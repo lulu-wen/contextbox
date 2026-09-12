@@ -1,0 +1,284 @@
+#!/usr/bin/env node
+/**
+ * ContextBox 命令列 —— 檔案與截圖管線的入口。
+ *
+ *   node cli.mjs doctor              這台機器現在什麼狀況
+ *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
+ *   node cli.mjs watch               常駐監看設定裡的資料夾
+ *   node cli.mjs list [狀態]          看收件匣
+ *   node cli.mjs search <詞>          全文搜尋（要先有理解，P1 之後才有東西）
+ *
+ * 三個作業系統的右鍵選單最後都是打 `propose`，所以核心不用知道自己在哪個 OS 上跑。
+ * **離開碼是那些選單的契約**：只有真的被拒絕才回非零。
+ */
+import { load, modelReady, modelKey, CONFIG_PATH } from './core/config.ts'
+import { admit } from './core/guard.ts'
+import { createWatcher } from './core/watcher.ts'
+import { open, DEFAULT_DB } from './core/db.ts'
+import { Items } from './core/items.ts'
+import { existsSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
+
+const [, , cmd, ...args] = process.argv
+
+const { config, problems, path: cfgPath, created } = load()
+
+let db
+try { db = open() }
+catch (e) {
+  // 右鍵選單一次選 N 個檔就是 N 個行程同時開資料庫。
+  // 讓它印一句人話，不要印一坨 Node 堆疊。
+  console.error(`打不開資料庫 ${DEFAULT_DB}：${e.message}`)
+  console.error('如果剛剛同時開了很多個，等一下再試一次就好。')
+  process.exit(1)
+}
+const items = new Items(db)
+
+const admitOpts = {
+  roots: config.watch,
+  maxBytes: config.maxBytes,
+  exclude: [config.filed],
+}
+
+const say = (...a) => console.log(...a)
+const warn = (...a) => console.warn(...a)
+
+const showProblems = () => { for (const p of problems) warn('⚠ ' + p) }
+
+// ── meta：給健康檢查用的心跳 ──────────────────────────────────
+const setMeta = (k, v) =>
+  db.prepare(`INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).run(k, String(v))
+const getMeta = k => (db.prepare(`SELECT v FROM meta WHERE k=?`).get(k) ?? {}).v ?? null
+
+/** 「3 分鐘前」這種人看得懂的講法 */
+function ago(iso) {
+  if (!iso) return null
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000)
+  if (s < 90) return `${Math.round(s)} 秒前`
+  if (s < 5400) return `${Math.round(s / 60)} 分鐘前`
+  if (s < 172800) return `${Math.round(s / 3600)} 小時前`
+  return `${Math.round(s / 86400)} 天前`
+}
+
+/**
+ * 打一次 /models 看模型在不在，順便確認金鑰對不對。
+ * 只回一句給人看的話 —— doctor 的價值就在「能不能用」講得斬釘截鐵。
+ */
+async function probeModel(cfg, key) {
+  const url = `${cfg.model.baseUrl}/models`
+  try {
+    const res = await fetch(url, {
+      headers: key ? { authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(8000),
+    })
+    if (res.status === 401 || res.status === 403) return `✗ 連得到，但金鑰不對（${res.status}）`
+    if (!res.ok) return `✗ ${url} 回了 ${res.status}`
+    const data = await res.json().catch(() => ({}))
+    const names = (data.data ?? []).map(m => m.id)
+    if (!names.length) return '✓ 連得到，但這台沒有列出任何模型'
+    return names.includes(cfg.model.name)
+      ? `✓ 連得到，${cfg.model.name} 在線上（共 ${names.length} 個模型）`
+      : `✗ 連得到，但沒有叫 ${cfg.model.name} 的模型。有的是：${names.slice(0, 6).join('、')}`
+  } catch (e) {
+    const why = e?.name === 'TimeoutError' ? '8 秒沒回應' : (e?.message ?? e)
+    return `✗ 連不上 ${url}（${why}）`
+  }
+}
+
+/** 收一個檔案。回 'new'｜'known'｜'rejected' */
+function intake(path, { quiet = false } = {}) {
+  const v = admit(resolve(path), admitOpts)
+  if (!v.ok) {
+    if (!quiet) warn(`✗ ${basename(path)}：${v.why}`)
+    return 'rejected'
+  }
+  let added
+  try { added = items.add(v) }
+  catch (e) { if (!quiet) warn(`✗ ${basename(path)}：${e.message}`); return 'rejected' }
+
+  if (!quiet) {
+    const sameContent = items.bySha(added.item.sha256, added.item.id)
+    say(`✓ ${basename(v.real)}  ${v.kind}  ${(v.bytes / 1024).toFixed(0)}KB`
+      + (added.fresh ? '' : '（已經收過了，沒有變）')
+      + (sameContent.length ? `　※ 另外有 ${sameContent.length} 份一樣的內容，理解可以共用` : ''))
+  }
+  return added.fresh ? 'new' : 'known'
+}
+
+// ── 搜尋 ────────────────────────────────────────────────────
+//
+// 使用者打的字**不可以**原封不動丟進 MATCH。FTS5 會把它當查詢語法解析，
+// 所以 `發票-2026`、`2026/09`、`a"b`、`*` 這些都會讓 CLI 帶著堆疊崩掉——
+// 而「搜一個檔名」正是這個工具最自然的用法。
+const ftsQuery = q =>
+  q.split(/\s+/).filter(Boolean).map(w => '"' + w.replace(/"/g, '""') + '"').join(' ')
+
+switch (cmd) {
+  case 'doctor': {
+    say('ContextBox 檢查')
+    say('')
+    say(`設定檔    ${cfgPath}${created ? '（還沒有，剛剛幫你建了一份）' : ''}`)
+    say(`資料庫    ${DEFAULT_DB}`)
+    say(`唯讀模式  ${config.readonly
+      ? '開著（不過搬檔器還沒實作，目前本來就不會動到任何檔案）'
+      : '關著'}`)
+    say('')
+    say('監看資料夾')
+    for (const r of config.watch) say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${r}`)
+    say(`歸檔到    ${config.filed}${existsSync(config.filed) ? '' : '（同意第一份提案時才會建）'}`)
+    say('')
+
+    // 監看到底有沒有在跑？設定正確不代表有人在看。
+    const beat = getMeta('watch_heartbeat')
+    const beatPid = Number(getMeta('watch_pid'))
+    const beatAgo = ago(beat)
+    // 心跳只證明「它上次寫的時候還活著」。被 kill -9 掉的話，
+    // 心跳會停在那裡，而 doctor 會繼續說「還活著」說滿五分鐘 ——
+    // 這個心跳本來就是為了「靜默失敗是最大的敵人」加的，不能自己說謊。
+    const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+    if (!beat) say('監看      ✗ 從來沒跑過。要它一直看著就開一個終端機跑 `node cli.mjs watch`。')
+    else if (!Number.isInteger(beatPid) || !alive(beatPid)) {
+      say(`監看      ✗ 那個行程（pid ${beatPid || '?'}）已經不在了，最後一次心跳是 ${beatAgo}。`)
+    } else if ((Date.now() - Date.parse(beat)) > 5 * 60_000) {
+      say(`監看      ✗ 行程還在，但最後一次心跳是 ${beatAgo}，看起來卡住了。`)
+    } else say(`監看      ✓ ${beatAgo}還活著（pid ${beatPid}）`)
+
+    const last = items.lastSeen()
+    say(`最後收到  ${last ? `${ago(last)}（${last}）` : '還沒收過任何東西'}`)
+    say('')
+
+    if (!modelReady(config)) {
+      say('模型      ✗ 還沒設定。請在設定檔填 model.baseUrl 與 model.name。')
+    } else {
+      say(`模型      ${config.model.name} @ ${config.model.baseUrl}`)
+      const key = modelKey(config)
+      say(`金鑰      ${key ? '✓ 從 ' + config.model.keyEnv + ' 讀到了' : '✗ 環境變數 ' + config.model.keyEnv + ' 是空的'}`)
+      // 真的打一次。設定檔填對不代表連得到——靜默失敗是這種工具最大的敵人。
+      say(`連線      ${await probeModel(config, key)}`)
+    }
+    say('')
+    const c = items.counts()
+    const total = Object.values(c).reduce((a, b) => a + b, 0)
+    say(`收件匣    共 ${total} 筆` + (total ? '：' + Object.entries(c).map(([k, v]) => `${k} ${v}`).join('、') : ''))
+    showProblems()
+    break
+  }
+
+  case 'propose': {
+    showProblems()
+    if (!args.length) { warn('要給檔案路徑。例：node cli.mjs propose ~/Downloads/a.pdf'); process.exit(1) }
+    const r = { new: 0, known: 0, rejected: 0 }
+    for (const a of args) r[intake(a)]++
+    // 「已經收過了」是成功。右鍵選單靠離開碼判斷成敗，
+    // 回非零會在 Windows／Nautilus 上跳一個錯誤視窗給使用者看。
+    if (r.new + r.known === 0) { process.exitCode = 1; break }
+    say(`\n收了 ${r.new} 個新檔案`
+      + (r.known ? `，${r.known} 個之前就收過了` : '')
+      + (r.rejected ? `，${r.rejected} 個被擋下` : '') + '。')
+    if (!modelReady(config)) {
+      say('（模型還沒設定，所以只有記下來，還沒有人去看懂它。設定好之後跑 `node cli.mjs doctor` 確認。）')
+    }
+    break
+  }
+
+  case 'watch': {
+    showProblems()
+    if (!config.watch.length) { warn('設定裡沒有任何監看資料夾。'); process.exit(1) }
+
+    const beat = () => { try { setMeta('watch_heartbeat', new Date().toISOString()); setMeta('watch_pid', process.pid) } catch { /* 資料庫忙就下次再寫 */ } }
+
+    const w = createWatcher({
+      roots: config.watch,
+      maxBytes: config.maxBytes,
+      exclude: [config.filed],
+      onSeed: count => {
+        say(`開機掃描：記住了 ${count} 個既有檔案，全部當成已經看過。`)
+        say('之後才落地、或是內容有變的檔案才會進收件匣。要處理舊檔就用 propose 手動指定。')
+      },
+      onFile: v => {
+        // 這裡丟例外不會讓檔案消失 —— watcher 會重試，重試太多次才放棄
+        const { fresh } = items.add(v)
+        say(`＋ ${new Date().toLocaleTimeString('zh-TW')}  ${basename(v.real)}（${v.kind}）`
+          + (fresh ? '' : '（內容沒變）'))
+      },
+      onProblem: m => warn('⚠ ' + m),
+    })
+
+    beat()
+    w.start()
+    const heartbeat = setInterval(beat, 30_000)
+    say(`正在看：\n  ${config.watch.join('\n  ')}`)
+    say('按 Ctrl+C 停止。')
+    if (!modelReady(config)) say('⚠ 模型還沒設定，收到的檔案只會被記下來，不會被看懂。')
+
+    const bye = () => { clearInterval(heartbeat); w.stop(); say('\n停了。'); process.exit(0) }
+    process.on('SIGINT', bye)
+    process.on('SIGTERM', bye)
+    setInterval(() => {}, 1 << 30)          // 讓行程活著
+    break
+  }
+
+  case 'list': {
+    showProblems()
+    const status = args[0]
+    const rows = items.list(status, 50)
+    if (!rows.length) { say(status ? `沒有狀態是 ${status} 的東西。` : '收件匣是空的。'); break }
+    for (const r of rows) say(`${r.status.padEnd(13)} ${r.kind.padEnd(10)} ${basename(r.path)}`)
+    say(`\n共 ${rows.length} 筆。`)
+    break
+  }
+
+  case 'search': {
+    showProblems()
+    const q = args.join(' ').trim()
+    if (!q) { warn('要給搜尋字詞。'); process.exit(1) }
+
+    // trigram 索引至少要三個字元才建得起來，所以短詞走 LIKE。
+    // 中文的詞大多是兩個字（發票、收據、學費），不處理的話這個工具
+    // 會對「發票」回「找不到」，而使用者會以為是資料沒進去。
+    const short = [...q].length < 3
+    // LIKE 的 % 與 _ 是萬用字元。不跳脫的話 `search %` 會把整個資料庫
+    // 倒出來 —— 包含每一張截圖抄下來的字。
+    const like = q.replace(/[\\%_]/g, c => '\\' + c)
+    let rows
+    try {
+      rows = short
+        ? db.prepare(
+            `SELECT i.*, f.summary FROM items_fts f JOIN items i ON i.id = f.item_id
+             WHERE f.name LIKE '%' || ? || '%' ESCAPE '\\'
+                OR f.summary LIKE '%' || ? || '%' ESCAPE '\\'
+                OR f.text LIKE '%' || ? || '%' ESCAPE '\\' LIMIT 20`
+          ).all(like, like, like)
+        : db.prepare(
+            `SELECT i.*, f.summary FROM items_fts f JOIN items i ON i.id = f.item_id
+             WHERE items_fts MATCH ? ORDER BY rank LIMIT 20`
+          ).all(ftsQuery(q))
+    } catch (e) {
+      warn(`這個搜尋字詞資料庫看不懂（${e.message}）。換個說法再試一次。`)
+      process.exitCode = 1
+      break
+    }
+
+    if (!rows.length) {
+      say(`找不到「${q}」。`)
+      const n = db.prepare(`SELECT count(*) n FROM understanding`).get().n
+      if (!n) say('（目前一份文件都還沒被看懂，所以搜尋還沒有東西可以找。那是 P1 的事。）')
+      break
+    }
+    for (const r of rows) say(`${basename(r.path)}\n   ${r.summary ?? ''}\n   ${r.path}\n`)
+    break
+  }
+
+  default: {
+    say(`ContextBox —— 檔案與截圖管線
+
+  node cli.mjs doctor            這台機器現在什麼狀況
+  node cli.mjs propose <檔案>...  手動收一個檔案
+  node cli.mjs watch             常駐監看
+  node cli.mjs list [狀態]        看收件匣（狀態：new/ignored/proposed/applied/error）
+  node cli.mjs search <詞>        全文搜尋
+
+設定檔在 ${CONFIG_PATH}`)
+    if (cmd) process.exit(1)
+  }
+}
