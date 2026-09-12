@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ContextBox 欄位偵測（原型）",
+  "version": "0.1.0",
+  "description": "掃描這一頁的表單欄位，看 ContextBox 認得出幾個。這個原型只認欄位，不填任何東西。",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [],
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["factTable.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

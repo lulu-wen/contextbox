@@ -1,0 +1,75 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
+<title>測試用求職表單</title>
+<style>
+ body{font:14px/1.7 system-ui,"Noto Sans TC",sans-serif;max-width:620px;margin:40px auto;padding:0 20px;color:#16161A}
+ h2{font-size:16px;margin:28px 0 10px;padding-bottom:6px;border-bottom:2px solid #ddd}
+ .f{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-bottom:9px}
+ input,select,textarea{padding:6px 8px;border:1px solid #bbb;border-radius:4px;font:inherit;width:100%;box-sizing:border-box}
+ textarea{height:70px}
+</style>
+<h1>人才資料表</h1>
+
+<h2>基本資料</h2>
+<div class="f"><label for="f1">姓名</label><input id="f1" autocomplete="name"></div>
+<div class="f"><label for="f2">英文姓名</label><input id="f2"></div>
+<div class="f"><label for="f3">性別</label><select id="f3"><option>男</option><option>女</option></select></div>
+<div class="f"><label for="f4">出生日期</label><input id="f4" autocomplete="bday" placeholder="民國 年 月 日"></div>
+<div class="f"><label for="f5">身分證統一編號</label><input id="f5"></div>
+<div class="f"><label for="f6">兵役狀況</label><select id="f6"><option>役畢</option><option>免役</option></select></div>
+<div class="f"><label for="f7">婚姻狀況</label><select id="f7"><option>未婚</option><option>已婚</option></select></div>
+
+<h2>聯絡方式</h2>
+<div class="f"><label for="g1">行動電話</label><input id="g1" autocomplete="tel"></div>
+<div class="f"><label for="g2">住家電話</label><input id="g2"></div>
+<div class="f"><label for="g3">電子信箱</label><input id="g3" type="email" autocomplete="email"></div>
+<div class="f"><label for="g4">通訊地址</label><input id="g4" autocomplete="street-address"></div>
+<div class="f"><label for="g5">戶籍地址</label><input id="g5"></div>
+<div class="f"><label for="g6">郵遞區號</label><input id="g6" autocomplete="postal-code"></div>
+
+<h2>最高學歷</h2>
+<div class="f"><label for="h1">學校名稱</label><input id="h1"></div>
+<div class="f"><label for="h2">科系名稱</label><input id="h2"></div>
+<div class="f"><label for="h3">教育程度</label><select id="h3"><option>碩士</option><option>學士</option></select></div>
+<div class="f"><label for="h4">畢業狀態</label><select id="h4"><option>畢業</option><option>肄業</option></select></div>
+<div class="f"><label for="h5">入學年月</label><input id="h5"></div>
+<div class="f"><label for="h6">畢業年月</label><input id="h6"></div>
+<div class="f"><label for="h7">論文題目</label><input id="h7"></div>
+
+<h2>工作經歷</h2>
+<div class="f"><label for="i1">公司名稱</label><input id="i1" autocomplete="organization"></div>
+<div class="f"><label for="i2">職務名稱</label><input id="i2" autocomplete="organization-title"></div>
+<div class="f"><label for="i3">產業類別</label><input id="i3"></div>
+<div class="f"><label for="i4">到職年月</label><input id="i4"></div>
+<div class="f"><label for="i5">離職年月</label><input id="i5"></div>
+<div class="f"><label for="i6">工作說明</label><textarea id="i6"></textarea></div>
+<div class="f"><label for="i7">離職原因</label><input id="i7"></div>
+<div class="f"><label for="i8">最近一份工作月薪</label><input id="i8"></div>
+
+<h2>專長與證照</h2>
+<div class="f"><label for="j1">專長技能</label><input id="j1"></div>
+<div class="f"><label for="j2">熟練程度</label><select id="j2"><option>精通</option></select></div>
+<div class="f"><label for="j3">語文能力</label><input id="j3"></div>
+<div class="f"><label for="j4">英文檢定</label><input id="j4"></div>
+<div class="f"><label for="j5">檢定分數</label><input id="j5"></div>
+<div class="f"><label for="j6">專業證照</label><input id="j6"></div>
+<div class="f"><label for="j7">證照有效期限</label><input id="j7"></div>
+
+<h2>作品</h2>
+<div class="f"><label for="k1">作品名稱</label><input id="k1"></div>
+<div class="f"><label for="k2">作品連結</label><input id="k2" type="url" autocomplete="url"></div>
+<div class="f"><label for="k3">個人網站</label><input id="k3"></div>
+
+<h2>希望工作條件</h2>
+<div class="f"><label for="l1">應徵職務</label><input id="l1"></div>
+<div class="f"><label for="l2">希望工作地點</label><input id="l2"></div>
+<div class="f"><label for="l3">期望薪資</label><input id="l3"></div>
+<div class="f"><label for="l4">工作性質</label><select id="l4"><option>全職</option></select></div>
+<div class="f"><label for="l5">最快到職日</label><input id="l5"></div>
+
+<h2>其他</h2>
+<div class="f"><label for="m1">自傳</label><textarea id="m1"></textarea></div>
+<div class="f"><label for="m2">緊急聯絡人姓名</label><input id="m2"></div>
+<div class="f"><label for="m3">與本人關係</label><input id="m3"></div>
+<div class="f"><label for="m4">緊急聯絡人電話</label><input id="m4"></div>
+<div class="f"><label for="m5">推薦人</label><input id="m5"></div>
+</html>
