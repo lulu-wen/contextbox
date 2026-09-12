@@ -152,7 +152,9 @@
     const doc0 = el.ownerDocument, docEl = doc0.documentElement
     const left = rect.left + win.scrollX, top = rect.top + win.scrollY
     if (left + rect.width <= 0 || top + rect.height <= 0) return no('被移到畫面外')
-    if (left >= docEl.scrollWidth || top >= docEl.scrollHeight) return no('被丟到文件範圍外')
+    // 注意：不要寫 `left >= docEl.scrollWidth`。被藏到 left:99999px 的元素
+    // 自己就會把 documentElement 的 scrollWidth 撐大，那個條件永遠不成立，
+    // 是死碼。真正擋得住的是下面那道「命中測試打不到就不填」。
 
     // 祖先鏈上只要有一層是 overflow:hidden/clip（使用者捲不到），
     // 元素就必須跟那一層有實際重疊，否則等於被裁掉看不見。
@@ -167,16 +169,25 @@
     }
 
     // 最關鍵的一條：中心點打下去，接到的是不是自己。
-    // 一次擋掉所有「正常欄位被另一個元素蓋住」的手法。
-    // 只有在視窗範圍內才測得出來，捲到看不到的地方就跳過這一條。
+    //
+    // **量不出來就當看不見（fail closed）。**
+    // 以前是「中心點落在視窗外就跳過這一條」，那等於 fail-open——
+    // 攻擊者只要把欄位放到第一屏底下，或丟到 left:99999px，就完全繞過。
+    // 長表單的體驗靠 inViewport() 那一支分流：批次填入只碰視窗內的，
+    // 其餘等人捲過去、按那一格自己的按鈕時再驗一次。
     const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2
-    if (cx >= 0 && cy >= 0 && cx <= win.innerWidth && cy <= win.innerHeight) {
+    const inView = cx >= 0 && cy >= 0 && cx <= win.innerWidth && cy <= win.innerHeight
+    if (!inView) return no('在視窗外，量不出有沒有被蓋住')
+    {
       const doc = el.ownerDocument
       const hit = doc.elementFromPoint(cx, cy)
       if (!hit) return no('中心點打不到東西')
       // 用我們自己記下來的節點集合判斷，不要用 DOM 屬性——
       // [data-cb] 頁面自己也寫得出來，等於把這道檢查的開關交給攻擊者。
-      const ours = OURS.has(hit) || (hit.closest && [...OURS].some(o => o.contains(hit)))
+      //
+      // 也不要用 o.contains(hit)：我們的節點活在對方的 DOM 裡，
+      // 頁面 appendChild 一個小孩進去就通過了。只認節點本身。
+      const ours = OURS.has(hit)
       const same = hit === el || el.contains(hit) || hit.contains(el)
         || (hit.shadowRoot && hit.shadowRoot.contains(el))
       if (!ours && !same) return no('被別的東西蓋住了')
@@ -186,7 +197,20 @@
 
   const isVisible = el => visibilityOf(el).ok === true
 
-  /** 我們自己畫到頁面上的節點。頁面偽造不了 WeakSet 的成員資格。 */
+  /**
+   * 中心點現在真的在視窗裡嗎。
+   * 可見性檢查對視窗外的欄位一律回「量不出來」，所以批次填入只碰視窗內的；
+   * 其餘的等人捲過去、按那一格自己的按鈕，那時候再驗一次。
+   */
+  function inViewport(el) {
+    if (!el || !el.getBoundingClientRect) return false
+    const w = (el.ownerDocument && el.ownerDocument.defaultView) || globalThis
+    const r = el.getBoundingClientRect()
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+    return cx >= 0 && cy >= 0 && cx <= w.innerWidth && cy <= w.innerHeight
+  }
+
+  /** 我們自己畫到頁面上的節點。頁面偽造不了 Set 成員資格。 */
   const OURS = new Set()
   const claim = n => { OURS.add(n); return n }
   const unclaim = n => OURS.delete(n)
@@ -616,12 +640,17 @@
           ? [...el.ownerDocument.querySelectorAll(
               `input[type=checkbox][name="${CSS.escape(el.name)}"]`)]
           : [el]
+        // pickOption 回的是 { ok, via, option }，沒中的時候回的也是物件。
+        // 所以要看 hit.ok，而且元素在 hit.option.el —— 兩個都寫錯過，
+        // 結果是每次都丟 TypeError，checkbox 一格都填不了。
         const hit = pickOption(
-          group.map(o => ({ el: o, text: controlLabel(o), value: o.value })), value)
-        if (hit) {
-          if (!hit.el.checked) hit.el.click()
-          return hit.el.checked
-            ? { ok: true, via: hit.via, shown: String(controlLabel(hit.el)).trim(), why: null }
+          group.map(o => ({ el: o, text: controlLabel(o), value: o.value, disabled: o.disabled })),
+          value)
+        if (hit.ok) {
+          const t = hit.option.el
+          if (!t.checked) t.click()
+          return t.checked
+            ? { ok: true, via: hit.via, shown: String(controlLabel(t)).trim(), why: null }
             : { ok: false, why: '點了但沒有被選起來' }
         }
       }
@@ -643,18 +672,55 @@
    * 頁面在自己的地盤上終究防不死，但至少：擋掉這段期間的 submit，
    * 並把攔了幾次回報出去，讓面板可以說「這一頁想在你按之前就送出」。
    */
-  async function guardSubmits(fn) {
+  let guard = null
+
+  /**
+   * 開始守衛。回傳一個 disarm()，呼叫之後才拆掉。
+   *
+   * **它攔得到什麼、攔不到什麼，要講清楚：**
+   *   攔得到：真正的表單送出事件（使用者或程式觸發 requestSubmit、按 submit 鈕）
+   *   攔不到：HTMLFormElement.prototype.submit() —— 依規格它根本不發 submit 事件；
+   *           也攔不到頁面直接用 fetch／XHR 把值送走。
+   * isolated world 蓋不到頁面的 prototype，所以這一層在頁面的地盤上防不死。
+   * 我們能做的是：攔掉攔得到的、偵測導航、然後**誠實地說**擋不死。
+   */
+  function arm() {
+    if (guard) { guard.depth++; return guard.disarm }
     const doc = document
-    let blocked = 0
-    const stop = e => { e.preventDefault(); e.stopImmediatePropagation(); blocked++ }
-    const forms = [...doc.querySelectorAll('form')]
-    for (const f of forms) f.addEventListener('submit', stop, true)
+    const state = { blocked: 0, navigated: false, depth: 1 }
+    const stop = e => { e.preventDefault(); e.stopImmediatePropagation(); state.blocked++ }
+    const onLeave = e => { state.navigated = true; e.preventDefault(); e.returnValue = '' }
+    const w = doc.defaultView || globalThis
     doc.addEventListener('submit', stop, true)
-    try {
-      return { value: await fn(), blocked }
-    } finally {
-      for (const f of forms) f.removeEventListener('submit', stop, true)
+    w.addEventListener('beforeunload', onLeave, true)
+    state.disarm = () => {
+      if (--state.depth > 0) return state
       doc.removeEventListener('submit', stop, true)
+      w.removeEventListener('beforeunload', onLeave, true)
+      guard = null
+      return state
+    }
+    guard = state
+    return state.disarm
+  }
+
+  /**
+   * 包住一次填入。守衛不會在 fn 一結束就拆掉——頁面只要把送出延後一拍
+   * （setTimeout、rAF、MutationObserver）就繞過去了，而且那時候欄位都填滿了。
+   * 所以多留 LINGER_MS，期間攔到的一樣算進去。
+   */
+  const LINGER_MS = 8000
+  async function guardSubmits(fn) {
+    const disarm = arm()
+    const state = guard
+    let value
+    try { value = await fn() } finally {
+      setTimeout(disarm, LINGER_MS)
+    }
+    return {
+      value,
+      get blocked() { return state.blocked },
+      get navigated() { return state.navigated },
     }
   }
 
@@ -691,7 +757,7 @@
     watchComposition, isComposing,
     // 純函式，好單獨測
     nativeSetter, setNativeValue, fireInput, fireChange,
-    pickOption, firstAllowed, matchesPattern, guardSubmits, claim, unclaim, isOurs: n => OURS.has(n),
+    pickOption, firstAllowed, matchesPattern, guardSubmits, arm, inViewport, claim, unclaim, isOurs: n => OURS.has(n),
     dateCandidates, rocParts, sepOf, phoneCandidates, twParts, numberForField,
     halfWidth, norm, valueTypeOf,
   }

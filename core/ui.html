@@ -367,7 +367,20 @@ function fieldRow(def, key, gi, first) {
   const cell = { row, input, status, def, key, group: gi }
   cells.set(key, cell)
 
-  input.addEventListener('change', () => save(cell))
+  // 原生 date／month／number 每按一鍵只要值變了就丟一次 change。
+  // 直接存的話打一個生日會寫進七八筆 confirmed 事實、十幾列 journal。
+  // 所以：這幾種等 blur 才存，其餘 change 後再等 400ms。
+  const EAGER = /^(date|month|number|time|datetime-local)$/
+  if (EAGER.test(input.type || '')) {
+    input.addEventListener('blur', () => save(cell))
+  } else {
+    let t = null
+    input.addEventListener('change', () => {
+      clearTimeout(t)
+      t = setTimeout(() => save(cell), 400)
+    })
+    input.addEventListener('blur', () => { clearTimeout(t); save(cell) })
+  }
   input.addEventListener('keydown', e => {
     // 單行欄位按 Enter 就是「我填完了」，讓它失焦去存，絕不送出表單
     if (e.key === 'Enter' && input.tagName !== 'TEXTAREA') { e.preventDefault(); input.blur() }

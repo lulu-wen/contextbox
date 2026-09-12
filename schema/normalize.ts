@@ -11,6 +11,9 @@
  * 「115年6月」→ 2026-06　　「民國 89 年 3 月 15 日」→ 2000-03-15
  */
 export function rocToAD(raw: string): string | null {
+  // 全形數字要先折成半形，不然下面的 (?<!\d) 攔不住：\d 只涵蓋 [0-9]，
+  // 「２024年6月」會被切成「024年」→ 1935-06，一樣是安靜地弄壞資料。
+  raw = toHalfWidth(raw)
   // (?<!\d) 很重要：沒有它的話，「2024年」會被切成「024年」當成民國 24 年，
   // 變成 1935 年。這個 bug 會安靜地把每一個西元日期弄壞。
   const m = raw.match(/(?:民國\s*)?(?<!\d)(\d{1,3})\s*年\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?/)
@@ -24,7 +27,7 @@ export function rocToAD(raw: string): string | null {
 
 /** 各種日期寫法 → YYYY-MM-DD 或 YYYY-MM。看不懂就回 null，不要猜。 */
 export function toDate(raw: string): string | null {
-  const s = raw.trim()
+  const s = toHalfWidth(raw).trim()      // 全形數字先折半形，理由同 rocToAD
   if (/^\d{4}-\d{2}(-\d{2})?$/.test(s)) return s
 
   // 先試西元四位數，再試民國。順序反了的話「2024年6月」會被民國分支搶走。

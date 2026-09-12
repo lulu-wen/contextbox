@@ -446,7 +446,9 @@
       if (!e.isTrusted) return
       e.preventDefault()
       e.stopPropagation()
-      onClick(e)
+      // onClick 現在可能是 async。不接的話 rejection 會靜靜消失。
+      Promise.resolve(onClick(e)).catch(err =>
+        console.warn('[ContextBox] 動作出錯：', err))
     })
     return b
   }
@@ -491,6 +493,7 @@
     return c
   }
 
+  let collapsed = false
   function paintPanel(fields, note) {
     if (panel) panel.remove()
     const c = countOf(fields)
@@ -504,7 +507,33 @@
       lineHeight: '1.7', textAlign: 'left',
     })
 
-    panel.appendChild(E('div', { fontWeight: '600', marginBottom: '2px' }, 'ContextBox'))
+    // 面板是 300px 寬、蓋在最上層的。表單只要置中，欄位右邊的徽章就會被它蓋住，
+    // 點下去完全沒反應——不是報錯，是點擊被面板吃掉。所以一定要能收起來。
+    const head = E('div', { display: 'flex', justifyContent: 'space-between',
+      alignItems: 'center', gap: '8px', marginBottom: '2px' })
+    head.appendChild(E('div', { fontWeight: '600' }, 'ContextBox'))
+    const fold = E('button', {
+      background: 'transparent', border: `1px solid ${C.line}`, color: C.dim,
+      borderRadius: '4px', cursor: 'pointer', padding: '1px 7px',
+      font: '11px ui-monospace, monospace', pointerEvents: 'auto',
+    }, collapsed ? '展開' : '收起')
+    fold.type = 'button'
+    fold.addEventListener('click', e => {
+      if (!e.isTrusted) return
+      e.preventDefault(); e.stopPropagation()
+      collapsed = !collapsed
+      paintPanel(fields, note)
+    })
+    head.appendChild(fold)
+    panel.appendChild(head)
+
+    if (collapsed) {
+      panel.appendChild(E('div', { color: C.dim },
+        `認出 ${recognised} 格。收起來的時候不會擋到欄位旁邊的按鈕。`))
+      document.body.appendChild(panel)
+      return
+    }
+
     panel.appendChild(E('div', { color: C.dim, marginBottom: '8px' },
       `這一頁 ${fields.length} 格，認出 ${recognised} 格`))
 
@@ -527,9 +556,11 @@
     panel.appendChild(E('div', {
       marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${C.line}`,
       color: C.okFg, fontWeight: '600',
-    }, '不會自動送出表單'))
+    }, '我不會幫你按送出'))
     panel.appendChild(E('div', { color: C.dim, marginBottom: '10px' },
-      '我只把值填進格子裡。按送出永遠是你自己的動作。'))
+      '我只把值填進格子裡，按送出永遠是你自己的動作。\n'
+      + '填的時候我也會擋下這一頁大部分的自動送出，但擋不死——'
+      + '值一旦填進格子，這一頁的程式立刻讀得到，不用等你按送出。'))
 
     const bar = E('div', { display: 'flex', gap: '8px', flexWrap: 'wrap' })
     const mkBtn = (text, bg, fn) => {
@@ -603,13 +634,21 @@
     return { ok: true, note: field.filledNote }
   }
 
-  function doFill(e, field, value, source) {
-    const r = applyValue(field, value)
+  async function doFill(e, field, value, source) {
+    if (e && !e.isTrusted) return
+    // 三條填入路徑（批次、選一筆、敏感）都要走同一道守衛。
+    // 以前只有批次有，等於最該保護的那兩條反而沒防線。
+    const g = await CBFill.guardSubmits(() => {
+      try { return applyValue(field, value) }
+      catch (err) { return { ok: false, why: '填的時候出錯：' + ((err && err.message) || err) } }
+    })
+    const r = g.value
     field.filledFrom = source || '事實庫'
     repaintOne(field)
-    say(r.ok
+    say((r.ok
       ? `填好了：${field.defLabel}${r.note ? '（' + r.note + '）' : ''}`
       : `${field.defLabel} 沒填成功：${r.why}`)
+      + (g.blocked ? `　⚠ 這一頁想趁機送出表單，被我攔下 ${g.blocked} 次。` : ''))
     refreshPanel()
   }
 
@@ -621,9 +660,26 @@
    * 敏感欄位：值永遠不提早下到頁面這一側。
    * 人按下去（而且是真的人按的）之後才臨時跟 background 要一次，填完立刻丟掉。
    */
+  const inFlight = new WeakSet()
   async function doSensitive(e, field) {
     const p = field.plan
     if (!e.isTrusted) return                      // 頁面用 el.click() 假造的點擊，一律不理
+
+    // 取值要一整個網路來回（實測 40～90ms）。這段期間按鈕還在原位，
+    // 使用者很自然的連點，第二下就打到頁面藏在底下的東西。所以先鎖住。
+    if (inFlight.has(field)) return
+    inFlight.add(field)
+    const btn = e.currentTarget
+    if (btn && 'disabled' in btn) btn.disabled = true
+    try {
+      await doSensitiveInner(e, field, p)
+    } finally {
+      inFlight.delete(field)
+      if (btn && 'disabled' in btn) btn.disabled = false
+    }
+  }
+
+  async function doSensitiveInner(e, field, p) {
 
     const bad = verify(field)
     if (bad) { say(`${field.defLabel} 沒填：${bad}`); return }
@@ -638,7 +694,12 @@
     const bad2 = verify(field)
     if (bad2) { say(`${field.defLabel} 沒填：${bad2}`); return }
 
-    const r = applyValue(field, res.value)
+    const g = await CBFill.guardSubmits(() => {
+      try { return applyValue(field, res.value) }
+      catch (err) { return { ok: false, why: '填的時候出錯：' + ((err && err.message) || err) } }
+    })
+    const r = g.value
+    if (g.blocked) say(`⚠ 這一頁想趁機送出表單，被我攔下 ${g.blocked} 次。`)
     field.filledFrom = (p && p.source) || '事實庫'
     repaintOne(field)
     say(r.ok
@@ -696,8 +757,12 @@
 
   async function fillSafe(e, fields) {
     if (!e.isTrusted) return                    // 頁面假造的點擊不算數
-    const targets = fields.filter(f =>
+    // 只碰現在真的看得到的欄位。可見性檢查對視窗外的一律回「量不出來」，
+    // 硬填就等於 fail-open。捲到的時候按那一格自己的按鈕即可。
+    const all = fields.filter(f =>
       f.plan && f.plan.action === 'fill' && !f.needsClick && f.state !== 'filled')
+    const targets = all.filter(f => CBFill.inViewport(f.el))
+    const offscreen = all.length - targets.length
     let ok = 0
     const failed = []
 
@@ -705,7 +770,10 @@
     // 我們說「永遠不會幫你按送出」，那這段期間就要真的把 submit 擋下來。
     const guarded = await CBFill.guardSubmits(() => {
       for (const f of targets) {
-        const r = applyValue(f, f.plan.value)
+        // 一格丟例外只該毀那一格，不要毀整批
+        let r
+        try { r = applyValue(f, f.plan.value) }
+        catch (e) { r = { ok: false, why: '填的時候出錯：' + ((e && e.message) || e) } }
         if (r.ok) { ok++; f.filledFrom = f.plan.source || '事實庫' }
         else failed.push(`${f.defLabel}：${r.why}`)
         repaintOne(f)
@@ -716,6 +784,7 @@
     paintPanel(fields,
       `填好 ${ok} 格` +
       (guessed ? `，其中 ${guessed} 格有推算或提醒（把滑鼠移到標記上看）` : '') +
+      (offscreen ? `\n另外 ${offscreen} 格在視窗外沒填。捲過去再按那一格旁邊的按鈕。` : '') +
       (failed.length ? `\n沒填成功 ${failed.length} 格：\n・${failed.join('\n・')}` : '') +
       (guarded.blocked
         ? `\n\n⚠ 這一頁試著在你按送出之前就自己送出表單 ${guarded.blocked} 次，我攔下來了。`
