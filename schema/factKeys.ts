@@ -14,7 +14,7 @@
  */
 
 /** key 表的版本。改過 key 就要進版，事實庫靠這個做遷移。 */
-export const SCHEMA_VERSION = '1.1.0'
+export const SCHEMA_VERSION = '1.2.0'
 
 export type Sensitivity =
   | 'public'     // 本來就印在履歷上
@@ -27,6 +27,16 @@ export type ExpiryPolicy =
   | 'months:6'   // 現職、求職條件、可上班日
   | 'months:12'  // 聯絡方式、技能年資
   | 'explicit'   // 值本身帶到期日（證照、居留證）
+
+/**
+ * 這個欄位要怎麼填。
+ *
+ *  direct  —— 值是確定的，擴充套件直接填。姓名、生日、戶籍地址。
+ *  pick    —— 庫裡有好幾筆，要先選一筆。學歷三筆，「最高學歷學校」只放一筆。
+ *  compose —— 要當場寫出來的長文。自傳、工作說明、求職信。
+ *             這種永遠不自動填，交給 agent 生成，再讓人過目。
+ */
+export type FillMode = 'direct' | 'pick' | 'compose'
 
 export type ValueType =
   | 'string' | 'text' | 'number' | 'boolean'
@@ -47,7 +57,22 @@ export type FactKeyDef = {
   aliases: string[]
   /** 可重複：education[]、work[] */
   repeatable?: boolean
+  /** 不寫就照 fillModeOf() 推導。只有推導錯的才手動指定。 */
+  fill?: FillMode
   note?: string
+}
+
+/**
+ * 填法用推的，不要手標 75 次——手標一定會漏。
+ *   長文（text）        → compose
+ *   可重複的（[]）      → pick
+ *   其他                → direct
+ */
+export function fillModeOf(d: FactKeyDef): FillMode {
+  if (d.fill) return d.fill
+  if (d.type === 'text') return 'compose'
+  if (d.repeatable) return 'pick'
+  return 'direct'
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -213,8 +238,9 @@ const EDUCATION: FactKeyDef[] = [
     sensitivity: 'public', expiry: 'never', aliases: ['畢業年月', '畢業時間', '就讀期間迄'] },
   { key: 'education[].gpa', label: '成績', type: 'string', repeatable: true,
     sensitivity: 'normal', expiry: 'never', aliases: ['成績', 'GPA', '平均成績', '班排名'] },
-  { key: 'education[].thesis', label: '論文題目', type: 'text', repeatable: true,
-    sensitivity: 'public', expiry: 'never', aliases: ['論文題目', '畢業論文', '研究題目'] },
+  { key: 'education[].thesis', label: '論文題目', type: 'text', repeatable: true, fill: 'pick',
+    sensitivity: 'public', expiry: 'never', aliases: ['論文題目', '畢業論文', '研究題目'],
+    note: '是固定的事實不是生成物，所以覆寫成 pick' },
 ]
 
 // ──────────────────────────────────────────────────────────────
@@ -386,3 +412,16 @@ export const sensitivityOf = (key: string): Sensitivity => M.sensitivityOf(key)
 
 /** 擴充套件能不能不問就填 */
 export const canAutofill = (key: string): boolean => M.canAutofill(key)
+
+/** 這個 key 該怎麼填 */
+export const fillOf = (key: string): FillMode | null => {
+  const d = defOf(key)
+  return d ? fillModeOf(d) : null
+}
+
+/**
+ * 擴充套件到底能不能「碰都不用問就填下去」。
+ * 三個條件都要過：值是確定的、不敏感、而且我們手上真的有那筆事實。
+ */
+export const canFillSilently = (key: string): boolean =>
+  fillOf(key) === 'direct' && canAutofill(key)
