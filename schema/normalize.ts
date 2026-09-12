@@ -11,9 +11,13 @@
  * 「115年6月」→ 2026-06　　「民國 89 年 3 月 15 日」→ 2000-03-15
  */
 export function rocToAD(raw: string): string | null {
-  const m = raw.match(/(?:民國)?\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?/)
+  // (?<!\d) 很重要：沒有它的話，「2024年」會被切成「024年」當成民國 24 年，
+  // 變成 1935 年。這個 bug 會安靜地把每一個西元日期弄壞。
+  const m = raw.match(/(?:民國\s*)?(?<!\d)(\d{1,3})\s*年\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?/)
   if (!m) return null
-  const y = parseInt(m[1], 10) + 1911
+  const roc = parseInt(m[1], 10)
+  if (roc < 1 || roc > 200) return null      // 民國年只可能在這個範圍
+  const y = roc + 1911
   const mo = m[2].padStart(2, '0')
   return m[3] ? `${y}-${mo}-${m[3].padStart(2, '0')}` : `${y}-${mo}`
 }
@@ -22,13 +26,15 @@ export function rocToAD(raw: string): string | null {
 export function toDate(raw: string): string | null {
   const s = raw.trim()
   if (/^\d{4}-\d{2}(-\d{2})?$/.test(s)) return s
-  const roc = rocToAD(s)
-  if (roc) return roc
-  const ad = s.match(/(\d{4})\s*[年\/\-.]\s*(\d{1,2})(?:\s*[月\/\-.]\s*(\d{1,2}))?/)
+
+  // 先試西元四位數，再試民國。順序反了的話「2024年6月」會被民國分支搶走。
+  const ad = s.match(/(?<!\d)(\d{4})\s*[年\/\-.]\s*(\d{1,2})(?:\s*[月\/\-.]\s*(\d{1,2}))?/)
   if (ad) {
     const mo = ad[2].padStart(2, '0')
     return ad[3] ? `${ad[1]}-${mo}-${ad[3].padStart(2, '0')}` : `${ad[1]}-${mo}`
   }
+  const roc = rocToAD(s)
+  if (roc) return roc
   return null
 }
 

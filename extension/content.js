@@ -57,7 +57,11 @@
 ;(function () {
   // 同一頁只留一份。被注入第二次的話直接不做事——不然會有兩個面板、
   // 兩組標記、兩個訊息監聽器，而且舊的那一份還活著，清不掉。
-  if (globalThis.__contextboxRunning) return
+  // 使用者可能連按兩次圖示。已經載入過就只重掃一次，不要再裝一組監聽器。
+  if (globalThis.__contextboxRunning) {
+    if (globalThis.__contextboxRescan) globalThis.__contextboxRescan()
+    return
+  }
   globalThis.__contextboxRunning = true
 
   if (typeof CB === 'undefined' || !CB.matchField) {
@@ -68,7 +72,8 @@
   if (!HAS_FILL) console.warn('[ContextBox] fill.js 沒有載入，只會標記不會填')
 
   /** 庫裡沒有的事實去哪裡補。server.ts 的 GET / 就是手填頁面。 */
-  const HOME = 'http://127.0.0.1:7391/'
+  // port 使用者改得動（設定頁），所以跟 background 要，不要寫死。
+  let HOME = 'http://127.0.0.1:7391/'
 
   // ── 顏色 ────────────────────────────────────────────────────
   const C = {
@@ -81,7 +86,8 @@
   // ── DOM 小工具：頁面給的字一律走 textContent，絕不進 innerHTML ──
   function E(tag, style, text) {
     const n = document.createElement(tag)
-    n.setAttribute('data-cb', '1')          // 讓 isVisible 的遮擋檢查認得出是我們畫的
+    n.setAttribute('data-cb', '1')          // 只為了掃描時跳過自己
+    if (HAS_FILL) CBFill.claim(n)            // 遮擋檢查認的是這個；屬性頁面偽造得出來
     if (style) Object.assign(n.style, style)
     if (text !== undefined && text !== null) n.textContent = String(text)
     return n
@@ -338,6 +344,10 @@
       go()
     })
   }
+
+  // 開場先問一次 health，順便把使用者設定的 port 拿回來
+  ask({ type: 'health' }).then(r => { if (r && r.port) HOME = `http://127.0.0.1:${r.port}/` })
+    .catch(() => {})
 
   /** 回來的東西可能有好幾種包法，都收。 */
   function planOf(r) {
@@ -819,6 +829,14 @@
     })
   }
 
-  // 載入時只掃描與標記，一個字都不填。人要先看到我們打算做什麼。
-  runOnce().catch(e => console.warn('[ContextBox] 掃描出錯：', e))
+  globalThis.__contextboxRescan = () =>
+    runOnce().catch(e => console.warn('[ContextBox] 掃描出錯：', e))
+
+  // **不自動跑。**
+  //
+  // 以前是每一頁載入就掃描並在頁面上畫標記，標記文字寫著哪些 key 庫裡有東西——
+  // 那等於把「你存了哪些個資」漏給每一個你造訪的網站，而且你一下都沒點過。
+  //
+  // 現在要人點工具列圖示、按「掃描這一頁」，popup.js 才用 activeTab 把這支注入。
+  // 注入完緊接著會收到一則 cb-scan，由上面那個 onMessage 處理。
 })()

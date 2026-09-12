@@ -2,17 +2,23 @@
   "manifest_version": 3,
   "name": "ContextBox",
   "version": "0.2.0",
-  "description": "把 ContextBox 事實庫裡的資料填進表單欄位。只填，永遠不會幫你按送出。敏感欄位每次都要你再點一次。",
-  "permissions": ["storage", "activeTab"],
-  "host_permissions": ["http://127.0.0.1/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html" },
-  "options_ui": { "page": "options.html", "open_in_tab": true },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["factTable.js", "fill.js", "content.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  "description": "把 ContextBox 事實庫裡的資料填進表單欄位。要你點圖示才會動，只填，永遠不會幫你按送出。敏感欄位每次都要你再點一次。",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
 }

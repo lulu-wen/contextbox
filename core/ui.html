@@ -347,9 +347,15 @@ function fieldRow(def, key, gi, first) {
   if (def.sensitivity === 'sensitive') hints.push({ cls: 'lockhint', text: '🔒 敏感欄位：自動填入時每一次都會再問你一遍，不會有「這個網站以後都好」。' })
   if (def.fill === 'compose') hints.push({ cls: '', text: '這一欄之後由 agent 用你的筆調寫，寫完再讓你過目。現在先自己填也可以。' })
   if (def.type === 'tel') hints.push({ cls: '', text: '填 0912-345-678 或 02-2720-8889 都可以，會自動轉成 +886 開頭存起來。' })
-  if (def.type === 'month') hints.push({ cls: '', text: '只要年月。民國年也看得懂，存起來會轉成西元。' })
+  // 原生的 date／month 欄位只收 YYYY-MM-DD／YYYY-MM，打民國年進去瀏覽器會直接清空。
+  // 所以這裡不承諾民國年，改講真話。想打民國年請用畢業證書那類檔案讓 agent 抽。
+  if (def.type === 'month') hints.push({ cls: '', text: '選年月就好。這一格只吃西元，打民國年瀏覽器會直接清掉。' })
+  if (def.type === 'date') hints.push({ cls: '', text: '這一格只吃西元。證件上是民國年的話，自己加 1911。' })
   if (def.type === 'file') hints.push({ cls: '', text: '這一版存的是檔案路徑或網址的文字，還不能真的上傳圖片。' })
-  if (def.note) hints.push({ cls: '', text: def.note })
+  // key 表的 note 有一半是寫給開發者看的內部備註（「覆寫成 pick」之類），
+  // 那些字使用者讀了只會困惑。只留看得出是講給使用者聽的。
+  const DEV_NOTE = /覆寫|不宣告|autocomplete|schema|推導|欄位是|這個系統|expiresAt|參數|程式/
+  if (def.note && !DEV_NOTE.test(def.note)) hints.push({ cls: '', text: def.note })
 
   const right = el('div', {}, [
     node,

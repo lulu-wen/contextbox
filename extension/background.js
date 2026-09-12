@@ -143,7 +143,7 @@ async function handle(msg, sender) {
     const r = await call('/health', { port })
     if (!r.ok) return r
     const facts = Number(r.data.facts) || 0
-    if (msg.type === 'health') return { ok: true, facts }
+    if (msg.type === 'health') return { ok: true, facts, port }
 
     // 「測試連線」要連 token 一起驗。/health 不用 token，光看它會誤判成一切正常。
     // 拿空的 keys 問一次 /form/plan 是最便宜的驗法：token 對回 200，不對回 401。

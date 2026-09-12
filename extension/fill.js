@@ -174,7 +174,9 @@
       const doc = el.ownerDocument
       const hit = doc.elementFromPoint(cx, cy)
       if (!hit) return no('中心點打不到東西')
-      const ours = hit.closest && hit.closest('[data-cb]')     // 蓋住的是我們自己畫的標記
+      // 用我們自己記下來的節點集合判斷，不要用 DOM 屬性——
+      // [data-cb] 頁面自己也寫得出來，等於把這道檢查的開關交給攻擊者。
+      const ours = OURS.has(hit) || (hit.closest && [...OURS].some(o => o.contains(hit)))
       const same = hit === el || el.contains(hit) || hit.contains(el)
         || (hit.shadowRoot && hit.shadowRoot.contains(el))
       if (!ours && !same) return no('被別的東西蓋住了')
@@ -183,6 +185,11 @@
   }
 
   const isVisible = el => visibilityOf(el).ok === true
+
+  /** 我們自己畫到頁面上的節點。頁面偽造不了 WeakSet 的成員資格。 */
+  const OURS = new Set()
+  const claim = n => { OURS.add(n); return n }
+  const unclaim = n => OURS.delete(n)
 
   /** 看得見，而且真的填得進去。disabled 的欄位送出時根本不會被帶走。 */
   function canFill(el) {
@@ -684,7 +691,7 @@
     watchComposition, isComposing,
     // 純函式，好單獨測
     nativeSetter, setNativeValue, fireInput, fireChange,
-    pickOption, firstAllowed, matchesPattern, guardSubmits,
+    pickOption, firstAllowed, matchesPattern, guardSubmits, claim, unclaim, isOurs: n => OURS.has(n),
     dateCandidates, rocParts, sepOf, phoneCandidates, twParts, numberForField,
     halfWidth, norm, valueTypeOf,
   }
