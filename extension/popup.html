@@ -6,11 +6,17 @@
   button{width:100%;padding:8px;border:0;border-radius:4px;background:#3B3A8C;color:#fff;
     font:inherit;cursor:pointer}
   button:hover{background:#4A48A8}
+  button.secondary{background:#2C2C35;margin-top:6px}
+  button.secondary:hover{background:#3A3A46}
+  .hint b{color:#E9E8EE}
   #out{margin-top:10px;font-family:ui-monospace,monospace;font-size:12px;color:#BCBAC6}
   .hint{color:#8B8A98;font-size:11.5px;margin-top:10px}
 </style>
 <h1>ContextBox 欄位偵測</h1>
 <button id="go">重新掃描這一頁</button>
 <div id="out"></div>
-<div class="hint">這個原型只認欄位，不會填任何東西，也不連任何網路。</div>
+<button id="setup" class="secondary">設定（貼鑰匙）</button>
+<div class="hint">只把值填進格子，<b>永遠不會幫你按送出</b>。<br>
+敏感欄位每次都要你再點一次才填。<br>
+它會連本機的 ContextBox（127.0.0.1），不連任何外面的網路。</div>
 <script src="popup.js"></script>

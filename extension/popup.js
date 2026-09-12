@@ -1,3 +1,5 @@
+document.getElementById('setup').onclick = () => chrome.runtime.openOptionsPage()
+
 document.getElementById('go').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   chrome.tabs.sendMessage(tab.id, 'cb-scan', r => {

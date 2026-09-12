@@ -1,0 +1,168 @@
+<meta charset="utf-8">
+<title>ContextBox 設定</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #F7F7F9;
+    --card: #FFFFFF;
+    --line: #DEDDE4;
+    --fg: #1B1B22;
+    --dim: #64636F;
+    --accent: #3B3A8C;
+    --accent-fg: #FFFFFF;
+    --ok: #1F6B47;
+    --warn: #8A5A00;
+    --bad: #A3301B;
+    --code-bg: #ECEBF0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131317;
+      --card: #1C1C22;
+      --line: #32313B;
+      --fg: #E9E8EE;
+      --dim: #9A99A6;
+      --accent: #6E6CD8;
+      --accent-fg: #12121A;
+      --ok: #72C79A;
+      --warn: #E0B45C;
+      --bad: #EE8C74;
+      --code-bg: #26262E;
+    }
+  }
+
+  body {
+    margin: 0;
+    padding: 32px 20px 64px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.7 system-ui, -apple-system, "Noto Sans TC", sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 14px; }
+  .lede { color: var(--dim); margin: 0 0 24px; }
+
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+
+  label { display: block; font-weight: 600; margin-bottom: 4px; }
+  .hint { color: var(--dim); font-size: 12.5px; margin: 4px 0 0; }
+  .field { margin-bottom: 18px; }
+
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type=number] { width: 140px; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .show { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-weight: 400; color: var(--dim); font-size: 12.5px; }
+  .show input { width: auto; }
+
+  button {
+    padding: 9px 16px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--fg); border-color: var(--line); font-weight: 400; }
+  button:hover { filter: brightness(1.08); }
+
+  #status { margin-top: 14px; font-size: 13px; min-height: 1.7em; }
+  #status.ok { color: var(--ok); }
+  #status.warn { color: var(--warn); }
+  #status.bad { color: var(--bad); }
+  #status.busy { color: var(--dim); }
+
+  code, .cmd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+  }
+  code { padding: 1px 5px; font-size: 12.5px; }
+  .cmd { display: block; padding: 9px 11px; margin: 8px 0; font-size: 12.5px; overflow-x: auto; white-space: pre; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 10px; }
+  a { color: var(--accent); }
+</style>
+
+<main>
+  <h1>ContextBox 設定</h1>
+  <p class="lede">告訴擴充套件怎麼找到你自己電腦上的 ContextBox server。</p>
+
+  <section>
+    <h2>連線</h2>
+
+    <div class="field">
+      <label for="port">Port</label>
+      <input id="port" type="number" min="1" max="65535" step="1" placeholder="7391">
+      <p class="hint">預設是 7391。server 換 port 跑的時候才要改。</p>
+    </div>
+
+    <div class="field">
+      <label for="token">Token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 ~/.contextbox/token 裡那一行">
+      <label class="show"><input id="reveal" type="checkbox"> 顯示 token</label>
+    </div>
+
+    <div class="row">
+      <button id="save">儲存</button>
+      <button id="test" class="ghost">測試連線</button>
+      <button id="clear" class="ghost">清除 token</button>
+    </div>
+
+    <div id="status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>token 在哪裡拿</h2>
+    <ol>
+      <li>
+        先把 server 跑起來（在 contextbox 資料夾裡）：
+        <span class="cmd">node --experimental-strip-types core/server.ts</span>
+        它啟動時會把 token 印在終端機上。
+      </li>
+      <li>
+        或者直接讀檔案：
+        <span class="cmd">cat ~/.contextbox/token</span>
+      </li>
+      <li>
+        想確認 server 有沒有開，瀏覽器打開
+        <a id="healthLink" href="http://127.0.0.1:7391/health" target="_blank" rel="noreferrer">這個網址</a>，
+        看到 <code>{"ok":true,...}</code> 就是活著。
+      </li>
+    </ol>
+    <p class="hint">
+      重新產生過 token 的話，要回來這裡重貼一次，舊的會一直被擋在門外。
+      同一個位址的 <code>/</code> 是 server 的手填頁面，server 開著就能直接開。
+    </p>
+  </section>
+
+  <section>
+    <h2>這把 token 會去哪裡</h2>
+    <p class="hint" style="margin:0">
+      token 只存在這台電腦的瀏覽器裡，只有擴充套件的背景程式讀得到它。
+      你正在填的那個網頁看不到 token，也碰不到你的事實庫 ——
+      網頁想直接連本機 server 會被擋下來。
+    </p>
+  </section>
+</main>
+
+<script src="options.js"></script>
