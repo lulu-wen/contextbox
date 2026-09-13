@@ -4,7 +4,8 @@
  * 涵蓋四塊：
  *   1. forForm 的五種 action（fill / pick / confirm-each-time / compose / missing）
  *      外加不認得的 key 會回 unknown
- *   2. schema/normalize.ts 的格式轉換（民國年、電話、地址、全形）
+ *   2. schema/normalize.ts 與 core/validate.ts 的格式轉換
+ *      （民國年、電話、地址，以及「每一個入口都要折全形」這條線）
  *   3. key 註冊表的一致性 —— 註冊表會一直長，這類測試最值錢
  *   4. 擴充套件跟 server 之間的契約（起一台真的 server 打過去）
  *
@@ -23,11 +24,12 @@ import { join } from 'node:path'
 import { open } from '../core/db.ts'
 import { Facts } from '../core/facts.ts'
 import { start } from '../core/server.ts'
-import { FACT_KEYS, fillModeOf, SCHEMA_VERSION } from '../schema/factKeys.ts'
+import { FACT_KEYS, defOf, fillModeOf, SCHEMA_VERSION } from '../schema/factKeys.ts'
 import { buildIndex, norm } from '../schema/match.js'
 import {
-  rocToAD, toDate, toE164, phoneForDisplay, splitAddress, toHalfWidth,
+  rocToAD, toDate, toE164, phoneForDisplay, splitAddress, toHalfWidth, foldFullWidth,
 } from '../schema/normalize.ts'
+import { normalizeValue, ValidationError } from '../core/validate.ts'
 
 const fresh = () => new Facts(open(':memory:'))
 
@@ -264,15 +266,15 @@ describe('schema/normalize.ts 的轉換', () => {
     }
   })
 
-  test('四位數的西元年配上「年」字，不可以被當成民國年',
-    { todo: 'schema/normalize.ts:14 的 (\\d{2,3})年 沒有錨定開頭，'
-          + '2018年9月 會比中後面三碼 018，算成民國 18 年 → 1929-09。'
-          + '差 89 年而且完全靜默。見 openIssues。' },
-    () => {
-      assert.equal(toDate('2018年9月'), '2018-09')
-      assert.equal(toDate('2000年3月15日'), '2000-03-15')
-      assert.equal(toDate('西元2000年3月15日'), '2000-03-15')
-    })
+  test('四位數的西元年配上「年」字，不可以被當成民國年', () => {
+    // 曾經是 todo：民國那條 regex 沒有錨定，2018年9月 會比中後面三碼 018 →
+    // 算成民國 18 年 → 1929-09，差 89 年而且完全靜默。
+    // 現在靠 toDate 先試西元、民國那條又加了 (?<!\d) 擋著，所以改成真的會紅的測試。
+    assert.equal(toDate('2018年9月'), '2018-09')
+    assert.equal(toDate('2000年3月15日'), '2000-03-15')
+    assert.equal(toDate('西元2000年3月15日'), '2000-03-15')
+    assert.equal(rocToAD('2018年9月'), null, '四位數的年不該被民國那條吃下去')
+  })
 
   test('電話：各種寫法轉 E.164 都一樣，再轉回顯示格式', () => {
     const 手機寫法 = ['0912-345-678', '0912345678', '0912 345 678',
@@ -346,6 +348,226 @@ describe('schema/normalize.ts 的轉換', () => {
     assert.equal(toHalfWidth('王　小明'), '王 小明', '全形空格變半形')
     assert.equal(toHalfWidth('  a   b  '), 'a b')
     assert.equal(toHalfWidth('王小明'), '王小明', '中文本身不要動')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════
+// 二之二、全形字：每一個入口都要折，折完還要量得出來
+//
+// 這一節是回歸測試。同一個 bug 已經出現兩次：
+//   第一次修在日期那條路上（rocToAD 先折全形），電話那條完全沒裝，
+//   toE164 的 raw.replace(/[^\d+]/g, '') 照樣把全形數字當雜訊刪掉 ——
+//   「0912-345-６７８」變成 +886912345，短三碼、一個錯都不丟。
+// 所以這裡不是只測「全形轉得過」，每一條都要順便斷言「不是靜默截短」：
+// 看不懂就是 null（或丟錯），不准回一個看起來很合理的半截答案。
+// ══════════════════════════════════════════════════════════════
+describe('全形進來的時候，每一條路都不准靜默截短', () => {
+
+  /** 挑出字串裡的數字（全形先折半形），用來比「進去幾碼、出來幾碼」 */
+  const 數字 = s => foldFullWidth(s).replace(/\D/g, '')
+
+  const 電話案例 = [
+    ['0912-345-６７８',     '+886912345678', '尾三碼全形，舊版整段被當雜訊刪掉'],
+    ['09１2345678',         '+886912345678', '中間一碼全形'],
+    ['０９１２３４５６７８', '+886912345678', '整串全形'],
+    ['＋886912345678',      '+886912345678', '全形加號一樣是國碼記號，不折就變成沒有國碼'],
+    ['02-2720-8889',        '+886227208889', '市話 10 碼'],
+    ['（０２）２７２０－８８８９', '+886227208889', '全形市話，連括號跟破折號都是全形'],
+    ['089-123456',          '+88689123456',  '台東市話 9 碼'],
+    ['0912345678９',        null,            '11 碼；多出來的那一碼不准被吃掉當成 10 碼'],
+    ['0912345',             null,            '太短'],
+    ['091234567890',        null,            '太長'],
+    ['０９１２３４５６７８９０', null,        '全形折回來還是 12 碼'],
+    ['＋886912345',         null,            '+886 後面只有 6 碼，行動號碼要 9 碼'],
+    ['+886227208',          null,            '+886 市話只有 6 碼，要 8-9 碼'],
+  ]
+
+  test('電話：全形折得回來，折完長度不對就回 null', () => {
+    for (const [輸入, 期望, 為什麼] of 電話案例) {
+      assert.equal(toE164(輸入), 期望, `${輸入}：${為什麼}`)
+    }
+  })
+
+  test('電話：只要回得出號碼，輸入的每一碼都要在輸出裡（沒被截短的通則）', () => {
+    // 個別案例會老，這條是通則：折半形之後進去幾碼，出來就該有幾碼
+    // （本地 0 開頭的差別只有「去掉 0、補上 886」）。
+    const 全部 = [...電話案例.map(c => c[0]), '0912345678', '886912345678', '+1 415 555 0000']
+    for (const 輸入 of 全部) {
+      const 出 = toE164(輸入)
+      if (出 === null) continue                 // 回 null 是合格的失敗，這條不管
+      const 進碼 = 數字(輸入)
+      const 出碼 = 數字(出)
+      const 本地 = 進碼.startsWith('0')
+      assert.equal(出碼.length, 本地 ? 進碼.length + 2 : 進碼.length,
+        `${輸入} 的數字被吃掉了：進去 ${進碼.length} 碼、出來 ${出碼.length} 碼（${出}）`)
+      assert.ok(出碼.endsWith(本地 ? 進碼.slice(1) : 進碼),
+        `${輸入} → ${出}：尾碼對不上，不是同一組號碼`)
+    }
+  })
+
+  test('電話：轉成 E.164 再轉回顯示格式，全形版跟半形版是同一筆', () => {
+    assert.equal(toE164('0912-345-６７８'), toE164('0912-345-678'))
+    assert.equal(phoneForDisplay(toE164('０９１２３４５６７８')), '0912-345-678')
+  })
+
+  test('日期：半形、全形、混排、民國、西元，全部落在同一個答案上', () => {
+    const 案例 = [
+      // ── 上一輪的案例：半形西元與民國 ──
+      ['2026-06-15',            '2026-06-15'],
+      ['2026-06',               '2026-06'],
+      ['2018/9/1',              '2018-09-01'],
+      ['2018.9',                '2018-09'],
+      ['  2026-06-15  ',        '2026-06-15'],
+      ['2018年9月',             '2018-09'],
+      ['2000年3月15日',         '2000-03-15'],
+      ['西元2000年3月15日',     '2000-03-15'],
+      ['115年6月',              '2026-06'],
+      ['民國 89 年 3 月 15 日', '2000-03-15'],
+      ['99年12月31日',          '2010-12-31'],
+      // ── 這一輪的案例：全形與混排 ──
+      ['２０２６－０６－１５',   '2026-06-15'],
+      ['２０２６－０６',         '2026-06'],
+      ['２０１８／９／１',       '2018-09-01'],
+      ['２０１８年９月',         '2018-09'],
+      ['２024年6月',             '2024-06'],      // 混排：舊版切成「024年」→ 1935-06
+      ['１１５年６月',           '2026-06'],
+      ['民國８９年３月１５日',   '2000-03-15'],
+      ['民國 １１５ 年 ６ 月',   '2026-06'],
+    ]
+    for (const [輸入, 期望] of 案例) {
+      assert.equal(toDate(輸入), 期望, `${輸入} 應該是 ${期望}`)
+    }
+  })
+
+  test('日期：看不懂就 null，不准生出半截或差一個世紀的年份', () => {
+    const 看不懂 = [
+      '', '　', '   ', '下個月', '不知道', 'N/A', '第三季', '2018年', 'yyyy/mm/dd',
+      '115/6', '民國115/6', '１１５／６',            // 沒有「年」字就分不出民國還是西元
+      '2026-13-45', '2018/13', '2018年0月', '2026-06-32', '２０１８年１３月',
+    ]
+    for (const s of 看不懂) {
+      assert.equal(toDate(s), null, `${JSON.stringify(s)} 應該回 null`)
+    }
+  })
+
+  test('日期：四位數的西元年，不管半形全形都不准被當成民國年', () => {
+    // 差 89 年，而且以前是完全靜默的：2018年9月 → 1929-09 照樣寫進事實庫。
+    for (const [s, 年] of [
+      ['2018年9月', '2018'], ['2000年3月15日', '2000'], ['西元2000年3月15日', '2000'],
+      ['２０１８年９月', '2018'], ['２024年6月', '2024'], ['２０００年３月１５日', '2000'],
+    ]) {
+      const got = toDate(s)
+      assert.ok(got && got.startsWith(`${年}-`), `${s} 轉成 ${got}，年份不是 ${年}`)
+    }
+  })
+
+  test('地址：全形的郵遞區號也要拆得開', () => {
+    // 不折的話 \d{3,5} 比不中，連 (.{2,3}[市縣]) 都會跟著垮 —— 四段全變 null，
+    // 表單只剩「整串」可以填，分欄的表單就填不動了。
+    const 全形 = splitAddress('１０６台北市大安區羅斯福路四段１號')
+    assert.deepEqual(全形, {
+      full: '106台北市大安區羅斯福路四段1號',
+      postalCode: '106', city: '台北市', district: '大安區', rest: '羅斯福路四段1號',
+    })
+    // 同一個地址不管用哪種寬度打進來，庫裡都要是同一筆
+    assert.deepEqual(全形, splitAddress('106台北市大安區羅斯福路四段1號'))
+    // 折半形只換寬度不掉字：字數要一樣多
+    assert.equal(全形.full.length, '106台北市大安區羅斯福路四段1號'.length)
+    // 拆不開的字串照樣把原文留著（折過半形的版本）
+    assert.equal(splitAddress('火星').full, '火星')
+  })
+
+  test('折半形的兩套工具，各自守著自己的地盤', () => {
+    // toHalfWidth 給人看的字用：折英數，留標點（中文標點是內容，折了就是改原文）
+    assert.equal(toHalfWidth('ＡＢＣ１２３'), 'ABC123')
+    assert.equal(toHalfWidth('台北市，大安區'), '台北市，大安區', '全形逗號是內容，不准折')
+    assert.equal(toHalfWidth('＋８８６'), '＋886', 'toHalfWidth 折不掉全形加號 —— 所以電話不能只靠它')
+    // foldFullWidth 給機器格式用：整塊全形 ASCII 都折
+    assert.equal(foldFullWidth('＋８８６'), '+886')
+    assert.equal(foldFullWidth('ｈｔｔｐｓ：／／ａ．ｃｏｍ'), 'https://a.com')
+    assert.equal(foldFullWidth('民國８９年'), '民國89年', '中文不在全形 ASCII 區裡，動不到')
+    assert.equal(foldFullWidth(foldFullWidth('＋８８６')), foldFullWidth('＋８８６'), '折兩次要跟折一次一樣')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════
+// 二之三、core/validate.ts 的每一個型別分支
+// 事實庫只認這一支的輸出，所以「有沒有折全形」要一個分支一個分支地釘住。
+// ══════════════════════════════════════════════════════════════
+describe('normalizeValue 的每一條型別分支', () => {
+  const 正規化 = (key, raw) => normalizeValue(defOf(key), raw)
+
+  test('date／month：全形、民國年都吃得下；轉不出來就丟錯', () => {
+    assert.equal(正規化('person.birthdate', '民國８９年３月１５日'), '2000-03-15')
+    assert.equal(正規化('person.birthdate', '２０００－０３－１５'), '2000-03-15')
+    assert.equal(正規化('education[].start', '２０１８年９月'), '2018-09')
+    assert.equal(正規化('education[].start', '民國107年9月'), '2018-09')
+    assert.throws(() => 正規化('person.birthdate', '2000年3月'), ValidationError,
+      'date 要到日，只有年月就是缺資料')
+    assert.throws(() => 正規化('person.birthdate', '不知道'), ValidationError)
+    assert.throws(() => 正規化('person.birthdate', '２０００年１３月１日'), ValidationError)
+  })
+
+  test('tel：全形折得回來；長度不對一律丟錯，不存半截', () => {
+    assert.equal(正規化('contact.phone.mobile', '0912-345-６７８'), '+886912345678')
+    assert.equal(正規化('contact.phone.mobile', '＋886912345678'), '+886912345678')
+    assert.equal(正規化('contact.phone.home', '（０２）２７２０－８８８９'), '+886227208889')
+    for (const 壞的 of ['0912345678９', '0912345', '091234567890', '不知道']) {
+      assert.throws(() => 正規化('contact.phone.mobile', 壞的), ValidationError,
+        `${壞的} 要丟錯，不能存一個半截號碼`)
+    }
+  })
+
+  test('email：全形的＠和．也要折得掉', () => {
+    // 這兩個字元不在 toHalfWidth 的範圍裡，只折英數的話整筆會被判成「不是 email」。
+    assert.equal(正規化('contact.email', 'Ｗａｎｇ＠Ｅｘａｍｐｌｅ．ｃｏｍ'), 'wang@example.com')
+    assert.equal(正規化('contact.email', '  WANG@Example.com  '), 'wang@example.com')
+    for (const 壞的 of ['王小明', 'a @b.com', 'a@b']) {
+      assert.throws(() => 正規化('contact.email', 壞的), ValidationError)
+    }
+  })
+
+  test('url：正常網址原樣通過，全形打出來的救得回來，path 裡的全形字不准動', () => {
+    assert.equal(正規化('person.website', 'https://example.com/a'), 'https://example.com/a')
+    assert.equal(正規化('person.website', 'ｈｔｔｐｓ：／／ｅｘａｍｐｌｅ．ｃｏｍ／ａ'),
+      'https://example.com/a')
+    // path 裡的全形字是內容，折掉等於安靜換了一個網址 —— 所以先拿原字串試，parse 得動就不折。
+    assert.equal(正規化('person.website', 'https://example.com/ＡＢ'),
+      new URL('https://example.com/ＡＢ').toString())
+    assert.equal(正規化('person.website', 'https://example.com/履歷'),
+      new URL('https://example.com/履歷').toString())
+    assert.throws(() => 正規化('person.website', '不知道'), ValidationError)
+  })
+
+  test('enum：折完仍不在清單裡就丟錯，不會挑一個最像的', () => {
+    assert.equal(正規化('person.gender', '男'), '男')
+    assert.equal(正規化('person.gender', ' 男 '), '男')
+    assert.equal(正規化('person.military', '役畢'), '役畢')
+    assert.throws(() => 正規化('person.gender', '男生'), ValidationError)
+  })
+
+  test('number：全形數字是數字；只有空白不是 0', () => {
+    assert.equal(正規化('skill[].years', '１２'), 12)
+    assert.equal(正規化('skill[].years', '12'), 12)
+    assert.equal(正規化('skill[].years', 3), 3)
+    assert.throws(() => 正規化('skill[].years', '三年'), ValidationError)
+    assert.throws(() => 正規化('skill[].years', '　'), ValidationError,
+      '全形空格 trim 完是空的，不准變成 0')
+    assert.throws(() => 正規化('skill[].years', '   '), ValidationError)
+  })
+
+  test('text（長文）刻意不折全形：換行與排版本身就是內容', () => {
+    const 自傳 = '第一段。\n\n第二段：ＡＢＣ　１２３'
+    assert.equal(正規化('writing.autobiography', 自傳), 自傳,
+      '折了會把 \\n 併進 \\s+ 壓成一行，整篇自傳變一段')
+  })
+
+  test('一般字串：折英數、收多餘空白，中文標點原樣留著', () => {
+    assert.equal(正規化('person.name.full', '王　小明'), '王 小明')
+    assert.equal(正規化('person.nationality', 'ＴＷ'), 'TW')
+    assert.equal(正規化('person.disability', '無'), '無')
+    assert.throws(() => 正規化('person.name.full', '　'), ValidationError,
+      '只有一個全形空格等於沒填，不准存成空字串')
   })
 })
 
