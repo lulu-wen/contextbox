@@ -1,277 +1,406 @@
 # ContextBox — 四人分工 spec
 
-2026-09-13　目標：把「檔案與截圖管線」的 P1～P5 拆成四份可以**同時動工**、**不互相擋**的工作。
+2026-09-13　目標：四個人平行做，但交付順序跟 [SPEC-實作計畫.md](SPEC-實作計畫.md) 對齊：
 
-搭配閱讀：[SPEC-檔案與截圖.md](SPEC-檔案與截圖.md)（管線設計）、
-[contextbox-稽核-20260912.md](../contextbox-稽核-20260912.md)（P0 的稽核紀錄，每一條都是踩過的坑）、
-[reading/10-參考過的開源專案.md](reading/10-參考過的開源專案.md)（為什麼不 fork）。
+1. 先在 Windows 上確認 P0 地基真的能跑。
+2. 先做出 CLI 端到端：截圖進來 → 看懂 → `inbox` → `approve` → `undo`。
+3. 再做網頁、右鍵選單、搜尋。
 
----
+舊分法最大的問題是把 C 太早丟去做網頁、把 D 丟去做一堆平台薄層，結果 M1 的「能每天用」沒有人完整收口。這版改成：**每個人都有自己的主線，但第一個共同終點是 M1 CLI E2E。**
 
-## 0 ・ 這一版的核心決定：**邊界是資料表與 HTTP，不是函式簽章**
+搭配閱讀：
 
-第一版的分法是照「層」切的：理解層 → 行動層 → 介面層。
-那個分法有一個致命問題 —— **它是一條鏈**。B 要 import A 的型別，C 要 import B 的函式，
-D 要等所有人。A 晚一天，三個人一起晚一天。
-
-這一版改成：**每個人讀一張表、寫一張表，誰都不 import 誰。**
-
-```
-   items 表          understanding 表         硬碟 ＋ plans ＋ file_journal
-  （P0 已上線）  ──A──▶  （JSON 一欄）    ──B──▶   （真的動作）
-                              │                      │
-                              └──────── C 只用 HTTP 讀 ───┘
-
-   D 完全不碰這條線：OS 整合、打包、文件、擴充套件
-```
-
-好處很具體：
-
-- **A 不用知道 `Op` 或 `Plan` 存在。** 它只負責把圖變成一份 JSON，寫進 `understanding.raw`。
-- **B 不用 import A 的碼。** 它從資料庫讀那一欄 JSON，用**自己的**型別去解。
-  型別在行程邊界兩側各寫一份是好事，不是重複。
-- **C 一行後端碼都不用等。** 它吃 HTTP，開發時吃一份靜態 JSON。
-- **D 從第一天到最後一天都不會被擋。** 它做的是 P0 與擴充套件（都已上線）上面的東西。
+- [SPEC-實作計畫.md](SPEC-實作計畫.md) — 現行里程碑，M0～M4
+- [SPEC-檔案與截圖.md](SPEC-檔案與截圖.md) — 管線設計
+- [reading/06-視覺模型.md](reading/06-視覺模型.md) — 模型風險與實測
 
 ---
 
-## 1 ・ 四個人負責什麼
+## 0 ・ 這一版怎麼切
 
-| | 角色 | 讀什麼 | 寫什麼 | 會被誰擋住 |
-|---|---|---|---|---|
-| **A** | 看懂 | `items`（status=new） | `understanding` | **沒有人** |
-| **B** | 動作 | `understanding` | 硬碟、`plans`、`file_journal` | 只需要**一份**真的理解，而 fixture 就能代替 |
-| **C** | 介面 | HTTP | 畫面 | **沒有人**（開發時吃靜態 JSON） |
-| **D** | 平台 | 已上線的 P0 與擴充套件 | 安裝包、右鍵選單、文件 | **沒有人** |
+不要用「前端、後端、平台」切。這會讓前端等後端、平台等產品形狀、最後才發現 Windows 不能跑。
 
-### 檔案所有權（**一個檔案只有一個 owner**）
+這版用四條可獨立驗收的線：
 
-```
-A  core/understand.ts        新   模型呼叫、容錯解析、證據查核
-   core/prompt.ts            新   prompt 組裝、PDF 轉圖
-   test/understand.test.mjs  新
-   test/fixtures/            新   三張圖 ＋ 三份正確答案（第一天就要有）
+| 人 | 主線 | 第一個可驗收結果 | 後續 |
+|---|---|---|---|
+| **A** | 收檔 ＋ 看懂 | `node cli.mjs understand` 讓 `new` 變 `proposed` | fixture、模型容錯、證據查核 |
+| **B** | 提案 ＋ 執行 ＋ 復原 | `approve <id>` 搬檔，`undo <id>` 搬回來 | journal、write routes |
+| **C** | 人看的操作面 | `inbox` 印出可同意的提案 | 網頁收件匣、搜尋 |
+| **D** | Windows 可用性 ＋ 發行 | 乾淨 Windows 機器跑通 `doctor/watch/list` | 右鍵選單、INSTALL、release QA |
 
-B  core/plans.ts             新   understanding → Ops
-   core/exec.ts              新   四個執行器
-   core/journal.ts           新   file_journal 的讀寫與反向重播
-   core/routes-write.ts      新   /plans/:id/{apply,undo,dismiss}
-   test/plans.test.mjs       新
-   test/exec.test.mjs        新
+共同原則：**邊界是資料表、CLI 輸出與 HTTP，不是互相 import 函式。**
 
-C  core/ui.html              改   收件匣分頁、搜尋分頁
-   core/routes-read.ts       新   /inbox、/search、/items/:id/file
-   core/search.ts            新   FTS 寫入與查詢（含短詞分流）
-   test/search.test.mjs      新
-   test/routes-read.test.mjs 新
-
-D  os/windows/*              新   右鍵選單 ＋ 安裝說明（**優先**）
-   os/linux/*  os/macos/*    新
-   package.json              新   engines、scripts（**不加任何 dependency**）
-   README.md  INSTALL.md     改／新
-   extension/（2 個 todo）    改
-   core/ui.html 的手填頁部分   改   ← 唯一與 C 共用的檔案，見 §5
-```
-
-**凍結、誰都不要動**：`core/db.ts`、`guard.ts`、`watcher.ts`、`items.ts`、`config.ts`、
-`facts.ts`、`validate.ts`、`schema/`。有需求開 issue，不要直接改。
+A 可以先寫 fixture，B/C 可以直接吃 fixture 開工；D 可以從第一小時就在 Windows 上找雷。
 
 ---
 
-## 2 ・ 第一天要凍結的四樣東西（**只有四樣**）
+## 1 ・ 共用契約，只凍結四個
 
-第一版要凍三份 TypeScript 契約。這一版只需要這些，而且都不是程式碼介面：
+### 1.1 `understanding.raw`
 
-### 2.1　`understanding.raw` 裡那一包 JSON 的形狀
-
-A 寫進去、B 讀出來。**兩邊各自定義自己的型別，不共用檔案。**
+A 寫入、B/C 讀取。兩邊可以各自定義型別，不共用檔案。
 
 ```jsonc
 {
-  "doc_type": "scholarship",       // enum，11 種，見 SPEC-檔案與截圖.md §6
-  "category": "獎學金",             // enum，10 種，來自 guard.ts 的 CATEGORIES
+  "doc_type": "scholarship",
+  "category": "獎學金",
   "summary": "台大 115 學年度弱勢學生助學金申請公告",
-  "text": "（畫面上看得到的字。contains_secret 為 true 時是空字串）",
+  "text": "畫面上看得到的字；contains_secret 為 true 時是空字串",
   "tags": ["獎學金", "台大"],
-  "suggested_name": "台大弱勢助學金公告",   // 不含副檔名，B 會再過一次 guard.safeName
+  "suggested_name": "台大弱勢助學金公告",
   "contains_secret": false,
-  "events":       [{ "title": "說明會", "date": "2026-09-18", "time": "14:00", "evidence": "說明會：115 年 9 月 18 日…" }],
-  "tasks":        [{ "title": "備妥成績單", "due": "2026-09-30", "evidence": "2. 最近一學期成績單正本" }],
-  "missing_docs": [{ "what": "戶籍謄本", "why": "應繳文件第 1 項", "evidence": "1. 全戶戶籍謄本（三個月內）" }],
-  "facts":        [{ "key": "education[0].school", "value": "國立臺灣大學", "evidence": "國立臺灣大學 學務處生活輔導組" }]
+  "events": [{ "title": "說明會", "date": "2026-09-18", "time": "14:00", "evidence": "說明會：115 年 9 月 18 日" }],
+  "tasks": [{ "title": "備妥成績單", "due": "2026-09-30", "evidence": "最近一學期成績單正本" }],
+  "missing_docs": [{ "what": "戶籍謄本", "why": "應繳文件第 1 項", "evidence": "全戶戶籍謄本" }],
+  "facts": [{ "key": "education[0].school", "value": "國立臺灣大學", "evidence": "國立臺灣大學" }]
 }
 ```
 
-**A 保證**：寫進去的東西一定通過驗證 —— enum 合法、`facts[].key` 在 `factKeys.ts` 裡、
-**每一個 `evidence` 都真的出現在 `text` 裡**。驗不過的那一項會被丟掉，不會寫進去。
+A 保證：
 
-**B 可以假設**：讀出來的 JSON 是乾淨的。但仍然要自己擋一次（防禦性，不是不信任 A）。
+- enum 合法。
+- `facts[].key` 在 `schema/factKeys.ts` 裡。
+- 每個 `evidence` 都真的出現在 `text` 裡；對不上就丟掉那一項。
+- `contains_secret: true` 時不存完整 `text`。
 
-### 2.2　`/inbox` 回應的樣子
+B/C 仍然要防禦性檢查，但可以用 fixture 先做完整流程。
 
-C 出一份 `docs/inbox-example.json`，**半小時的事**。C 整個開發期間都吃這份，
-不用等後端。B 與 C 各自照著它做，不用對接。
+### 1.2 `Plan.ops`
 
-### 2.3　`test/fixtures/`
-
-A 第一天產出，其他人一律吃這個：
-
-```
-test/fixtures/獎學金公告.png  ＋ .understanding.json     正常案例
-test/fixtures/發票.png        ＋ .understanding.json     另一種 doc_type
-test/fixtures/亂七八糟.png    ＋ .understanding.json     模型會答錯、應該被擋下來的那種
-```
-
-### 2.4　`core/server.ts` 掛載兩個 route module
-
-**這是唯一一次改 server.ts**，由 lead 在第一天做完，十行，之後誰都不碰：
+B 產出、C 顯示、B 執行。
 
 ```ts
-import { readRoutes } from './routes-read.ts'      // C
-import { writeRoutes } from './routes-write.ts'    // B
-// …在既有的三道鎖之後：
-if (await readRoutes(req, res, ctx)) return
-if (await writeRoutes(req, res, ctx)) return
+type Op =
+  | { op: 'move'; from: string; to: string }
+  | { op: 'rename'; from: string; to: string }
+  | { op: 'fact'; key: string; value: string; evidence: string }
+  | { op: 'event'; title: string; date: string; ics: string }
+  | { op: 'task'; title: string; due?: string }
 ```
 
-`ctx` 帶 `{ db, config, items, facts }`。兩個 module 各自處理自己的路徑、
-認不得就回 `false` 讓下一個接手。
+模型永遠不能提供目的地路徑。目的地一律由 B 用 `guard.destFor(category, safeName(...))` 算。
 
----
+### 1.3 CLI 格式
 
-## 3 ・ 每個人的工作與驗收
+C 先定 `inbox` 的輸出，B 照這個讓 `approve/undo` 能接。
 
-### A — 看懂
-
-**為什麼這份最難**：實測顯示模型**不遵守 schema、而且會幻覺**
-（詳見 [reading/10](reading/10-參考過的開源專案.md) 第四節）。
-所以這一層的價值不在呼叫 API，在**把不可信的輸出變成可信的資料**。
-
-1. `prompt.ts` — 組 prompt；PDF 用 `pdftoppm` 轉前 N 頁（沒裝就標 `error`，不要硬撐）
-2. `understand.ts` — 一次 `fetch`，零依賴，逾時 60 秒，同 `sha256` 不重問
-3. **容錯解析** — 剝 ` ```json ` 圍欄、抓第一個平衡的 `{...}`、修尾逗號
-4. **程式驗 schema** — enum 比對、`facts[].key` 不在註冊表就丟掉那一項
-5. **證據查核（最重要）** — 每個 `evidence` 必須真的出現在 `text` 裡（正規化後比對），
-   對不上就丟掉那一項。**這是唯一擋得住幻覺的機制，而且免費。**
-6. 驗不過就**重問一次**（把錯誤帶回去），還是不行就寫 `items.status='error'`
-
-**驗收**
-- 三張 fixture 跑過，第三張（會答錯的）**必須被擋下**，不可以寫進 `understanding`
-- 餵一個 `evidence` 對不上的假回應 → 那一項消失
-- 餵 ` ```json ` 圍欄、尾逗號、違反 enum 的值 → 三種都要救得回來或明確失敗
-- `node cli.mjs understand` 跑完，`understanding` 表有資料，`items.status` 變 `proposed`
-
-### B — 動作
-
-1. `plans.ts` — 從 `understanding.raw` 組出 Ops。**目的地由程式算**：
-   `guard.destFor(category, safeName(...))`。模型只給分類與檔名，**這條不可以妥協**
-2. `exec.ts` — 四個執行器，每個第一行檢查 `config.readonly`
-3. `journal.ts` — **先寫 journal 再動作**；復原是倒序重播
-4. 同名不覆蓋（`(2)`、`(3)`）；**整個專案不准出現 `unlink`／`rm`／`rmdir`**（`test/repo.test.mjs` 會擋你）
-5. 搬完要 `items.setPath()`，不然資料庫指向不存在的路徑
-6. `fact` op 直接呼叫既有的 `Facts.propose()`（凍結的碼，不用等 D），
-   `source_kind` 用 `'file'`、`source_ref` 填檔名
-
-**驗收**
-- 同意後檔案真的搬了、改名了；**復原退回原位原名**
-- `CONTEXTBOX_READONLY=1` 跑一次，**一個檔案都沒動**（斷言 mtime 沒變）
-- 目的地已有同名檔 → 變成 `(2)`，舊的不被覆蓋
-- 執行到一半丟例外 → 已完成的那幾步仍然可以復原
-- 餵一個 `suggested_name` 是 `../../.ssh/authorized_keys` 的理解 → 檔案落在 `Filed/其他/` 底下
-
-### C — 介面
-
-1. `routes-read.ts` — `/inbox`、`/search`、`/items/:id/file`。
-   最後一個是新的攻擊面：**只認 item id，不接路徑**，送出前再過一次 `admit()`
-2. `ui.html` 收件匣分頁：縮圖 ＋ 摘要 ＋ 逐列可取消的 ops ＋ `[全部同意]` `[略過]` ＋ 同意後變 `[復原]`
-3. **健康列**：看哪幾個資料夾、模型連不連得到、幾張待處理、監看有沒有在跑。
-   靜默失敗是這種工具最大的敵人
-4. `search.ts` ＋ 搜尋分頁。**短詞（< 3 字）走 LIKE** —— trigram 至少要三個字元，
-   不處理的話「發票」「收據」永遠搜不到。`LIKE` 記得 `ESCAPE`
-5. `items_fts` 的寫入收斂成一個 upsert（先 DELETE 再 INSERT）—— 現在沒有人負責寫
-
-**驗收**
-- 吃 `docs/inbox-example.json` 就能把整個畫面做完，**過程中不需要 A 或 B 交付任何東西**
-- `/items/:id/file` 餵不存在的 id、餵路徑當 id → 403／404
-- 搜尋「發票」找得到；`%`、`_`、`a-b`、`2026/09` 都不崩、不倒資料
-- 重跑一次理解，`items_fts` 不會變成兩列
-
-### D — 平台
-
-**完全不碰管線。** 做的是把已經上線的東西變成「裝得起來的產品」。
-
-1. **Windows 右鍵選單優先** —— 那是使用者真的在用的機器。
-   `HKCU\Software\Classes\*\shell\ContextBox\command` → `node cli.mjs propose "%1"`
-2. Linux（Nautilus script）與 macOS（快速動作）
-3. 「在檔案總管顯示」：`explorer.exe /select,` ／ `open -R` ／ `nautilus --select`
-4. `package.json`：`engines.node >= 24`、`scripts.test`。**不准加任何 dependency**
-5. `INSTALL.md` — 一台乾淨的機器照著裝，不用問任何人
-6. 既有的 2 個擴充套件 todo：敏感欄位空值洩漏「我沒有這筆」、「成績」別名撞 key
-7. 手填頁顯示事實的來源（「來自 xxx.png」）—— 資料是 B 寫進去的，
-   但**那是既有的 `facts` 表**，D 不用等 B
-
-**驗收**
-- Windows 上右鍵一個檔 → `node cli.mjs list` 看得到它
-- 照 `INSTALL.md` 在乾淨機器上裝起來
-- `node --test test/*.test.mjs` 的 2 個 todo 變成 0
-
----
-
-## 4 ・ 依賴圖
-
-```
-第 1 天（半天）
-  lead   把 server.ts 的兩行掛載做掉
-  A      產出 test/fixtures/（三張圖 ＋ 三份答案）
-  C      產出 docs/inbox-example.json
-  ↓
-
-A ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
-B ━━━ 吃 fixture ━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
-C ━━━ 吃 inbox-example.json ━━━━━━━━━━▶   全程不被擋
-D ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
-
-唯一的整合點（最後幾天）
-  A×B   B 把 fixture 換成資料庫裡真的 understanding 列
-  B×C   C 把靜態 JSON 換成真的 /inbox
-  D     把全部裝起來，端到端跑一次
+```text
+[a1b2]  獎學金公告.png                              獎學金
+        台大 115 學年度弱勢學生助學金申請公告
+        1. 搬到  Filed/獎學金/台大弱勢助學金公告.png
+        2. 待辦  備妥成績單（2026-09-30 前）
+        3. 事實  education[0].school = 國立臺灣大學
+        approve a1b2
+        approve a1b2 --skip 2,3
 ```
 
-**跟第一版比**：整合點從三個（第 4、6、8 天）縮成**全部集中在最後**，
-而且任何一個人落後都不會擋住其他三個。
+### 1.4 HTTP 回應
+
+C 第一天產出 `docs/inbox-example.json`。M2 之前 UI 都吃這份；C 做 `/inbox` 時照它回。
 
 ---
 
-## 5 ・ 怎麼協作
+## 2 ・ 檔案所有權
 
-- **分支**：`feat/understand`、`feat/plans`、`feat/ui`、`feat/os`，從 `main` 開，PR 回 `main`
-- **一個 PR 只動自己 owner 的檔案。** 要動別人的，先在 PR 裡 @ 他
-- **唯一的共用檔是 `core/ui.html`**（C 做新分頁、D 改手填頁）。
-  兩人各自只碰自己的 `<section>`，先講好誰先 merge
-- **每個 PR 都要有測試**，而且測試要**驗過會失敗**（把修法拿掉，測試要變紅）
-- **merge 前跑 `audit-round`**。這個 repo 的歷史證明「我覺得修好了」有一半會被推翻 ——
-  P0 那一輪 59 條發現裡，有 2 條是**修正自己引進的新問題**
-- 中文全形標點；註解寫「為什麼」不寫「做了什麼」
+一個檔案只放一個 owner。要動別人的檔案，先在 PR 說明原因。
+
+### A — 收檔與看懂
+
+```text
+core/understand.ts        新
+core/prompt.ts            新
+test/understand.test.mjs  新
+test/fixtures/            新
+```
+
+可動既有檔案：
+
+```text
+cli.mjs                   只加 understand 子指令
+core/db.ts                只在確定缺表時加 migration；先確認現況
+```
+
+### B — 提案、執行、復原
+
+```text
+core/plans.ts             新
+core/exec.ts              新
+core/journal.ts           新
+core/routes-write.ts      新
+test/plans.test.mjs       新
+test/exec.test.mjs        新
+test/journal.test.mjs     新
+```
+
+可動既有檔案：
+
+```text
+cli.mjs                   只加 approve、undo 子指令
+```
+
+### C — 操作面、讀取路由、搜尋
+
+```text
+core/routes-read.ts       新
+core/search.ts            新
+docs/inbox-example.json   新
+test/routes-read.test.mjs 新
+test/search.test.mjs      新
+```
+
+可動既有檔案：
+
+```text
+cli.mjs                   只加 inbox 與強化 search 輸出
+core/ui.html              M2 後才改：收件匣分頁、搜尋分頁、健康列
+```
+
+### D — Windows、發行、整合驗收
+
+```text
+M0-Windows檢查.md         改
+os/windows/*              新
+INSTALL.md                新
+package.json              新
+test/windows-smoke.md     新，手動驗收紀錄
+```
+
+可動既有檔案：
+
+```text
+README.md                 裝法與 demo script
+extension/*               只修已知 2 個 todo
+core/ui.html              只改手填頁來源顯示；避開 C 的新分頁
+cli.mjs                   只加 reveal 子指令或 Windows 顯示檔案輔助
+```
+
+暫時凍結：`guard.ts`、`watcher.ts`、`items.ts`、`config.ts`、`facts.ts`、`validate.ts`、`schema/`。除非 M0 在 Windows 上驗出 bug，否則不要碰。
 
 ---
 
-## 6 ・ 已知地雷（P0 踩過，不要再踩一次）
+## 3 ・ 第一天安排
 
-| 地雷 | 會怎樣 |
+### 上午：M0，全員看 Windows
+
+D 開 Windows 主機或遠端畫面，四個人一起跑：
+
+```bash
+node --test test/*.test.mjs
+node cli.mjs doctor
+node cli.mjs watch
+node cli.mjs list
+```
+
+驗收寫進 [M0-Windows檢查.md](M0-Windows檢查.md)：
+
+- Node 版本、Windows 版本、是否 OneDrive。
+- 測試紅燈清單。
+- `Win + Shift + S` 截圖是否進 `items`。
+- `Pictures` 是否被 OneDrive 整包拉回本機。
+- Tailscale／模型端點是否通。
+
+如果 M0 有 blocker，D 收口；A/B/C 只協助定位，不要全部人卡在修平台。
+
+### 下午：四個人分開產 fixture 與假資料
+
+| 人 | 當天交付 |
 |---|---|
-| `busy_timeout` 不是第一個 pragma | 全新資料庫 12 個行程同時開，只有 1 個活下來 |
-| 以路徑當快取鍵 | 同名覆蓋、暫時失敗的檔案**永遠**消失 |
-| 子字串比對黑名單 | `Secretariat`、`OneDrive - Secret Project` 整個資料夾被擋掉 |
-| 只看 `lstat` | 硬鏈結（`ln` 不是 `ln -s`）整個繞過捷徑防線 |
-| 檢查完才讀檔 | 中間可以被換成指向 `~/.ssh` 的捷徑 |
-| 原始碼裡寫真的 NUL 位元組 | git 當二進位檔，diff 看不到、grep 掃不到 |
-| 安全開關型別寫錯 fail-open | `readonly: "true"` 靜靜變成 false |
-| `LIKE` 沒有 `ESCAPE` | 打一個 `%` 把整個資料庫倒出來 |
-| 註解說有做、程式沒做 | 這個 repo 出過三次 |
+| A | `test/fixtures/` 三張圖與三份 `.understanding.json` |
+| B | 用 fixture 產出第一份 `plans`，先不用真的搬檔 |
+| C | `docs/inbox-example.json` 與 `node cli.mjs inbox` 的輸出版型 |
+| D | `INSTALL.md` 骨架、Windows 右鍵 registry 草稿、M0 修正清單 |
+
+這天下班前要能做到：B/C 不等模型，A 不等 B，D 不等任何後端。
 
 ---
 
-## 7 ・ 不在這一輪（想做先講）
+## 4 ・ 每個人的工作與驗收
 
-桌面寵物、事件與待辦真的寫進行事曆與 Todoist、向量語意搜尋、docx／pptx、
-多機同步、對外開放的 MCP server。
+### A — 收檔與看懂
+
+#### 工作
+
+1. `prompt.ts`：組 prompt；PDF 用 `pdftoppm` 轉前 N 頁。Windows 沒裝 poppler 時，PDF 標成明確 error，不影響截圖。
+2. `understand.ts`：一次 `fetch`，逾時 60 秒，同 `sha256` 不重問。
+3. 容錯解析：剝 ` ```json ` 圍欄、抓第一個平衡 `{...}`、修尾逗號。
+4. schema 驗證：doc type、category、facts key、字串長度。
+5. 證據查核：每個 `evidence` 必須出現在正規化後的 `text` 裡。
+6. `node cli.mjs understand`：把 `items.status='new'` 的列處理成 `proposed` 或 `error`。
+
+#### 驗收
+
+- 三張 fixture 跑過；壞案例不能寫進 `understanding`。
+- fake 模型回應有 markdown fence、尾逗號、非法 enum 時，要救得回來或清楚失敗。
+- `evidence` 對不上的項目會消失。
+- `contains_secret: true` 時 `text` 不落庫。
+- 同一個 `sha256` 不重問模型。
+
+---
+
+### B — 提案、執行、復原
+
+#### 工作
+
+1. `plans.ts`：從 `understanding.raw` 組 Ops。檔案目的地只能由程式算。
+2. `exec.ts`：執行 move、rename、fact、event/task 的本版行為；每個執行器第一行檢查 `config.readonly`。
+3. `journal.ts`：先寫 journal 再動作；復原倒序重播。
+4. `node cli.mjs approve <id> [--skip 2,3]`。
+5. `node cli.mjs undo <id>`。
+6. M2 再補 `routes-write.ts`：`/plans/:id/apply`、`/undo`、`/dismiss`。
+
+#### 驗收
+
+- `approve` 後檔案真的到 `Filed/<category>/`，`undo` 後回原位原名。
+- 目的地同名時變 `(2)`、`(3)`，舊檔不被覆蓋。
+- `CONTEXTBOX_READONLY=1` 時一個檔案都不動。
+- 中途丟例外後，已完成的步驟仍可復原。
+- 惡意 `suggested_name: "../../.ssh/authorized_keys"` 最後只會落在安全目的地。
+- repo 不能新增 `unlink`、`rm`、`rmdir` 類刪檔呼叫。
+
+---
+
+### C — 操作面、讀取路由、搜尋
+
+#### 工作
+
+1. `docs/inbox-example.json`：先定 UI/CLI 要吃的形狀。
+2. `node cli.mjs inbox`：顯示摘要、類別、建議檔名、每一列 op、approve 指令提示。
+3. `routes-read.ts`：M2 時提供 `/inbox`、`/items/:id/file`、`/health`。
+4. `core/ui.html`：M2 時做收件匣分頁、逐列取消、全部同意、略過、復原、健康列。
+5. `search.ts`：M4 時收斂 FTS upsert 與搜尋。短詞 `< 3` 走 LIKE，LIKE 必須 `ESCAPE`。
+
+#### 驗收
+
+- 不接 A/B 真實程式，只吃 `docs/inbox-example.json` 就能顯示完整 `inbox`。
+- `/items/:id/file` 只認 item id，不接路徑；不存在 id 回 404，亂塞路徑回 403/404。
+- 網頁上每個 op 可以單獨取消。
+- 搜尋「發票」找得到；`%`、`_`、`a-b`、`2026/09` 都不崩、不倒資料。
+- 同一個 item 重跑理解，`items_fts` 不會重複列。
+
+---
+
+### D — Windows、發行、整合驗收
+
+#### 工作
+
+1. M0 driver：乾淨 Windows 機器跑測試、doctor、watch、截圖、list。
+2. 修 M0 找到的 Windows blocker；如果碰到凍結檔，PR 說清楚是哪個 M0 bug。
+3. `package.json`：`engines.node >= 24`、`scripts.test`，不加 dependency。
+4. `INSTALL.md`：照著做可以在乾淨 Windows 機器裝起來。
+5. Windows 右鍵選單：`HKCU\Software\Classes\*\shell\ContextBox\command` → `node cli.mjs propose "%1"`。
+6. 「在檔案總管顯示」：Windows 先做 `explorer.exe /select,"<path>"`；macOS/Linux 暫緩。
+7. 修既有 extension 兩個 todo：敏感欄位空值洩漏、成績別名撞 key。
+8. 每晚跑一次端到端驗收，記錄在 `test/windows-smoke.md`。
+
+#### 驗收
+
+- 乾淨 Windows 機器照 `INSTALL.md` 能跑 `doctor/watch/list`。
+- 右鍵一個檔案後，`node cli.mjs list` 看得到它。
+- M1 完成後，在 Windows 上跑完整流程：截圖 → understand → inbox → approve → undo。
+- `node --test test/*.test.mjs` 的 todo 數量不能增加；能清掉既有 2 個最好。
+
+---
+
+## 5 ・ 里程碑與 merge 順序
+
+### M0：Windows 地基，半天
+
+Owner：D。
+
+Support：全員一起看第一次結果。
+
+完成條件：
+
+- `doctor/watch/list` 在 Windows 上跑過。
+- 新截圖會進 `items`。
+- blocker 已列出 owner。
+
+### M1：CLI 端到端，4～5 天
+
+Owner：A/B/C 一起，但收口順序固定：
+
+1. A 交 fixture。
+2. B 用 fixture 產 plan 與 approve/undo。
+3. C 用同一份 plan 做 inbox。
+4. A 接真模型。
+5. D 在 Windows 上跑端到端。
+
+完成條件：
+
+- `node cli.mjs understand`
+- `node cli.mjs inbox`
+- `node cli.mjs approve <id>`
+- `node cli.mjs undo <id>`
+
+### M2：網頁收件匣，3～4 天
+
+Owner：C。
+
+B 補 write routes，D 做 Windows smoke。
+
+完成條件：
+
+- 縮圖、摘要、逐列取消、一鍵同意、略過、復原。
+- 健康列清楚顯示模型與 watch 狀態。
+
+### M3：Windows 右鍵與顯示檔案，2～3 天
+
+Owner：D。
+
+C 接網頁按鈕，B 提供 reveal 所需安全路徑。
+
+完成條件：
+
+- 右鍵「用 ContextBox 整理」。
+- 搜尋或收件匣結果可以在檔案總管選中。
+
+### M4：搜尋，2 天
+
+Owner：C。
+
+A 提供文字品質，B 確認 apply/undo 不破壞索引。
+
+完成條件：
+
+- 「發票」「收據」這種兩字詞找得到。
+- 特殊字元搜尋不崩、不洩漏全部資料。
+
+---
+
+## 6 ・ 協作規則
+
+- 分支：`feat/understand`、`feat/plans`、`feat/surface`、`feat/windows-release`。
+- 每個 PR 只動自己的 owner 檔案；例外要在 PR 開頭講。
+- `cli.mjs` 是共用檔，merge 順序固定：A 的 `understand` → B 的 `approve/undo` → C 的 `inbox/search` → D 的 `reveal`。
+- `core/ui.html` 是共用檔，M2 前只有 D 可以改手填頁小修；M2 開始 C 改新分頁。
+- 每個 PR 都要有測試，或在 `test/windows-smoke.md` 有明確手動驗收。
+- 合併前跑 `node --test test/*.test.mjs`。
+- 中文文件用全形標點；註解寫「為什麼」，不要重述程式在做什麼。
+
+---
+
+## 7 ・ 已知地雷
+
+| 地雷 | 會怎樣 | Owner |
+|---|---|---|
+| Windows 沒先跑 | M2 才發現路徑、OneDrive、watch 行為壞掉 | D |
+| C 太早做網頁 | M1 沒有 CLI 可用版本，大家等整合 | C |
+| 模型輸出直接信 | 幻覺事件、亂寫個資、錯誤 facts | A |
+| 模型提供目的地 | prompt injection 可以叫它搬危險路徑 | B |
+| `READONLY` 漏檢查 | 第一次在新機器試跑就真的動檔案 | B |
+| `LIKE` 沒有 `ESCAPE` | 搜 `%` 把整個資料庫倒出來 | C |
+| 一次做三個 OS | Windows 使用者還不能用，時間先被平台分散 | D |
+| 共用檔亂改 | PR 互相踩，最後沒人敢 merge | 全員 |
+
+---
+
+## 8 ・ 這輪不做
+
+- macOS／Linux 右鍵選單。
+- 桌面寵物。
+- 事件／待辦直接寫進外部行事曆或 Todoist。
+- 向量語意搜尋。
+- docx／pptx。
+- 多機同步。
+- 對外開放 MCP server。
