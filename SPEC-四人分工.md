@@ -1,421 +1,480 @@
-# ContextBox — 四人分工 spec
+# ContextBox Pet — 四人分工 spec
 
-2026-09-13　目標：四個人平行做，但交付順序跟 [SPEC-實作計畫.md](SPEC-實作計畫.md) 對齊：
+2026-09-13　新版題目縮小成一個完整、好 demo、能真的每天用的小專案：
 
-1. 先在 Windows 與 macOS 上確認 P0 地基真的能跑。
-2. 先做出 CLI 端到端：截圖進來 → 看懂 → `inbox` → `approve` → `undo`。
-3. 再做網頁、右鍵選單、搜尋。
+> **桌面寵物住在你的桌面角落，盯著 Downloads。它會發現垃圾檔、解釋為什麼覺得該丟，等你點頭後把檔案移到可復原的隔離區。**
 
-舊分法最大的問題是把 C 太早丟去做網頁、把 D 丟去做一堆平台薄層，結果 M1 的「能每天用」沒有人完整收口。這版改成：**每個人都有自己的主線，但第一個共同終點是 M1 CLI E2E。**
+這版不做截圖理解、不做事實庫、不做表單填入。專題只收斂成一件事：
 
-搭配閱讀：
-
-- [SPEC-實作計畫.md](SPEC-實作計畫.md) — 現行里程碑，M0～M4
-- [SPEC-檔案與截圖.md](SPEC-檔案與截圖.md) — 管線設計
-- [reading/06-視覺模型.md](reading/06-視覺模型.md) — 模型風險與實測
+**把下載資料夾裡的垃圾清掉，而且每一步都能說明、能反悔、能容錯。**
 
 ---
 
-## 0 ・ 這一版怎麼切
+## 0 ・ 成品長什麼樣
 
-不要用「前端、後端、平台」切。這會讓前端等後端、平台等產品形狀、最後才發現使用者機器不能跑。
+使用者看到的是一隻桌面寵物：
 
-這版用四條可獨立驗收的線：
+1. 平常在桌面角落待機。
+2. Downloads 有新檔或變亂時，寵物冒出提醒。
+3. 點寵物打開小面板：列出「可丟掉的檔案」與原因。
+4. 使用者可以逐項取消，或按「幫我清掉」。
+5. 檔案不會直接刪掉，而是移到 `~/.contextbox/quarantine/`。
+6. 使用者按「復原」可以全部搬回原位。
+7. 七天後才允許清空隔離區；清空前還要再確認一次。
 
-| 人 | 主線 | 第一個可驗收結果 | 後續 |
-|---|---|---|---|
-| **A** | 收檔 ＋ 看懂 | `node cli.mjs understand` 讓 `new` 變 `proposed` | fixture、模型容錯、證據查核 |
-| **B** | 提案 ＋ 執行 ＋ 復原 | `approve <id>` 搬檔，`undo <id>` 搬回來 | journal、write routes |
-| **C** | 人看的操作面 ＋ macOS smoke | `inbox` 印出可同意的提案；macOS 跑通 `doctor/watch/list` | 網頁收件匣、搜尋、Finder Quick Action |
-| **D** | Windows 可用性 ＋ 發行收斂 | 乾淨 Windows 機器跑通 `doctor/watch/list` | Windows 右鍵選單、INSTALL、release QA |
+Demo 主線：
 
-共同原則：**邊界是資料表、CLI 輸出與 HTTP，不是互相 import 函式。**
+```bash
+node cli.mjs doctor
+node cli.mjs pet
+```
 
-A 可以先寫 fixture，B/C 可以直接吃 fixture 開工；D 從第一小時在 Windows 上找雷，C 同步在 macOS 上跑 smoke。D 收斂發行文件與最後驗收，不一個人扛兩個 OS。
+然後把幾個 `.zip`、重複下載的 `report (1).pdf`、空檔、安裝包丟進 Downloads。寵物跳出來說：「我找到 6 個可以清掉的東西。」使用者點同意，Downloads 變乾淨，按復原又回來。
 
 ---
 
-## 1 ・ 共用契約，只凍結四個
+## 1 ・ 非目標
 
-### 1.1 `understanding.raw`
+這些先不做，避免專題又膨脹：
 
-A 寫入、B/C 讀取。兩邊可以各自定義型別，不共用檔案。
-
-```jsonc
-{
-  "doc_type": "scholarship",
-  "category": "獎學金",
-  "summary": "台大 115 學年度弱勢學生助學金申請公告",
-  "text": "畫面上看得到的字；contains_secret 為 true 時是空字串",
-  "tags": ["獎學金", "台大"],
-  "suggested_name": "台大弱勢助學金公告",
-  "contains_secret": false,
-  "events": [{ "title": "說明會", "date": "2026-09-18", "time": "14:00", "evidence": "說明會：115 年 9 月 18 日" }],
-  "tasks": [{ "title": "備妥成績單", "due": "2026-09-30", "evidence": "最近一學期成績單正本" }],
-  "missing_docs": [{ "what": "戶籍謄本", "why": "應繳文件第 1 項", "evidence": "全戶戶籍謄本" }],
-  "facts": [{ "key": "education[0].school", "value": "國立臺灣大學", "evidence": "國立臺灣大學" }]
-}
-```
-
-A 保證：
-
-- enum 合法。
-- `facts[].key` 在 `schema/factKeys.ts` 裡。
-- 每個 `evidence` 都真的出現在 `text` 裡；對不上就丟掉那一項。
-- `contains_secret: true` 時不存完整 `text`。
-
-B/C 仍然要防禦性檢查，但可以用 fixture 先做完整流程。
-
-### 1.2 `Plan.ops`
-
-B 產出、C 顯示、B 執行。
-
-```ts
-type Op =
-  | { op: 'move'; from: string; to: string }
-  | { op: 'rename'; from: string; to: string }
-  | { op: 'fact'; key: string; value: string; evidence: string }
-  | { op: 'event'; title: string; date: string; ics: string }
-  | { op: 'task'; title: string; due?: string }
-```
-
-模型永遠不能提供目的地路徑。目的地一律由 B 用 `guard.destFor(category, safeName(...))` 算。
-
-### 1.3 CLI 格式
-
-C 先定 `inbox` 的輸出，B 照這個讓 `approve/undo` 能接。
-
-```text
-[a1b2]  獎學金公告.png                              獎學金
-        台大 115 學年度弱勢學生助學金申請公告
-        1. 搬到  Filed/獎學金/台大弱勢助學金公告.png
-        2. 待辦  備妥成績單（2026-09-30 前）
-        3. 事實  education[0].school = 國立臺灣大學
-        approve a1b2
-        approve a1b2 --skip 2,3
-```
-
-### 1.4 HTTP 回應
-
-C 第一天產出 `docs/inbox-example.json`。M2 之前 UI 都吃這份；C 做 `/inbox` 時照它回。
+- 不讀懂截圖內容。
+- 不接視覺模型。
+- 不做個人事實庫。
+- 不填網頁表單。
+- 不做跨機同步。
+- 不直接刪檔。
+- 不碰 Downloads 以外的資料夾，除非使用者在設定裡手動加。
 
 ---
 
-## 2 ・ 檔案所有權
+## 2 ・ 安全規則
 
-一個檔案只放一個 owner。要動別人的檔案，先在 PR 說明原因。
+「丟掉垃圾」在產品上可以這樣講，但工程上必須是：
 
-### A — 收檔與看懂
+**先隔離，不刪除。**
 
-```text
-core/understand.ts        新
-core/prompt.ts            新
-test/understand.test.mjs  新
-test/fixtures/            新
-```
+規則：
 
-可動既有檔案：
-
-```text
-cli.mjs                   只加 understand 子指令
-core/db.ts                只在確定缺表時加 migration；先確認現況
-```
-
-### B — 提案、執行、復原
-
-```text
-core/plans.ts             新
-core/exec.ts              新
-core/journal.ts           新
-core/routes-write.ts      新
-test/plans.test.mjs       新
-test/exec.test.mjs        新
-test/journal.test.mjs     新
-```
-
-可動既有檔案：
-
-```text
-cli.mjs                   只加 approve、undo 子指令
-```
-
-### C — 操作面、讀取路由、搜尋
-
-```text
-core/routes-read.ts       新
-core/search.ts            新
-docs/inbox-example.json   新
-test/routes-read.test.mjs 新
-test/search.test.mjs      新
-test/macos-smoke.md       新，手動驗收紀錄
-os/macos/*                新
-```
-
-可動既有檔案：
-
-```text
-cli.mjs                   只加 inbox/search；M3 可協助 macOS reveal
-core/ui.html              M2 後才改：收件匣分頁、搜尋分頁、健康列
-```
-
-### D — Windows、發行收斂、整合驗收
-
-```text
-M0-Windows檢查.md         改
-os/windows/*              新
-INSTALL.md                新
-package.json              新
-test/windows-smoke.md     新，手動驗收紀錄
-```
-
-可動既有檔案：
-
-```text
-README.md                 裝法與 demo script
-extension/*               只修已知 2 個 todo
-core/ui.html              只改手填頁來源顯示；避開 C 的新分頁
-cli.mjs                   只加 Windows reveal 子指令或 Windows 顯示檔案輔助
-```
-
-暫時凍結：`guard.ts`、`watcher.ts`、`items.ts`、`config.ts`、`facts.ts`、`validate.ts`、`schema/`。除非 M0 在 Windows/macOS 上驗出 bug，否則不要碰。
+1. 只掃設定裡的資料夾，預設只有 Downloads。
+2. 不跟 symlink，不處理捷徑指到外面的檔案。
+3. 不碰隱藏檔、設定檔、金鑰、資料庫、`.git`、`.ssh`、`.env`。
+4. 不處理最近 10 分鐘內還在變動的檔案。
+5. 不處理超過大小上限的檔案，先列為「需要人工看」。
+6. 不直接 `unlink`、`rm`、`rmdir`。
+7. 所有動作先寫 journal，再移檔。
+8. 移到 quarantine 時保留原路徑、mtime、sha256。
+9. 復原時只搬回原路徑；如果原路徑已有新檔，就改成 `filename.restored`，不覆蓋。
+10. 後端任何一步失敗，都要回到「可重試」狀態，不讓檔案消失在半路。
 
 ---
 
-## 3 ・ 第一天安排
+## 3 ・ 系統切法
 
-### 上午：M0，全員看 Windows/macOS
+```text
+Downloads
+   │
+   ▼
+watcher.ts            發現新檔、等檔案穩定
+   │
+   ▼
+scanner.ts            建立 file_items，算 sha256、大小、mtime
+   │
+   ▼
+classifier.ts         用規則判斷垃圾候選，不用模型
+   │
+   ▼
+plans.ts              產生 cleanup_plan：每一個檔案一個 reason
+   │
+   ▼
+pet ui                寵物提醒、清理面板、逐項取消
+   │
+   ▼ 使用者點頭
+   │
+exec.ts + journal.ts  移到 quarantine，可復原
+```
 
-D 開 Windows 主機或遠端畫面，C 開 macOS 主機或遠端畫面，四個人一起跑：
+後端是完整產品，不是 UI 的假資料：
+
+- 有資料庫。
+- 有健康檢查。
+- 有 watcher。
+- 有分類規則。
+- 有 API。
+- 有 journal。
+- 有 undo。
+- 有錯誤狀態。
+- 有測試。
+
+---
+
+## 4 ・ 資料表
+
+```sql
+CREATE TABLE IF NOT EXISTS file_items (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  ext TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  sha256 TEXT,
+  mtime TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  status TEXT NOT NULL,       -- new | candidate | kept | quarantined | restored | missing | error
+  error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_candidates (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES file_items(id),
+  kind TEXT NOT NULL,         -- duplicate | installer | archive | temp | empty | old-download | partial | screenshot-noise
+  confidence INTEGER NOT NULL, -- 0..100
+  reason TEXT NOT NULL,
+  evidence TEXT NOT NULL,     -- 例：同 sha256 已有 3 份、檔名符合 .crdownload、90 天未開啟
+  status TEXT NOT NULL,       -- proposed | skipped | approved | quarantined | restored | dismissed | error
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_plans (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,       -- proposed | applied | restored | dismissed | partial | error
+  item_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  applied_at TEXT,
+  error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_plan_items (
+  plan_id TEXT NOT NULL REFERENCES cleanup_plans(id),
+  candidate_id TEXT NOT NULL REFERENCES cleanup_candidates(id),
+  position INTEGER NOT NULL,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (plan_id, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_journal (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  op TEXT NOT NULL,           -- quarantine | restore | skip
+  from_path TEXT,
+  to_path TEXT,
+  sha256 TEXT,
+  status TEXT NOT NULL,       -- started | done | failed | reverted
+  error TEXT
+);
+```
+
+---
+
+## 5 ・ 垃圾判斷規則
+
+不用模型，先用可解釋規則。每個 candidate 都要能講得出原因。
+
+| kind | 條件 | 預設 |
+|---|---|---|
+| `duplicate` | 同 sha256 已有另一份，且另一份路徑仍存在 | 高信心，可清 |
+| `partial` | `.crdownload`、`.part`、`.download`，且 24 小時未變 | 高信心，可清 |
+| `empty` | 0 byte，且 24 小時未變 | 高信心，可清 |
+| `installer` | `.dmg`、`.pkg`、`.msi`、`.exe`，且 14 天未變 | 中信心，需顯示清楚 |
+| `archive` | `.zip`、`.rar`、`.7z`、`.tar`，且 30 天未變 | 中信心 |
+| `old-download` | 90 天未變，且不在保護副檔名 | 低信心，預設不勾 |
+| `screenshot-noise` | `Screenshot`、`截圖` 開頭，且 30 天未變 | 低信心，預設不勾 |
+
+保護副檔名：`.pdf`、`.docx`、`.xlsx`、`.pptx`、`.key`、`.pages`、`.numbers`、`.txt`、`.md`。
+
+保護副檔名不是永遠不能清，而是低信心規則預設不勾。
+
+---
+
+## 6 ・ 後端容錯
+
+這一節是必做，不是加分。
+
+### watcher 容錯
+
+- 開機先 seed 現有檔案，不把整個 Downloads 都當新檔嚇使用者。
+- `fs.watch` 掉事件時，每 60 秒補一次掃描。
+- 檔案大小連續兩次一樣才算穩定。
+- 讀不到檔案時標 `missing`，不丟例外讓 watcher 死掉。
+- DB busy 時重試，最多 5 次，失敗後寫 meta 錯誤。
+
+### scanner 容錯
+
+- sha256 算到一半檔案被移走，標 `missing`。
+- 權限不夠，標 `error`，UI 顯示「無法讀取」。
+- 大檔案先不算 hash，只用 metadata 顯示「太大，略過」。
+- 路徑經過 realpath 後不在 Downloads，就拒收。
+
+### classifier 容錯
+
+- 規則失敗不影響其他檔案。
+- 每個 candidate 都要有 `reason` 與 `evidence`，沒有就不寫入。
+- 同一個 item 重掃時要 upsert，不重複產生 20 張一樣的卡。
+- 分類規則版本改了，要能重新掃描。
+
+### exec 容錯
+
+- 執行前再確認來源檔案存在、sha256 或 size/mtime 符合。
+- 先寫 `cleanup_journal.status='started'`，再搬檔。
+- 搬完確認目標存在，才標 `done`。
+- 搬到 quarantine 失敗時，plan 變 `partial` 或 `error`，已搬成功的項目仍可 undo。
+- 復原時如果原位置已被新檔佔用，不覆蓋，改用 `.restored`。
+
+### API 容錯
+
+- 所有 POST 都要 idempotent：同一個 plan 重送 apply，不會搬第二次。
+- body 超過 1MB 直接拒絕。
+- token 錯誤回 401，路徑錯誤回 404，不把本機路徑洩漏給 UI。
+- `/health` 要回 watcher、db、quarantine、pending candidates、last error。
+
+---
+
+## 7 ・ API
+
+全部走現有本機 server 的 token 與 loopback 防線。
+
+| route | method | 用途 |
+|---|---|---|
+| `/health` | GET | 後端狀態、watcher 心跳、待清候選數 |
+| `/cleanup/scan` | POST | 手動掃 Downloads |
+| `/cleanup/candidates` | GET | 清理候選列表 |
+| `/cleanup/plans` | POST | 用目前候選建立 plan |
+| `/cleanup/plans/:id/apply` | POST | 套用 plan，可帶 skipped ids |
+| `/cleanup/plans/:id/undo` | POST | 復原 plan |
+| `/cleanup/plans/:id/dismiss` | POST | 這次不清 |
+| `/cleanup/quarantine` | GET | 隔離區內容 |
+| `/cleanup/quarantine/empty` | POST | 七天後清空，需要二次確認 |
+| `/pet/state` | GET | 寵物目前狀態與一句話文案 |
+
+---
+
+## 8 ・ 寵物狀態
+
+寵物不是純裝飾，它是清理流程的狀態機。
+
+| state | 觸發 | 表現 |
+|---|---|---|
+| `idle` | 沒事 | 慢慢晃、偶爾眨眼 |
+| `watching` | watcher 正常 | 看著 Downloads 小圖示 |
+| `found` | 有 candidates | 跳一下，顯示數字 badge |
+| `thinking` | 正在掃描 | 拿放大鏡或轉圈 |
+| `waiting` | plan 已建立 | 坐著等使用者確認 |
+| `cleaning` | apply 中 | 把檔案拖進箱子 |
+| `happy` | 清完 | 開心一下，顯示省下空間 |
+| `worried` | 後端錯誤 | 顯示短錯誤與重試 |
+| `undoable` | 剛清完 | 顯示「復原」入口 |
+
+MVP 可以是 `core/ui.html` 裡的一個固定角落面板，不一定要原生桌面透明窗。
+
+如果時間夠，D/C 再把它包成 OS 啟動捷徑或 PWA 視窗。
+
+---
+
+## 9 ・ 四人分工
+
+### A — Downloads 後端入口
+
+負責檔案進來到候選產生前的地基。
+
+Owner files：
+
+```text
+core/cleanup-watcher.ts       新
+core/cleanup-scanner.ts       新
+core/cleanup-rules.ts         新
+test/cleanup-watcher.test.mjs 新
+test/cleanup-scanner.test.mjs 新
+test/cleanup-rules.test.mjs   新
+```
+
+工作：
+
+1. 掃 Downloads，建立 `file_items`。
+2. 等檔案穩定，不處理下載到一半的檔。
+3. 實作垃圾判斷規則。
+4. 同一個檔案重掃不重複新增 candidate。
+5. 所有讀檔錯誤都落在 `status/error`，不能讓行程死掉。
+
+驗收：
+
+- 新檔會進 `file_items`。
+- `.crdownload` 24 小時未變才變 candidate。
+- duplicate 用 sha256 判斷。
+- 權限錯誤、檔案消失、DB busy 都不會讓 watcher 掛掉。
+
+### B — 清理執行、隔離區、復原
+
+負責「真的動檔案」的安全邊界。
+
+Owner files：
+
+```text
+core/cleanup-plans.ts       新
+core/cleanup-exec.ts        新
+core/cleanup-journal.ts     新
+test/cleanup-plans.test.mjs 新
+test/cleanup-exec.test.mjs  新
+test/cleanup-undo.test.mjs  新
+```
+
+工作：
+
+1. 用 candidates 建立 cleanup plan。
+2. apply 時把檔案移到 `~/.contextbox/quarantine/`。
+3. journal 先寫再搬。
+4. undo 時搬回原位。
+5. 實作 partial failure：搬到一半壞掉，也能復原已成功的項目。
+6. 清空 quarantine 要七天後、二次確認。
+
+驗收：
+
+- apply 不刪檔，只搬到 quarantine。
+- undo 能搬回原位。
+- 原位被佔用時不覆蓋，改成 `.restored`。
+- 重送同一個 apply 不會重複搬。
+- repo 不新增一般用途的 `unlink`、`rm`、`rmdir`。唯一例外是隔離區清空模組，而且只能刪 `~/.contextbox/quarantine/` 裡七天前的檔案，必須有測試保護。
+
+### C — 寵物 UI 與清理面板
+
+負責使用者看到與操作的部分。
+
+Owner files：
+
+```text
+core/ui.html              改
+core/pet-state.ts         新
+test/pet-state.test.mjs   新
+docs/demo-script.md       新
+```
+
+工作：
+
+1. 寵物狀態機：idle、found、thinking、cleaning、happy、worried、undoable。
+2. 清理面板：候選檔案、原因、信心、大小、逐項取消。
+3. 操作：掃描、建立 plan、清理、復原、略過。
+4. 後端錯誤要顯示成人話，不顯示 stack trace。
+5. demo script：3 分鐘展示流程。
+
+驗收：
+
+- 後端沒開時，寵物顯示 worried 與重試。
+- 有 candidates 時 badge 數字正確。
+- 使用者取消某項後 apply 不會搬那個檔。
+- 清完後顯示清掉幾個檔、釋放多少空間、復原入口。
+- 手機不重要，桌面寬度 1024～1920 要好看。
+
+### D — API、發行、OS 整合
+
+負責把 A/B/C 串成完整可跑專案。
+
+Owner files：
+
+```text
+core/cleanup-routes.ts       新
+core/server.ts               改，只掛 cleanup routes
+cli.mjs                      改，新增 cleanup/pet 指令
+package.json                 新
+INSTALL.md                   新
+os/windows/*                 新
+os/macos/*                   新
+test/cleanup-routes.test.mjs 新
+test/smoke-cleanup.md        新
+```
+
+工作：
+
+1. API routes：health、scan、candidates、plans、apply、undo、dismiss、quarantine。
+2. CLI：`cleanup scan`、`cleanup list`、`cleanup apply`、`cleanup undo`、`pet`。
+3. `node cli.mjs pet` 啟動 server 並印出網址。
+4. Windows/macOS 啟動捷徑或安裝說明。
+5. `INSTALL.md`：乾淨機器照著做能跑。
+6. 每晚跑 smoke：真的在 Downloads 放垃圾 → 寵物出現 → 清理 → 復原。
+
+驗收：
+
+- `node cli.mjs doctor` 顯示 Downloads、quarantine、watcher、pending candidates。
+- `node cli.mjs cleanup scan/list/apply/undo` 能完整跑。
+- `node cli.mjs pet` 打開寵物 UI。
+- API body 錯、token 錯、plan 重送、檔案消失都有正確錯誤。
+- Windows 與 macOS 至少各跑一次 smoke。
+
+---
+
+## 10 ・ 第一天交付
+
+| 人 | 第一天要交 |
+|---|---|
+| A | `test/fixtures/downloads/`：重複檔、空檔、舊 zip、下載中檔、正常文件；scanner/rules 測試草稿 |
+| B | quarantine 目錄格式、journal 格式、apply/undo 測試草稿 |
+| C | 寵物狀態草圖、清理面板 HTML prototype、demo script 草稿 |
+| D | API response 範例、CLI 指令草稿、INSTALL 骨架 |
+
+第一天結束要能用假資料看到完整故事：寵物發現垃圾 → 使用者確認 → 顯示清完 → 可以復原。
+
+---
+
+## 11 ・ 里程碑
+
+### M0：本機地基，半天
+
+完成條件：
+
+- `doctor` 顯示 Downloads 與 quarantine。
+- 測試能跑。
+- fake candidates 能被 UI 顯示。
+
+### M1：後端清理閉環，2 天
+
+完成條件：
+
+- scan → candidates → plan → apply → quarantine → undo。
+- 所有容錯測試至少覆蓋：檔案消失、同名復原、重送 apply、權限錯誤。
+
+### M2：寵物 UI，2 天
+
+完成條件：
+
+- 寵物狀態會跟後端變化。
+- 清理面板可逐項取消。
+- 錯誤與復原入口清楚。
+
+### M3：整合與 demo，1～2 天
+
+完成條件：
+
+- Windows/macOS smoke 各跑一次。
+- `INSTALL.md` 完整。
+- `docs/demo-script.md` 可以照著錄 3 分鐘影片。
+
+---
+
+## 12 ・ 協作規則
+
+- 分支：`feat/cleanup-scan`、`feat/cleanup-exec`、`feat/pet-ui`、`feat/cleanup-api-release`。
+- 不直接改別人的 owner files。
+- 共用檔只有 `core/server.ts`、`cli.mjs`、`core/ui.html`；D 收 server/CLI，C 收 UI。
+- 每個 PR 都要有測試，UI prototype 至少要有手動驗收記錄。
+- 合併前跑：
 
 ```bash
 node --test test/*.test.mjs
-node cli.mjs doctor
-node cli.mjs watch
-node cli.mjs list
+node cli.mjs cleanup scan
+node cli.mjs cleanup list
 ```
 
-驗收寫進 [M0-Windows檢查.md](M0-Windows檢查.md)：
-
-- Node 版本、Windows 版本、是否 OneDrive。
-- 測試紅燈清單。
-- `Win + Shift + S` 截圖是否進 `items`。
-- `Pictures` 是否被 OneDrive 整包拉回本機。
-- Tailscale／模型端點是否通。
-
-macOS 驗收由 C 記進 `test/macos-smoke.md`：
-
-- Node 版本、macOS 版本、截圖預設路徑。
-- `Cmd + Shift + 5` 或截圖工具產生的檔案是否進 `items`。
-- `doctor/watch/list` 是否能跑。
-- Tailscale／模型端點是否通。
-
-如果 M0 有 blocker，Windows 由 D 收口，macOS 由 C 收口；A/B 只協助定位，不要全部人卡在修平台。
-
-### 下午：四個人分開產 fixture 與假資料
-
-| 人 | 當天交付 |
-|---|---|
-| A | `test/fixtures/` 三張圖與三份 `.understanding.json` |
-| B | 用 fixture 產出第一份 `plans`，先不用真的搬檔 |
-| C | `docs/inbox-example.json`、`node cli.mjs inbox` 的輸出版型、macOS smoke 紀錄 |
-| D | `INSTALL.md` 骨架、Windows 右鍵 registry 草稿、Windows M0 修正清單 |
-
-這天下班前要能做到：B/C 不等模型，A 不等 B，D 不等任何後端。
-
 ---
 
-## 4 ・ 每個人的工作與驗收
+## 13 ・ 已知地雷
 
-### A — 收檔與看懂
-
-#### 工作
-
-1. `prompt.ts`：組 prompt；PDF 用 `pdftoppm` 轉前 N 頁。Windows 沒裝 poppler 時，PDF 標成明確 error，不影響截圖。
-2. `understand.ts`：一次 `fetch`，逾時 60 秒，同 `sha256` 不重問。
-3. 容錯解析：剝 ` ```json ` 圍欄、抓第一個平衡 `{...}`、修尾逗號。
-4. schema 驗證：doc type、category、facts key、字串長度。
-5. 證據查核：每個 `evidence` 必須出現在正規化後的 `text` 裡。
-6. `node cli.mjs understand`：把 `items.status='new'` 的列處理成 `proposed` 或 `error`。
-
-#### 驗收
-
-- 三張 fixture 跑過；壞案例不能寫進 `understanding`。
-- fake 模型回應有 markdown fence、尾逗號、非法 enum 時，要救得回來或清楚失敗。
-- `evidence` 對不上的項目會消失。
-- `contains_secret: true` 時 `text` 不落庫。
-- 同一個 `sha256` 不重問模型。
-
----
-
-### B — 提案、執行、復原
-
-#### 工作
-
-1. `plans.ts`：從 `understanding.raw` 組 Ops。檔案目的地只能由程式算。
-2. `exec.ts`：執行 move、rename、fact、event/task 的本版行為；每個執行器第一行檢查 `config.readonly`。
-3. `journal.ts`：先寫 journal 再動作；復原倒序重播。
-4. `node cli.mjs approve <id> [--skip 2,3]`。
-5. `node cli.mjs undo <id>`。
-6. M2 再補 `routes-write.ts`：`/plans/:id/apply`、`/undo`、`/dismiss`。
-
-#### 驗收
-
-- `approve` 後檔案真的到 `Filed/<category>/`，`undo` 後回原位原名。
-- 目的地同名時變 `(2)`、`(3)`，舊檔不被覆蓋。
-- `CONTEXTBOX_READONLY=1` 時一個檔案都不動。
-- 中途丟例外後，已完成的步驟仍可復原。
-- 惡意 `suggested_name: "../../.ssh/authorized_keys"` 最後只會落在安全目的地。
-- repo 不能新增 `unlink`、`rm`、`rmdir` 類刪檔呼叫。
-
----
-
-### C — 操作面、讀取路由、搜尋
-
-#### 工作
-
-1. `docs/inbox-example.json`：先定 UI/CLI 要吃的形狀。
-2. `node cli.mjs inbox`：顯示摘要、類別、建議檔名、每一列 op、approve 指令提示。
-3. macOS smoke：跑 `doctor/watch/list`、截圖落地、模型連線，記到 `test/macos-smoke.md`。
-4. M3 做 macOS Finder Quick Action：把選到的檔案交給 `node cli.mjs propose "$1"`。
-5. `routes-read.ts`：M2 時提供 `/inbox`、`/items/:id/file`、`/health`。
-6. `core/ui.html`：M2 時做收件匣分頁、逐列取消、全部同意、略過、復原、健康列。
-7. `search.ts`：M4 時收斂 FTS upsert 與搜尋。短詞 `< 3` 走 LIKE，LIKE 必須 `ESCAPE`。
-
-#### 驗收
-
-- 不接 A/B 真實程式，只吃 `docs/inbox-example.json` 就能顯示完整 `inbox`。
-- macOS 上 `doctor/watch/list` 跑過，截圖會進 `items`。
-- macOS Quick Action 丟一個檔案後，`node cli.mjs list` 看得到它。
-- `/items/:id/file` 只認 item id，不接路徑；不存在 id 回 404，亂塞路徑回 403/404。
-- 網頁上每個 op 可以單獨取消。
-- 搜尋「發票」找得到；`%`、`_`、`a-b`、`2026/09` 都不崩、不倒資料。
-- 同一個 item 重跑理解，`items_fts` 不會重複列。
-
----
-
-### D — Windows、發行收斂、整合驗收
-
-#### 工作
-
-1. M0 Windows driver：乾淨 Windows 機器跑測試、doctor、watch、截圖、list。
-2. 修 M0 找到的 Windows blocker；如果碰到凍結檔，PR 說清楚是哪個 M0 bug。
-3. `package.json`：`engines.node >= 24`、`scripts.test`，不加 dependency。
-4. `INSTALL.md`：整合 Windows 與 C 提供的 macOS 步驟，照著做可以在乾淨機器裝起來。
-5. Windows 右鍵選單：`HKCU\Software\Classes\*\shell\ContextBox\command` → `node cli.mjs propose "%1"`。
-6. 「在檔案總管顯示」：Windows 用 `explorer.exe /select,"<path>"`。
-7. 修既有 extension 兩個 todo：敏感欄位空值洩漏、成績別名撞 key。
-8. 每晚收斂端到端驗收：自己更新 `test/windows-smoke.md`，確認 C 的 `test/macos-smoke.md` 沒退步。
-
-#### 驗收
-
-- 乾淨 Windows 機器照 `INSTALL.md` 能跑 `doctor/watch/list`。
-- Windows 右鍵丟一個檔案後，`node cli.mjs list` 看得到它。
-- M1 完成後，在 Windows 上跑完整流程：截圖 → understand → inbox → approve → undo。
-- release 前確認 C 的 macOS smoke 是綠的，但 macOS blocker 不歸 D 修。
-- `node --test test/*.test.mjs` 的 todo 數量不能增加；能清掉既有 2 個最好。
-
----
-
-## 5 ・ 里程碑與 merge 順序
-
-### M0：Windows/macOS 地基，半天～一天
-
-Owner：D 收 Windows；C 收 macOS。
-
-Support：全員一起看第一次結果。
-
-完成條件：
-
-- `doctor/watch/list` 在 Windows 與 macOS 上跑過。
-- 新截圖會進 `items`。
-- blocker 已列出 owner。
-
-### M1：CLI 端到端，4～5 天
-
-Owner：A/B/C 一起，但收口順序固定：
-
-1. A 交 fixture。
-2. B 用 fixture 產 plan 與 approve/undo。
-3. C 用同一份 plan 做 inbox。
-4. A 接真模型。
-5. D 在 Windows 上跑端到端，C 在 macOS 上跑端到端。
-
-完成條件：
-
-- `node cli.mjs understand`
-- `node cli.mjs inbox`
-- `node cli.mjs approve <id>`
-- `node cli.mjs undo <id>`
-
-### M2：網頁收件匣，3～4 天
-
-Owner：C。
-
-B 補 write routes，D 做 Windows smoke，C 做 macOS smoke。
-
-完成條件：
-
-- 縮圖、摘要、逐列取消、一鍵同意、略過、復原。
-- 健康列清楚顯示模型與 watch 狀態。
-
-### M3：Windows/macOS 右鍵與顯示檔案，2～3 天
-
-Owner：D 收 Windows；C 收 macOS。
-
-C 接網頁按鈕與 macOS Quick Action，B 提供 reveal 所需安全路徑，D 做 Windows 右鍵。
-
-完成條件：
-
-- 右鍵「用 ContextBox 整理」。
-- 搜尋或收件匣結果可以在檔案總管/Finder 選中。
-
-### M4：搜尋，2 天
-
-Owner：C。
-
-A 提供文字品質，B 確認 apply/undo 不破壞索引。
-
-完成條件：
-
-- 「發票」「收據」這種兩字詞找得到。
-- 特殊字元搜尋不崩、不洩漏全部資料。
-
----
-
-## 6 ・ 協作規則
-
-- 分支：`feat/understand`、`feat/plans`、`feat/surface-macos`、`feat/windows-release`。
-- 每個 PR 只動自己的 owner 檔案；例外要在 PR 開頭講。
-- `cli.mjs` 是共用檔，merge 順序固定：A 的 `understand` → B 的 `approve/undo` → C 的 `inbox/search` → D/C 的 `reveal`。
-- `core/ui.html` 是共用檔，M2 前只有 D 可以改手填頁小修；M2 開始 C 改新分頁。
-- 每個 PR 都要有測試，或在 `test/windows-smoke.md`／`test/macos-smoke.md` 有明確手動驗收。
-- 合併前跑 `node --test test/*.test.mjs`。
-- 中文文件用全形標點；註解寫「為什麼」，不要重述程式在做什麼。
-
----
-
-## 7 ・ 已知地雷
-
-| 地雷 | 會怎樣 | Owner |
+| 地雷 | 會怎樣 | 擋法 |
 |---|---|---|
-| Windows/macOS 沒先跑 | M2 才發現路徑、OneDrive、Finder、watch 行為壞掉 | C/D |
-| C 太早做網頁 | M1 沒有 CLI 可用版本，大家等整合 | C |
-| 模型輸出直接信 | 幻覺事件、亂寫個資、錯誤 facts | A |
-| 模型提供目的地 | prompt injection 可以叫它搬危險路徑 | B |
-| `READONLY` 漏檢查 | 第一次在新機器試跑就真的動檔案 | B |
-| `LIKE` 沒有 `ESCAPE` | 搜 `%` 把整個資料庫倒出來 | C |
-| 把雙平台都塞給 D | D 變 release、平台、QA 全包，M1 反而沒人收 | C/D |
-| 一次做三個 OS | Windows/macOS 使用者還不能用，時間先被平台分散 | D |
-| 共用檔亂改 | PR 互相踩，最後沒人敢 merge | 全員 |
-
----
-
-## 8 ・ 這輪不做
-
-- Linux 右鍵選單。
-- 桌面寵物。
-- 事件／待辦直接寫進外部行事曆或 Todoist。
-- 向量語意搜尋。
-- docx／pptx。
-- 多機同步。
-- 對外開放 MCP server。
+| 直接刪檔 | demo 一翻車就是災難 | 只進 quarantine，七天後才可清空 |
+| 把文件當垃圾 | 使用者不信任產品 | 保護副檔名、低信心預設不勾 |
+| watcher 漏事件 | 寵物沒反應 | fs.watch + 60 秒補掃 |
+| 下載到一半就搬走 | 破壞下載 | 檔案穩定與 24 小時規則 |
+| 重送 apply | 同一批檔案搬兩次 | API idempotent |
+| 復原覆蓋新檔 | 資料遺失 | `.restored`，不覆蓋 |
+| 錯誤只印 console | 使用者以為寵物壞了 | `/health` 與 worried state |
+| 寵物只是動畫 | 專題看起來像玩具 | 寵物必須驅動掃描、確認、復原 |
