@@ -35,6 +35,15 @@ Win11 綁 Microsoft 帳號時，已知資料夾移轉可能把它搬到
 node cli.mjs pet
 ```
 
+裝成開始選單捷徑（**不需要系統管理員**）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File os\windows\install.ps1
+```
+
+要開機自動啟動就加 `-Startup`。細節與移除方式看
+[os/windows/README.md](os/windows/README.md)。
+
 > ⚠️ **OneDrive 檔案隨選**：如果你的 Downloads 是「僅線上」的佔位檔，
 > 掃描時會需要讀檔案內容來算指紋。**M0 要驗這件事不會把整個資料夾拉回本機。**
 > 驗完會把結論寫在這裡。
@@ -108,7 +117,6 @@ rm -rf ~/.contextbox
 
 ## 待補（M3）
 
-- [ ] Windows 開機自動啟動的捷徑
 - [ ] macOS 的 LaunchAgent
 - [ ] 乾淨機器實測紀錄（Windows 與 macOS 各一次）
 - [ ] OneDrive 檔案隨選的結論
