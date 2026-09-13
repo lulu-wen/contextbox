@@ -150,7 +150,7 @@ core/       事實庫、本機 server、手填頁、檔案管線（守門／監�
 extension/  Chrome MV3 擴充套件
 test/       194 個測試
 cli.mjs     檔案管線的命令列入口
-reading/    這個專案一路上的調查筆記
+reading/    參考過的開源專案：抄了什麼、為什麼不抄
 ```
 
 三份 spec：
