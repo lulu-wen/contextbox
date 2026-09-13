@@ -109,6 +109,74 @@ CREATE TABLE IF NOT EXISTS file_journal (
 CREATE INDEX IF NOT EXISTS ix_fj_plan ON file_journal(plan_id, seq);
 
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+
+-- ── Downloads 清理管線 ───────────────────────────────────────
+-- file_items 是「掃到的檔案」，cleanup_candidates 是「可清理候選」。
+-- 清理不是刪除：後續執行器只會先移到 quarantine，復原靠 journal。
+CREATE TABLE IF NOT EXISTS file_items (
+  id            TEXT PRIMARY KEY,
+  path          TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  ext           TEXT NOT NULL,
+  bytes         INTEGER NOT NULL,
+  sha256        TEXT,
+  mtime         TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at  TEXT NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN
+                  ('new','candidate','kept','quarantined','restored','missing','error')),
+  error         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_file_items_sha    ON file_items(sha256) WHERE sha256 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_file_items_status ON file_items(status, last_seen_at);
+
+CREATE TABLE IF NOT EXISTS cleanup_candidates (
+  id           TEXT PRIMARY KEY,
+  item_id      TEXT NOT NULL REFERENCES file_items(id),
+  kind         TEXT NOT NULL CHECK (kind IN
+               ('duplicate','installer','archive','temp','empty','old-download','partial','screenshot-noise')),
+  rule_version TEXT NOT NULL,
+  confidence   INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100),
+  reason       TEXT NOT NULL,
+  evidence     TEXT NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN
+               ('proposed','skipped','approved','quarantined','restored','dismissed','error')),
+  created_at   TEXT NOT NULL,
+  UNIQUE (item_id, kind, rule_version)
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_candidates_item   ON cleanup_candidates(item_id, status);
+CREATE INDEX IF NOT EXISTS ix_cleanup_candidates_status ON cleanup_candidates(status, created_at);
+
+CREATE TABLE IF NOT EXISTS cleanup_plans (
+  id         TEXT PRIMARY KEY,
+  status     TEXT NOT NULL CHECK (status IN ('proposed','applied','restored','dismissed','partial','error')),
+  item_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  applied_at TEXT,
+  error      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_plan_items (
+  plan_id      TEXT NOT NULL REFERENCES cleanup_plans(id),
+  candidate_id TEXT NOT NULL REFERENCES cleanup_candidates(id),
+  position     INTEGER NOT NULL,
+  skipped      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (plan_id, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_journal (
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        TEXT NOT NULL,
+  plan_id   TEXT NOT NULL,
+  item_id   TEXT NOT NULL,
+  op        TEXT NOT NULL CHECK (op IN ('quarantine','restore','skip')),
+  from_path TEXT,
+  to_path   TEXT,
+  sha256    TEXT,
+  status    TEXT NOT NULL CHECK (status IN ('started','done','failed','reverted')),
+  error     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_journal_plan ON cleanup_journal(plan_id, seq);
 `
 
 /**
