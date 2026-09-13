@@ -402,7 +402,40 @@ test/smoke-cleanup.md        新
 
 ---
 
-## 10 ・ 第一天交付
+## 10 ・ 開發機配置
+
+不是每個人都需要同時有 Mac 和 Windows。這樣會太重，也會讓平台問題拖慢主線。
+
+最低配置：
+
+| 人 | 建議電腦 | 為什麼 |
+|---|---|---|
+| **A** | Mac 或 Windows 都可 | watcher、scanner、rules 都是 Node 核心邏輯；用 fixture 與暫存 Downloads 測就好 |
+| **B** | Mac 或 Windows 都可 | quarantine、journal、undo 是跨平台檔案邏輯；測試要用 temp dir，不依賴真 Downloads |
+| **C** | **Mac 優先**，Windows 也可 | 寵物 UI 在本機網頁跑；如果要做 macOS 啟動捷徑或 Finder flow，Mac 比較方便 |
+| **D** | **Windows 必須**，Mac 可選 | D 收 Windows 安裝、右鍵選單、release smoke；沒有 Windows 會驗不到最容易壞的地方 |
+
+全隊最低要求：
+
+- 至少 1 台 Windows：D 使用，負責 Windows smoke。
+- 至少 1 台 Mac：C 使用，負責 macOS smoke 與 UI 視覺。
+- A/B 不限制 OS，但每天至少要在自己的 OS 跑 `node --test test/*.test.mjs`。
+
+如果只有一台 Windows：
+
+- Windows 給 D。
+- A/B/C 用 Mac 或其他機器開發。
+- 每天固定一個時段讓 D 跑整合 smoke，不要四個人輪流搶 Windows。
+
+如果只有一台 Mac：
+
+- Mac 給 C。
+- D 專心 Windows。
+- macOS 啟動捷徑可以降級成 `node cli.mjs pet` 的手動啟動，不影響 demo 主線。
+
+---
+
+## 11 ・ 第一天交付
 
 | 人 | 第一天要交 |
 |---|---|
@@ -415,7 +448,7 @@ test/smoke-cleanup.md        新
 
 ---
 
-## 11 ・ 里程碑
+## 12 ・ 里程碑
 
 ### M0：本機地基，半天
 
@@ -450,7 +483,7 @@ test/smoke-cleanup.md        新
 
 ---
 
-## 12 ・ 協作規則
+## 13 ・ 協作規則
 
 - 分支：`feat/cleanup-scan`、`feat/cleanup-exec`、`feat/pet-ui`、`feat/cleanup-api-release`。
 - 不直接改別人的 owner files。
@@ -466,7 +499,7 @@ node cli.mjs cleanup list
 
 ---
 
-## 13 ・ 已知地雷
+## 14 ・ 已知地雷
 
 | 地雷 | 會怎樣 | 擋法 |
 |---|---|---|
