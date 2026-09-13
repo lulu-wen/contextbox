@@ -1,0 +1,40 @@
+{
+  "id": "p_2026091301",
+  "status": "applied",
+  "quarantined": 5,
+  "skipped": 0,
+  "failed": 0,
+  "bytesFreed": 1892340112,
+  "appliedAt": "2026-09-13T08:42:31.000Z",
+  "canUndo": true,
+  "items": [
+    {
+      "candidateId": "c_7Qa",
+      "name": "report (1).pdf",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_8Bz",
+      "name": "ubuntu-26.04.iso.crdownload",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_9Cy",
+      "name": "新增文字文件.txt",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_1Dx",
+      "name": "NodeSetup-24.6.0.msi",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_2Ew",
+      "name": "素材包.zip",
+      "outcome": "quarantined"
+    }
+  ],
+  "_request": {
+    "skipped": []
+  }
+}

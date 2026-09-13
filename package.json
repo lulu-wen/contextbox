@@ -1,0 +1,17 @@
+{
+  "name": "contextbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "桌面寵物幫你清 Downloads：先隔離、不刪除、可復原",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "doctor": "node cli.mjs doctor",
+    "pet": "node cli.mjs pet",
+    "scan": "node cli.mjs cleanup scan"
+  },
+  "//": "零外部依賴是硬規則。這裡永遠不會有 dependencies 或 devDependencies。"
+}

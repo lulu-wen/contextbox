@@ -1,0 +1,94 @@
+{
+  "total": 6,
+  "bytes": 1892340112,
+  "generatedAt": "2026-09-13T08:41:10.221Z",
+  "candidates": [
+    {
+      "id": "c_7Qa",
+      "itemId": "i_44f",
+      "name": "report (1).pdf",
+      "folder": "Downloads",
+      "bytes": 2411882,
+      "mtime": "2026-08-30T11:02:00.000Z",
+      "kind": "duplicate",
+      "confidence": 95,
+      "defaultChecked": true,
+      "reason": "這份跟另一個檔案內容一模一樣",
+      "evidence": "同 sha256 還有 1 份：report.pdf（2026-08-12 下載）"
+    },
+    {
+      "id": "c_8Bz",
+      "itemId": "i_51c",
+      "name": "ubuntu-26.04.iso.crdownload",
+      "folder": "Downloads",
+      "bytes": 1073741824,
+      "mtime": "2026-09-01T03:20:00.000Z",
+      "kind": "partial",
+      "confidence": 98,
+      "defaultChecked": true,
+      "reason": "下載到一半就停了",
+      "evidence": "副檔名 .crdownload，12 天沒有變動"
+    },
+    {
+      "id": "c_9Cy",
+      "itemId": "i_63a",
+      "name": "新增文字文件.txt",
+      "folder": "Downloads",
+      "bytes": 0,
+      "mtime": "2026-09-05T14:00:00.000Z",
+      "kind": "empty",
+      "confidence": 90,
+      "defaultChecked": true,
+      "reason": "這是一個空檔案",
+      "evidence": "0 byte，8 天沒有變動"
+    },
+    {
+      "id": "c_1Dx",
+      "itemId": "i_70b",
+      "name": "NodeSetup-24.6.0.msi",
+      "folder": "Downloads",
+      "bytes": 31457280,
+      "mtime": "2026-08-20T09:00:00.000Z",
+      "kind": "installer",
+      "confidence": 70,
+      "defaultChecked": true,
+      "reason": "安裝檔，裝完通常就用不到了",
+      "evidence": ".msi，24 天沒有變動"
+    },
+    {
+      "id": "c_2Ew",
+      "itemId": "i_81d",
+      "name": "素材包.zip",
+      "folder": "Downloads",
+      "bytes": 786432000,
+      "mtime": "2026-07-10T22:15:00.000Z",
+      "kind": "archive",
+      "confidence": 60,
+      "defaultChecked": true,
+      "reason": "壓縮檔，兩個月沒動過",
+      "evidence": ".zip，65 天沒有變動"
+    },
+    {
+      "id": "c_3Fv",
+      "itemId": "i_92e",
+      "name": "Screenshot 2026-06-02 141203.png",
+      "folder": "Downloads",
+      "bytes": 482113,
+      "mtime": "2026-06-02T06:12:03.000Z",
+      "kind": "screenshot-noise",
+      "confidence": 35,
+      "defaultChecked": false,
+      "reason": "很久沒看的截圖",
+      "evidence": "檔名以 Screenshot 開頭，103 天沒有變動"
+    }
+  ],
+  "needsHuman": [
+    {
+      "itemId": "i_99f",
+      "name": "備份.tar",
+      "folder": "Downloads",
+      "bytes": 8589934592,
+      "why": "超過 5GB，沒有算 sha256，請自己看一眼"
+    }
+  ]
+}

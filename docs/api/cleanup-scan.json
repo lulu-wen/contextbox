@@ -1,0 +1,10 @@
+{
+  "scanned": 412,
+  "added": 3,
+  "updated": 1,
+  "missing": 2,
+  "errors": 1,
+  "candidates": 6,
+  "ms": 820,
+  "note": "errors 是讀不到的檔案，會標成 status=error，不會讓掃描中斷"
+}
