@@ -151,19 +151,18 @@ extension/  Chrome MV3 擴充套件
 test/       194 個測試
 cli.mjs     命令列入口
 docs/
-  specs/    四份 spec
+  specs/    三份 spec
   api/      API 回應範例（C 可以直接當 mock）
   reading/  參考過的開源專案：抄了什麼、為什麼不抄
 ```
 
-四份 spec：
+三份 spec：
 
 | | |
 |---|---|
 | [SPEC-實作計畫.md](docs/specs/實作計畫.md) | **下一步做什麼**。M0～M4，以「使用者能做什麼」當里程碑 |
 | [SPEC-檔案與截圖.md](docs/specs/檔案與截圖.md) | 檔案管線怎麼設計、借了哪些開源專案的形狀 |
 | [SPEC-四人分工.md](docs/specs/四人分工.md) | 四個人怎麼平行做、邊界定在哪 |
-| [SPEC.md](docs/specs/hackathon-原版.md) | 黑克松當天那版，沒有實作，留著當歷史 |
 
 ---
 
