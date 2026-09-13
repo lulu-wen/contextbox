@@ -1,262 +1,244 @@
 # ContextBox — 四人分工 spec
 
-2026-09-13　目標：把「檔案與截圖管線」的 P1～P5 拆成四份可以**同時動工**、**不互相踩**的工作。
+2026-09-13　目標：把「檔案與截圖管線」的 P1～P5 拆成四份可以**同時動工**、**不互相擋**的工作。
 
 搭配閱讀：[SPEC-檔案與截圖.md](SPEC-檔案與截圖.md)（管線設計）、
-[contextbox-稽核-20260912.md](../contextbox-稽核-20260912.md)（P0 的稽核紀錄，裡面每一條都是踩過的坑）。
+[contextbox-稽核-20260912.md](../contextbox-稽核-20260912.md)（P0 的稽核紀錄，每一條都是踩過的坑）、
+[reading/10-參考過的開源專案.md](reading/10-參考過的開源專案.md)（為什麼不 fork）。
 
 ---
 
-## 0 ・ 現況
+## 0 ・ 這一版的核心決定：**邊界是資料表與 HTTP，不是函式簽章**
 
-**已完成、不要改**（除非你是那個檔案的 owner）：
+第一版的分法是照「層」切的：理解層 → 行動層 → 介面層。
+那個分法有一個致命問題 —— **它是一條鏈**。B 要 import A 的型別，C 要 import B 的函式，
+D 要等所有人。A 晚一天，三個人一起晚一天。
 
-| 區塊 | 內容 | 狀態 |
-|---|---|---|
-| 事實庫 | `schema/factKeys.ts`（75 個 key）、`core/facts.ts`、`core/validate.ts`、`core/db.ts` | 上線，跑過兩輪稽核 |
-| 本機 server | `core/server.ts`（三道鎖）、`core/ui.html`（手填頁） | 上線 |
-| 擴充套件 | `extension/`（認欄位、填值、敏感欄位要人再點） | 上線，2 個已知 todo |
-| **管線地基** | `core/config.ts`、`guard.ts`、`watcher.ts`、`items.ts`、`cli.mjs` | **上線**，194 tests / 0 fail |
+這一版改成：**每個人讀一張表、寫一張表，誰都不 import 誰。**
 
-**這一輪要做**：P1 看懂 → P2 卡片與同意 → P3 接回事實庫 → P4 檔案總管 → P5 搜尋。
+```
+   items 表          understanding 表         硬碟 ＋ plans ＋ file_journal
+  （P0 已上線）  ──A──▶  （JSON 一欄）    ──B──▶   （真的動作）
+                              │                      │
+                              └──────── C 只用 HTTP 讀 ───┘
 
-**模型現況（已實測，2026-09-13）**：
-- porin 上唯一能看圖的是 `google/gemma-4-E4B-it`。`Qwen/Qwen2.5-Omni-7B` 帶圖一律 400。
-- 繁中 OCR 品質很好（民國年換算也正確）。
-- **但 `json_schema` strict／`json_object`／`guided_json` 三種強制格式全部無效** ——
-  永遠包在 ` ```json ` 圍欄裡，而且會違反 enum。
-- **而且會幻覺**：同一張圖短 prompt 時把「國立臺灣大學」讀成「國立嘉義大學」。
-- 速度：長 prompt 約 44 秒，短 prompt 約 5 秒。
+   D 完全不碰這條線：OS 整合、打包、文件、擴充套件
+```
 
-這三件事直接決定了 A 的工作內容，見下。
+好處很具體：
+
+- **A 不用知道 `Op` 或 `Plan` 存在。** 它只負責把圖變成一份 JSON，寫進 `understanding.raw`。
+- **B 不用 import A 的碼。** 它從資料庫讀那一欄 JSON，用**自己的**型別去解。
+  型別在行程邊界兩側各寫一份是好事，不是重複。
+- **C 一行後端碼都不用等。** 它吃 HTTP，開發時吃一份靜態 JSON。
+- **D 從第一天到最後一天都不會被擋。** 它做的是 P0 與擴充套件（都已上線）上面的東西。
 
 ---
 
 ## 1 ・ 四個人負責什麼
 
-| | 角色 | 一句話 | 對外介面 |
-|---|---|---|---|
-| **A** | 理解層 | 把一張圖變成一份**可信的** Proposal | `understand(item, cfg) → Result<Proposal>` |
-| **B** | 行動層 | 把 Proposal 變成 Ops，執行、記錄、復原 | `planFor()` / `apply()` / `undo()` |
-| **C** | 介面層 | 收件匣與搜尋：人在哪裡按同意 | HTTP 路由 ＋ `ui.html` 分頁 |
-| **D** | 落地層 | 讓它變成一個裝得起來的東西 | 右鍵選單、打包、接回事實庫 |
+| | 角色 | 讀什麼 | 寫什麼 | 會被誰擋住 |
+|---|---|---|---|---|
+| **A** | 看懂 | `items`（status=new） | `understanding` | **沒有人** |
+| **B** | 動作 | `understanding` | 硬碟、`plans`、`file_journal` | 只需要**一份**真的理解，而 fixture 就能代替 |
+| **C** | 介面 | HTTP | 畫面 | **沒有人**（開發時吃靜態 JSON） |
+| **D** | 平台 | 已上線的 P0 與擴充套件 | 安裝包、右鍵選單、文件 | **沒有人** |
 
 ### 檔案所有權（**一個檔案只有一個 owner**）
 
 ```
 A  core/understand.ts        新   模型呼叫、容錯解析、證據查核
-   core/proposal.ts          新   Proposal 型別 ＋ 驗證器 ＋ JSON schema
-   core/prompt.ts            新   prompt 組裝（含 PDF 轉圖）
+   core/prompt.ts            新   prompt 組裝、PDF 轉圖
    test/understand.test.mjs  新
-   test/proposal.test.mjs    新
+   test/fixtures/            新   三張圖 ＋ 三份正確答案（第一天就要有）
 
-B  core/plans.ts             新   Proposal → Ops、plan 的生命週期
-   core/exec.ts              新   四個執行器（move／rename／fact／event）
+B  core/plans.ts             新   understanding → Ops
+   core/exec.ts              新   四個執行器
    core/journal.ts           新   file_journal 的讀寫與反向重播
+   core/routes-write.ts      新   /plans/:id/{apply,undo,dismiss}
    test/plans.test.mjs       新
    test/exec.test.mjs        新
 
-C  core/server.ts            改   §4 的新路由
-   core/ui.html              改   收件匣分頁、搜尋分頁
+C  core/ui.html              改   收件匣分頁、搜尋分頁
+   core/routes-read.ts       新   /inbox、/search、/items/:id/file
    core/search.ts            新   FTS 寫入與查詢（含短詞分流）
-   test/server.test.mjs      改
    test/search.test.mjs      新
+   test/routes-read.test.mjs 新
 
-D  core/facts-bridge.ts      新   fact op → Facts.propose，來源標記
-   os/windows/*              新   右鍵選單 .reg ＋ 安裝說明
+D  os/windows/*              新   右鍵選單 ＋ 安裝說明（**優先**）
    os/linux/*  os/macos/*    新
    package.json              新   engines、scripts（**不加任何 dependency**）
-   README.md                 改   換成真正的專案說明（現在是黑克松筆記）
-   INSTALL.md                新
+   README.md  INSTALL.md     改／新
    extension/（2 個 todo）    改
-   test/facts-bridge.test.mjs 新
+   core/ui.html 的手填頁部分   改   ← 唯一與 C 共用的檔案，見 §5
 ```
 
-**共用但凍結的檔案**：`core/db.ts` 的 schema 已經定好（`items`／`understanding`／
-`items_fts`／`plans`／`file_journal`）。**要改 schema 一律先在群組講**，因為四個人都靠它。
-`core/guard.ts`／`watcher.ts`／`items.ts`／`config.ts` 同理 —— 有需求開 issue，不要直接改。
+**凍結、誰都不要動**：`core/db.ts`、`guard.ts`、`watcher.ts`、`items.ts`、`config.ts`、
+`facts.ts`、`validate.ts`、`schema/`。有需求開 issue，不要直接改。
 
 ---
 
-## 2 ・ 契約（**第一天就凍結，所有人照這個寫**）
+## 2 ・ 第一天要凍結的四樣東西（**只有四樣**）
 
-這一節是整份 spec 最重要的部分。契約定好，四個人可以完全平行動工，不用等彼此。
+第一版要凍三份 TypeScript 契約。這一版只需要這些，而且都不是程式碼介面：
 
-### 2.1　`core/proposal.ts`（A 寫，第一天就要 merge）
+### 2.1　`understanding.raw` 裡那一包 JSON 的形狀
+
+A 寫進去、B 讀出來。**兩邊各自定義自己的型別，不共用檔案。**
+
+```jsonc
+{
+  "doc_type": "scholarship",       // enum，11 種，見 SPEC-檔案與截圖.md §6
+  "category": "獎學金",             // enum，10 種，來自 guard.ts 的 CATEGORIES
+  "summary": "台大 115 學年度弱勢學生助學金申請公告",
+  "text": "（畫面上看得到的字。contains_secret 為 true 時是空字串）",
+  "tags": ["獎學金", "台大"],
+  "suggested_name": "台大弱勢助學金公告",   // 不含副檔名，B 會再過一次 guard.safeName
+  "contains_secret": false,
+  "events":       [{ "title": "說明會", "date": "2026-09-18", "time": "14:00", "evidence": "說明會：115 年 9 月 18 日…" }],
+  "tasks":        [{ "title": "備妥成績單", "due": "2026-09-30", "evidence": "2. 最近一學期成績單正本" }],
+  "missing_docs": [{ "what": "戶籍謄本", "why": "應繳文件第 1 項", "evidence": "1. 全戶戶籍謄本（三個月內）" }],
+  "facts":        [{ "key": "education[0].school", "value": "國立臺灣大學", "evidence": "國立臺灣大學 學務處生活輔導組" }]
+}
+```
+
+**A 保證**：寫進去的東西一定通過驗證 —— enum 合法、`facts[].key` 在 `factKeys.ts` 裡、
+**每一個 `evidence` 都真的出現在 `text` 裡**。驗不過的那一項會被丟掉，不會寫進去。
+
+**B 可以假設**：讀出來的 JSON 是乾淨的。但仍然要自己擋一次（防禦性，不是不信任 A）。
+
+### 2.2　`/inbox` 回應的樣子
+
+C 出一份 `docs/inbox-example.json`，**半小時的事**。C 整個開發期間都吃這份，
+不用等後端。B 與 C 各自照著它做，不用對接。
+
+### 2.3　`test/fixtures/`
+
+A 第一天產出，其他人一律吃這個：
+
+```
+test/fixtures/獎學金公告.png  ＋ .understanding.json     正常案例
+test/fixtures/發票.png        ＋ .understanding.json     另一種 doc_type
+test/fixtures/亂七八糟.png    ＋ .understanding.json     模型會答錯、應該被擋下來的那種
+```
+
+### 2.4　`core/server.ts` 掛載兩個 route module
+
+**這是唯一一次改 server.ts**，由 lead 在第一天做完，十行，之後誰都不碰：
 
 ```ts
-/** 模型的輸出。**沒有任何路徑欄位，這是刻意的。** */
-export type Proposal = {
-  doc_type: 'scholarship' | 'invoice' | 'receipt' | 'paper' | 'ticket'
-          | 'chat' | 'code' | 'webpage' | 'form' | 'certificate' | 'other'
-  category: (typeof CATEGORIES)[number]        // 來自 guard.ts，enum
-  summary: string                              // 一句話，人看的
-  text: string                                 // 畫面上看得到的字（contains_secret 時為空）
-  tags: string[]
-  suggested_name: string                       // 不含副檔名，會被 guard.safeName 洗
-  contains_secret: boolean
-  events:       { title: string; date: string; time?: string; evidence: string }[]
-  tasks:        { title: string; due?: string; evidence: string }[]
-  missing_docs: { what: string; why: string; evidence: string }[]
-  facts:        { key: string; value: string; evidence: string }[]
-}
-
-/** 成功與失敗都要講得出原因。不要用丟例外表示「模型講不清楚」。 */
-export type Result<T> =
-  | { ok: true; value: T; meta: { model: string; ms: number; tokens: number; repaired: boolean } }
-  | { ok: false; why: string; raw?: string }
-
-/** 驗證器。B、C 都可以直接用來擋壞資料。 */
-export function vetProposal(raw: unknown, ocrText: string): Result<Proposal>
+import { readRoutes } from './routes-read.ts'      // C
+import { writeRoutes } from './routes-write.ts'    // B
+// …在既有的三道鎖之後：
+if (await readRoutes(req, res, ctx)) return
+if (await writeRoutes(req, res, ctx)) return
 ```
 
-### 2.2　`core/plans.ts`（B 寫，第一天就要 merge 型別）
-
-```ts
-export type Op =
-  | { op: 'move';   from: string; to: string }
-  | { op: 'rename'; from: string; to: string }
-  | { op: 'fact';   key: string; value: string; evidence: string }   // 只 propose，不 confirm
-  | { op: 'event';  title: string; date: string; ics: string }       // 只產 .ics，不碰行事曆
-  | { op: 'task';   title: string; due?: string }                    // 這一版只顯示
-
-export type Plan = {
-  id: string; itemId: string; proposal: Proposal
-  ops: Op[]                       // **由程式從 proposal 組出來，模型碰不到**
-  status: 'proposed' | 'applied' | 'reverted' | 'dismissed'
-  createdAt: string; appliedAt?: string
-}
-
-export function planFor(item: Item, p: Proposal, cfg: Config): Plan
-export function apply(db, planId: string, skip: number[]): { done: number; skipped: number; failed: string[] }
-export function undo(db, planId: string): { reverted: number }
-```
-
-### 2.3　HTTP（C 寫，B 與 D 依賴）
-
-| 路由 | 方法 | 進 | 出 |
-|---|---|---|---|
-| `/inbox` | GET | `?status=proposed` | `{ items: [{ item, understanding, plan }] }` |
-| `/items/:id/file` | GET | — | 原檔（只服務 `items` 表裡的路徑，送出前再過一次 guard） |
-| `/items/:id/understand` | POST | — | 重新問一次模型 |
-| `/plans/:id/apply` | POST | `{ skip: number[] }` | `{ done, skipped, failed }` |
-| `/plans/:id/undo` | POST | — | `{ reverted }` |
-| `/plans/:id/dismiss` | POST | — | `{ ok: true }` |
-| `/search` | GET | `?q=&from=&to=` | `{ hits: [...] }` |
-| `/health` | GET | — | 加 `watching[]`、`pending`、`model`、`lastSeen` |
-
-### 2.4　假資料（**第一天就要有**，讓大家不用等彼此）
-
-A 負責在 `test/fixtures/` 放三份：
-
-```
-test/fixtures/獎學金公告.png        真的截圖
-test/fixtures/獎學金公告.proposal.json   對應的正確 Proposal
-test/fixtures/發票.png / .proposal.json
-test/fixtures/亂七八糟.png / .proposal.json   模型會答錯的那種
-```
-
-B、C、D 一律吃 fixture，不要等 A 的模型串好。
+`ctx` 帶 `{ db, config, items, facts }`。兩個 module 各自處理自己的路徑、
+認不得就回 `false` 讓下一個接手。
 
 ---
 
 ## 3 ・ 每個人的工作與驗收
 
-### A — 理解層
+### A — 看懂
 
-**為什麼這份最難**：實測顯示模型**不遵守 schema、而且會幻覺**。所以這一層的價值不在
-「呼叫 API」，在**「把不可信的輸出變成可信的資料」**。
+**為什麼這份最難**：實測顯示模型**不遵守 schema、而且會幻覺**
+（詳見 [reading/10](reading/10-參考過的開源專案.md) 第四節）。
+所以這一層的價值不在呼叫 API，在**把不可信的輸出變成可信的資料**。
 
-要做的：
-1. `core/prompt.ts` — 組 prompt；PDF 用 `pdftoppm` 轉前 N 頁 PNG（沒裝就標 `error`，不要硬撐）
-2. `core/understand.ts` — 一次 `fetch`，零依賴，逾時 60 秒，同 `sha256` 不重問
+1. `prompt.ts` — 組 prompt；PDF 用 `pdftoppm` 轉前 N 頁（沒裝就標 `error`，不要硬撐）
+2. `understand.ts` — 一次 `fetch`，零依賴，逾時 60 秒，同 `sha256` 不重問
 3. **容錯解析** — 剝 ` ```json ` 圍欄、抓第一個平衡的 `{...}`、修尾逗號
-4. **程式驗 schema** — enum 比對、key 白名單（`facts[].key` 不在 `factKeys.ts` 就丟掉那一項）、字串長度
-5. **證據查核（這條最重要）** — 每一個 `events`／`tasks`／`missing_docs`／`facts` 的
-   `evidence` 字串，**必須真的出現在 `text` 裡**（正規化後比對），對不上就丟掉那一項並記下來。
-   這是唯一擋得住幻覺的機制，而且免費。
-6. 驗不過就**重問一次**（把錯誤訊息帶回去），還是不行就 `error`，不要無限重試
+4. **程式驗 schema** — enum 比對、`facts[].key` 不在註冊表就丟掉那一項
+5. **證據查核（最重要）** — 每個 `evidence` 必須真的出現在 `text` 裡（正規化後比對），
+   對不上就丟掉那一項。**這是唯一擋得住幻覺的機制，而且免費。**
+6. 驗不過就**重問一次**（把錯誤帶回去），還是不行就寫 `items.status='error'`
 
-**驗收**：
-- 拿 `test/fixtures/` 的三張圖跑，第三張（會答錯的那張）**必須被擋下來**，不可以入庫
-- 故意餵一個 `evidence` 對不上的假回應，那一項要消失
-- 故意餵 ` ```json ` 圍欄、尾逗號、違反 enum 的值，三種都要救得回來或明確失敗
-- 零外部依賴；`node --test` 全綠
+**驗收**
+- 三張 fixture 跑過，第三張（會答錯的）**必須被擋下**，不可以寫進 `understanding`
+- 餵一個 `evidence` 對不上的假回應 → 那一項消失
+- 餵 ` ```json ` 圍欄、尾逗號、違反 enum 的值 → 三種都要救得回來或明確失敗
+- `node cli.mjs understand` 跑完，`understanding` 表有資料，`items.status` 變 `proposed`
 
-### B — 行動層
+### B — 動作
 
-要做的：
-1. `planFor()` — **目的地由程式組**。模型只給 `category` 與 `suggested_name`，
-   路徑是 `guard.destFor(category, safeName(...))` 算出來的。這條不可以妥協。
-2. 四個執行器，每個第一行檢查 `config.readonly`
+1. `plans.ts` — 從 `understanding.raw` 組出 Ops。**目的地由程式算**：
+   `guard.destFor(category, safeName(...))`。模型只給分類與檔名，**這條不可以妥協**
+2. `exec.ts` — 四個執行器，每個第一行檢查 `config.readonly`
 3. `journal.ts` — **先寫 journal 再動作**；復原是倒序重播
-4. 同名不覆蓋（`(2)`、`(3)`）；**整個專案不准出現 `unlink`／`rm`／`rmdir`**
-   （`test/repo.test.mjs` 會擋你）
+4. 同名不覆蓋（`(2)`、`(3)`）；**整個專案不准出現 `unlink`／`rm`／`rmdir`**（`test/repo.test.mjs` 會擋你）
 5. 搬完要 `items.setPath()`，不然資料庫指向不存在的路徑
+6. `fact` op 直接呼叫既有的 `Facts.propose()`（凍結的碼，不用等 D），
+   `source_kind` 用 `'file'`、`source_ref` 填檔名
 
-**驗收**：
-- 同意後檔案真的搬了、名字改了；**復原退回原位原名**
-- `CONTEXTBOX_READONLY=1` 跑一次，**一個檔案都沒動**（測試要斷言 mtime 沒變）
-- 目的地已經有同名檔 → 變成 `(2)`，舊的不被覆蓋
+**驗收**
+- 同意後檔案真的搬了、改名了；**復原退回原位原名**
+- `CONTEXTBOX_READONLY=1` 跑一次，**一個檔案都沒動**（斷言 mtime 沒變）
+- 目的地已有同名檔 → 變成 `(2)`，舊的不被覆蓋
 - 執行到一半丟例外 → 已完成的那幾步仍然可以復原
-- 餵一個 `suggested_name` 是 `../../.ssh/authorized_keys` 的 Proposal → 檔案落在 `Filed/其他/` 底下
+- 餵一個 `suggested_name` 是 `../../.ssh/authorized_keys` 的理解 → 檔案落在 `Filed/其他/` 底下
 
-### C — 介面層
+### C — 介面
 
-要做的：
-1. `server.ts` 的新路由（§2.3）。`/items/:id/file` 是新的攻擊面 —— **只認 item id，不接路徑**，送出前再過一次 `admit()`
+1. `routes-read.ts` — `/inbox`、`/search`、`/items/:id/file`。
+   最後一個是新的攻擊面：**只認 item id，不接路徑**，送出前再過一次 `admit()`
 2. `ui.html` 收件匣分頁：縮圖 ＋ 摘要 ＋ 逐列可取消的 ops ＋ `[全部同意]` `[略過]` ＋ 同意後變 `[復原]`
-3. **健康列**：正在看哪幾個資料夾、模型連不連得到、幾張待處理、監看有沒有在跑。
-   靜默失敗是這種工具最大的敵人。
-4. `search.ts` ＋ 搜尋分頁。**短詞（< 3 字）要走 LIKE** —— trigram 索引至少要三個字元，
-   不處理的話「發票」「收據」永遠搜不到。`LIKE` 記得 `ESCAPE`，不然打一個 `%` 會把整個資料庫倒出來。
-5. `items_fts` 的寫入要收斂成一個 `upsert`（先 DELETE 再 INSERT），現在沒有人負責寫
+3. **健康列**：看哪幾個資料夾、模型連不連得到、幾張待處理、監看有沒有在跑。
+   靜默失敗是這種工具最大的敵人
+4. `search.ts` ＋ 搜尋分頁。**短詞（< 3 字）走 LIKE** —— trigram 至少要三個字元，
+   不處理的話「發票」「收據」永遠搜不到。`LIKE` 記得 `ESCAPE`
+5. `items_fts` 的寫入收斂成一個 upsert（先 DELETE 再 INSERT）—— 現在沒有人負責寫
 
-**驗收**：
-- 端到端：開網頁 → 看到卡片 → 按同意 → 檔案真的動了 → 按復原 → 退回去
-- `/items/:id/file` 餵一個不在 `items` 裡的 id、餵路徑當 id，都要 403／404
-- 搜尋「發票」找得到；搜尋 `%`、`_`、`a-b`、`2026/09` 都不可以崩、不可以倒資料
-- 重跑一次理解，`items_fts` 不可以變成兩列
+**驗收**
+- 吃 `docs/inbox-example.json` 就能把整個畫面做完，**過程中不需要 A 或 B 交付任何東西**
+- `/items/:id/file` 餵不存在的 id、餵路徑當 id → 403／404
+- 搜尋「發票」找得到；`%`、`_`、`a-b`、`2026/09` 都不崩、不倒資料
+- 重跑一次理解，`items_fts` 不會變成兩列
 
-### D — 落地層
+### D — 平台
 
-要做的：
-1. `facts-bridge.ts` — `fact` op → `Facts.propose()`，`source_kind` 用一個**獨立的值**
-   （建議 `screenshot`），跟手填、履歷解析區隔開。手填頁要顯示「來自 xxx.png」。
-   **這條路的終點是擴充套件會把值填進真的網頁表單**，所以 UI 上不可以批次確認。
-2. 三個 OS 的薄層（右鍵「用 ContextBox 整理」→ `node cli.mjs propose "%1"`；
-   「在檔案總管顯示」）。**Windows 優先**，那是使用者真的在用的機器。
-3. `package.json`：`engines.node >= 24`、`scripts.test`。**不准加任何 dependency。**
-4. `README.md` 重寫（現在是黑克松筆記）＋ `INSTALL.md`
-5. 既有的 2 個擴充套件 todo：敏感欄位空值洩漏「我沒有這筆」、「成績」別名撞 key
+**完全不碰管線。** 做的是把已經上線的東西變成「裝得起來的產品」。
 
-**驗收**：
-- 一張在職證明截圖 → `work[].company` 候選 → 在手填頁按確認 → **擴充套件在測試表單填得出來**
-- Windows 上右鍵一個檔 → 收件匣出現卡片；搜尋結果按「顯示」→ 檔案總管跳出來選中它
-- 照 `INSTALL.md` 在一台乾淨的機器上裝起來，不用問任何人
+1. **Windows 右鍵選單優先** —— 那是使用者真的在用的機器。
+   `HKCU\Software\Classes\*\shell\ContextBox\command` → `node cli.mjs propose "%1"`
+2. Linux（Nautilus script）與 macOS（快速動作）
+3. 「在檔案總管顯示」：`explorer.exe /select,` ／ `open -R` ／ `nautilus --select`
+4. `package.json`：`engines.node >= 24`、`scripts.test`。**不准加任何 dependency**
+5. `INSTALL.md` — 一台乾淨的機器照著裝，不用問任何人
+6. 既有的 2 個擴充套件 todo：敏感欄位空值洩漏「我沒有這筆」、「成績」別名撞 key
+7. 手填頁顯示事實的來源（「來自 xxx.png」）—— 資料是 B 寫進去的，
+   但**那是既有的 `facts` 表**，D 不用等 B
+
+**驗收**
+- Windows 上右鍵一個檔 → `node cli.mjs list` 看得到它
+- 照 `INSTALL.md` 在乾淨機器上裝起來
 - `node --test test/*.test.mjs` 的 2 個 todo 變成 0
 
 ---
 
-## 4 ・ 依賴與順序
+## 4 ・ 依賴圖
 
 ```
-第 1 天   ── 所有人一起 ──
-          凍結契約：A 的 proposal.ts 型別、B 的 plans.ts 型別、C 的路由表
-          A 產出 test/fixtures/（三張圖 ＋ 三份正確答案）
-          ↓  之後完全平行
+第 1 天（半天）
+  lead   把 server.ts 的兩行掛載做掉
+  A      產出 test/fixtures/（三張圖 ＋ 三份答案）
+  C      產出 docs/inbox-example.json
+  ↓
 
-A ─────────────────────────────────▶ 理解層
-B ──── 吃 fixture ─────────────────▶ 行動層          兩者不需要等彼此
-C ──── 吃 fixture ＋ 假的 plans ───▶ 介面層
-D ──── 吃 fixture ─────────────────▶ 落地層
+A ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
+B ━━━ 吃 fixture ━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
+C ━━━ 吃 inbox-example.json ━━━━━━━━━━▶   全程不被擋
+D ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶   全程不被擋
 
-          ── 整合點 1（約第 4 天）──  A×B：真的 Proposal 進 planFor
-          ── 整合點 2（約第 6 天）──  B×C：真的 plan 進 UI
-          ── 整合點 3（約第 8 天）──  D×全部：裝起來，端到端一次
+唯一的整合點（最後幾天）
+  A×B   B 把 fixture 換成資料庫裡真的 understanding 列
+  B×C   C 把靜態 JSON 換成真的 /inbox
+  D     把全部裝起來，端到端跑一次
 ```
 
-**誰都不要等模型。** 模型那條線只有 A 碰，其他人一律吃 fixture。
+**跟第一版比**：整合點從三個（第 4、6、8 天）縮成**全部集中在最後**，
+而且任何一個人落後都不會擋住其他三個。
 
 ---
 
@@ -264,9 +246,11 @@ D ──── 吃 fixture ─────────────────�
 
 - **分支**：`feat/understand`、`feat/plans`、`feat/ui`、`feat/os`，從 `main` 開，PR 回 `main`
 - **一個 PR 只動自己 owner 的檔案。** 要動別人的，先在 PR 裡 @ 他
+- **唯一的共用檔是 `core/ui.html`**（C 做新分頁、D 改手填頁）。
+  兩人各自只碰自己的 `<section>`，先講好誰先 merge
 - **每個 PR 都要有測試**，而且測試要**驗過會失敗**（把修法拿掉，測試要變紅）
-- **merge 前跑 `audit-round`**（`.claude/skills/audit-round`）。這個 repo 的歷史證明
-  「我覺得修好了」有一半會被推翻 —— P0 那一輪 59 條發現裡，有 2 條是**修正自己引進的新問題**
+- **merge 前跑 `audit-round`**。這個 repo 的歷史證明「我覺得修好了」有一半會被推翻 ——
+  P0 那一輪 59 條發現裡，有 2 條是**修正自己引進的新問題**
 - 中文全形標點；註解寫「為什麼」不寫「做了什麼」
 
 ---
@@ -289,5 +273,5 @@ D ──── 吃 fixture ─────────────────�
 
 ## 7 ・ 不在這一輪（想做先講）
 
-桌面寵物、事件／任務真的外送到行事曆與 Todoist、向量語意搜尋、docx／pptx、
+桌面寵物、事件與待辦真的寫進行事曆與 Todoist、向量語意搜尋、docx／pptx、
 多機同步、對外開放的 MCP server。
