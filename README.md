@@ -62,7 +62,7 @@ node cli.mjs doctor     # 現在什麼狀況
 把截圖送給視覺模型 → 產出「搬到哪、改什麼名字、有什麼待辦」的提案 →
 你按一次同意 → 真的發生 → 按一次復原。
 
-規劃在 [SPEC-檔案與截圖.md](SPEC-檔案與截圖.md)，分工在 [SPEC-四人分工.md](SPEC-四人分工.md)。
+規劃在 [SPEC-檔案與截圖.md](docs/specs/檔案與截圖.md)，分工在 [SPEC-四人分工.md](docs/specs/四人分工.md)。
 
 ---
 
@@ -145,22 +145,24 @@ node cli.mjs list                    # 看收件匣
 ## 這個 repo 長什麼樣
 
 ```
-schema/     事實 key 註冊表（75 個 key）、欄位比對、值的正規化
 core/       事實庫、本機 server、手填頁、檔案管線（守門／監看／收件）
+schema/     事實 key 註冊表（75 個 key）、欄位比對、值的正規化
 extension/  Chrome MV3 擴充套件
 test/       194 個測試
-cli.mjs     檔案管線的命令列入口
-reading/    參考過的開源專案：抄了什麼、為什麼不抄
+cli.mjs     命令列入口
+docs/
+  specs/    三份 spec
+  api/      API 回應範例（C 可以直接當 mock）
+  reading/  參考過的開源專案：抄了什麼、為什麼不抄
 ```
 
-四份 spec：
+三份 spec：
 
 | | |
 |---|---|
-| [SPEC-實作計畫.md](SPEC-實作計畫.md) | **下一步做什麼**。M0～M4，以「使用者能做什麼」當里程碑 |
-| [SPEC-檔案與截圖.md](SPEC-檔案與截圖.md) | 檔案管線怎麼設計、借了哪些開源專案的形狀 |
-| [SPEC-四人分工.md](SPEC-四人分工.md) | 四個人怎麼平行做、邊界定在哪 |
-| [SPEC.md](SPEC.md) | 黑克松當天那版，沒有實作，留著當歷史 |
+| [SPEC-實作計畫.md](docs/specs/實作計畫.md) | **下一步做什麼**。M0～M4，以「使用者能做什麼」當里程碑 |
+| [SPEC-檔案與截圖.md](docs/specs/檔案與截圖.md) | 檔案管線怎麼設計、借了哪些開源專案的形狀 |
+| [SPEC-四人分工.md](docs/specs/四人分工.md) | 四個人怎麼平行做、邊界定在哪 |
 
 ---
 
@@ -179,7 +181,7 @@ node --test test/*.test.mjs
 3. **合併前跑一次獨立稽查**（`audit-round`）。這個 repo 的歷史證明「我覺得修好了」有一半會被推翻 ——
    檔案管線那一輪 59 條發現裡，有 2 條是修正自己引進的新問題。
 
-踩過的地雷寫在 [SPEC-四人分工.md](SPEC-四人分工.md) 第 6 節，不要再踩第二次。
+踩過的地雷寫在 [SPEC-四人分工.md](docs/specs/四人分工.md) 第 6 節，不要再踩第二次。
 
 ---
 

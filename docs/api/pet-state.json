@@ -1,0 +1,20 @@
+{
+  "state": "found",
+  "badge": 6,
+  "line": "我找到 6 個可以清掉的東西",
+  "detail": "大概可以空出 1.8 GB",
+  "planId": null,
+  "canUndo": false,
+  "lastPlanId": "p_2026091301",
+  "_states": [
+    "idle",
+    "watching",
+    "found",
+    "thinking",
+    "waiting",
+    "cleaning",
+    "happy",
+    "worried",
+    "undoable"
+  ]
+}

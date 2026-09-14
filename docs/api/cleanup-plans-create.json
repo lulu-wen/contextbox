@@ -1,0 +1,48 @@
+{
+  "id": "p_2026091301",
+  "status": "proposed",
+  "itemCount": 5,
+  "bytes": 1892340112,
+  "createdAt": "2026-09-13T08:42:00.000Z",
+  "items": [
+    {
+      "position": 1,
+      "candidateId": "c_7Qa",
+      "name": "report (1).pdf",
+      "skipped": false
+    },
+    {
+      "position": 2,
+      "candidateId": "c_8Bz",
+      "name": "ubuntu-26.04.iso.crdownload",
+      "skipped": false
+    },
+    {
+      "position": 3,
+      "candidateId": "c_9Cy",
+      "name": "新增文字文件.txt",
+      "skipped": false
+    },
+    {
+      "position": 4,
+      "candidateId": "c_1Dx",
+      "name": "NodeSetup-24.6.0.msi",
+      "skipped": false
+    },
+    {
+      "position": 5,
+      "candidateId": "c_2Ew",
+      "name": "素材包.zip",
+      "skipped": false
+    }
+  ],
+  "_request": {
+    "candidateIds": [
+      "c_7Qa",
+      "c_8Bz",
+      "c_9Cy",
+      "c_1Dx",
+      "c_2Ew"
+    ]
+  }
+}

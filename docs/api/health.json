@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "version": "0.1.0",
+  "db": {
+    "ok": true,
+    "busyRetries": 0
+  },
+  "watcher": {
+    "ok": true,
+    "lastHeartbeatAt": "2026-09-13T08:41:12.004Z",
+    "pid": 18442,
+    "watching": [
+      "Downloads"
+    ],
+    "seeded": 412
+  },
+  "quarantine": {
+    "items": 12,
+    "bytes": 480123456,
+    "oldestAt": "2026-09-06T02:11:00.000Z",
+    "canEmptyAt": "2026-09-13T02:11:00.000Z"
+  },
+  "pendingCandidates": 6,
+  "lastError": null
+}

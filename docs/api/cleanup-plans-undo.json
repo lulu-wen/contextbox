@@ -1,0 +1,37 @@
+{
+  "id": "p_2026091301",
+  "status": "restored",
+  "restored": 4,
+  "renamed": 1,
+  "failed": 0,
+  "restoredAt": "2026-09-13T08:45:02.000Z",
+  "items": [
+    {
+      "candidateId": "c_7Qa",
+      "name": "report (1).pdf",
+      "outcome": "restored"
+    },
+    {
+      "candidateId": "c_8Bz",
+      "name": "ubuntu-26.04.iso.crdownload",
+      "outcome": "restored"
+    },
+    {
+      "candidateId": "c_9Cy",
+      "name": "新增文字文件.txt",
+      "outcome": "restored"
+    },
+    {
+      "candidateId": "c_1Dx",
+      "name": "NodeSetup-24.6.0.msi",
+      "outcome": "restored"
+    },
+    {
+      "candidateId": "c_2Ew",
+      "name": "素材包.zip",
+      "outcome": "renamed",
+      "restoredAs": "素材包.zip.restored",
+      "why": "原本的位置已經有一個新的同名檔案，所以沒有覆蓋它"
+    }
+  ]
+}

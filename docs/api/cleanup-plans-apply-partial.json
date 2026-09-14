@@ -1,0 +1,41 @@
+{
+  "id": "p_2026091302",
+  "status": "partial",
+  "quarantined": 3,
+  "skipped": 1,
+  "failed": 1,
+  "bytesFreed": 2894,
+  "appliedAt": "2026-09-13T09:01:44.000Z",
+  "canUndo": true,
+  "note": "**搬到一半壞掉也要能復原已經搬成功的。** UI 不可以只畫成功的樣子。",
+  "items": [
+    {
+      "candidateId": "c_7Qa",
+      "name": "report (1).pdf",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_8Bz",
+      "name": "a.crdownload",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_9Cy",
+      "name": "空的.txt",
+      "outcome": "quarantined"
+    },
+    {
+      "candidateId": "c_1Dx",
+      "name": "Setup.msi",
+      "outcome": "skipped",
+      "why": "你取消了這一項"
+    },
+    {
+      "candidateId": "c_2Ew",
+      "name": "素材包.zip",
+      "outcome": "failed",
+      "why": "檔案正在被別的程式使用，這次沒搬成功。等一下再試一次。",
+      "code": "EBUSY"
+    }
+  ]
+}

@@ -6,7 +6,9 @@
  *   ①  掃描        deepQuery() 找出頁面上所有表單欄位（含 shadow DOM）
  *                  labelCandidates() 挖出可能的標籤文字
  *                  CB.matchField()   比對出 key
- *                  CBFill.isVisible() 看不見的在這裡就丟掉
+ *                  CBFill.maybeVisible() 只丟掉「確定看不見」的那些。
+ *                  在視窗外的欄位量不出有沒有被蓋住，但那不代表看不見——
+ *                  長表單第一屏底下那些一樣要有 plan、有標記、有自己的按鈕。
  *                       ↓
  *   ②  只送 key    keys = ['person.name.full', 'contact.email', ...]
  *                  chrome.runtime.sendMessage 交給 background.js
@@ -26,12 +28,14 @@
  *   ④  標記        每一格旁邊畫一個小標記，右下角面板統計六種各有幾格。
  *                  這時候還沒有任何值被填進頁面。
  *                       ↓
- *   ⑤  人按按鈕    「填入所有安全欄位」只填 action 是 fill 的；
- *                  pick 與 confirm-each-time 一定要按那一格自己的按鈕。
+ *   ⑤  人按按鈕    面板上那顆批次鈕只填「action 是 fill、而且現在真的在視窗裡」的，
+ *                  視窗外的欄位量不出遮擋，批次填下去就是 fail-open。
+ *                  視窗外的、pick 的、confirm-each-time 的，一律按那一格自己的按鈕。
  *                  每一個處理函式第一行都檢查 event.isTrusted，
  *                  網頁用程式合成的點擊一律不算數。
  *                       ↓
- *   ⑥  填之前再驗一次  欄位還在嗎、現在還看得見嗎、標籤還是同一個 key 嗎。
+ *   ⑥  填之前再驗一次  欄位還在嗎、現在 isVisible() 過不過、標籤還是同一個 key 嗎。
+ *                  掃描寬、動手嚴：掃描放過「量不出來」的，這一關不放過。
  *                  掃描到填入之間有好幾百毫秒，頁面完全清醒，可以掉包。
  *                       ↓
  *   ⑦  填          CBFill.formatFor → CBFill.setValue。填完讀回來比對。
@@ -240,7 +244,7 @@
    * 比對一個欄位，並且套上「寧可不填」的幾條政策。
    * 回 { def, layer, via, conflict, needsClick, dropped }
    *   dropped   認出來了但我們決定不承認（寫明原因，只進 console 不進頁面）
-   *   needsClick 認出來了，但要人點一下才填，不進「填入所有安全欄位」
+   *   needsClick 認出來了，但要人點一下才填，不進面板上那顆批次鈕
    */
   function matchOf(el) {
     const { texts, masked } = labelCandidates(el)
@@ -284,14 +288,21 @@
   function scan() {
     const seenRadio = new Map()             // 範圍（form 或 document）→ 已經看過的 name
     const fields = []
-    let hiddenSkipped = 0
+    let hiddenSkipped = 0                   // 只數「確定看不見」的，不要跟「還沒捲到」混在一起
 
     for (const el of deepQuery(document)) {
       if (el.closest('[data-cb]')) continue          // 不要掃到我們自己畫的東西
 
-      // 看不見的一律不算。不送去問、不標記、不填。
+      // 掃描階段用 maybeVisible()：只丟掉確定看不見的。
+      //
+      // 不能用 isVisible()。visibilityOf() 對「中心點落在視窗外」的欄位一律回 no
+      // （它量不出有沒有被東西蓋住，那一關 fail closed 是對的），
+      // 拿它來篩掃描結果的話，長表單第一屏底下的欄位會整批消失：
+      // 沒有 plan、沒有標記、沒有按鈕，人捲下去只看到一片空白。
+      // 掃描要寬、動手要嚴——真的要填的那一刻 verify() 會再要求一次 isVisible()。
+      //
       // 這一關要排在 radio 去重前面，不然整組的代表會被一個藏起來的選項佔走。
-      if (HAS_FILL && !CBFill.isVisible(el)) { hiddenSkipped++; continue }
+      if (HAS_FILL && !CBFill.maybeVisible(el)) { hiddenSkipped++; continue }
 
       // 同一組 radio 只算一格
       if (el.type === 'radio' && el.name) {
@@ -361,7 +372,9 @@
 
   let marks = []          // { field, node }
   let panel = null
+  let panelHandle = null  // 收起之後剩下的那顆把手。它才是唯一還會吃掉點擊的那一塊。
   let statusLine = null
+  let coveredByPanel = 0  // 幾格的標記怎麼擺都閃不開面板（面板那邊要講出來）
   let shots = []          // 填之前的快照，給「全部還原」用
   const secretValues = new Map()   // 敏感值只放在這裡，不進 DOM、不進 field 物件
 
@@ -369,12 +382,101 @@
     for (const m of marks) m.node.remove()
     marks = []
     if (panel) { panel.remove(); panel = null }
+    panelHandle = null
+    statusLine = null
+    coveredByPanel = 0
   }
 
+  const hitsBox = (a, b) =>
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+  const overlapArea = (a, b) =>
+    Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+    * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
+
+  /**
+   * 面板現在真的會吃掉點擊的那一塊（視窗座標，外加 6px 餘裕）。
+   * 展開時是整個面板；收起時只有那顆 28×28 的把手，外框是 pointer-events:none，
+   * 所以收起之後真的只剩那一小塊擋人。回 null 代表沒有東西擋著。
+   */
+  function blockerBox() {
+    const el = collapsed ? panelHandle : panel
+    if (!el || !el.isConnected) return null
+    const r = el.getBoundingClientRect()
+    if (r.width < 1 || r.height < 1) return null
+    // 留 6px：徽章貼著面板邊緣的話，滑鼠差幾 px 就會打到面板上的動作鈕
+    return { left: r.left - 6, top: r.top - 6, right: r.right + 6, bottom: r.bottom + 6 }
+  }
+
+  /**
+   * 標記擺哪裡。預設欄位右邊，但一定要閃開面板。
+   *
+   * 為什麼非閃不可：面板是 position:fixed、z-index 2147483647，蓋在最上層，
+   * 而它底下那一塊正好是「填入…安全欄位」那顆按鈕。表單只要置中，
+   * 欄位右邊的徽章就落在它底下——瞄準徽章的那一下會打到批次填入，
+   * 一次寫一批值進頁面。整個設計的前提是「填入一定是人針對那一格按下去的」，
+   * 版面重疊會直接把這個前提毀掉。
+   *
+   * 節點要先進 DOM 再呼叫這一支：要量它自己的寬高，才知道往哪一邊閃。
+   * 回 true 代表四個位置都閃不掉（欄位剛好在面板那個角落）。
+   */
   function place(node, el) {
     const r = el.getBoundingClientRect()
-    node.style.left = `${r.right + window.scrollX + 4}px`
-    node.style.top = `${r.top + window.scrollY}px`
+    const sx = window.scrollX, sy = window.scrollY
+    const put = (left, top) => {
+      node.style.left = `${left + sx}px`
+      node.style.top = `${top + sy}px`
+      return node.getBoundingClientRect()
+    }
+    const home = [r.right + 4, r.top]
+    let box = put(home[0], home[1])
+    const blocker = blockerBox()
+    if (!blocker || !hitsBox(box, blocker)) return false
+
+    // 依序試：欄位左邊（可能蓋到標籤，但點得到比較重要）→ 正上方 → 正下方
+    const w = box.width, h = box.height
+    const tries = [
+      [r.left - 4 - w, r.top],
+      [r.left, r.top - h - 2],
+      [r.left, r.bottom + 2],
+    ].filter(at => at[0] + sx >= 0 && at[1] + sy >= 0)
+
+    let best = { at: home, overlap: overlapArea(box, blocker) }
+    for (const at of tries) {
+      box = put(at[0], at[1])
+      if (!hitsBox(box, blocker)) return false
+      const o = overlapArea(box, blocker)
+      if (o < best.overlap) best = { at, overlap: o }
+    }
+    // 四個位置都被壓到：挑重疊最少的擺著，面板會告訴人「按收起就點得到」。
+    put(best.at[0], best.at[1])
+    return true
+  }
+
+  /** 全部重新對位。面板是 fixed 不跟著捲，所以捲動之後也要再跑一次。 */
+  function placeAll() {
+    let covered = 0
+    for (const m of marks) {
+      if (!m.field.el.isConnected) continue
+      if (place(m.node, m.field.el)) covered++
+    }
+    coveredByPanel = covered
+  }
+
+  /**
+   * 對位一次；被面板壓住的格數變了，就順手把面板那一行字也更新。
+   *
+   * 為什麼跑兩輪：面板多長出「有 N 格閃不開」那一行之後會變高，
+   * 有可能又多壓到一格。第二輪就收斂了（那一行已經在，只是數字變），
+   * 而且寫死兩輪，兩邊不會互相追著跑。paintPanel 自己不呼叫 reflow，
+   * 所以這裡也不會遞迴下去。
+   */
+  function reflow() {
+    for (let i = 0; i < 2; i++) {
+      const before = coveredByPanel
+      placeAll()
+      if (coveredByPanel === before || !panel || collapsed) return
+      paintPanel(lastFields)
+    }
   }
 
   const MARK_BASE = {
@@ -402,10 +504,19 @@
     if (action === 'fill') {
       if (field.needsClick) return button(field, '⚠ 兩邊說法不同，點了才填', C.pick,
         e => doFill(e, field, p.value, p.source))
-      const n = E('div', { ...MARK_BASE, background: C.ok, pointerEvents: 'none' },
-        `可填 · ${cut(field.defLabel || p.label || p.key, 14)}`)
-      n.title = '按右下角的「填入所有安全欄位」'
-      return n
+      // 每一格都給自己的按鈕，不是只給視窗外的那幾格。
+      //
+      // 以前這裡畫的是 pointerEvents:none 的死標記，面板卻寫著
+      // 「其餘等人捲過去、按那一格自己的按鈕」——那顆按鈕根本不存在。
+      // 批次鈕只碰視窗內的欄位（視窗外量不出遮擋，硬填就是 fail-open），
+      // 所以第一屏底下的欄位只剩這顆按鈕填得到。
+      //
+      // 也不要用「現在在不在視窗裡」去決定畫按鈕還是畫死標記：
+      // 標記畫下去之後人一捲就不準了，而標記不會自己重畫，那是個死角。
+      const b = button(field, `填入 · ${cut(field.defLabel || p.label || p.key, 14)}`, C.ok,
+        e => doFill(e, field, p.value, p.source))
+      b.title = '按這一顆只填這一格。右下角那顆批次鈕只會填當下在視窗裡的欄位。'
+      return b
     }
     if (action === 'pick') {
       return button(field, `選一筆（${(p.options || []).length}）▾`, C.pick,
@@ -459,29 +570,37 @@
     for (const f of fields) {
       const node = markNode(f)
       if (!node) continue
-      place(node, f.el)
+      // 先進 DOM 再定位：place() 要量這個節點自己的寬高，才知道往哪一邊閃開面板
       document.body.appendChild(node)
       marks.push({ field: f, node })
     }
+    placeAll()
   }
 
+  /**
+   * 只重畫一格。這裡只對位自己這一顆——三個呼叫端（doFill、doSensitive、
+   * fillSafe）後面都一定會再 reflow() 一次，被面板壓住的格數在那裡才重算。
+   * 在這裡跑 placeAll() 的話，fillSafe 一批填 N 格就會量 N×N 次版面。
+   */
   function repaintOne(field) {
     const m = marks.find(x => x.field === field)
     const node = markNode(field)
     if (m) {
       m.node.remove()
       if (!node) { marks = marks.filter(x => x !== m); return }
-      place(node, field.el)
       document.body.appendChild(node)
       m.node = node
     } else if (node) {
-      place(node, field.el)
       document.body.appendChild(node)
       marks.push({ field, node })
     }
+    if (node) place(node, field.el)
   }
 
   // ── 六、面板 ────────────────────────────────────────────────
+
+  /** 按了那一格的按鈕就真的會填東西的三種。 */
+  const ACTIONABLE = new Set(['fill', 'pick', 'confirm-each-time'])
 
   function countOf(fields) {
     const c = { fill: 0, pick: 0, 'confirm-each-time': 0, compose: 0, missing: 0, unknown: 0, filled: 0 }
@@ -494,10 +613,64 @@
   }
 
   let collapsed = false
+
+  /**
+   * 面板最後那一句話的正本。存字串，不要從 statusLine.textContent 讀回來——
+   * 面板一重畫（填完一格、收起、展開）節點就換人了，讀回來的是已經離開文件的舊節點。
+   */
+  let noteText = ''
+
   function paintPanel(fields, note) {
+    // note 沒給就沿用上一句。收起再展開不該把訊息弄丟。
+    if (note !== undefined && note !== null) noteText = note
     if (panel) panel.remove()
+    panel = null
+    panelHandle = null
+    statusLine = null
+
     const c = countOf(fields)
     const recognised = fields.filter(f => f.key).length
+    // 只有最上層才畫面板。之後 manifest 打開 all_frames 的話，
+    // 每個 iframe 都畫一個會很吵。
+    const onTop = window.top === window
+
+    if (collapsed) {
+      // 「收起」要真的收起來。
+      //
+      // 以前收起只是換掉內文：面板本體還是 width:300px（含 padding 共 332px）、
+      // position:fixed、z-index 2147483647，實測收起後仍然佔著 332×70.8。
+      // 落在那一塊的徽章照樣點不到——而收起分支印的那句話，正好在跟使用者保證
+      // 「收起來的時候不會擋到欄位旁邊的按鈕」。程式做不到的事不要寫在畫面上。
+      //
+      // 現在收起後只剩一顆 28×28 的把手：外框 pointer-events:none 完全不吃點擊，
+      // 只有把手自己是 auto。收起／展開之後 reflow() 會再對位一次，
+      // 剛剛被擠到旁邊的徽章會自己走回欄位右邊。
+      panel = E('div', {
+        position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647',
+        width: '28px', height: '28px', padding: '0', border: '0',
+        background: 'transparent', boxShadow: 'none', pointerEvents: 'none',
+      })
+      const alerts = alertText()
+      panelHandle = E('button', {
+        width: '28px', height: '28px', padding: '0', borderRadius: '6px',
+        border: `1px solid ${C.line}`, background: C.bg,
+        color: alerts ? C.warn : C.fg, cursor: 'pointer', pointerEvents: 'auto',
+        font: '13px ui-monospace, SFMono-Regular, monospace', lineHeight: '1',
+      }, alerts ? '⚠' : '▣')
+      panelHandle.type = 'button'
+      panelHandle.title = `ContextBox：認出 ${recognised} 格，已收起。點我展開。`
+        + (alerts ? '\n' + alerts : '')
+      panelHandle.addEventListener('click', e => {
+        if (!e.isTrusted) return
+        e.preventDefault(); e.stopPropagation()
+        collapsed = false
+        paintPanel(lastFields)
+        reflow()
+      })
+      panel.appendChild(panelHandle)
+      if (onTop) document.body.appendChild(panel)
+      return
+    }
 
     panel = E('div', {
       position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647',
@@ -507,8 +680,9 @@
       lineHeight: '1.7', textAlign: 'left',
     })
 
-    // 面板是 300px 寬、蓋在最上層的。表單只要置中，欄位右邊的徽章就會被它蓋住，
-    // 點下去完全沒反應——不是報錯，是點擊被面板吃掉。所以一定要能收起來。
+    // 面板 300px 寬（含 padding 332px）、蓋在最上層。表單只要置中，
+    // 欄位右邊的徽章就會落在它底下，點下去不是沒反應，是打到面板上的按鈕。
+    // 兩道處理：place() 讓徽章閃開它，這顆「收起」讓面板真的縮成一顆把手。
     const head = E('div', { display: 'flex', justifyContent: 'space-between',
       alignItems: 'center', gap: '8px', marginBottom: '2px' })
     head.appendChild(E('div', { fontWeight: '600' }, 'ContextBox'))
@@ -516,23 +690,18 @@
       background: 'transparent', border: `1px solid ${C.line}`, color: C.dim,
       borderRadius: '4px', cursor: 'pointer', padding: '1px 7px',
       font: '11px ui-monospace, monospace', pointerEvents: 'auto',
-    }, collapsed ? '展開' : '收起')
+    }, '收起')
     fold.type = 'button'
+    fold.title = '收起之後只剩右下角一顆 28×28 的小把手，其他地方都點得到。'
     fold.addEventListener('click', e => {
       if (!e.isTrusted) return
       e.preventDefault(); e.stopPropagation()
-      collapsed = !collapsed
-      paintPanel(fields, note)
+      collapsed = true
+      paintPanel(lastFields)
+      reflow()
     })
     head.appendChild(fold)
     panel.appendChild(head)
-
-    if (collapsed) {
-      panel.appendChild(E('div', { color: C.dim },
-        `認出 ${recognised} 格。收起來的時候不會擋到欄位旁邊的按鈕。`))
-      document.body.appendChild(panel)
-      return
-    }
 
     panel.appendChild(E('div', { color: C.dim, marginBottom: '8px' },
       `這一頁 ${fields.length} 格，認出 ${recognised} 格`))
@@ -551,6 +720,25 @@
     row('要生成（這一版不填）', c.compose, '#B8A3E0')
     row('庫裡沒有', c.missing, C.warn)
     row('認不出來', c.unknown, C.dim)
+
+    // 「還在視窗外」跟「確定看不見」是兩件事，分開講。
+    // 這些格子掃到了、標記跟按鈕也畫了，只是批次填入不碰它們。
+    // 只數真的按了就會填的那三種；missing／compose 捲過去也沒得填，
+    // 算進來的話這句話就在講一件做不到的事。
+    const waiting = HAS_FILL
+      ? fields.filter(f => f.plan && ACTIONABLE.has(f.plan.action)
+          && f.state !== 'filled' && !CBFill.inViewport(f.el)).length
+      : 0
+    if (waiting) {
+      panel.appendChild(E('div', { color: C.dim, marginTop: '6px' },
+        `其中 ${waiting} 格還在視窗外：捲過去，按那一格旁邊的按鈕就會填。`
+        + '（批次填入只碰視窗裡的：視窗外量不出有沒有被蓋住。）'))
+    }
+    if (coveredByPanel) {
+      panel.appendChild(E('div', { color: C.warn, marginTop: '6px' },
+        `有 ${coveredByPanel} 格的標記怎麼擺都閃不開這塊面板。按上面的「收起」，`
+        + '面板只剩一顆小把手，那幾格就點得到了。'))
+    }
 
     // 鐵則，寫在人看得到的地方
     panel.appendChild(E('div', {
@@ -574,23 +762,116 @@
       return b
     }
     const safe = fields.filter(f => f.plan && f.plan.action === 'fill' && !f.needsClick && f.state !== 'filled')
-    if (safe.length) bar.appendChild(mkBtn(`填入所有安全欄位（${safe.length}）`, C.ok, e => fillSafe(e, fields)))
-    if (shots.length) bar.appendChild(mkBtn('全部還原', '#4A3A3A', e => undoAll(e, fields)))
+    // 按鈕上的數字只能算「現在真的在視窗裡」的那幾格——fillSafe() 也只填這些。
+    // 寫 safe.length 的話，按鈕會宣稱要填 8 格、實際只填 3 格。
+    // fill.js 沒載入的話一格都填不了，那就不要放一顆按了不會有事的按鈕。
+    const now = HAS_FILL ? safe.filter(f => CBFill.inViewport(f.el)) : []
+    if (now.length) {
+      bar.appendChild(mkBtn(`填入視窗內的安全欄位（${now.length}）`, C.ok, e => fillSafe(e, lastFields)))
+    }
+    if (shots.length) bar.appendChild(mkBtn('全部還原', '#4A3A3A', e => undoAll(e, lastFields)))
     if (bar.children.length) panel.appendChild(bar)
 
-    statusLine = E('div', { color: C.dim, marginTop: '8px', whiteSpace: 'pre-wrap' },
-      note || (c.fill || c.pick || c['confirm-each-time']
-        ? '敏感欄位跟要選的欄位，請按那一格旁邊的按鈕。'
-        : ''))
+    statusLine = E('div', { color: C.dim, marginTop: '8px', whiteSpace: 'pre-wrap' })
     panel.appendChild(statusLine)
+    renderNote(c)
 
-    // 只有最上層才畫面板。之後 manifest 打開 all_frames 的話，
-    // 每個 iframe 都畫一個會很吵。
-    if (window.top === window) document.body.appendChild(panel)
+    if (onTop) document.body.appendChild(panel)
+    keepMenuOnTop()
   }
 
-  function say(text) {
-    if (statusLine) statusLine.textContent = text
+  /**
+   * 「選一筆」的選單跟面板都是 z-index 2147483647，平手的時候後進 DOM 的在上面。
+   * 選單是後開的，所以本來在上面；但面板只要在選單開著的時候重畫一次
+   * （捲動後 reflow、收起時的警示），就換成面板壓在選單上——
+   * 那等於人以為在選一筆，實際點到的是面板上的批次鈕。跟徽章那一條是同一個坑。
+   */
+  function keepMenuOnTop() {
+    if (openedMenu && openedMenu.isConnected) document.body.appendChild(openedMenu)
+  }
+
+  /**
+   * 面板最後那一段 = 狀態訊息 ＋ 守衛警示，一次寫完。
+   *
+   * 不要分兩次寫。say() 就是 textContent = text，是覆蓋不是附加：
+   * 以前敏感欄位那一條是先 say(⚠ 攔下 N 次) 再 say(填好了…)，
+   * 第二句把警示整個洗掉，最需要告警的那一格反而是唯一不會告警的。
+   */
+  function renderNote(c) {
+    if (!statusLine) return
+    const counts = c || countOf(lastFields)
+    const base = noteText || ((counts.fill || counts.pick || counts['confirm-each-time'])
+      ? '敏感欄位跟要選的欄位，請按那一格旁邊的按鈕。'
+      : '')
+    const alerts = alertText()
+    statusLine.textContent = base + (alerts ? (base ? '\n\n' : '') + alerts : '')
+    statusLine.style.color = alerts ? C.warn : C.dim
+  }
+
+  /**
+   * urgent 的訊息（沒填成功、守衛警示）在面板收起時要自己展開：
+   * 收起之後只剩一顆 28×28 的把手，這種話寫不下，而安靜吞掉更糟。
+   * 填成功就不吵人——那一格的標記自己會變成「已填」。
+   */
+  function say(text, urgent) {
+    noteText = text
+    if (collapsed && (urgent || alertText())) {
+      collapsed = false
+      paintPanel(lastFields)
+      reflow()
+      return
+    }
+    renderNote()
+  }
+
+  // ── 六之二、守衛的回報 ──────────────────────────────────────
+  //
+  // CBFill.guardSubmits 在 fn 結束之後還會多守幾秒（linger）：頁面只要把送出
+  // 延後一拍（setTimeout、rAF、MutationObserver）就繞過去了，而那時候值都填好了。
+  // 那段期間攔到的，fn 早就回來了，回傳值上的數字也已經被讀走——
+  // 只有 onBlocked 講得出來。所以三處填入路徑都要把這份 opts 傳進去。
+  let guardBlocked = 0
+  let guardBlind = false
+
+  function alertText() {
+    const out = []
+    if (guardBlocked > 0) {
+      out.push(`⚠ 這一頁在你按送出之前就自己試著送出表單，我至少攔下 ${guardBlocked} 次。`
+        + '這不是正常行為，這一頁要小心。')
+    }
+    if (guardBlind) {
+      out.push('⚠ 這一頁把我的送出防線關掉了（我自己發的探針事件收不回來）。'
+        + '填進去的值隨時可能被送走，我攔不住。')
+    }
+    return out.join('\n')
+  }
+
+  /**
+   * 為什麼面板只敢說「至少」N 次：fill.js 的守衛是共用的。
+   * 兩次填入的 linger 期重疊時，onBlocked 給的 count 是同一個計數器的累計，
+   * 相加會把同一次攔截算兩遍；守衛全部拆掉之後再開一組，count 又從 0 重新算，
+   * 取最大值則會少算。兩種都量不準，那就不要假裝這是精確值。
+   */
+  const guardOpts = {
+    onBlocked(count, info) {
+      const n = Number.isFinite(count) ? count : guardBlocked + 1
+      if (n > guardBlocked) guardBlocked = n
+      console.warn('[ContextBox] 攔下一次這一頁自己發動的送出：', info)
+      // linger 期間攔到的，面板上那句話早就寫完了。重寫同一句，把警示接上去。
+      say(noteText, true)
+    },
+  }
+
+  /**
+   * guardSubmits 的回傳值也要接一次：blind 只有這裡拿得到。
+   * 用 === true 比，是因為契約說它是 boolean；拿到別的形狀
+   * （欄位不存在、或回了一個物件）代表兩邊協定對不上，
+   * 那要修的是協定，不是在這裡猜它想講什麼。
+   */
+  function noteGuard(g) {
+    if (!g) return
+    if (Number.isFinite(g.blocked) && g.blocked > guardBlocked) guardBlocked = g.blocked
+    if (g.blind === true) guardBlind = true
   }
 
   // ── 七、填入 ────────────────────────────────────────────────
@@ -603,6 +884,13 @@
     if (!field.el.isConnected) return '這一格已經不在頁面上了'
     if (HAS_FILL) {
       const v = CBFill.visibilityOf(field.el)
+      // measurable === false：在視窗外，量不出有沒有東西蓋在上面。
+      // 那不等於看不見，但也絕對不能當成看得見就填——所以照樣不填，
+      // 只是要講對原因：叫人把它捲進畫面再按一次，而不是說「這一格被藏起來了」。
+      // 嚴格比 false：拿不到這個欄位時是 undefined，那要走下面那句通用訊息。
+      if (!v.ok && v.measurable === false) {
+        return '還沒完全捲進視窗，量不出有沒有東西蓋在上面。把它捲到畫面中間再按一次'
+      }
       if (!v.ok) return `這一格現在${v.why}`
     }
     const now = matchOf(field.el)
@@ -636,19 +924,20 @@
 
   async function doFill(e, field, value, source) {
     if (e && !e.isTrusted) return
-    // 三條填入路徑（批次、選一筆、敏感）都要走同一道守衛。
-    // 以前只有批次有，等於最該保護的那兩條反而沒防線。
+    // 三條填入路徑（批次、選一筆、敏感）都要走同一道守衛，
+    // 而且都要把 onBlocked 傳進去——不然 linger 期間攔到的沒人講得出來。
     const g = await CBFill.guardSubmits(() => {
       try { return applyValue(field, value) }
       catch (err) { return { ok: false, why: '填的時候出錯：' + ((err && err.message) || err) } }
-    })
-    const r = g.value
+    }, guardOpts)
+    noteGuard(g)
+    const r = (g && g.value) || { ok: false, why: '守衛沒有把填入結果交回來' }
     field.filledFrom = source || '事實庫'
     repaintOne(field)
-    say((r.ok
+    // 攔截次數與 blind 由 renderNote() 接在同一段字後面，這裡不要再寫第二句。
+    say(r.ok
       ? `填好了：${field.defLabel}${r.note ? '（' + r.note + '）' : ''}`
-      : `${field.defLabel} 沒填成功：${r.why}`)
-      + (g.blocked ? `　⚠ 這一頁想趁機送出表單，被我攔下 ${g.blocked} 次。` : ''))
+      : `${field.defLabel} 沒填成功：${r.why}`, !r.ok)
     refreshPanel()
   }
 
@@ -697,14 +986,18 @@
     const g = await CBFill.guardSubmits(() => {
       try { return applyValue(field, res.value) }
       catch (err) { return { ok: false, why: '填的時候出錯：' + ((err && err.message) || err) } }
-    })
-    const r = g.value
-    if (g.blocked) say(`⚠ 這一頁想趁機送出表單，被我攔下 ${g.blocked} 次。`)
+    }, guardOpts)
+    noteGuard(g)
+    const r = (g && g.value) || { ok: false, why: '守衛沒有把填入結果交回來' }
     field.filledFrom = (p && p.source) || '事實庫'
     repaintOne(field)
+    // 一句話講完。以前這裡是先 say(⚠ 攔下 N 次) 再 say(填好了…)，
+    // 而 say() 是 textContent = text，第二句把警示整個洗掉——
+    // 最需要告警的那一格（身分證）反而變成唯一不會告警的。
+    // 現在攔截與 blind 統一由 renderNote() 接在同一段字後面。
     say(r.ok
       ? `填好了：${field.defLabel}。這是敏感資料，填進去這一頁的程式就讀得到，不用等你按送出。`
-      : `${field.defLabel} 沒填成功：${r.why}`)
+      : `${field.defLabel} 沒填成功：${r.why}`, !r.ok)
     refreshPanel()
   }
 
@@ -758,7 +1051,7 @@
   async function fillSafe(e, fields) {
     if (!e.isTrusted) return                    // 頁面假造的點擊不算數
     // 只碰現在真的看得到的欄位。可見性檢查對視窗外的一律回「量不出來」，
-    // 硬填就等於 fail-open。捲到的時候按那一格自己的按鈕即可。
+    // 硬填就等於 fail-open。視窗外的那些每一格都有自己的按鈕，捲過去按就行。
     const all = fields.filter(f =>
       f.plan && f.plan.action === 'fill' && !f.needsClick && f.state !== 'filled')
     const targets = all.filter(f => CBFill.inViewport(f.el))
@@ -778,19 +1071,19 @@
         else failed.push(`${f.defLabel}：${r.why}`)
         repaintOne(f)
       }
-    })
+    }, guardOpts)
+    noteGuard(guarded)
 
     const guessed = fields.filter(f => f.state === 'filled' && f.filledNote).length
+    // 攔截次數與 blind 不寫在這一段裡：renderNote() 會接在後面。
+    // 寫在這裡的話，一來同一件事講兩遍，二來 linger 期間才攔到的這裡還不知道。
     paintPanel(fields,
       `填好 ${ok} 格` +
       (guessed ? `，其中 ${guessed} 格有推算或提醒（把滑鼠移到標記上看）` : '') +
-      (offscreen ? `\n另外 ${offscreen} 格在視窗外沒填。捲過去再按那一格旁邊的按鈕。` : '') +
+      (offscreen ? `\n另外 ${offscreen} 格在視窗外沒填。捲過去按那一格旁邊的「填入」鈕。` : '') +
       (failed.length ? `\n沒填成功 ${failed.length} 格：\n・${failed.join('\n・')}` : '') +
-      (guarded.blocked
-        ? `\n\n⚠ 這一頁試著在你按送出之前就自己送出表單 ${guarded.blocked} 次，我攔下來了。`
-          + '這不是正常行為，這一頁要小心。'
-        : '') +
       '\n檢查一下，沒問題再自己按送出。')
+    reflow()
   }
 
   function undoAll(e, fields) {
@@ -799,12 +1092,13 @@
     for (const f of fields) { f.state = null; f.filledNote = null; f.filledFrom = null }
     paintMarks(fields)
     paintPanel(fields, `還原了 ${n} 格。敏感欄位要重新掃描才能再填一次。`)
+    reflow()
   }
 
-  /** 面板重畫，但把剛剛那句狀態訊息留著 */
+  /** 面板重畫。那一句狀態訊息留在 noteText 裡，不從 DOM 讀回來。 */
   function refreshPanel() {
-    const note = statusLine ? statusLine.textContent : ''
-    paintPanel(lastFields, note)
+    paintPanel(lastFields)
+    reflow()
   }
 
   // ── 八、跑起來 ──────────────────────────────────────────────
@@ -819,6 +1113,9 @@
     lastFields = fields
     shots = []
     secretValues.clear()
+    // 重掃 = 重新認識這一頁。上一輪的攔截統計不要繼續掛在新的一輪上。
+    guardBlocked = 0
+    guardBlind = false
 
     const dropped = fields.filter(f => f.dropped)
     if (dropped.length) {
@@ -836,7 +1133,8 @@
     clearPaint()
     if (!recognised.length) {
       paintMarks(fields)
-      paintPanel(fields, hiddenSkipped ? `另外跳過 ${hiddenSkipped} 個看不見的欄位。` : '')
+      paintPanel(fields, scanNote(hiddenSkipped))
+      reflow()
       return lastSummary
     }
 
@@ -851,6 +1149,7 @@
       paintMarks(fields)
       paintPanel(fields, `問不到事實庫：${error}\n`
         + '先確認本機的 ContextBox 有在跑，然後在擴充套件的設定頁貼上鑰匙。')
+      reflow()
       return lastSummary
     }
 
@@ -863,8 +1162,21 @@
     secretValues.clear()
 
     paintMarks(fields)
-    paintPanel(fields, hiddenSkipped ? `另外跳過 ${hiddenSkipped} 個看不見的欄位。` : '')
+    paintPanel(fields, scanNote(hiddenSkipped))
+    reflow()
     return lastSummary
+  }
+
+  /**
+   * 掃描完那一句。「確定藏起來」跟「只是還沒捲到」要分開講：
+   * 混在一起數的話，長表單會顯示「跳過 20 個看不見的欄位」，
+   * 但那 20 格其實好端端地在第一屏底下，而且我們也確實掃了、也畫了按鈕。
+   * 「還在視窗外」那一句由面板自己算（人捲一捲數字就變了，寫死在這裡會過期）。
+   */
+  function scanNote(hiddenSkipped) {
+    return hiddenSkipped
+      ? `另外跳過 ${hiddenSkipped} 個確定看不見的欄位（藏起來、0 尺寸或被蓋住的）。`
+      : ''
   }
 
   // 同時只跑一次掃描。popup 連按兩下、或載入時剛好又收到訊息，
@@ -875,14 +1187,12 @@
     return running
   }
 
-  // 版面變了標記就會跑掉，重新對位一次
+  // 版面變了標記就會跑掉；面板是 fixed 不跟著捲，本來安全的標記捲一捲
+  // 就鑽到面板底下了。兩種情況都要重新對位（reflow 會順便閃開面板）。
   let rePos = null
-  window.addEventListener('resize', () => {
-    clearTimeout(rePos)
-    rePos = setTimeout(() => {
-      for (const m of marks) if (m.field.el.isConnected) place(m.node, m.field.el)
-    }, 150)
-  })
+  const reposition = () => { clearTimeout(rePos); rePos = setTimeout(reflow, 120) }
+  window.addEventListener('resize', reposition)
+  window.addEventListener('scroll', reposition, { passive: true, capture: true })
   document.addEventListener('click', e => {
     if (openedMenu && !openedMenu.contains(e.target)) closeMenu()
   }, true)

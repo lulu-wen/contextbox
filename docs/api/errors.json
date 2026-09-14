@@ -1,0 +1,39 @@
+{
+  "_說明": "每一種錯誤長什麼樣。error 給人看，code 給程式判斷。",
+  "400": {
+    "error": "candidateIds 要是一個字串陣列。",
+    "code": "BAD_BODY"
+  },
+  "401": {
+    "error": "token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。",
+    "code": "BAD_TOKEN"
+  },
+  "403": {
+    "error": "網頁不能直接讀這個。",
+    "code": "FORBIDDEN"
+  },
+  "404": {
+    "error": "找不到這個 plan。",
+    "code": "NOT_FOUND"
+  },
+  "409_applied": {
+    "error": "這個 plan 已經套用過了，不會再搬一次。",
+    "code": "PLAN_ALREADY_APPLIED"
+  },
+  "409_young": {
+    "error": "隔離區裡最舊的東西還不到七天，先不能清空。",
+    "code": "QUARANTINE_TOO_YOUNG"
+  },
+  "409_confirm": {
+    "error": "清空隔離區要再確認一次，請帶 confirm。",
+    "code": "CONFIRM_REQUIRED"
+  },
+  "413": {
+    "error": "送來的資料太大了。",
+    "code": "BODY_TOO_LARGE"
+  },
+  "500": {
+    "error": "後端出錯了，這一步沒有動到任何檔案。",
+    "code": "INTERNAL"
+  }
+}
