@@ -10,7 +10,7 @@ import {
   realpathSync,
   closeSync,
 } from 'node:fs'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { DENY_DIRS, DENY_FILES } from './guard.ts'
 import {
@@ -249,10 +249,24 @@ function upsertFile(db: DatabaseSync, f: InspectedFile, sha256: string | null, s
   return db.prepare(`SELECT * FROM file_items WHERE path=?`).get(f.real) as CleanupFileItem
 }
 
+function knownFormsOf(path: string): string[] {
+  const forms = [path, resolve(path)]
+  try { forms.push(join(realpathSync(dirname(path)), basename(path))) } catch { /* 父資料夾也不見了就算了 */ }
+  return [...new Set(forms)]
+}
+
 function markPathMissing(db: DatabaseSync, path: string, nowIso: string) {
+  const forms = knownFormsOf(path)
+  const placeholders = forms.map(() => '?').join(',')
   waitForDb(() => db.prepare(
-    `UPDATE file_items SET status='missing', error='檔案不見了', last_seen_at=? WHERE path=?`
-  ).run(nowIso, path))
+    `UPDATE file_items SET status='missing', error='檔案不見了', last_seen_at=?
+     WHERE path IN (${placeholders})`
+  ).run(nowIso, ...forms))
+  waitForDb(() => db.prepare(
+    `UPDATE cleanup_candidates SET status='dismissed'
+     WHERE status='proposed'
+       AND item_id IN (SELECT id FROM file_items WHERE path IN (${placeholders}))`
+  ).run(...forms))
 }
 
 function upsertCandidate(db: DatabaseSync, itemId: string, draft: CleanupCandidateDraft, nowIso: string): CleanupCandidate {

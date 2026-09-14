@@ -36,7 +36,7 @@ describe('cleanup rules', () => {
     const rows = classifyByRules({
       path: '/Downloads/tool.dmg',
       bytes: 123,
-      mtimeMs: ago(40),
+      mtimeMs: ago(100),
       nowMs: now,
     })
     assert.deepEqual(kinds(rows), ['installer', 'old-download'])
