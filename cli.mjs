@@ -16,8 +16,34 @@ import { admit } from './core/guard.ts'
 import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
 import { Items } from './core/items.ts'
+import { listCandidates, healthSnapshot } from './core/cleanup-routes.ts'
+import { scanDownloads } from './core/cleanup-scanner.ts'
 import { existsSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { basename, resolve, join } from 'node:path'
+import { homedir } from 'node:os'
+
+const QUARANTINE = process.env.CONTEXTBOX_QUARANTINE ?? join(homedir(), '.contextbox', 'quarantine')
+
+/**
+ * 離開碼是契約（docs/cli.md）：
+ *   0 成功，**包含「沒有東西要清」** —— 那代表 Downloads 很乾淨，不是失敗
+ *   1 使用者輸入錯
+ *   2 後端錯
+ *   3 部分失敗
+ */
+const EXIT = { ok: 0, badInput: 1, backend: 2, partial: 3 }
+
+const mb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+  : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'
+
+/** 清單上那一列長什麼樣。每一列都要有原因 —— 沒有原因就不該出現。 */
+function printCandidate(c) {
+  const box = c.defaultChecked ? '✔' : '☐'
+  const where = c.subdir ? `${c.folder}/${c.subdir}` : c.folder
+  say(`  [${c.itemId.slice(0, 4)}] ${box} ${c.name}`)
+  say(`         ${mb(c.bytes).padStart(8)}  ${c.kind}  ${where}`)
+  for (const r of c.reasons) say(`         · ${r.reason}（${r.evidence}）`)
+}
 
 const [, , cmd, ...args] = process.argv
 
@@ -143,6 +169,16 @@ switch (cmd) {
       say(`監看      ✗ 行程還在，但最後一次心跳是 ${beatAgo}，看起來卡住了。`)
     } else say(`監看      ✓ ${beatAgo}還活著（pid ${beatPid}）`)
 
+    const h = healthSnapshot(db, { roots: config.watch, quarantine: QUARANTINE })
+    say(`隔離區    ${QUARANTINE}`)
+    say(`          ${h.quarantine.items} 個檔案，${(h.quarantine.bytes / 1048576).toFixed(1)} MB`
+      + (h.quarantine.items
+        ? (h.quarantine.canEmptyNow ? '，現在可以清空' : `，最舊的還不到七天`)
+        : ''))
+    say(`待清候選  ${h.pendingCandidates} 個`
+      + (h.needsHuman ? `，另外 ${h.needsHuman} 個讀不到` : ''))
+    say('')
+
     const last = items.lastSeen()
     say(`最後收到  ${last ? `${ago(last)}（${last}）` : '還沒收過任何東西'}`)
     say('')
@@ -218,6 +254,78 @@ switch (cmd) {
     break
   }
 
+  case 'pet': {
+    showProblems()
+    const { start } = await import('./core/server.ts')
+    const { ready, token, port: want } = start()
+    const port = await ready
+    say(`ContextBox 在 http://127.0.0.1:${port}`)
+    say(`寵物與清理面板：http://127.0.0.1:${port}/　（鑰匙已經幫你帶好了）`)
+    say('')
+    say(`正在看：${config.watch.map(basename).join('、')}`)
+    say(`隔離區：${QUARANTINE}`)
+    say('按 Ctrl+C 停止。')
+    process.on('SIGINT', () => { say('\n停了。'); process.exit(0) })
+    setInterval(() => {}, 1 << 30)
+    break
+  }
+
+  case 'cleanup': {
+    showProblems()
+    const sub = args[0]
+
+    if (sub === 'scan') {
+      let r
+      try {
+        r = scanDownloads({ db, roots: config.watch, maxBytes: config.maxBytes })
+      } catch (e) {
+        warn('掃描出錯：' + e.message)
+        process.exitCode = EXIT.backend
+        break
+      }
+      say(`掃了 ${r.scanned} 個檔案，${r.candidates} 個可以清。`)
+      if (r.skipped) say(`${r.skipped} 個還在變動，這次跳過。`)
+      // 讀不到的檔案**不算掃描失敗** —— 掃描的工作是更新資料庫，那件事成功了。
+      // 它們已經記成 status=error，在 list 裡看得到。回非 0 會讓每晚 smoke 一直紅。
+      if (r.errors) say(`${r.errors} 個讀不到，用 cleanup list 看是哪些。`)
+      if (r.truncated) warn('⚠ 檔案太多，這次只掃了前面那些。把監看範圍縮小。')
+      break
+    }
+
+    if (sub === 'list' || sub === undefined) {
+      const r = listCandidates(db, { roots: config.watch })
+      if (!r.total && !r.needsHuman.length) {
+        // 沒東西要清是**成功**，不是失敗
+        const scanned = db.prepare(`SELECT count(*) n FROM file_items`).get().n
+        say(scanned
+          ? '沒有東西需要清，Downloads 很乾淨。'
+          : '還沒掃過。先跑 `node cli.mjs cleanup scan`。')
+        break
+      }
+      if (r.total) {
+        say(`有 ${r.total} 個可以清掉的東西，大概 ${mb(r.bytes)}\n`)
+        for (const c of r.candidates) { printCandidate(c); say('') }
+        const checked = r.candidates.filter(c => c.defaultChecked).length
+        say(`☐ 的預設不清。cleanup apply 會清掉打勾的 ${checked} 個。`)
+      }
+      if (r.needsHuman.length) {
+        say(`\n另外 ${r.needsHuman.length} 個需要你自己看一眼：`)
+        for (const h of r.needsHuman) say(`  ${h.name}　${mb(h.bytes)}　—— ${h.why}`)
+      }
+      break
+    }
+
+    if (['apply', 'undo', 'quarantine', 'dismiss'].includes(sub)) {
+      warn(`cleanup ${sub} 還沒做好。`)
+      process.exitCode = EXIT.backend
+      break
+    }
+
+    warn(`不認得 cleanup ${sub ?? ''}。可以用：scan、list`)
+    process.exitCode = EXIT.badInput
+    break
+  }
+
   case 'list': {
     showProblems()
     const status = args[0]
@@ -273,9 +381,12 @@ switch (cmd) {
     say(`ContextBox —— 檔案與截圖管線
 
   node cli.mjs doctor            這台機器現在什麼狀況
-  node cli.mjs propose <檔案>...  手動收一個檔案
+  node cli.mjs pet               啟動寵物與清理面板
+  node cli.mjs cleanup scan      掃一次 Downloads
+  node cli.mjs cleanup list      看有什麼可以清
   node cli.mjs watch             常駐監看
-  node cli.mjs list [狀態]        看收件匣（狀態：new/ignored/proposed/applied/error）
+  node cli.mjs propose <檔案>...  手動收一個檔案
+  node cli.mjs list [狀態]        看收件匣
   node cli.mjs search <詞>        全文搜尋
 
 設定檔在 ${CONFIG_PATH}`)

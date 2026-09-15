@@ -2,24 +2,28 @@
   "ok": true,
   "version": "0.1.0",
   "db": {
-    "ok": true,
-    "busyRetries": 0
+    "ok": true
   },
   "watcher": {
-    "ok": true,
-    "lastHeartbeatAt": "2026-09-13T08:41:12.004Z",
-    "pid": 18442,
+    "ok": false,
+    "lastHeartbeatAt": null,
+    "pid": null,
     "watching": [
+      "Screenshots",
       "Downloads"
     ],
-    "seeded": 412
+    "why": "從來沒跑過"
   },
   "quarantine": {
     "items": 12,
     "bytes": 480123456,
     "oldestAt": "2026-09-06T02:11:00.000Z",
-    "canEmptyAt": "2026-09-13T02:11:00.000Z"
+    "canEmptyAt": "2026-09-13T02:11:00.000Z",
+    "canEmptyNow": true
   },
   "pendingCandidates": 6,
-  "lastError": null
+  "needsHuman": 1,
+  "lastError": null,
+  "facts": 42,
+  "_註": "watching 只有資料夾的顯示名，沒有完整路徑。這個端點不需要 token，所以裡面不可以有檔名。"
 }

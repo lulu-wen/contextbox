@@ -24,6 +24,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { open, DEFAULT_DB } from './db.ts'
 import { Facts } from './facts.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
+import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
+import { scanDownloads } from './cleanup-scanner.ts'
+import { load as loadConfig } from './config.ts'
+import { join } from 'node:path'
 
 export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
   ?? `${homedir()}/.contextbox/token`
@@ -56,10 +60,16 @@ function uiHtml(token: string): string {
     .replaceAll('__TOKEN__', JSON.stringify(token).replace(/</g, '\\u003c'))
 }
 
-export function start(opts: { port?: number; db?: string; token?: string } = {}) {
+export function start(opts: { port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string } = {}) {
   const port = opts.port ?? 7391
   const token = opts.token ?? loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
+
+  // 清理那條線要看哪些資料夾、隔離區放哪。只算一次。
+  const cfg = loadConfig().config
+  const cleanupRoots = opts.roots ?? cfg.watch
+  const cleanupMaxBytes = cfg.maxBytes
+  const QUARANTINE = opts.quarantine ?? join(homedir(), '.contextbox', 'quarantine')
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -150,7 +160,12 @@ export function start(opts: { port?: number; db?: string; token?: string } = {})
     }
 
     if (url.pathname === '/health') {
-      return send(200, { ok: true, facts: F.list('confirmed').length })
+      // 加上清理那條線的狀態。裡面只有計數與資料夾的**顯示名**，
+      // 沒有檔名也沒有路徑，所以放在 token 之前沒關係。
+      return send(200, {
+        ...healthSnapshot(F.db, { roots: cleanupRoots, quarantine: QUARANTINE }),
+        facts: F.list('confirmed').length,
+      })
     }
     // 鎖 2：其他全部要 token
     if (!sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)) {
@@ -166,6 +181,13 @@ export function start(opts: { port?: number; db?: string; token?: string } = {})
       : {}
 
     try {
+      // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
+      if (cleanupRoutes({
+        db: F.db, roots: cleanupRoots, quarantine: QUARANTINE,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => scanDownloads({ db: F.db, roots: cleanupRoots, maxBytes: cleanupMaxBytes }),
+      })) return
+
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。
       if (url.pathname === '/schema' && req.method === 'GET') {
         return send(200, {
