@@ -6,7 +6,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -637,4 +637,61 @@ test('undo 只列真的放回去的，數字跟行數要對得上', t => {
   const lines = (out.match(/↩/g) ?? []).length
   assert.equal(lines, n, `說放回去 ${n} 個，卻列了 ${lines} 行：\n${out}`)
   assert.doesNotMatch(out, /↩ a\.zip/, 'a.zip 根本沒被搬走，不可以說它被放回去了')
+})
+
+describe('剛動過的檔不搬 —— 但要說實話', () => {
+  test('**什麼都沒改的新檔不可以被說成「已變更」**', t => {
+    // 一個剛 cp 出來的重複檔會撞到十分鐘的靜置窗。
+    // 訊息如果是「檔案已變更，請重新掃描」，那是在說謊：什麼都沒變，
+    // 而且使用者照做（重新掃描）也沒用 —— 重掃之後它還是一樣新。
+    const f = fixture(t, {})
+    writeFileSync(join(f.downloads, '報告.pdf'), 'SMOKE 報告')
+    writeFileSync(join(f.downloads, '報告 (1).pdf'), 'SMOKE 報告')
+    f.scan()
+    const p = createPlan(f.db)
+    const r = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
+
+    assert.equal(r.code, 200, '逐項失敗不是路由錯誤')
+    assert.equal(r.body.quarantinedCount, 0)
+    const why = f.db.prepare('SELECT error FROM file_items WHERE error IS NOT NULL').get().error
+    assert.doesNotMatch(why, /已變更/, `什麼都沒改卻說已變更：${why}`)
+    assert.match(why, /十分鐘|等一下/, `要說得出真正的原因與該怎麼辦：${why}`)
+  })
+
+  test('撥回兩小時之後就搬得動 —— 確認擋的只是「太新」', t => {
+    const f = fixture(t, {})
+    for (const n of ['報告.pdf', '報告 (1).pdf']) {
+      writeFileSync(join(f.downloads, n), 'SMOKE 報告')
+      const old = (Date.now() - 2 * 3600_000) / 1000
+      utimesSync(join(f.downloads, n), old, old)
+    }
+    f.scan()
+    const p = createPlan(f.db)
+    const r = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
+    assert.equal(r.body.status, 'applied', JSON.stringify(r.body))
+    assert.equal(r.body.quarantinedCount, 1, '重複的那一份要被搬走')
+    assert.ok(existsSync(join(f.downloads, '報告 (1).pdf'))
+           || existsSync(join(f.downloads, '報告.pdf')), '**一定要留下一份**')
+  })
+
+  test('TOO_FRESH 對到 409 —— 等一下重試會成功，不是 500', () => {
+    assert.equal(statusFor('TOO_FRESH'), 409)
+  })
+
+  test('smoke 文件裡每個垃圾檔都要往回撥時間', () => {
+    // 十分鐘的靜置窗會讓任何剛建立的檔搬不動。
+    // 文件漏了 touch 的話，照著做的人會在第 3 步撞牆，而且錯不在程式。
+    const md = readFileSync(join(REPO, 'test/smoke-cleanup.md'), 'utf8')
+    const bash = /```bash\ncd ~\/Downloads\n([\s\S]*?)```/.exec(md)?.[1] ?? ''
+    assert.ok(bash, '找不到 smoke 的建檔區塊')
+    // 抓出每個被建立的垃圾檔（smoke-* 與截圖），確認後面有 touch
+    const created = [...bash.matchAll(/^(?:printf|:)[^>]*>\s*'?([^\s']+(?:\s[^']*)?)'?$/gm)]
+      .map(m => m[1].trim()).filter(n => n.startsWith('smoke-') || n.startsWith('Screenshot'))
+    const touched = bash.slice(0, bash.indexOf('### 順便放三個'))
+    for (const name of created) {
+      // 那三個「不可以被碰」的本來就該是新的，不在這個區塊裡
+      assert.ok(touched.includes(`touch -d`) && new RegExp(`touch -d[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(touched),
+        `${name} 沒有 touch -d，照著做會搬不動`)
+    }
+  })
 })

@@ -705,6 +705,8 @@ export const HTTP_FOR_CODE: Record<string, number> = {
   // 「沒東西可清」對 HTTP 是狀態；對 CLI 是**成功**（見 cli.mjs 的離開碼）
   EMPTY_PLAN: 409,
   TOO_RECENT: 409,
+  // 檔案十分鐘內還在變動。等一下重試就會成功，所以是狀態不是錯誤。
+  TOO_FRESH: 409,
   // 唯讀模式是權限拒絕，不是格式錯
   READ_ONLY: 403,
   // 語意就是為「你少做了前一步」設計的

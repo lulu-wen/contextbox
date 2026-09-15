@@ -38,8 +38,11 @@ node cli.mjs doctor
 cd ~/Downloads
 
 # duplicate —— 同 sha256 兩份，另一份還在
+# **兩個都要往回撥時間。** 十分鐘內動過的檔一律不搬（防「還在寫入」），
+# 不撥的話這一步一定失敗，而且錯不在程式。
 printf 'SMOKE 這是一份報告的內容\n' > smoke-report.pdf
 cp smoke-report.pdf 'smoke-report (1).pdf'
+touch -d '2 hours ago' smoke-report.pdf 'smoke-report (1).pdf'
 
 # partial —— 下載到一半，而且 24 小時沒變
 printf 'SMOKE 半個檔\n' > smoke-big.iso.crdownload
@@ -66,12 +69,21 @@ printf 'SMOKE 假截圖\n' > 'Screenshot 2026-01-02 141203.png'
 touch -d '120 days ago' 'Screenshot 2026-01-02 141203.png'
 ```
 
+> **為什麼每一個垃圾檔都要往回撥時間？**
+> 搬檔前會檢查「這個檔十分鐘內有沒有被動過」—— 有的話就不搬，因為下載器、
+> 解壓縮、編輯器的暫存寫入都會在幾秒內連續改同一個檔，搬一個正在被寫的檔
+> 會讓那個程式的 fd 指向舊 inode，資料靜靜消失。
+> 所以**剛建立的檔一定搬不動**，那是對的行為，不是 bug。
+> 訊息會說「這個檔案十分鐘內還在變動，先不搬」。
+
 **Windows（PowerShell）** 的 `touch -d` 對應寫法：
 
 ```powershell
 cd $env:USERPROFILE\Downloads
 "SMOKE 這是一份報告的內容" | Out-File -Encoding utf8 smoke-report.pdf
 Copy-Item smoke-report.pdf "smoke-report (1).pdf"
+(Get-Item smoke-report.pdf).LastWriteTime = (Get-Date).AddHours(-2)
+(Get-Item "smoke-report (1).pdf").LastWriteTime = (Get-Date).AddHours(-2)
 "SMOKE 半個檔" | Out-File -Encoding utf8 smoke-big.iso.crdownload
 (Get-Item smoke-big.iso.crdownload).LastWriteTime = (Get-Date).AddDays(-3)
 New-Item smoke-empty.txt -ItemType File -Force | Out-Null

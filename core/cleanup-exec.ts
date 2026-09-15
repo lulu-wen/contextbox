@@ -103,12 +103,27 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
   return target
 }
 
+/**
+ * 檔案要「靜置」多久才肯搬。
+ *
+ * 防的是「還在寫入」—— 下載器、解壓縮、編輯器的暫存寫入都會在幾秒內
+ * 連續改同一個檔。搬一個正在被寫的檔會讓那個程式的 fd 指向舊 inode，
+ * 資料靜靜消失。
+ */
+export const SETTLE_MS = 10 * 60_000
+
 function verifySnapshot(item: PlanSnapshot, opts: ExecOptions): Fingerprint {
   const path = originalPath(item.path, opts)
   const f = fingerprint(path, opts.maxBytes)
-  if (f.size !== item.bytes || f.mtime !== item.mtime || (item.sha256 && f.sha256 !== item.sha256)
-      || Date.now() - Date.parse(f.mtime) < 10 * 60_000) {
+  if (f.size !== item.bytes || f.mtime !== item.mtime || (item.sha256 && f.sha256 !== item.sha256)) {
     throw new CleanupError('CHANGED', '檔案已變更或仍在下載，請重新掃描並建立計畫。')
+  }
+  // **靜置不是「變更」，要分開講。**
+  // 併在一起的話，一個剛複製出來、什麼都沒動過的重複檔會得到
+  // 「檔案已變更」—— 訊息在說謊，而使用者唯一能做的事（重新掃描）也沒用，
+  // 因為重掃之後它還是一樣新。正確的指示是「等一下再試」。
+  if (Date.now() - Date.parse(f.mtime) < SETTLE_MS) {
+    throw new CleanupError('TOO_FRESH', '這個檔案十分鐘內還在變動，先不搬。等一下再試一次。')
   }
   return f
 }
