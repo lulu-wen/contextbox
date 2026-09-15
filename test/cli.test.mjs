@@ -209,3 +209,37 @@ describe('設定有問題的時候每個指令都要講', () => {
     }
   })
 })
+
+describe('cleanup 的離開碼契約', () => {
+  // 離開碼是三個作業系統右鍵選單的契約，而 cleanup 這三條一條都沒被守著。
+  test('沒東西可清是成功（0），不是失敗', () => {
+    const r = run('cleanup', 'list')
+    assert.equal(r.code, 0, `回了 ${r.code}：「乾淨」被當成錯誤的話，每晚 smoke 會一直紅`)
+    assert.match(r.out, /乾淨|還沒掃過/)
+  })
+
+  test('掃到讀不到的檔還是 0 —— 掃描的工作是更新資料庫，那件事成功了', () => {
+    const bad = join(watchDir, '讀不到.bin')
+    writeFileSync(bad, 'x'.repeat(200))
+    const r = run('cleanup', 'scan')
+    assert.equal(r.code, 0)
+    rmSync(bad, { force: true })
+  })
+
+  test('後端壞掉是 2，不是 1 —— 1 是在說「你打錯了」', () => {
+    const broken = join(root, 'broken.db')
+    writeFileSync(broken, 'this is not a sqlite file at all')
+    const r = spawnSync(process.execPath, [CLI, 'cleanup', 'list'], {
+      encoding: 'utf8',
+      env: { ...process.env, CONTEXTBOX_CONFIG: cfgPath, CONTEXTBOX_DB: broken },
+    })
+    assert.equal(r.status, 2, `回了 ${r.status}`)
+    const out = (r.stdout ?? '') + (r.stderr ?? '')
+    assert.ok(!/ {4}at /.test(out), '不要噴 Node 堆疊給使用者')
+  })
+
+  test('不認得的子指令是 1（輸入錯）', () => {
+    const r = run('cleanup', '亂打的東西')
+    assert.equal(r.code, 1)
+  })
+})

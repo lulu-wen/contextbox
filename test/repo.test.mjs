@@ -57,3 +57,29 @@ describe('只搬不刪', () => {
     assert.deepEqual(offenders, [], '正式程式碼不可以刪檔案')
   })
 })
+
+test('docs/api 的範例不可以有真實絕對路徑', () => {
+  // 這些檔是從真的程式輸出產生的，產生腳本跑在誰的機器上就會帶誰的家目錄。
+  // C 會把它們當 mock 端出來，也會進 git 歷史。
+  const dir = join(REPO, 'docs', 'api')
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.json'))) {
+    const s = readFileSync(join(dir, f), 'utf8')
+    for (const bad of [/\/home\/(?!alice\b)[a-z0-9_-]+/i, /\/Users\/(?!alice\b)[a-z0-9_-]+/i,
+                       /C:\\Users\\(?!Alice\b)/i, /\/tmp\/claude/, /\/var\/folders\//]) {
+      assert.ok(!bad.test(s), `${f} 裡有真實路徑：${s.match(bad)?.[0]}`)
+    }
+  }
+})
+
+test('不帶 token 的 health 範例不可以有資料夾名或錯誤原文', () => {
+  const lean = JSON.parse(readFileSync(join(REPO, 'docs/api/health.json'), 'utf8'))
+  const full = JSON.parse(readFileSync(join(REPO, 'docs/api/health-with-token.json'), 'utf8'))
+  assert.deepEqual(lean.watcher.watching, [])
+  assert.ok(full.watcher.watching.length > 0, '帶 token 那份要真的示範有值的樣子')
+  assert.equal(lean.watcher.pid, null)
+  // 兩份的欄位集合要一模一樣 —— C 拿 lean 做 UI，少一個鍵就是一個 undefined
+  const keys = (o) => Object.keys(o).sort().join(',')
+  assert.equal(keys(lean), keys(full))
+  assert.equal(keys(lean.watcher), keys(full.watcher))
+  assert.equal(keys(lean.quarantine), keys(full.quarantine))
+})

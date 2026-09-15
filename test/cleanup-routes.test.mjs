@@ -7,12 +7,18 @@
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
+import { randomUUID } from 'node:crypto'
+import { CLEANUP_RULE_VERSION } from '../core/cleanup-rules.ts'
 import { open } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
-import { listCandidates, healthSnapshot, DEFAULT_CHECK_MIN, KIND_CONFIDENCE } from '../core/cleanup-routes.ts'
+import { listCandidates, healthSnapshot, humanError, displayPath, META,
+         cleanupRoutes, invalidateQuarantineCache, canEmptyNow,
+         DEFAULT_CHECK_MIN, KIND_CONFIDENCE, CLEANUP_KINDS } from '../core/cleanup-routes.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -99,18 +105,20 @@ describe('A1b 新增 kind 不可以靜悄悄變成預設勾', () => {
       installer: true, archive: true,
       'old-download': false, 'screenshot-noise': false,
     }
-    const seen = new Set()
-    for (const [kind, want] of Object.entries(EXPECTED)) {
-      const conf = KIND_CONFIDENCE[kind]
-      assert.ok(conf !== undefined, `${kind} 在 cleanup-rules.ts 裡找不到信心值`)
-      assert.equal(conf >= DEFAULT_CHECK_MIN, want,
-        `${kind}（${conf}）的預設勾選狀態跟規格對不上`)
-      seen.add(kind)
-    }
-    for (const kind of Object.keys(KIND_CONFIDENCE)) {
-      assert.ok(seen.has(kind),
+    // **真值來源是 cleanup-rules.ts 匯出的 CLEANUP_KINDS**，不是用探針反推。
+    // 第一版用一組寫死的探針輸入跑分類器來湊出這張表，結果新規則沒有
+    // 對應探針就完全不會出現 —— 這道防線看不到自己看不到的東西。
+    // 稽查實測：加一條 55 分的新規則，23 條測試全綠。
+    for (const kind of CLEANUP_KINDS) {
+      assert.ok(kind in EXPECTED,
         `cleanup-rules.ts 多了一個 kind「${kind}」，但沒有人決定過它要不要預設勾。` +
         '請在這條測試的 EXPECTED 裡補上，並在 spec 第 5 節的表補一列。')
+      assert.equal(KIND_CONFIDENCE[kind] >= DEFAULT_CHECK_MIN, EXPECTED[kind],
+        `${kind}（${KIND_CONFIDENCE[kind]}）的預設勾選狀態跟規格對不上`)
+    }
+    for (const kind of Object.keys(EXPECTED)) {
+      assert.ok(CLEANUP_KINDS.includes(kind),
+        `EXPECTED 裡的「${kind}」在 cleanup-rules.ts 已經不存在了，請一起刪掉`)
     }
   })
 })
@@ -186,9 +194,10 @@ describe('A4 保護副檔名', () => {
 
   test('保護副檔名 + 低信心 → 不勾', () => {
     put('很舊的合約.pdf', { days: 200 })
-    const c = byName(scanAndList(), '很舊的合約.pdf')
-    // spec：老檔規則本來就排除保護副檔名，所以這個檔要嘛不出現、要嘛不勾
-    if (c) assert.equal(c.defaultChecked, false)
+    // 原本寫成 `if (c) assert...`，而 c 永遠是 undefined ——
+    // 條件斷言等於一個斷言都沒跑。改成斷言真正該成立的事。
+    assert.equal(byName(scanAndList(), '很舊的合約.pdf'), undefined,
+      '保護副檔名不該被低信心規則挑中，連出現都不該出現')
   })
 })
 
@@ -232,16 +241,21 @@ describe('B 路徑不可以外洩到 UI', () => {
 
   test('讀不到的檔案也不可以把路徑洩漏出去', () => {
     put('x.zip', { days: 60 })
+    // **這條原本是假綠的。** 第一版塞的 error 是「權限不足」——
+    // 那個字串本來就沒有路徑，所以斷言不可能失敗。
+    // 真實的 fs 錯誤長這樣，原文裡有完整路徑。
+    const realFsError = `EACCES: permission denied, open '${join(dl, 'private', '機密.pdf')}'`
     db.prepare(
       `INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status,error)
        VALUES (?,?,?,?,?,?,?,?,?,?)`
     ).run('bad1', join(dl, 'private', '機密.pdf'), '機密.pdf', '.pdf', 100,
           new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
-          'error', '權限不足')
+          'error', realFsError)
     const r = listCandidates(db, { roots: [dl] })
 
     assert.ok(!JSON.stringify(r).includes(dl), '錯誤項目把路徑帶出來了')
     assert.ok(r.needsHuman.some(x => x.name === '機密.pdf'), '讀不到的檔要讓使用者知道')
+    assert.equal(r.needsHuman[0].why, '沒有權限讀這個檔案', '要換成人話，不是吐原文')
   })
 })
 
@@ -353,3 +367,460 @@ describe('性質：路徑永遠不外洩（結構化隨機）', () => {
 })
 
 function sepOf(p) { return p.includes('\\') ? '\\' : '/' }
+
+// ── 稽查抓到的四個 blocker，每個一條釘子 ────────────────────
+describe('B1 隔離區的七天保護窗', () => {
+  test('**剛搬進來的舊檔不可以馬上就能清空**', () => {
+    // mv／rename 會保留 mtime。用 mtime 算七天的話，一個 200 天沒動的 zip
+    // 一搬進隔離區，canEmptyAt 已經是過去式 —— 七天反悔期等於不存在。
+    // 而這個工具的目標客群就是「很久沒動的舊檔」。
+    const q = join(root, 'q' + n)
+    mkdirSync(q, { recursive: true })
+    const f = join(q, '舊檔.zip')
+    writeFileSync(f, 'x')
+    const old = (Date.now() - 200 * DAY) / 1000
+    utimesSync(f, old, old)              // mtime 調成 200 天前，ctime 還是現在
+
+    const h = healthSnapshot(db, { roots: [dl], quarantine: q })
+    assert.equal(h.quarantine.items, 1)
+    assert.equal(h.quarantine.canEmptyNow, false,
+      '剛搬進來就能清空的話，七天反悔期形同虛設')
+    // **要釘住真正的長度，不是只斷言「在未來」。**
+    // 只斷言在未來的話，把 SEVEN_DAYS 改成 7000 毫秒也會過 —— 突變實測 0 紅。
+    // 七天保留期是這個產品唯一的安全承諾，那個數字要有測試守著。
+    const gap = Date.parse(h.quarantine.canEmptyAt) - Date.parse(h.quarantine.lastQuarantinedAt)
+    assert.equal(gap, 7 * DAY, `保留期是 ${gap / DAY} 天，不是七天`)
+    assert.ok(Date.parse(h.quarantine.canEmptyAt) > Date.now() + 6 * DAY,
+      '剛搬進來的話，至少還要等六天以上')
+  })
+
+  test('空的隔離區不算「可以清空」', () => {
+    const q = join(root, 'empty-q' + n)
+    mkdirSync(q, { recursive: true })
+    const h = healthSnapshot(db, { roots: [dl], quarantine: q })
+    assert.equal(h.quarantine.canEmptyNow, false)
+  })
+
+  test('算不出隔離時間就當不能清（fail closed）', () => {
+    const h = healthSnapshot(db, { roots: [dl], quarantine: join(root, '不存在') })
+    assert.equal(h.quarantine.canEmptyNow, false)
+    assert.equal(h.quarantine.canEmptyAt, null)
+  })
+})
+
+describe('B2 錯誤原文不可以直通到 UI', () => {
+  test('每一種 fs 錯誤都換成人話，而且不含路徑', () => {
+    const cases = [
+      ["EACCES: permission denied, open '/home/u/Downloads/薪資單.pdf'", '沒有權限讀這個檔案'],
+      ["ENOENT: no such file or directory, stat '/home/u/Downloads/x.zip'", '這個檔案已經不在了'],
+      ["EBUSY: resource busy or locked, rename '/home/u/a' -> '/home/u/b'", '這個檔案正在被別的程式使用'],
+      ['某個沒看過的錯誤 /home/u/secret.pdf', '讀不到這個檔案'],
+      [null, '讀不到這個檔案'],
+    ]
+    for (const [raw, want] of cases) {
+      const got = humanError(raw)
+      assert.equal(got, want)
+      assert.ok(!got.includes('/'), `換完還有路徑：${got}`)
+    }
+  })
+})
+
+describe('B4 信心打平時，卡片標題要穩定', () => {
+  test('同一批輸入重跑十次，kind 與 reasons 順序都一樣', () => {
+    // 原本 tie-break 用 candidate id（UUID），兩條 35 分的規則
+    // 每次重掃會隨機挑一個當標題，UI 上會亂跳（實測 12 次 6:6）。
+    const seen = new Set()
+    for (let i = 0; i < 10; i++) {
+      const d = open(':memory:')
+      const now = new Date().toISOString()
+      d.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
+                 VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run('i1', '/r/Screenshot x.png', 'Screenshot x.png', '.png', 10, now, now, now, 'candidate')
+      for (const k of ['old-download', 'screenshot-noise']) {
+        d.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)`)
+          .run(randomUUID(), 'i1', k, CLEANUP_RULE_VERSION, 35, 'r', 'e', 'proposed', now)
+      }
+      const c = listCandidates(d, { roots: ['/r'] }).candidates[0]
+      seen.add(c.kind + '|' + c.reasons.map(x => x.kind).join(','))
+    }
+    assert.equal(seen.size, 1, `重掃之間不穩定，出現了 ${seen.size} 種順序：${[...seen].join(' / ')}`)
+  })
+})
+
+// ── 第二批稽查抓到的 ─────────────────────────────────────────
+describe('舊版規則的候選不可以還活著', () => {
+  test('**調降信心要真的生效**', () => {
+    // scanner 只清當前 rule_version 的候選，舊版本的 proposed 列會永久活著。
+    // 讀取層不過濾的話，max 取的是「這個檔歷史上拿過的最高分」——
+    // 調降信心這個動作永遠不會有效果。
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('i1', join(dl, 'a.zip'), 'a.zip', '.zip', 10, now, now, now, 'candidate')
+    const ins = (id, ver, conf) => db.prepare(
+      `INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`).run(id, 'i1', 'archive', ver, conf, 'r', 'e', 'proposed', now)
+    ins('old', 'cleanup-rules-v0', 65)               // 舊版，高分
+    ins('new', CLEANUP_RULE_VERSION, 45)             // 現行版，已經調降到門檻以下
+
+    const c = listCandidates(db, { roots: [dl] }).candidates[0]
+    assert.equal(c.confidence, 45, '要用現行版的信心，不是歷史最高分')
+    assert.equal(c.defaultChecked, false, '調降到門檻以下就不該再預設勾')
+    assert.equal(c.reasons.length, 1, '同一個 kind 不可以因為版本不同出現兩次')
+    assert.deepEqual(c.candidateIds, ['new'], '舊版的 id 不可以被送去 apply')
+  })
+})
+
+describe('讀不到的檔不可以同時出現在兩區', () => {
+  test('status=error 的檔不進候選清單', () => {
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status,error)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('i1', join(dl, 'x.zip'), 'x.zip', '.zip', 10, now, now, now, 'error', 'EACCES: denied')
+    db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('c1', 'i1', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
+
+    const r = listCandidates(db, { roots: [dl] })
+    assert.equal(r.candidates.length, 0, '讀不到的檔不可以說「幫你勾好了」')
+    assert.equal(r.needsHuman.length, 1, '要出現在「你自己看一眼」')
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: join(root, 'q') }).pendingCandidates, 0,
+      '不可以被算兩次')
+  })
+})
+
+describe('limit 截斷要有訊號', () => {
+  test('total 是這次的，totalAvailable 是全部的', () => {
+    const now = new Date().toISOString()
+    for (let i = 0; i < 5; i++) {
+      db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
+                  VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run('i' + i, join(dl, i + '.zip'), i + '.zip', '.zip', 100, now, now, now, 'candidate')
+      db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                  VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run('c' + i, 'i' + i, 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
+    }
+    const r = listCandidates(db, { roots: [dl], limit: 2 })
+    assert.equal(r.total, 2)
+    assert.equal(r.totalAvailable, 5, '沒有這個欄位，UI 會把 limit 當成全部')
+    assert.equal(r.truncated, true)
+    assert.equal(listCandidates(db, { roots: [dl] }).truncated, false)
+  })
+})
+
+describe('duplicate 同名不同目錄', () => {
+  test('「會留著」那句話不可以消失', () => {
+    // 比 name 的話，Downloads/report.pdf 與 Downloads/2026/09/report.pdf
+    // 會被當成同一個檔，那句使用者敢勾的理由整個不見。
+    const now = new Date().toISOString()
+    const add = (id, sub, seen) => db.prepare(
+      `INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).run(id, join(dl, sub, 'report.pdf'), 'report.pdf', '.pdf', 10, 'samesha', now, seen, now, 'candidate')
+    add('keep', '.', '2026-01-01T00:00:00.000Z')
+    add('dup', join('2026', '09'), '2026-02-01T00:00:00.000Z')
+    db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('c1', 'dup', 'duplicate', CLEANUP_RULE_VERSION, 98, 'r', '同一個 sha256 還有 1 份檔案存在', 'proposed', now)
+
+    const e = listCandidates(db, { roots: [dl] }).candidates[0].reasons[0].evidence
+    assert.match(e, /會留著/, '同名不同目錄時這句話也要在')
+    assert.ok(!e.includes(dl), '補上的位置資訊不可以是絕對路徑')
+  })
+})
+
+describe('displayPath 不可以誤殺合法檔名', () => {
+  test('檔名裡有冒號還是看得出在哪個資料夾', () => {
+    // log-2026-09-15T10:30:00.zip 是完全合法的 POSIX 檔名。
+    // 冒號檢查套在整條相對路徑上的話，它在 UI 上會完全沒有位置資訊。
+    assert.equal(displayPath(join(dl, 'log-2026-09-15T10:30:00.zip'), [dl]).folder, 'Downloads')
+    assert.equal(displayPath(join(dl, '2026', 'a.zip'), [dl]).subdir.replace(/\\/g, '/'), '2026')
+    assert.equal(displayPath('/完全不相干/x.zip', [dl]).folder, '', '不在 root 底下就什麼都不給')
+  })
+})
+
+describe('health 要真的能回報不健康', () => {
+  test('資料庫壞掉時要優雅降級，而且形狀要完整', () => {
+    // 原本這條的名字寫「db.ok 是 false」，斷言卻是 assert.throws ——
+    // 把「它會炸」寫成規格，卻掛了一個「它會降級」的名字。
+    // /health 是唯一免 token 的端點，它炸掉會讓整個行程死。
+    const broken = open(':memory:')
+    broken.exec('DROP TABLE meta')
+    const h = healthSnapshot(broken, { roots: [dl], quarantine: join(root, 'q') })
+
+    assert.equal(h.db.ok, false)
+    assert.equal(h.ok, false)
+    // **形狀要完整** —— 少一半的話 UI 拿 h.watcher.ok 直接 TypeError
+    assert.ok(h.watcher, 'watcher 區塊不可以不見')
+    assert.ok(h.quarantine, 'quarantine 區塊不可以不見')
+    assert.equal(typeof h.pendingCandidates, 'number')
+  })
+
+  test('watcher 沒跑不代表後端不能用', () => {
+    // ok 只講「這台後端能不能用」。使用者剛裝好還沒開 pet，
+    // 後端是好的 —— 查得到候選、資料庫是通的。
+    // 把兩件事合併成一個布林，對 liveness probe 與 UI 都是錯的訊號。
+    const h = healthSnapshot(db, { roots: [dl], quarantine: join(root, 'q') })
+    assert.equal(h.db.ok, true)
+    assert.equal(h.ok, true, 'watcher 沒跑，但後端是好的')
+    assert.equal(h.watcher.ok, false, 'watcher 自己的狀態還是要如實回報')
+    assert.equal(h.watcher.why, '從來沒跑過')
+  })
+
+  test('心跳的 key 兩邊要對得上', () => {
+    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.heartbeat, new Date().toISOString())
+    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.pid, String(process.pid))
+    const h = healthSnapshot(db, { roots: [dl], quarantine: join(root, 'q') })
+    assert.equal(h.watcher.ok, true, 'CLI 寫的 key 與 health 讀的 key 對不上就永遠說「沒跑過」')
+    assert.equal(h.ok, true)
+  })
+})
+
+describe('否決旗標', () => {
+  test('**太大算不出指紋的檔不可以預設勾**', () => {
+    // scanner 對超過上限的檔不算 sha256，但 archive/old-download 這些規則
+    // 只看副檔名與 mtime —— 所以最大、最可能是重要備份的那批檔，
+    // 會帶著 65 分被預設勾起來，而且沒有內容指紋可以驗證。
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('big', join(dl, '婚禮影片備份.zip'), '婚禮影片備份.zip', '.zip',
+           8_000_000_000, null, now, now, now, 'candidate')
+    db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('c1', 'big', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
+
+    const c = listCandidates(db, { roots: [dl], maxBytes: 20 * 1024 * 1024 }).candidates[0]
+    assert.equal(c.confidence, 65, '信心還是 65')
+    assert.equal(c.defaultChecked, false, '但否決旗標要蓋過信心')
+    assert.match(c.vetoed, /太大/)
+  })
+
+  test('**大的**半下載檔也不可以誤殺', () => {
+    // 上一版用 `bytes > maxBytes` 當判準，把大的 .crdownload 全否決了 ——
+    // 而下載會中斷通常就是因為檔案大。原本這條測試用 30 bytes 的小檔、
+    // 而且完全不傳 maxBytes，所以沒有任何路徑可以否決任何東西：假綠。
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('big-partial', join(dl, 'ubuntu.iso.crdownload'), 'ubuntu.iso.crdownload',
+           '.crdownload', 2_500_000_000, null, now, now, now, 'candidate')
+    db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('cp', 'big-partial', 'partial', CLEANUP_RULE_VERSION, 95, 'r', 'e', 'proposed', now)
+
+    const c = listCandidates(db, { roots: [dl] }).candidates[0]
+    assert.equal(c.vetoed, null, '半下載檔本來就沒有指紋，那是正常的')
+    assert.equal(c.defaultChecked, true)
+  })
+
+  test('否決的判準是這一列自己的事實，不是讀取時的門檻', () => {
+    // 用讀取時的 maxBytes 比對的話，使用者把設定調大（合法操作、不用重掃），
+    // 那個沒有指紋的 8GB 備份檔就自己恢復預設勾。
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('nb', join(dl, '備份.zip'), '備份.zip', '.zip', 8_000_000_000, null, now, now, now, 'candidate')
+    db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run('cn', 'nb', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
+
+    // 不管呼叫端傳什麼，結論都一樣
+    for (const opts of [{ roots: [dl] }, { roots: [dl], limit: 10 }]) {
+      const c = listCandidates(db, opts).candidates[0]
+      assert.equal(c.defaultChecked, false)
+      assert.match(c.vetoed, /指紋/)
+    }
+  })
+})
+
+describe('免 token 的 /health 要瘦身', () => {
+  test('不帶 token 拿不到資料夾顯示名與錯誤內容', () => {
+    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.lastError, "EACCES open '/home/alice/x'")
+    const lean = healthSnapshot(db, { roots: [dl], quarantine: join(root, 'q') })
+    const full = healthSnapshot(db, { roots: [dl], quarantine: join(root, 'q'), full: true })
+
+    // **形狀在兩版之間必須一致。** 換型別（string[] ↔ number）的話，
+    // C 拿免 token 那版做 UI，watching.map(...) 直接 TypeError。
+    // undefined 也不行 —— JSON.stringify 會整個刪掉，連「被遮蔽了」都看不出來。
+    assert.ok(Array.isArray(lean.watcher.watching), 'watching 兩版都要是陣列')
+    assert.deepEqual(lean.watcher.watching, [], '免 token 時是空陣列，不是數字')
+    assert.ok(Array.isArray(full.watcher.watching) && full.watcher.watching.length > 0)
+    assert.equal(lean.watcher.watchingCount, 1, '數量兩版都給')
+    assert.equal(full.watcher.watchingCount, 1)
+    assert.equal(lean.watcher.pid, null, 'null 不是 undefined')
+    assert.ok('lastHeartbeatAt' in lean.watcher, '欄位要在，只是遮蔽')
+    assert.ok(!JSON.stringify(lean).includes('/home/alice'), 'lastError 的內容不可以無條件送出')
+    assert.ok(JSON.stringify(full).includes('/home/alice'), '帶 token 就給得出來')
+  })
+
+  test('監看資料夾不存在時 watcher 不是 ok', () => {
+    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.heartbeat, new Date().toISOString())
+    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.pid, String(process.pid))
+    const h = healthSnapshot(db, { roots: [join(root, '不存在的資料夾')], quarantine: join(root, 'q') })
+    assert.equal(h.watcher.ok, false, '掃描會安靜地回 0 個檔，跟「很乾淨」長得一樣')
+    assert.equal(h.watcher.why, '有監看資料夾不存在')
+  })
+})
+
+describe('displayPath 的出口硬上限', () => {
+  test('watch 設成根目錄時，subdir 不可以變成完整路徑', () => {
+    const d = displayPath('/home/alice/Documents/2026/09/機密/x.zip', ['/'])
+    assert.ok(!d.subdir.startsWith('home'), `整條路徑跑出來了：${d.subdir}`)
+    assert.match(d.subdir, /^…\//, '超過上限要截斷')
+  })
+
+  test('多個 root 重疊時取最長的那個', () => {
+    const d = displayPath('/home/alice/Downloads/x.zip', ['/home/alice', '/home/alice/Downloads'])
+    assert.equal(d.folder, 'Downloads', '取第一個的話 folder 會變成使用者名稱')
+    assert.equal(d.subdir, '')
+  })
+})
+
+// ── 心跳：要驗「CLI 真的寫的」與「health 真的讀的」是同一個 key ──
+describe('心跳的 key 兩支檔案要對得上（端到端）', () => {
+  test('**真的跑一次 CLI**，health 要看得到它', async () => {
+    // 只用 META 常數寫再用 META 常數讀，等於自己跟自己對答案 ——
+    // 把常數改錯兩邊會一起錯，突變實測 0 紅。
+    // 這個 bug 真的上線過（讀 cleanup_watch_heartbeat、寫 watch_heartbeat），
+    // 所以要真的跑 CLI，讓它把字串寫進資料庫。
+    const { spawnSync } = await import('node:child_process')
+    const dir = join(root, 'beat' + n)
+    const w = join(dir, 'Downloads')
+    mkdirSync(w, { recursive: true })
+    const cfg = join(dir, 'config.json')
+    const dbPath = join(dir, 'data.db')
+    writeFileSync(cfg, JSON.stringify({
+      watch: [w], filed: join(dir, 'Filed'),
+      model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
+      readonly: false, pdfPages: 3, maxBytes: 20971520,
+    }))
+
+    // watch 是常駐的，跑一下就殺掉 —— 它一啟動就會寫第一次心跳
+    spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'watch'], {
+      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: dbPath },
+      timeout: 2500, encoding: 'utf8',
+    })
+
+    const live = open(dbPath)
+    const keys = live.prepare(`SELECT k FROM meta`).all().map(r => r.k)
+    assert.ok(keys.includes(META.heartbeat),
+      `CLI 寫進去的 key 是 ${JSON.stringify(keys)}，health 讀的是 ${META.heartbeat}`)
+
+    const full = healthSnapshot(live, { roots: [w], quarantine: join(dir, 'q'), full: true })
+    assert.ok(full.watcher.lastHeartbeatAt, 'health 要讀得到 CLI 寫的心跳')
+  })
+})
+
+// ── 第二輪點名「改回去也沒人發現」的那幾條 ──────────────────
+describe('存活突變的釘子', () => {
+  test('501：/cleanup/ 底下認不得的一律 501，不可以掉到 404', () => {
+    const seen = []
+    const ctx = (p, m = 'POST') => ({
+      db, roots: [dl], quarantine: join(root, 'q'),
+      url: new URL('http://x' + p), method: m, body: {},
+      send: (code, payload) => seen.push({ p, code, payload }),
+      scan: () => ({ scanned: 0, candidates: 0, skipped: 0, errors: 0, truncated: false }),
+    })
+    // 逐條列黑名單一定會漏 —— 第一版漏 apply/undo/dismiss/reveal，
+    // 第二版還漏 restore/empty。所以改成白名單反過來列。
+    for (const p of ['/cleanup/plans', '/cleanup/apply', '/cleanup/undo', '/cleanup/dismiss',
+                     '/cleanup/reveal', '/cleanup/quarantine/empty', '/cleanup/restore',
+                     '/cleanup/empty', '/cleanup/隨便什麼', '/pet/state']) {
+      assert.equal(cleanupRoutes(ctx(p)), true, `${p} 應該被接住`)
+    }
+    for (const r of seen) {
+      assert.equal(r.code, 501, `${r.p} 回了 ${r.code}，不是 501`)
+      assert.equal(r.payload.code, 'NOT_IMPLEMENTED')
+    }
+  })
+
+  test('例外要變成 500 + code，而且寫進 lastError，不可以吐原文', () => {
+    db.exec('DROP TABLE cleanup_candidates')
+    let got = null
+    const ok = cleanupRoutes({
+      db, roots: [dl], quarantine: join(root, 'q'),
+      url: new URL('http://x/cleanup/candidates'), method: 'GET', body: {},
+      send: (code, payload) => { got = { code, payload } },
+      scan: () => ({ scanned: 0, candidates: 0, skipped: 0, errors: 0, truncated: false }),
+    })
+    assert.equal(ok, true)
+    assert.equal(got.code, 500, '後端故障不可以回 400 —— 那是在說「你打錯了」')
+    assert.equal(got.payload.code, 'INTERNAL')
+    assert.ok(!/no such table|SQLITE/i.test(got.payload.error), '不可以吐 SQLite 原文')
+    // 錯誤要留下來，不然 /health 的 lastError 永遠是 null
+    const kept = db.prepare(`SELECT v FROM meta WHERE k=?`).get(META.lastError)
+    assert.ok(kept?.v, '錯誤吞掉的話，連續失敗十次 doctor 也會說一切正常')
+  })
+
+  test('needsHuman 要含「有 error 文字但 status 還是 candidate」的檔', () => {
+    // scanner 對「太大」的檔寫 error 文字但 status 留在 candidate。
+    // 只看 status='error' 的話，那批檔會完全不出現在「你自己看一眼」。
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status,error)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('e1', join(dl, '太大.zip'), '太大.zip', '.zip', 9e9, now, now, now, 'candidate', '太大，略過')
+    const r = listCandidates(db, { roots: [dl] })
+    assert.equal(r.needsHumanTotal, 1)
+    assert.equal(r.needsHuman[0].name, '太大.zip')
+  })
+
+  test('隔離區走訪讀不到東西的時候要 fail closed', () => {
+    const q = join(root, 'q-trunc' + n)
+    mkdirSync(join(q, 'deep'), { recursive: true })
+    // 看得到的那個**已經超過七天**，所以 canEmptyAt 是過去式 ——
+    // 不這樣的話 canEmptyNow 本來就是 false，!truncated 那個子句永遠碰不到，
+    // 測了等於沒測（第一版就是這樣，突變活著）。
+    writeFileSync(join(q, 'deep', 'a.zip'), 'x')
+    chmodSync(join(q, 'deep'), 0o000)
+    invalidateQuarantineCache()
+    try {
+      const h = healthSnapshot(db, { roots: [dl], quarantine: q })
+      assert.equal(h.quarantine.truncated, true, '沒看完就要說沒看完')
+      assert.equal(h.quarantine.canEmptyNow, false)
+    } finally { chmodSync(join(q, 'deep'), 0o700); invalidateQuarantineCache() }
+
+    // 上面那段**測不到 `!truncated` 這個子句** —— 新建的檔 ctime 是現在，
+    // canEmptyAt 一定在未來，所以不管截不截斷 canEmptyNow 都是 false。
+    // 真正危險的組合（七天早就到了、但走訪沒看完）要直接打純函式。
+    const past = new Date(Date.now() - DAY).toISOString()
+    assert.equal(canEmptyNow({ items: 3, truncated: false }, past), true, '前提：這樣是可以清的')
+    assert.equal(canEmptyNow({ items: 3, truncated: true }, past), false,
+      '七天到了但沒看完 —— 讀不到的那個子目錄裡可能有昨天才搬進來的東西')
+    assert.equal(canEmptyNow({ items: 0, truncated: false }, past), false, '空的沒有意義')
+    assert.equal(canEmptyNow({ items: 3, truncated: false }, null), false, '算不出時間就 fail closed')
+    const future = new Date(Date.now() + DAY).toISOString()
+    assert.equal(canEmptyNow({ items: 3, truncated: false }, future), false, '還沒到')
+    // 邊界兩側：剛好到 vs 差一毫秒
+    const t = Date.now()
+    assert.equal(canEmptyNow({ items: 1, truncated: false }, new Date(t).toISOString(), t), true)
+    assert.equal(canEmptyNow({ items: 1, truncated: false }, new Date(t + 1).toISOString(), t), false)
+  })
+
+  test('未來的時間戳不可以把整個隔離區鎖住', () => {
+    const q = join(root, 'q-future' + n)
+    mkdirSync(q, { recursive: true })
+    const f = join(q, '怪檔.zip')
+    writeFileSync(f, 'x')
+    const future = (Date.now() + 365 * DAY) / 1000
+    utimesSync(f, future, future)
+    const h = healthSnapshot(db, { roots: [dl], quarantine: q })
+    assert.ok(Date.parse(h.quarantine.canEmptyAt) <= Date.now() + 7 * DAY + 60_000,
+      `一個未來時間戳把整區鎖到 ${h.quarantine.canEmptyAt}`)
+  })
+
+  test('隔離區的快取要有失效管道', () => {
+    const q = join(root, 'q-cache' + n)
+    mkdirSync(q, { recursive: true })
+    writeFileSync(join(q, 'a.zip'), 'x')
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 1)
+
+    writeFileSync(join(q, 'b.zip'), 'y')
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 1,
+      '十秒內走快取，這是預期的')
+    invalidateQuarantineCache()
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 2,
+      'B 搬完檔呼叫這個，數字要立刻更新 —— 不然新檔的七天窗在那十秒裡不存在')
+  })
+})

@@ -2,6 +2,30 @@ import { basename, extname } from 'node:path'
 
 export const CLEANUP_RULE_VERSION = 'cleanup-rules-v1'
 
+/**
+ * 每一種 kind 與它的信心值。**這裡是唯一的真值來源。**
+ *
+ * 之前上層是用一組寫死的「探針」輸入跑一次 classifyByRules 反推這張表。
+ * 那個做法在結構上抓不到它被寫來抓的那件事 —— 新規則沒有對應探針就
+ * 完全不會出現，上層的「列舉所有 kind」檢查看不到自己看不到的東西。
+ * 稽查實測：加一條 55 分的新規則，23 條測試全綠。
+ *
+ * **加新規則就要在這裡加一行**，然後 test/cleanup-routes.test.mjs
+ * 會強迫你決定它要不要預設勾。
+ */
+export const KIND_CONFIDENCE = {
+  duplicate: 98,
+  partial: 95,
+  empty: 95,
+  temp: 85,
+  installer: 70,
+  archive: 65,
+  'old-download': 35,
+  'screenshot-noise': 35,
+} as const
+
+export const CLEANUP_KINDS = Object.keys(KIND_CONFIDENCE) as (keyof typeof KIND_CONFIDENCE)[]
+
 export type CleanupCandidateKind =
   | 'duplicate'
   | 'installer'

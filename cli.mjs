@@ -16,7 +16,7 @@ import { admit } from './core/guard.ts'
 import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
 import { Items } from './core/items.ts'
-import { listCandidates, healthSnapshot } from './core/cleanup-routes.ts'
+import { listCandidates, healthSnapshot, META } from './core/cleanup-routes.ts'
 import { scanDownloads } from './core/cleanup-scanner.ts'
 import { existsSync } from 'node:fs'
 import { basename, resolve, join } from 'node:path'
@@ -43,6 +43,7 @@ function printCandidate(c) {
   say(`  [${c.itemId.slice(0, 4)}] ${box} ${c.name}`)
   say(`         ${mb(c.bytes).padStart(8)}  ${c.kind}  ${where}`)
   for (const r of c.reasons) say(`         · ${r.reason}（${r.evidence}）`)
+  if (c.vetoed) say(`         ⚠ ${c.vetoed}`)
 }
 
 const [, , cmd, ...args] = process.argv
@@ -56,7 +57,10 @@ catch (e) {
   // 讓它印一句人話，不要印一坨 Node 堆疊。
   console.error(`打不開資料庫 ${DEFAULT_DB}：${e.message}`)
   console.error('如果剛剛同時開了很多個，等一下再試一次就好。')
-  process.exit(1)
+  // 打不開資料庫是**後端錯（2）**，不是輸入錯（1）。
+  // 回 1 等於跟右鍵選單說「使用者打錯了」，而使用者什麼都沒打錯 ——
+  // 呼叫端據此決定要不要重試，分錯就不會重試。
+  process.exit(EXIT.backend)
 }
 const items = new Items(db)
 
@@ -155,8 +159,8 @@ switch (cmd) {
     say('')
 
     // 監看到底有沒有在跑？設定正確不代表有人在看。
-    const beat = getMeta('watch_heartbeat')
-    const beatPid = Number(getMeta('watch_pid'))
+    const beat = getMeta(META.heartbeat)
+    const beatPid = Number(getMeta(META.pid))
     const beatAgo = ago(beat)
     // 心跳只證明「它上次寫的時候還活著」。被 kill -9 掉的話，
     // 心跳會停在那裡，而 doctor 會繼續說「還活著」說滿五分鐘 ——
@@ -171,12 +175,12 @@ switch (cmd) {
 
     const h = healthSnapshot(db, { roots: config.watch, quarantine: QUARANTINE })
     say(`隔離區    ${QUARANTINE}`)
-    say(`          ${h.quarantine.items} 個檔案，${(h.quarantine.bytes / 1048576).toFixed(1)} MB`
+    say(`          ${h.quarantine.items} 個檔案，${mb(h.quarantine.bytes)}`
       + (h.quarantine.items
         ? (h.quarantine.canEmptyNow ? '，現在可以清空' : `，最舊的還不到七天`)
         : ''))
     say(`待清候選  ${h.pendingCandidates} 個`
-      + (h.needsHuman ? `，另外 ${h.needsHuman} 個讀不到` : ''))
+      + (h.needsHumanCount ? `，另外 ${h.needsHumanCount} 個讀不到` : ''))
     say('')
 
     const last = items.lastSeen()
@@ -221,7 +225,7 @@ switch (cmd) {
     showProblems()
     if (!config.watch.length) { warn('設定裡沒有任何監看資料夾。'); process.exit(1) }
 
-    const beat = () => { try { setMeta('watch_heartbeat', new Date().toISOString()); setMeta('watch_pid', process.pid) } catch { /* 資料庫忙就下次再寫 */ } }
+    const beat = () => { try { setMeta(META.heartbeat, new Date().toISOString()); setMeta(META.pid, process.pid) } catch { /* 資料庫忙就下次再寫 */ } }
 
     const w = createWatcher({
       roots: config.watch,
@@ -257,16 +261,42 @@ switch (cmd) {
   case 'pet': {
     showProblems()
     const { start } = await import('./core/server.ts')
-    const { ready, token, port: want } = start()
-    const port = await ready
+    const { createCleanupWatcher } = await import('./core/cleanup-watcher.ts')
+    // **把 roots 與 quarantine 傳進去。** 不傳的話 server 自己去讀設定檔，
+    // 而 pet 印出來的隔離區跟它剛啟動的那個 server 服務的不是同一個目錄。
+    const { ready } = start({ roots: config.watch, quarantine: QUARANTINE })
+    let port
+    try { port = await ready }
+    catch (e) {
+      if (e?.code === 'EADDRINUSE') {
+        say('已經有一個 ContextBox 在跑了。打開 http://127.0.0.1:7391/ 就好。')
+        break
+      }
+      warn('起不來：' + (e?.message ?? e))
+      process.exitCode = EXIT.backend
+      break
+    }
+
+    // 心跳要有人寫，不然 /health 的 watcher 永遠說「從來沒跑過」，
+    // 而寵物的 watching 狀態永遠進不去。
+    const beat = () => { try { setMeta(META.heartbeat, new Date().toISOString()); setMeta(META.pid, process.pid) } catch { /* 忙就下次 */ } }
+    beat()
+    const heartbeat = setInterval(beat, 30_000)
+    const w = createCleanupWatcher({
+      db, roots: config.watch, maxBytes: config.maxBytes,
+      onProblem: m => warn('⚠ ' + m),
+    })
+    w.start()
+
     say(`ContextBox 在 http://127.0.0.1:${port}`)
     say(`寵物與清理面板：http://127.0.0.1:${port}/　（鑰匙已經幫你帶好了）`)
     say('')
     say(`正在看：${config.watch.map(basename).join('、')}`)
     say(`隔離區：${QUARANTINE}`)
     say('按 Ctrl+C 停止。')
-    process.on('SIGINT', () => { say('\n停了。'); process.exit(0) })
-    setInterval(() => {}, 1 << 30)
+    const bye = () => { clearInterval(heartbeat); w.stop(); say('\n停了。'); process.exit(0) }
+    process.on('SIGINT', bye)
+    process.on('SIGTERM', bye)
     break
   }
 
@@ -283,7 +313,10 @@ switch (cmd) {
         process.exitCode = EXIT.backend
         break
       }
-      say(`掃了 ${r.scanned} 個檔案，${r.candidates} 個可以清。`)
+      // scanner 回的 candidates 是**規則列數**，但 list 講的是**檔案數** ——
+      // 這整支檔案存在的理由就是消掉這個差別，不可以在自己的 CLI 又端出來。
+      const files = listCandidates(db, { roots: config.watch }).totalAvailable
+      say(`掃了 ${r.scanned} 個檔案，${files} 個可以清。`)
       if (r.skipped) say(`${r.skipped} 個還在變動，這次跳過。`)
       // 讀不到的檔案**不算掃描失敗** —— 掃描的工作是更新資料庫，那件事成功了。
       // 它們已經記成 status=error，在 list 裡看得到。回非 0 會讓每晚 smoke 一直紅。
@@ -293,7 +326,14 @@ switch (cmd) {
     }
 
     if (sub === 'list' || sub === undefined) {
-      const r = listCandidates(db, { roots: config.watch })
+      let r
+      try { r = listCandidates(db, { roots: config.watch }) }
+      catch (e) {
+        // 後端錯是 2 不是 1，而且不要噴一坨 Node 堆疊
+        warn('讀不到清理候選：' + (e?.message ?? e))
+        process.exitCode = EXIT.backend
+        break
+      }
       if (!r.total && !r.needsHuman.length) {
         // 沒東西要清是**成功**，不是失敗
         const scanned = db.prepare(`SELECT count(*) n FROM file_items`).get().n
@@ -303,13 +343,15 @@ switch (cmd) {
         break
       }
       if (r.total) {
-        say(`有 ${r.total} 個可以清掉的東西，大概 ${mb(r.bytes)}\n`)
+        say(`有 ${r.total} 個可以清掉的東西，大概 ${mb(r.bytes)}`
+          + (r.truncated ? `（總共有 ${r.totalAvailable} 個，這裡只列前 ${r.total} 個）` : '') + '\n')
         for (const c of r.candidates) { printCandidate(c); say('') }
         const checked = r.candidates.filter(c => c.defaultChecked).length
         say(`☐ 的預設不清。cleanup apply 會清掉打勾的 ${checked} 個。`)
       }
       if (r.needsHuman.length) {
-        say(`\n另外 ${r.needsHuman.length} 個需要你自己看一眼：`)
+        say(`\n另外 ${r.needsHumanTotal} 個需要你自己看一眼：`
+          + (r.needsHumanTruncated ? `（只列前 ${r.needsHuman.length} 個）` : ''))
         for (const h of r.needsHuman) say(`  ${h.name}　${mb(h.bytes)}　—— ${h.why}`)
       }
       break

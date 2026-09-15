@@ -59,7 +59,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api'+q
 
 | 檔案 | 對應 route |
 |---|---|
-| `health.json` | `GET /health` |
+| `health.json` | `GET /health`　**不帶 token** |
+| `health-with-token.json` | `GET /health`　帶 token |
 | `cleanup-scan.json` | `POST /cleanup/scan` |
 | `cleanup-candidates.json` | `GET /cleanup/candidates` |
 | `cleanup-plans-create.json` | `POST /cleanup/plans` |

@@ -46,7 +46,7 @@ describe('同時被很多個行程打開', () => {
 
   test('busy_timeout 真的設進去了', () => {
     const db = open(join(tmp(), 'x.db'))
-    assert.equal(db.prepare('PRAGMA busy_timeout').get().timeout, 5000)
+    assert.equal(db.prepare('PRAGMA busy_timeout').get().timeout, 15000)
   })
 })
 

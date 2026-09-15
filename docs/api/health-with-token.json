@@ -6,11 +6,13 @@
   },
   "watcher": {
     "ok": true,
-    "lastHeartbeatAt": null,
-    "pid": null,
+    "lastHeartbeatAt": "2026-09-15T03:12:49.161Z",
+    "pid": 1671862,
     "rootsMissing": 0,
     "watchingCount": 1,
-    "watching": [],
+    "watching": [
+      "Downloads"
+    ],
     "why": null
   },
   "quarantine": {
@@ -24,5 +26,5 @@
   },
   "pendingCandidates": 0,
   "needsHumanCount": 0,
-  "lastError": "有，帶 token 才看得到"
+  "lastError": "2026-09-15T03:12:49.161Z EACCES: permission denied, open '/home/alice/Downloads/鎖住的.pdf'"
 }

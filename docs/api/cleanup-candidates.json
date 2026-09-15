@@ -1,42 +1,69 @@
 {
-  "total": 3,
-  "bytes": 1076153706,
-  "generatedAt": "2026-09-15T08:41:10.221Z",
+  "total": 7,
+  "totalAvailable": 7,
+  "truncated": false,
+  "bytes": 8000000039,
+  "generatedAt": "2026-09-15T02:36:12.704Z",
   "candidates": [
     {
-      "itemId": "i_44f",
-      "name": "report (1).pdf",
+      "itemId": "7242a026-639d-48f0-8f7a-2945c0f278d0",
+      "name": "report.pdf",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 2411882,
-      "mtime": "2026-08-30T11:02:00.000Z",
+      "bytes": 15,
+      "mtime": "2026-08-26T02:36:12.700Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
+      "vetoed": null,
       "candidateIds": [
-        "c_7Qa"
+        "ef16bf85-2c5d-4bcf-9188-809f2b532a6a"
       ],
       "reasons": [
         {
           "kind": "duplicate",
           "confidence": 98,
           "reason": "同內容的重複檔案",
-          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「report.pdf」"
+          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「report (1).pdf」"
         }
       ]
     },
     {
-      "itemId": "i_51c",
-      "name": "ubuntu-26.04.iso.crdownload",
+      "itemId": "9de54315-89d9-4dea-aa8b-938cf92c25d1",
+      "name": "新增文字文件.txt",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 1073741824,
-      "mtime": "2026-09-01T03:20:00.000Z",
+      "bytes": 0,
+      "mtime": "2026-09-07T02:36:12.700Z",
+      "kind": "empty",
+      "confidence": 95,
+      "defaultChecked": true,
+      "vetoed": null,
+      "candidateIds": [
+        "dfb53428-4ec4-4f6f-a78c-101f67c9a2d3"
+      ],
+      "reasons": [
+        {
+          "kind": "empty",
+          "confidence": 95,
+          "reason": "空檔案",
+          "evidence": "檔案大小是 0 byte，而且 8 天沒有變動"
+        }
+      ]
+    },
+    {
+      "itemId": "e8bcf10b-4690-4241-8f7c-ae5941b0fe88",
+      "name": "ubuntu.iso.crdownload",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 4,
+      "mtime": "2026-09-03T02:36:12.700Z",
       "kind": "partial",
       "confidence": 95,
       "defaultChecked": true,
+      "vetoed": null,
       "candidateIds": [
-        "c_8Bz"
+        "c47c2a5d-8756-4c76-b6dd-90fed830aa19"
       ],
       "reasons": [
         {
@@ -48,18 +75,41 @@
       ]
     },
     {
-      "itemId": "i_81d",
+      "itemId": "68607b44-1be4-45e2-86f9-51aea9acbe84",
+      "name": "NodeSetup-24.6.0.msi",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 9,
+      "mtime": "2026-08-22T02:36:12.700Z",
+      "kind": "installer",
+      "confidence": 70,
+      "defaultChecked": true,
+      "vetoed": null,
+      "candidateIds": [
+        "06e1b90b-b445-4571-bc96-98fdaeeb6b2f"
+      ],
+      "reasons": [
+        {
+          "kind": "installer",
+          "confidence": 70,
+          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
+          "evidence": ".msi 安裝檔，而且 24 天沒有變動"
+        }
+      ]
+    },
+    {
+      "itemId": "d76576e0-9e65-447e-b768-65b03b313daa",
       "name": "素材包.zip",
       "folder": "Downloads",
       "subdir": "2026/07",
-      "bytes": 786432000,
-      "mtime": "2026-07-10T22:15:00.000Z",
+      "bytes": 7,
+      "mtime": "2026-07-12T02:36:12.700Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
+      "vetoed": null,
       "candidateIds": [
-        "c_2Ew",
-        "c_5Hq"
+        "a86f8653-385d-4cb8-99a9-bfab1b65d0c3"
       ],
       "reasons": [
         {
@@ -67,29 +117,54 @@
           "confidence": 65,
           "reason": "舊壓縮檔通常是一次性下載",
           "evidence": ".zip 壓縮檔，而且 65 天沒有變動"
-        },
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "65 天沒有變動，且副檔名 .zip 不在保護清單"
         }
       ]
     },
     {
-      "itemId": "i_92e",
+      "itemId": "big",
+      "name": "婚禮影片備份.zip",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 8000000000,
+      "mtime": "2026-09-15T02:36:12.704Z",
+      "kind": "archive",
+      "confidence": 65,
+      "defaultChecked": false,
+      "vetoed": "檔案太大，沒有算指紋，請自己確認",
+      "candidateIds": [
+        "c-big"
+      ],
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "舊壓縮檔通常是一次性下載",
+          "evidence": ".zip 壓縮檔，而且 120 天沒有變動"
+        }
+      ]
+    },
+    {
+      "itemId": "ca141d4d-2492-4765-8da8-284fe8ff514f",
       "name": "Screenshot 2026-06-02 141203.png",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 482113,
-      "mtime": "2026-06-02T06:12:03.000Z",
-      "kind": "screenshot-noise",
+      "bytes": 4,
+      "mtime": "2026-06-02T02:36:12.700Z",
+      "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
+      "vetoed": null,
       "candidateIds": [
-        "c_3Fv"
+        "3c8905b7-76e3-4104-86f4-25ee81d794c8",
+        "b735744b-a0e3-4956-9600-cb3faa04287f"
       ],
       "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "105 天沒有變動，且副檔名 .png 不在保護清單"
+        },
         {
           "kind": "screenshot-noise",
           "confidence": 35,
@@ -99,18 +174,15 @@
       ]
     }
   ],
-  "needsHuman": [
-    {
-      "itemId": "i_99f",
-      "name": "備份.tar",
-      "folder": "Downloads",
-      "bytes": 8589934592,
-      "why": "讀不到這個檔案：權限不足"
-    }
-  ],
-  "_給 C 的三個提醒": [
-    "一列是一個**檔案**，不是一條規則。同一個檔命中多條規則時 reasons 會有多筆，defaultChecked 用最高信心那條決定（門檻 50）。",
-    "勾選送出時要送 candidateIds **整包**，不是只送第一個 —— 不然執行端會漏處理。",
-    "**沒有絕對路徑。** 要在檔案總管打開請走 POST /cleanup/reveal，路徑永遠不離開後端。"
+  "needsHumanTotal": 0,
+  "needsHumanTruncated": false,
+  "needsHuman": [],
+  "_註": [
+    "**這份是跑真的程式產生的**，不是手寫的。改了回應形狀就重新產一次。",
+    "一列是一個檔案，不是一條規則。reasons 可能有多筆，defaultChecked 用最高信心決定（門檻 50）。",
+    "vetoed 不是 null 的時候，不管信心多高都不預設勾 —— 例如太大算不出指紋的檔。",
+    "勾選送出要送 candidateIds 整包，不是只送第一個。",
+    "truncated 為 true 時 total 只是這一頁，totalAvailable 才是全部。",
+    "沒有絕對路徑。要在檔案總管打開請走 POST /cleanup/reveal（目前回 501）。"
   ]
 }

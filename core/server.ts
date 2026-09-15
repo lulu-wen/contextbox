@@ -65,11 +65,23 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
   const token = opts.token ?? loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
 
-  // 清理那條線要看哪些資料夾、隔離區放哪。只算一次。
-  const cfg = loadConfig().config
-  const cleanupRoots = opts.roots ?? cfg.watch
-  const cleanupMaxBytes = cfg.maxBytes
-  const QUARANTINE = opts.quarantine ?? join(homedir(), '.contextbox', 'quarantine')
+  // 清理那條線要看哪些資料夾、隔離區放哪。
+  //
+  // **呼叫端沒給就不要自己去讀使用者的設定檔。** 稽查抓到：
+  // `start({ db: ':memory:' })` 這種明顯是測試的呼叫，cleanupRoots 還是綁到
+  // 使用者真的 Downloads，/health 會走訪使用者真的隔離區，而
+  // POST /cleanup/scan 那條線已經接好了 —— 任何人加一條測試就會對
+  // 真的 Downloads 做一次含 sha256 的全量掃描。而且 loadConfig() 會
+  // 在沒有設定檔的機器上「建立」一個，測試因此有副作用。
+  //
+  // 所以：只有兩個都沒給的時候才讀設定，而且是**延後到真的用到才讀**。
+  let cfgCache: ReturnType<typeof loadConfig> | null = null
+  const cfg = () => (cfgCache ??= loadConfig()).config
+  const cleanupRoots = opts.roots ?? null
+  const roots = () => cleanupRoots ?? cfg().watch
+  const QUARANTINE = opts.quarantine
+    ?? process.env.CONTEXTBOX_QUARANTINE
+    ?? join(homedir(), '.contextbox', 'quarantine')
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -160,12 +172,26 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
     }
 
     if (url.pathname === '/health') {
-      // 加上清理那條線的狀態。裡面只有計數與資料夾的**顯示名**，
-      // 沒有檔名也沒有路徑，所以放在 token 之前沒關係。
-      return send(200, {
-        ...healthSnapshot(F.db, { roots: cleanupRoots, quarantine: QUARANTINE }),
-        facts: F.list('confirmed').length,
-      })
+      if (req.method !== 'GET') return send(405, { error: '這個路徑只收 GET', code: 'BAD_METHOD' })
+      // **這條在 token 檢查之前，所以它是唯一沒有錯誤處理的路徑。**
+      // 不包起來的話，healthSnapshot 丟例外會變成 unhandled error ——
+      // 整個行程死掉、離開碼 1、client 的連線永遠掛著。
+      // 一個要在系統匣待整天的常駐程式，不可以這樣死。
+      //
+      // 而且健康檢查失敗**本身就是健康狀態**，不該回 500。
+      const hasToken = sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)
+      try {
+        return send(200, {
+          ...healthSnapshot(F.db, { roots: roots, quarantine: QUARANTINE, full: hasToken }),
+          // facts 是純計數，沒有路徑也沒有名字，跟 pendingCandidates 同級。
+          // 把它移到 token 後面會打壞 extension/background.js —— 它不帶 token
+          // 讀 r.data.facts，會靜靜變成永遠 0。
+          facts: F.list('confirmed').length,
+        })
+      } catch (e: any) {
+        console.error('[contextbox] /health 自我檢查失敗：', (e && e.message) || e)
+        return send(200, { ok: false, db: { ok: false }, why: '後端自我檢查失敗' })
+      }
     }
     // 鎖 2：其他全部要 token
     if (!sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)) {
@@ -183,9 +209,12 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
     try {
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
-        db: F.db, roots: cleanupRoots, quarantine: QUARANTINE,
+        // **這些都要是 thunk。** 上一版 `maxBytes: cfg().maxBytes` 是每個請求
+        // 立刻求值，連 /facts 這種跟清理無關的路徑都會去讀（甚至建立）
+        // 使用者的設定檔 —— 延後讀取的修正等於沒做。
+        db: F.db, roots, quarantine: QUARANTINE,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => scanDownloads({ db: F.db, roots: cleanupRoots, maxBytes: cleanupMaxBytes }),
+        scan: () => scanDownloads({ db: F.db, roots: roots(), maxBytes: cfg().maxBytes }),
       })) return
 
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。
@@ -220,11 +249,17 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
 
   // 鎖 1：只綁 loopback
   // listen 是非同步的，address() 要等 'listening' 才有值
-  const ready = new Promise<number>(resolve =>
+  // listen 失敗（port 被佔）要讓 await ready 拿到例外。
+  // 不掛 'error' 監聽器的話 Node 會丟 unhandled 'error' event，
+  // 使用者第二次開 pet 看到的是一坨堆疊而不是「已經有一個在跑了」。
+  const ready = new Promise<number>((resolve, reject) => {
+    server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject)
       const a = server.address()
       resolve(typeof a === 'object' && a ? a.port : port)
-    }))
+    })
+  })
   return { server, token, port, ready, facts: F }
 }
 
