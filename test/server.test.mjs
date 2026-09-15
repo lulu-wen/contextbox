@@ -86,3 +86,32 @@ test('復原會退回上一步', async () => {
   const email = facts.find(f => f.key === 'contact.email')
   assert.equal(email.value, 'a@example.com')
 })
+
+test('**會動檔案的 route 一律要 token**', async () => {
+  // /health 是唯一免 token 的。清理那條線會搬檔、會刪檔，
+  // 漏一條就等於任何網頁都能叫這台機器動使用者的檔案。
+  const destructive = [
+    ['POST', '/cleanup/plans'],
+    ['GET', '/cleanup/plans/abc'],
+    ['POST', '/cleanup/plans/abc/apply'],
+    ['POST', '/cleanup/plans/abc/undo'],
+    ['POST', '/cleanup/plans/abc/dismiss'],
+    ['GET', '/cleanup/quarantine'],
+    ['POST', '/cleanup/quarantine/empty'],
+    ['POST', '/cleanup/scan'],
+    ['GET', '/cleanup/candidates'],
+    ['GET', '/pet/state'],
+  ]
+  for (const [method, path] of destructive) {
+    const r = await call(path, { token: null, method, body: method === 'POST' ? '{}' : undefined })
+    assert.equal(r.status, 401, `${method} ${path} 沒帶 token 卻回了 ${r.status}`)
+  }
+})
+
+test('免 token 的 /health 不可以有檔名或路徑', async () => {
+  const r = await call('/health', { token: null })
+  const body = await r.json()
+  const s = JSON.stringify(body)
+  assert.ok(!/\/home\/|\/Users\/|C:\\\\/.test(s), `/health 洩漏了路徑：${s}`)
+  assert.deepEqual(body.watcher.watching, [], '免 token 不給資料夾顯示名')
+})

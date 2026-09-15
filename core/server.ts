@@ -213,6 +213,9 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
         // 立刻求值，連 /facts 這種跟清理無關的路徑都會去讀（甚至建立）
         // 使用者的設定檔 —— 延後讀取的修正等於沒做。
         db: F.db, roots, quarantine: QUARANTINE,
+        // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
+        maxBytes: () => cfg().maxBytes,
+        readonly: () => cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
         scan: () => scanDownloads({ db: F.db, roots: roots(), maxBytes: cfg().maxBytes }),
       })) return

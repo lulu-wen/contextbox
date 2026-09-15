@@ -1,39 +1,66 @@
 {
-  "_說明": "每一種錯誤長什麼樣。error 給人看，code 給程式判斷。",
-  "400": {
-    "error": "candidateIds 要是一個字串陣列。",
-    "code": "BAD_BODY"
-  },
-  "401": {
-    "error": "token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。",
-    "code": "BAD_TOKEN"
-  },
-  "403": {
-    "error": "網頁不能直接讀這個。",
-    "code": "FORBIDDEN"
-  },
-  "404": {
-    "error": "找不到這個 plan。",
+  "_說明": "每一種錯誤長什麼樣。error 給人看，code 給程式判斷。這份檔案由真的觸發產生，不是手寫的。",
+  "找不到那份計畫": {
+    "status": 404,
+    "error": "找不到這份清理計畫。",
     "code": "NOT_FOUND"
   },
-  "409_applied": {
-    "error": "這個 plan 已經套用過了，不會再搬一次。",
-    "code": "PLAN_ALREADY_APPLIED"
+  "略過清單有不屬於這份計畫的 id": {
+    "status": 400,
+    "error": "略過清單包含不屬於這份計畫的候選。",
+    "code": "BAD_BODY"
   },
-  "409_young": {
-    "error": "隔離區裡最舊的東西還不到七天，先不能清空。",
-    "code": "QUARANTINE_TOO_YOUNG"
+  "唯讀模式": {
+    "status": 403,
+    "error": "目前不允許變更檔案。",
+    "code": "READ_ONLY"
   },
-  "409_confirm": {
-    "error": "清空隔離區要再確認一次，請帶 confirm。",
-    "code": "CONFIRM_REQUIRED"
+  "還沒預覽就確認清空": {
+    "status": 428,
+    "error": "清空確認無效，請重新預覽。",
+    "code": "CONFIRMATION_REQUIRED"
   },
-  "413": {
-    "error": "送來的資料太大了。",
-    "code": "BODY_TOO_LARGE"
+  "已經套用過的再 dismiss": {
+    "status": 409,
+    "error": "計畫已開始執行，請使用復原。",
+    "code": "CONFLICT"
   },
-  "500": {
-    "error": "後端出錯了，這一步沒有動到任何檔案。",
-    "code": "INTERNAL"
+  "沒東西可清": {
+    "status": 409,
+    "error": "沒有選擇可清理的檔案。",
+    "code": "EMPTY_PLAN"
+  },
+  "還沒實作的功能": {
+    "status": 501,
+    "error": "這個功能還沒做好。",
+    "code": "NOT_IMPLEMENTED"
+  },
+  "limit 超出範圍": {
+    "status": 400,
+    "error": "limit 要是 1 到 1000 之間的整數。",
+    "code": "BAD_BODY"
+  },
+  "_狀態碼對應": {
+    "BAD_BODY": 400,
+    "NOT_FOUND": 404,
+    "CONFLICT": 409,
+    "STALE_CANDIDATE": 409,
+    "EMPTY_PLAN": 409,
+    "TOO_RECENT": 409,
+    "READ_ONLY": 403,
+    "CONFIRMATION_REQUIRED": 428,
+    "CONFIRMATION_EXPIRED": 410,
+    "BUSY": 503,
+    "BAD_CONFIG": 500,
+    "UNSAFE_PATH": 500,
+    "UNSAFE_JOURNAL": 500,
+    "UNSAFE_FILE": 500,
+    "CHANGED": 500,
+    "MISSING": 500,
+    "PURGED": 500,
+    "PROTECTED": 500,
+    "OUTSIDE_ROOT": 500,
+    "NO_DUPLICATE": 500,
+    "VERIFY_FAILED": 500
   }
 }

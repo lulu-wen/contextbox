@@ -17,6 +17,10 @@ import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
 import { Items } from './core/items.ts'
 import { listCandidates, healthSnapshot, META } from './core/cleanup-routes.ts'
+import { applyPlan, undoPlan, listQuarantine } from './core/cleanup-exec.ts'
+import { createPlan } from './core/cleanup-plans.ts'
+import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
+import { CleanupError, listJournal } from './core/cleanup-journal.ts'
 import { scanDownloads } from './core/cleanup-scanner.ts'
 import { existsSync } from 'node:fs'
 import { basename, resolve, join } from 'node:path'
@@ -74,6 +78,26 @@ const say = (...a) => console.log(...a)
 const warn = (...a) => console.warn(...a)
 
 const showProblems = () => { for (const p of problems) warn('⚠ ' + p) }
+
+/** 還要等幾天，無條件進位 —— 「還要等 0 天」是錯的訊息。 */
+const days = (at) => Math.max(1, Math.ceil((at - Date.now()) / 86400_000))
+
+/**
+ * CleanupError → 離開碼。
+ *
+ * **判準：2 ＝ 這個動作根本沒執行；3 ＝ 執行了但沒有全部成功。**
+ * 呼叫端據此決定要不要重試。
+ */
+function exitFor(e) {
+  if (!(e instanceof CleanupError)) return EXIT.backend
+  // 使用者打錯了 plan id —— 這是唯一 NOT_FOUND 真的是輸入錯的地方
+  if (e.code === 'NOT_FOUND' || e.code === 'BAD_BODY') return EXIT.badInput
+  // 另一個行程正在跑。動作沒執行，而且重試會成功
+  return EXIT.backend
+}
+
+/** B 的錯誤訊息本來就是寫好的人話而且不含路徑，直接用；其他的換罐頭。 */
+const cliProblem = (e) => e instanceof CleanupError ? e.message : ('出錯了：' + (e?.message ?? e))
 
 // ── meta：給健康檢查用的心跳 ──────────────────────────────────
 const setMeta = (k, v) =>
@@ -177,8 +201,12 @@ switch (cmd) {
     say(`隔離區    ${QUARANTINE}`)
     say(`          ${h.quarantine.items} 個檔案，${mb(h.quarantine.bytes)}`
       + (h.quarantine.items
-        ? (h.quarantine.canEmptyNow ? '，現在可以清空' : `，最舊的還不到七天`)
-        : ''))
+        // canEmptyNow 的意思是「按下去**會有東西**被刪掉」，不是「整區都能清」。
+        // 講成「現在可以清空」的話，使用者按完發現還有東西，會以為壞了。
+        ? (h.quarantine.canEmptyNow ? '，其中有滿七天可以清空的' : '，最舊的還不到七天')
+        : '')
+      + (h.quarantine.orphans ? `\n          另有 ${h.quarantine.orphans} 個來路不明的檔，清空不會動到它們` : '')
+      + (h.quarantine.truncated ? '\n          ⚠ 隔離區沒讀完，數字可能不準' : ''))
     say(`待清候選  ${h.pendingCandidates} 個`
       + (h.needsHumanCount ? `，另外 ${h.needsHumanCount} 個讀不到` : ''))
     say('')
@@ -357,13 +385,183 @@ switch (cmd) {
       break
     }
 
-    if (['apply', 'undo', 'quarantine', 'dismiss'].includes(sub)) {
-      warn(`cleanup ${sub} 還沒做好。`)
+    // ── 會真的動檔案的 ───────────────────────────────────────
+    //
+    // **離開碼的判準：2 ＝ 這個動作根本沒執行；3 ＝ 執行了但沒有全部成功。**
+    // 呼叫端（右鍵選單、每晚 smoke）據此決定要不要重試：
+    // 2 通常重試會成功（鎖住了、資料庫開不了），3 要人去看那幾個檔。
+    const execOpts = {
+      roots: config.watch, quarantine: QUARANTINE,
+      maxBytes: config.maxBytes, readonly: config.readonly,
+    }
+
+    if (sub === 'apply') {
+      // **唯讀模式不可以建 plan。**
+      // createPlan 不看 readonly（只有 applyPlan 看），所以先建再被擋的話，
+      // 那份 plan 會留在資料庫裡佔住那些檔案，下一次真的 apply 直接撞
+      // 「這個檔案已有待處理的清理計畫」—— 而 smoke 第 0 步正是叫使用者
+      // 先跑一次唯讀試跑。照著文件做就會壞掉。
+      if (config.readonly && !args[1]) {
+        const r = listCandidates(db, { roots: config.watch })
+        const checked = r.candidates.filter(c => c.defaultChecked)
+        say(`唯讀模式：會清掉 ${checked.length} 個檔案，${mb(checked.reduce((n, c) => n + c.bytes, 0))}。`)
+        for (const c of checked) say(`  ✔ ${c.name}　${mb(c.bytes)}`)
+        say('\n這次一個都沒動，也沒有建立計畫。')
+        break
+      }
+
+      let plan
+      try {
+        // 給了 id 就套用那一份，沒給就用目前的候選建一份新的
+        plan = args[1] ? { id: args[1] } : createPlan(db)
+      } catch (e) {
+        if (e instanceof CleanupError && e.code === 'CONFLICT') {
+          // 有 plan 卡著的話要講得出**怎麼往下走**，不然使用者只能去翻資料庫
+          const stuck = db.prepare(
+            `SELECT id FROM cleanup_plans WHERE status IN ('proposed','partial','error')
+             ORDER BY created_at DESC LIMIT 1`).get()
+          warn(e.message)
+          if (stuck) {
+            say(`\n那份計畫是 ${stuck.id}。`)
+            say(`  接著清：node cli.mjs cleanup apply ${stuck.id}`)
+            say(`  不清了：node cli.mjs cleanup undo ${stuck.id}`)
+          }
+          process.exitCode = EXIT.backend
+          break
+        }
+        if (e instanceof CleanupError && e.code === 'EMPTY_PLAN') {
+          // **沒東西要清是成功。** 回非 0 會讓每晚 smoke 一直紅。
+          say('沒有東西需要清，Downloads 很乾淨。')
+          break
+        }
+        warn(cliProblem(e))
+        process.exitCode = exitFor(e)
+        break
+      }
+
+      let r
+      try { r = applyPlan(db, plan.id, execOpts) }
+      catch (e) {
+        if (e instanceof CleanupError && e.code === 'READ_ONLY') {
+          // smoke 第 0 步就靠這個確認「只說不做」。回非 0 會讓那一步永遠紅。
+          const n = plan.items?.length ?? 0
+          say(`唯讀模式：會清掉 ${n} 個檔案，但這次一個都沒動。`)
+          break
+        }
+        warn(cliProblem(e))
+        process.exitCode = exitFor(e)
+        break
+      }
+
+      say(`計畫 ${r.id}`)
+      // **逐項的勾要看 journal，不可以看「有沒有被略過」。**
+      // 一律印 ✔ 的話，全失敗時會印出五個 ✔ 後面接「搬進隔離區 0 個」——
+      // 畫面在說謊，而這支工具的全部價值就是使用者信得過它動了什麼。
+      const byItem = new Map()
+      for (const j of listJournal(db, r.id)) {
+        if (j.op === 'quarantine') byItem.set(j.item_id, j)
+      }
+      // **失敗原因有兩個地方。** 檢查沒過的話（檔案變了、是重複檔的留存者、
+      // 不在白名單資料夾）根本不會寫 journal —— markFailure 只把訊息寫進
+      // file_items.error。只查 journal 的話，最常見的那種失敗印出來是一句
+      // 「沒有搬動」，使用者完全不知道發生什麼事。
+      // spec 第 6 節：沒有 reason 就是 bug。
+      const itemError = db.prepare('SELECT error FROM file_items WHERE id=?')
+      for (const i of r.items) {
+        const j = byItem.get(i.itemId)
+        if (i.skipped) { say(`  － ${i.name}　${mb(i.bytes)}　（你略過了）`); continue }
+        if (j?.status === 'done') { say(`  ✔ ${i.name}　${mb(i.bytes)}`); continue }
+        const why = j?.error ?? itemError.get(i.itemId)?.error ?? '沒有搬動，原因不明'
+        say(`  ✘ ${i.name}　${mb(i.bytes)}　—— ${why}`)
+      }
+      say(`\n搬進隔離區 ${r.quarantinedCount} 個，${mb(r.quarantinedBytes)}。`)
+      if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
+      if (r.status === 'partial' || r.status === 'error') {
+        warn(`\n⚠ 上面 ✘ 的沒搬成。原檔都還在原位，沒有任何東西被刪除。`)
+        // partial 與 error 都是 3 —— 動作執行了，只是檔案沒全部搬成。
+        // 全失敗也不是 2：2 要留給「連跑都跑不起來」。
+        process.exitCode = EXIT.partial
+      }
+      break
+    }
+
+    if (sub === 'undo') {
+      const id = args[1]
+      if (!id) {
+        warn('要給計畫 id。例：node cli.mjs cleanup undo <plan-id>')
+        process.exitCode = EXIT.badInput
+        break
+      }
+      let r
+      try { r = undoPlan(db, id, execOpts) }
+      catch (e) {
+        warn(cliProblem(e))
+        process.exitCode = exitFor(e)
+        break
+      }
+      // 只列**真的放回去**的那些。列全部的話會出現「放回去 2 個檔案」
+      // 後面接三行 ↩ —— 跟 apply 那邊一律印 ✔ 是同一類的畫面說謊。
+      const restored = new Set(
+        listJournal(db, id).filter(j => j.op === 'restore' && j.status === 'done')
+          .map(j => j.item_id))
+      say(`放回去 ${r.restoredCount} 個檔案。`)
+      for (const i of r.items) if (restored.has(i.itemId)) say(`  ↩ ${i.name}`)
+      if (r.status === 'partial' || r.status === 'error') process.exitCode = EXIT.partial
+      break
+    }
+
+    if (sub === 'quarantine') {
+      let rows
+      try { rows = listQuarantine(db) }
+      catch (e) { warn(cliProblem(e)); process.exitCode = exitFor(e); break }
+
+      if (args.includes('--empty')) {
+        let prep
+        try { prep = prepareEmptyQuarantine(db, execOpts) }
+        catch (e) { warn(cliProblem(e)); process.exitCode = exitFor(e); break }
+
+        if (!prep.itemCount) {
+          const waiting = rows.filter(r => !r.canEmptyNow)
+          const soonest = waiting.map(r => Date.parse(r.canEmptyAt)).sort((a, b) => a - b)[0]
+          say(waiting.length
+            ? `還沒有滿七天的檔案。最早的那個還要等 ${days(soonest)} 天。`
+            : '隔離區是空的。')
+          break
+        }
+        say(prep.message)
+        say(`會永久刪除 ${prep.itemCount} 個檔案，${mb(prep.bytes)}。`)
+        // **二次確認要人真的再打一次。** 這是整個專案唯一會刪檔的路徑。
+        say(`確定的話跑：node cli.mjs cleanup quarantine --empty --yes ${prep.token}`)
+        if (!args.includes('--yes')) break
+
+        let r
+        try { r = emptyQuarantine(db, { ...execOpts, token: args[args.indexOf('--yes') + 1], confirmed: true }) }
+        catch (e) { warn(cliProblem(e)); process.exitCode = exitFor(e); break }
+        say(`刪掉 ${r.deletedCount} 個，${mb(r.deletedBytes)}。`)
+        if (r.errors.length) {
+          warn(`${r.errors.length} 個沒刪成：`)
+          for (const e of r.errors) warn(`  ${e.error}`)
+          process.exitCode = EXIT.partial
+        }
+        break
+      }
+
+      if (!rows.length) { say('隔離區是空的。'); break }
+      say(`隔離區有 ${rows.length} 個檔案，${mb(rows.reduce((n, r) => n + r.bytes, 0))}：\n`)
+      for (const r of rows) {
+        say(`  ${r.name}　${mb(r.bytes)}`)
+        say(`         ${r.canEmptyNow ? '可以清空了' : `還要等 ${days(Date.parse(r.canEmptyAt))} 天`}`)
+      }
+      break
+    }
+
+    if (sub === 'dismiss') {
+      warn('cleanup dismiss 還沒做好（要先有 plan id 的來源，等 C 的面板）。')
       process.exitCode = EXIT.backend
       break
     }
 
-    warn(`不認得 cleanup ${sub ?? ''}。可以用：scan、list`)
+    warn(`不認得 cleanup ${sub ?? ''}。可以用：scan、list、apply、undo、quarantine`)
     process.exitCode = EXIT.badInput
     break
   }

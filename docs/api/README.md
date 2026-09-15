@@ -68,8 +68,34 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api'+q
 | `cleanup-plans-apply-partial.json` | 同上，**搬到一半壞掉** |
 | `cleanup-plans-undo.json` | `POST /cleanup/plans/:id/undo` |
 | `cleanup-quarantine.json` | `GET /cleanup/quarantine` |
+| `cleanup-quarantine-empty-preview.json` | `POST /cleanup/quarantine/empty`　**第一次（預覽）** |
 | `pet-state.json` | `GET /pet/state` |
 | `errors.json` | 每一種錯誤長什麼樣 |
+
+### 清空隔離區是**一個 route、兩個階段**
+
+`POST /cleanup/quarantine/empty` 不帶 `token` 是預覽，回 `phase: "preview"` 加一個
+五分鐘內有效的 `token`；帶 `{ token, confirmed: true }` 才真的刪，回 `phase: "done"`。
+
+`confirmed` 必須是**布林 true**。送字串 `"true"`／`"false"` 一律被拒（428）——
+字串在 JS 是 truthy，而這是整個專案唯一會真的刪檔的路徑。
+
+### 錯誤代碼怎麼分
+
+| 狀態碼 | 意思 | C 該做什麼 |
+|---|---|---|
+| 400 | 請求本身有問題 | 改 body 再送 |
+| 403 | 唯讀模式 | 告訴使用者，不要重試 |
+| 404 | 找不到那份計畫 | 重新拿清單 |
+| 409 | 狀態衝突（候選變了、已經套用過、沒東西可清） | 重新掃描或重新拿清單 |
+| 410 | 二次確認過期 | 重新預覽 |
+| 428 | 還沒預覽就確認 | 先打一次不帶 token 的 |
+| 503 | 另一個清理動作正在跑 | 等幾秒重試 |
+| 500 | 這台機器的問題 | 顯示「後端出狀況」，不要自動重試 |
+
+**逐項失敗不是路由錯誤。** 一個檔搬不動的時候整個請求仍然回 200，
+失敗的那幾個在 `error` 與 `status: "partial"` 裡 —— 一個檔失敗不該讓
+另外九個檔的成功消失。
 
 **C 請特別看 `cleanup-plans-apply-partial.json`** —— 搬到一半壞掉是**必做**的容錯
 （spec §6），UI 不能只畫成功的樣子。

@@ -16,6 +16,11 @@ import { randomUUID } from 'node:crypto'
 import { CLEANUP_RULE_VERSION } from '../core/cleanup-rules.ts'
 import { open } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
+import { applyPlan } from '../core/cleanup-exec.ts'
+import { createPlan } from '../core/cleanup-plans.ts'
+import { fixture } from './helpers/cleanup.mjs'
+
+const createPlanFor = (f) => createPlan(f.db)
 import { listCandidates, healthSnapshot, humanError, displayPath, META,
          cleanupRoutes, invalidateQuarantineCache, canEmptyNow,
          DEFAULT_CHECK_MIN, KIND_CONFIDENCE, CLEANUP_KINDS } from '../core/cleanup-routes.ts'
@@ -370,28 +375,19 @@ function sepOf(p) { return p.includes('\\') ? '\\' : '/' }
 
 // ── 稽查抓到的四個 blocker，每個一條釘子 ────────────────────
 describe('B1 隔離區的七天保護窗', () => {
-  test('**剛搬進來的舊檔不可以馬上就能清空**', () => {
-    // mv／rename 會保留 mtime。用 mtime 算七天的話，一個 200 天沒動的 zip
-    // 一搬進隔離區，canEmptyAt 已經是過去式 —— 七天反悔期等於不存在。
-    // 而這個工具的目標客群就是「很久沒動的舊檔」。
-    const q = join(root, 'q' + n)
-    mkdirSync(q, { recursive: true })
-    const f = join(q, '舊檔.zip')
-    writeFileSync(f, 'x')
-    const old = (Date.now() - 200 * DAY) / 1000
-    utimesSync(f, old, old)              // mtime 調成 200 天前，ctime 還是現在
-
-    const h = healthSnapshot(db, { roots: [dl], quarantine: q })
-    assert.equal(h.quarantine.items, 1)
-    assert.equal(h.quarantine.canEmptyNow, false,
-      '剛搬進來就能清空的話，七天反悔期形同虛設')
-    // **要釘住真正的長度，不是只斷言「在未來」。**
-    // 只斷言在未來的話，把 SEVEN_DAYS 改成 7000 毫秒也會過 —— 突變實測 0 紅。
-    // 七天保留期是這個產品唯一的安全承諾，那個數字要有測試守著。
-    const gap = Date.parse(h.quarantine.canEmptyAt) - Date.parse(h.quarantine.lastQuarantinedAt)
-    assert.equal(gap, 7 * DAY, `保留期是 ${gap / DAY} 天，不是七天`)
+  test('**剛搬進來的舊檔不可以馬上就能清空**', t => {
+    // 這條原本釘的是「用 ctime 不要用 mtime」—— 那是 B 還沒做 journal 時的暫代品。
+    // 機制換了，但**關切完全沒變**：mv 會保留 mtime，而這個工具的目標客群
+    // 就是「很久沒動的舊檔」。用 mtime 算的話，一個 200 天沒動的 zip 一搬進來，
+    // canEmptyAt 已經是過去式，七天反悔期等於不存在。
+    const f = fixture(t)   // fixture 裡的檔案 mtime 是 120 天前
+    const plan = createPlanFor(f)
+    applyPlan(f.db, plan.id, f.opts)
+    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine })
+    assert.equal(h.quarantine.items, 2)
+    assert.equal(h.quarantine.canEmptyNow, false, '120 天沒動的檔，搬進來的當下不可以能清')
     assert.ok(Date.parse(h.quarantine.canEmptyAt) > Date.now() + 6 * DAY,
-      '剛搬進來的話，至少還要等六天以上')
+      '七天要從**搬進隔離區**算起，不是從檔案自己的 mtime')
   })
 
   test('空的隔離區不算「可以清空」', () => {
@@ -725,9 +721,10 @@ describe('存活突變的釘子', () => {
     })
     // 逐條列黑名單一定會漏 —— 第一版漏 apply/undo/dismiss/reveal，
     // 第二版還漏 restore/empty。所以改成白名單反過來列。
-    for (const p of ['/cleanup/plans', '/cleanup/apply', '/cleanup/undo', '/cleanup/dismiss',
-                     '/cleanup/reveal', '/cleanup/quarantine/empty', '/cleanup/restore',
-                     '/cleanup/empty', '/cleanup/隨便什麼', '/pet/state']) {
+    // plans／apply／undo／dismiss／quarantine／pet 現在都實作了，不在這張表。
+    // 剩下的還是要被接住 —— 404 會讓 C 以為自己打錯網址。
+    for (const p of ['/cleanup/reveal', '/cleanup/restore', '/cleanup/empty',
+                     '/cleanup/隨便什麼', '/pet/隨便什麼', '/cleanup/plans/x/reveal']) {
       assert.equal(cleanupRoutes(ctx(p)), true, `${p} 應該被接住`)
     }
     for (const r of seen) {
@@ -766,61 +763,33 @@ describe('存活突變的釘子', () => {
     assert.equal(r.needsHuman[0].name, '太大.zip')
   })
 
-  test('隔離區走訪讀不到東西的時候要 fail closed', () => {
+  test('孤兒對帳的走訪要有快取，而且要有失效管道', () => {
+    // 七天窗現在走 journal（一次 SQL），但**孤兒對帳還是得走訪磁碟**，
+    // 而 /health 不需要 token —— 任何網頁都可以用 <img src=...> 連發。
+    const q = join(root, 'q-cache' + n)
+    mkdirSync(q, { recursive: true })
+    writeFileSync(join(q, 'a.zip'), 'x')
+    invalidateQuarantineCache()
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.orphans, 1)
+
+    writeFileSync(join(q, 'b.zip'), 'y')
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.orphans, 1,
+      '十秒內走快取，這是預期的')
+    invalidateQuarantineCache()
+    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.orphans, 2,
+      'B 搬完檔呼叫這個，數字要立刻更新')
+  })
+
+  test('走訪沒看完就 fail closed —— 說不出有沒有孤兒', () => {
     const q = join(root, 'q-trunc' + n)
     mkdirSync(join(q, 'deep'), { recursive: true })
-    // 看得到的那個**已經超過七天**，所以 canEmptyAt 是過去式 ——
-    // 不這樣的話 canEmptyNow 本來就是 false，!truncated 那個子句永遠碰不到，
-    // 測了等於沒測（第一版就是這樣，突變活著）。
     writeFileSync(join(q, 'deep', 'a.zip'), 'x')
     chmodSync(join(q, 'deep'), 0o000)
     invalidateQuarantineCache()
     try {
       const h = healthSnapshot(db, { roots: [dl], quarantine: q })
       assert.equal(h.quarantine.truncated, true, '沒看完就要說沒看完')
-      assert.equal(h.quarantine.canEmptyNow, false)
+      assert.equal(h.quarantine.orphans, 0, '沒看完不可以猜一個孤兒數字')
     } finally { chmodSync(join(q, 'deep'), 0o700); invalidateQuarantineCache() }
-
-    // 上面那段**測不到 `!truncated` 這個子句** —— 新建的檔 ctime 是現在，
-    // canEmptyAt 一定在未來，所以不管截不截斷 canEmptyNow 都是 false。
-    // 真正危險的組合（七天早就到了、但走訪沒看完）要直接打純函式。
-    const past = new Date(Date.now() - DAY).toISOString()
-    assert.equal(canEmptyNow({ items: 3, truncated: false }, past), true, '前提：這樣是可以清的')
-    assert.equal(canEmptyNow({ items: 3, truncated: true }, past), false,
-      '七天到了但沒看完 —— 讀不到的那個子目錄裡可能有昨天才搬進來的東西')
-    assert.equal(canEmptyNow({ items: 0, truncated: false }, past), false, '空的沒有意義')
-    assert.equal(canEmptyNow({ items: 3, truncated: false }, null), false, '算不出時間就 fail closed')
-    const future = new Date(Date.now() + DAY).toISOString()
-    assert.equal(canEmptyNow({ items: 3, truncated: false }, future), false, '還沒到')
-    // 邊界兩側：剛好到 vs 差一毫秒
-    const t = Date.now()
-    assert.equal(canEmptyNow({ items: 1, truncated: false }, new Date(t).toISOString(), t), true)
-    assert.equal(canEmptyNow({ items: 1, truncated: false }, new Date(t + 1).toISOString(), t), false)
-  })
-
-  test('未來的時間戳不可以把整個隔離區鎖住', () => {
-    const q = join(root, 'q-future' + n)
-    mkdirSync(q, { recursive: true })
-    const f = join(q, '怪檔.zip')
-    writeFileSync(f, 'x')
-    const future = (Date.now() + 365 * DAY) / 1000
-    utimesSync(f, future, future)
-    const h = healthSnapshot(db, { roots: [dl], quarantine: q })
-    assert.ok(Date.parse(h.quarantine.canEmptyAt) <= Date.now() + 7 * DAY + 60_000,
-      `一個未來時間戳把整區鎖到 ${h.quarantine.canEmptyAt}`)
-  })
-
-  test('隔離區的快取要有失效管道', () => {
-    const q = join(root, 'q-cache' + n)
-    mkdirSync(q, { recursive: true })
-    writeFileSync(join(q, 'a.zip'), 'x')
-    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 1)
-
-    writeFileSync(join(q, 'b.zip'), 'y')
-    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 1,
-      '十秒內走快取，這是預期的')
-    invalidateQuarantineCache()
-    assert.equal(healthSnapshot(db, { roots: [dl], quarantine: q }).quarantine.items, 2,
-      'B 搬完檔呼叫這個，數字要立刻更新 —— 不然新檔的七天窗在那十秒裡不存在')
   })
 })

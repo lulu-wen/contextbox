@@ -21,6 +21,12 @@ import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
 import { KIND_CONFIDENCE, CLEANUP_KINDS, CLEANUP_RULE_VERSION, PARTIAL_EXT } from './cleanup-rules.ts'
+import {
+  RETENTION_MS, applyPlan, undoPlan, listQuarantine, type ExecOptions,
+} from './cleanup-exec.ts'
+import { createPlan, getPlan, dismissPlan } from './cleanup-plans.ts'
+import { prepareEmptyQuarantine, emptyQuarantine } from './cleanup-quarantine.ts'
+import { CleanupError } from './cleanup-journal.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -353,6 +359,9 @@ export type HealthOptions = {
   /** 傳函式的話會延後求值 —— 呼叫端才不用在建構時就去讀設定檔 */
   roots: string[] | (() => string[])
   quarantine: string
+  /** 這兩個只有會動檔案的 route 才需要。跟 roots 一樣可以是 thunk（延後讀設定）。 */
+  maxBytes?: number | (() => number)
+  readonly?: boolean | (() => boolean)
   version?: string
   /**
    * 帶 token 的呼叫才給完整內容。
@@ -374,114 +383,198 @@ function alive(pid: number): boolean {
   catch (e: any) { return e?.code === 'EPERM' }
 }
 
-type QuarantineStats = {
-  items: number; bytes: number
-  oldestAt: string | null
-  /** **最新**一次被搬進來的時間。七天窗看這個。 */
-  newestQuarantinedAt: string | null
-  /** 走訪超過深度上限，數字是少報的 */
-  truncated: boolean
-}
-
-/** 隔離區的佈局是 B 決定的（可能按 plan id 或日期分層），留寬一點 */
+/** 隔離區走訪的深度上限。B 的結構是 <plan>/<item>/content，正常只有三層。 */
 const MAX_QUARANTINE_DEPTH = 8
 
-/** 檔案是什麼時候被搬進隔離區的。ctime 會被 rename 更新，mtime 不會。 */
-const quarantinedAt = (st: { ctimeMs: number; mtimeMs: number }): number =>
-  // 取 max 是對的方向（rename／cross-fs move／cp -a 都會把 ctime 設成現在，
-  // 所以 max ≥ 真正的隔離時間，永遠偏保守）。但**一定要夾上限** ——
-  // 一個 mtime 在未來的檔（從壓縮檔解出來、下載自帶未來時間、雙開機時鐘）
-  // 會把整個隔離區鎖到一年後，而且沒有任何欄位講得出是哪一個檔。
-  Math.min(Math.max(st.ctimeMs, st.mtimeMs), Date.now())
 
-/**
- * 隔離區的統計要快取。
- *
- * `/health` **不需要 token**，而這支是同步的遞迴走訪 —— 4 萬個檔實測 61ms，
- * 那段時間整個事件迴圈是停住的。任何網頁都可以用不帶 Origin 的 `<img>`
- * 連發（它讀不到回應，但請求照樣執行）。隔離區只有 B 的 exec 會改，
- * 十秒的快取完全夠用。
- */
-let qCache: { dir: string; at: number; val: QuarantineStats } | null = null
-const Q_CACHE_MS = 10_000
-
-/**
- * **搬完檔案一定要呼叫這個。**
- * 不呼叫的話，剛搬進來的檔在接下來十秒內不存在於統計裡 ——
- * 而 canEmptyNow 是用那份統計算的，等於它的七天窗在那十秒裡消失。
- */
-export function invalidateQuarantineCache() { qCache = null }
-
-function quarantineStatsCached(dir: string): QuarantineStats {
-  if (qCache && qCache.dir === dir && Date.now() - qCache.at < Q_CACHE_MS) return qCache.val
-  const val = quarantineStats(dir)
-  qCache = { dir, at: Date.now(), val }
-  return val
+/** 任何一段查詢炸掉都不可以讓整個健康快照少半邊。泛型用函式宣告，箭頭會被當成 JSX。 */
+function safe<T>(fn: () => T, fallback: T): T {
+  try { return fn() } catch { return fallback }
 }
-
-function quarantineStats(dir: string): QuarantineStats {
-  // 隔離區要等第一次搬檔才會建，所以這是每個新安裝的預設回應。
-  // 少一個欄位的話 JSON 出去就整個不見，C 拿 `=== false` 判斷會走錯分支。
-  if (!existsSync(dir)) return { items: 0, bytes: 0, oldestAt: null, newestQuarantinedAt: null, truncated: false }
-  let items = 0, bytes = 0, oldest: number | null = null, newest: number | null = null
-  let truncated = false
-  const walk = (d: string, depth: number) => {
-    if (depth > MAX_QUARANTINE_DEPTH) { truncated = true; return }
-    let entries
-    // 讀不到子目錄跟深度截斷對 canEmptyNow 的意義一樣：**我沒有看完**。
-    try { entries = readdirSync(d, { withFileTypes: true }) } catch { truncated = true; return }
-    for (const e of entries) {
-      const p = d + sep + e.name
-      if (e.isDirectory()) { walk(p, depth + 1); continue }
-      if (!e.isFile()) continue
-      try {
-        const st = statSync(p)
-        items++; bytes += st.size
-        if (oldest === null || st.mtimeMs < oldest) oldest = st.mtimeMs
-        const qAt = quarantinedAt(st)
-        if (newest === null || qAt > newest) newest = qAt
-      } catch { truncated = true }
-    }
-  }
-  walk(dir, 0)
-  return {
-    items, bytes,
-    oldestAt: oldest === null ? null : new Date(oldest).toISOString(),
-    newestQuarantinedAt: newest === null ? null : new Date(newest).toISOString(),
-    truncated,
-  }
-}
-
-const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * 隔離區現在可不可以清空。
  *
- * 抽成純函式是為了**測得到**。留在 healthSnapshot 裡的話，
- * 「超過七天 + 走訪沒看完」這個組合用真實檔案造不出來 ——
- * 新建的檔 ctime 一定是現在，而 quarantinedAt 取 max(ctime, mtime)，
- * 所以 canEmptyAt 永遠在未來，`!truncated` 那個子句永遠碰不到。
- * 突變測試證實了：把 `&& !truncated` 拿掉，整套測試照樣全綠。
+ * 抽成純函式是為了**測得到**：「滿七天 + 走訪沒看完」這個組合
+ * 用真實檔案造不出來，留在 healthSnapshot 裡的話永遠碰不到那個分支。
+ * 突變測試證實過 —— 把 `!truncated` 拿掉，整套測試照樣全綠。
  *
- * 等 B 的 cleanup_journal 進來（那裡的 ts 是真的隔離時間，可以是任意過去），
- * 這個組合就會在真實世界出現，而那正是最危險的時候：
- * 讀不到的那個子目錄裡可能有昨天才搬進來的東西。
+ * `canEmptyNow` 的意思是**「按下去會有東西被刪掉」**，不是「整區都能清」。
+ * `emptyQuarantine` 本來就只刪合格的那幾筆，所以只要有一筆滿七天就成立。
+ * 這個定義跟 canEmptyAt 互推：`canEmptyNow === (canEmptyAt !== null && canEmptyAt <= now)`。
  */
 export function canEmptyNow(
-  q: { items: number; truncated: boolean },
-  canEmptyAt: string | null,
+  q: { items: number; truncated: boolean; canEmptyAt: string | null },
   now: number = Date.now(),
 ): boolean {
   if (q.items === 0) return false        // 空的隔離區「可以清空」沒有意義
   if (q.truncated) return false          // 沒看完 → fail closed
-  if (!canEmptyAt) return false          // 算不出時間 → fail closed
-  return Date.parse(canEmptyAt) <= now
+  if (!q.canEmptyAt) return false        // 算不出時間 → fail closed
+  return Date.parse(q.canEmptyAt) <= now
 }
 
-/** 後端到底有沒有在運作。**這裡也不可以有絕對路徑。** */
-/** 任何一段查詢炸掉都不可以讓整個健康快照少半邊。泛型用函式宣告，箭頭會被當成 JSX。 */
-function safe<T>(fn: () => T, fallback: T): T {
-  try { return fn() } catch { return fallback }
+export type QuarantineView = {
+  items: number
+  bytes: number
+  oldestMtimeAt: string | null
+  /** **最早**一筆變得可刪的時間。取最新那筆的話，UI 會說「還要等七天」，而其實明天就有東西可清。 */
+  canEmptyAt: string | null
+  /** 隔離區裡有、journal 沒有的檔。清空不會動到它們。 */
+  orphans: number
+  truncated: boolean
+}
+
+/**
+ * 隔離區的狀態，**不上鎖**。
+ *
+ * B 的 `listQuarantine()` 會拿 `withCleanupLock`（寫 `cleanup_operation_lock`）。
+ * 但 `/health` **不需要 token**，任何網頁都可以用 `<img src=...>` 連發
+ * （它讀不到回應，但請求照樣執行）。健康檢查拿寫鎖 =
+ * 一個外部網頁就能跟真正的清理動作搶鎖、或讓 /health 一直丟 BUSY。
+ *
+ * 所以這裡自己下唯讀查詢。**journal 是正本**，磁碟只用來數孤兒 ——
+ * 有人手動丟檔進隔離區、或是搬完檔但寫 DB 前當機，都會留下 journal 沒有的檔案。
+ * 那些檔 `emptyQuarantine` 不會刪，所以要另外報數；但也**不可以**讓它們擋住清空，
+ * 不然一個孤兒就讓隔離區永遠清不掉。
+ */
+export function quarantineFromJournal(db: DatabaseSync, dir: string): QuarantineView {
+  // **B 的表是懶建的。** `cleanup_move_details` 與 `cleanup_purges` 只在
+  // `initCleanup()` 裡建，而那支只被 createPlan／getPlan 呼叫 ——
+  // 全新安裝、還沒建過任何 plan 的機器上它們不存在，JOIN 會丟例外，
+  // 外層的 safe() 就把整個隔離區區塊吞成 truncated，而且永遠不會好。
+  //
+  // 這裡**不主動建表**：/health 不需要 token，不可以在那條路徑上做 DDL 寫入。
+  // 沒有 journal 就代表從來沒搬過檔 —— 隔離區裡任何東西都是孤兒，這是誠實的答案。
+  const ready = db.prepare(
+    `SELECT count(*) n FROM sqlite_master WHERE type='table'
+       AND name IN ('cleanup_journal','cleanup_move_details','cleanup_purges')`
+  ).get() as { n: number }
+  if (ready.n < 3) {
+    const onDisk = countFilesCached(dir)
+    return { items: 0, bytes: 0, oldestMtimeAt: null, canEmptyAt: null,
+      orphans: onDisk < 0 ? 0 : onDisk, truncated: onDisk < 0 }
+  }
+
+  const rows = db.prepare(
+    `SELECT q.seq, d.completed_at, d.fingerprint
+       FROM cleanup_journal q
+       JOIN cleanup_move_details d ON d.seq = q.seq
+      WHERE q.op='quarantine' AND q.status='done'
+        AND NOT EXISTS (SELECT 1 FROM cleanup_journal r
+                         WHERE r.plan_id=q.plan_id AND r.item_id=q.item_id
+                           AND r.op='restore' AND r.status='done')
+        AND NOT EXISTS (SELECT 1 FROM cleanup_purges p WHERE p.seq=q.seq AND p.status='done')`
+  ).all() as { seq: number; completed_at: string | null; fingerprint: string }[]
+
+  let bytes = 0, oldestMtime: number | null = null, earliest: number | null = null
+  let truncated = false
+  for (const r of rows) {
+    // 大小與 mtime 存在 fingerprint 的 JSON 裡（B 的格式）。讀不出來就當 0，
+    // 但**不影響七天窗** —— 那是 completed_at 的事。
+    const fp = safe(() => JSON.parse(r.fingerprint) as { size?: number; mtime?: string }, {})
+    bytes += fp.size ?? 0
+    const m = fp.mtime ? Date.parse(fp.mtime) : NaN
+    if (Number.isFinite(m) && (oldestMtime === null || m < oldestMtime)) oldestMtime = m
+    const done = r.completed_at ? Date.parse(r.completed_at) : NaN
+    // 缺隔離完成時間就算不出七天 → fail closed，而不是當成「很久以前」
+    if (!Number.isFinite(done)) { truncated = true; continue }
+    const at = done + RETENTION_MS
+    if (earliest === null || at < earliest) earliest = at
+  }
+
+  const onDisk = countFilesCached(dir)
+  // -1 代表磁碟讀不到／沒看完。journal 說有 N 筆但磁碟數不出來 → 說不出有沒有孤兒
+  const orphans = onDisk < 0 ? 0 : Math.max(0, onDisk - rows.length)
+  if (onDisk < 0) truncated = true
+
+  return {
+    items: rows.length,
+    bytes,
+    oldestMtimeAt: oldestMtime === null ? null : new Date(oldestMtime).toISOString(),
+    canEmptyAt: earliest === null ? null : new Date(earliest).toISOString(),
+    orphans,
+    truncated,
+  }
+}
+
+/** 只數檔案數，用來對帳孤兒。讀不到／沒看完就回 -1（**不是 0** —— 0 會被當成「確定沒有孤兒」）。 */
+function countFiles(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let n = 0
+  let ok = true
+  const walk = (d: string, depth: number) => {
+    if (depth > MAX_QUARANTINE_DEPTH) { ok = false; return }
+    let entries
+    // 讀不到子目錄跟深度截斷的意義一樣：**我沒有看完**，說不出有沒有孤兒。
+    try { entries = readdirSync(d, { withFileTypes: true }) } catch { ok = false; return }
+    for (const e of entries) {
+      if (e.isDirectory()) walk(d + sep + e.name, depth + 1)
+      else if (e.isFile()) n++
+    }
+  }
+  walk(dir, 0)
+  return ok ? n : -1
+}
+
+/**
+ * 數檔案要快取。
+ *
+ * 七天窗現在走 journal（一次 SQL），但**孤兒對帳還是得走訪磁碟**，
+ * 而 `/health` 不需要 token —— 這支是同步遞迴，4 萬個檔實測 61ms，
+ * 那段時間整個事件迴圈是停住的。任何網頁都可以用不帶 Origin 的 `<img>` 連發
+ * （它讀不到回應，但請求照樣執行）。隔離區只有 B 的 exec 會改，十秒夠用。
+ */
+let countCache: { dir: string; at: number; files: number } | null = null
+
+function countFilesCached(dir: string): number {
+  if (countCache && countCache.dir === dir && Date.now() - countCache.at < 10_000) return countCache.files
+  const files = countFiles(dir)
+  countCache = { dir, at: Date.now(), files }
+  return files
+}
+
+/** B 搬完檔呼叫這個，數字立刻更新 —— 不然新檔在那十秒裡看起來像孤兒。 */
+export function invalidateQuarantineCache() { countCache = null }
+
+/**
+ * 寵物狀態。**第一個成立的贏。**
+ *
+ * spec 第 8 節把 `undoable` 列成一個 state，但它的條件是
+ * 「隔離區裡還有這份 plan 的檔」——那會成立**七天**。當成 state 的話
+ * 寵物會卡在「可以復原」整整一週，`found`／`watching` 永遠不會出現。
+ * 所以降成旗標。
+ *
+ * 另外 `thinking`／`cleaning`／`happy` 後端**查不出來**：掃描與 apply
+ * 都是同步 request，回應送出的時候它們已經結束了。那三個是前端在等
+ * response 的時候自己播的動畫，不該由這裡回報。
+ */
+export function petState(
+  h: { db: { ok: boolean }; watcher: { ok: boolean }; pendingCandidates: number; lastError: unknown },
+  counts: { proposedPlans: number; activeQuarantine: number },
+) {
+  const state =
+    // 壞掉的時候顯示「找到 7 個可以清」是在騙人
+    !h.db.ok || h.lastError ? 'worried'
+    // 使用者正在等確認，這時候跳「找到東西了」會蓋掉待辦
+    : counts.proposedPlans > 0 ? 'waiting'
+    : h.pendingCandidates > 0 ? 'found'
+    : h.watcher.ok ? 'watching'
+    : 'idle'
+
+  const message =
+    state === 'worried' ? '後端出了點狀況，先看一下 doctor。'
+    : state === 'waiting' ? `有 ${counts.proposedPlans} 份清單等你確認。`
+    : state === 'found' ? `找到 ${h.pendingCandidates} 個可以清的檔案。`
+    : state === 'watching' ? '盯著 Downloads。'
+    : '沒事，在發呆。'
+
+  return {
+    state,
+    message,
+    pendingCount: h.pendingCandidates,
+    quarantinedCount: counts.activeQuarantine,
+    undoable: counts.activeQuarantine > 0,
+  }
 }
 
 export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
@@ -497,21 +590,9 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
   const running = Boolean(beat) && alive(pid)
   const fresh = Boolean(beat) && (Date.now() - Date.parse(beat!)) < 5 * 60_000
 
-  const q = safe(() => quarantineStatsCached(opts.quarantine),
-    { items: 0, bytes: 0, oldestAt: null, newestQuarantinedAt: null, truncated: true })
-  // **七天窗要看「搬進隔離區的時間」，不是檔案自己的 mtime。**
-  //
-  // rename／mv 會保留 mtime，而這個工具的目標客群就是「很久沒動的舊檔」——
-  // 一個 200 天沒動的 zip 一搬進來，用 mtime 算出來的 canEmptyAt 已經是過去式，
-  // 七天反悔期等於不存在。稽查實測過。
-  //
-  // 而且要看**最新**一次隔離，不是最舊的那一份 —— 只要裡面還有東西不滿七天，
-  // 整區就不能清空。
-  //
-  // 正確的來源是 cleanup_journal 的 ts（B 還沒做）。在那之前用檔案的 ctime
-  // （搬移會更新 ctime，Windows 上是建立時間），兩個都拿不到就 fail closed。
-  const newest = q.newestQuarantinedAt
-  const canEmptyAt = newest ? new Date(Date.parse(newest) + SEVEN_DAYS).toISOString() : null
+  // 隔離區：journal 是正本，磁碟只用來對帳（見 quarantineFromJournal）。
+  const q = safe(() => quarantineFromJournal(db, opts.quarantine),
+    { items: 0, bytes: 0, oldestMtimeAt: null, canEmptyAt: null, orphans: 0, truncated: true })
 
   const pending = safe(() => (db.prepare(
     `SELECT count(DISTINCT c.item_id) n FROM cleanup_candidates c
@@ -564,11 +645,11 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
     quarantine: {
       items: q.items, bytes: q.bytes,
       /** 檔案自己的 mtime，**不是**隔離時間。只拿來顯示，不要拿來算七天。 */
-      oldestMtimeAt: q.oldestAt,
-      lastQuarantinedAt: q.newestQuarantinedAt,
-      canEmptyAt,
-      // 空的隔離區「可以清空」沒有意義，而且算不出時間就當不能清（fail closed）
-      canEmptyNow: canEmptyNow(q, canEmptyAt),
+      oldestMtimeAt: q.oldestMtimeAt,
+      canEmptyAt: q.canEmptyAt,
+      canEmptyNow: canEmptyNow(q),
+      /** 隔離區裡有、journal 沒有的檔。清空**不會**動到它們，所以要說出來。 */
+      orphans: q.orphans,
       truncated: q.truncated,
     },
     pendingCandidates: pending,
@@ -585,6 +666,9 @@ export type RouteCtx = {
   db: DatabaseSync
   roots: string[] | (() => string[])
   quarantine: string
+  /** 這兩個只有會動檔案的 route 才需要。跟 roots 一樣可以是 thunk（延後讀設定）。 */
+  maxBytes?: number | (() => number)
+  readonly?: boolean | (() => boolean)
   url: URL
   method: string
   body: any
@@ -598,15 +682,96 @@ const fail = (send: RouteCtx['send'], code: number, error: string, tag: string) 
   send(code, { error, code: tag })
 
 /**
+ * B 的 CleanupError code → HTTP 狀態碼。
+ *
+ * **這張表一定要跟 B 的原始碼對得上。** 手寫清單會腐爛 ——
+ * 上一輪 `KIND_CONFIDENCE` 就是這樣：新增一條規則、表沒更新，
+ * 它靜靜變成預設值，沒有任何測試會紅。
+ * 所以 `test/cleanup-wire.test.mjs` 會從 `core/cleanup-*.ts` 把 code 抓出來比對，
+ * B 新增一個沒對應的 code 就紅。
+ *
+ * 分三類：**使用者送錯**（4xx 該改請求）、**狀態衝突**（4xx 該改做法）、
+ * **這台機器的問題**（5xx 不是呼叫端的錯）。
+ */
+export const HTTP_FOR_CODE: Record<string, number> = {
+  // ── 請求本身有問題
+  BAD_BODY: 400,
+  NOT_FOUND: 404,
+
+  // ── 請求合法，但現在的狀態不允許
+  CONFLICT: 409,
+  // 候選變了是狀態衝突，不是格式錯 —— C 該重新掃描，不是改參數
+  STALE_CANDIDATE: 409,
+  // 「沒東西可清」對 HTTP 是狀態；對 CLI 是**成功**（見 cli.mjs 的離開碼）
+  EMPTY_PLAN: 409,
+  TOO_RECENT: 409,
+  // 唯讀模式是權限拒絕，不是格式錯
+  READ_ONLY: 403,
+  // 語意就是為「你少做了前一步」設計的
+  CONFIRMATION_REQUIRED: 428,
+  // 曾經有效、現在永久消失 —— 重試同一個 token 沒有意義
+  CONFIRMATION_EXPIRED: 410,
+  // 請求完全合法，只是現在忙。409 會讓 C 以為要改請求
+  BUSY: 503,
+
+  // ── 這台機器的問題，呼叫端改什麼都沒用
+  BAD_CONFIG: 500,
+  UNSAFE_PATH: 500,
+  UNSAFE_JOURNAL: 500,
+  UNSAFE_FILE: 500,
+  // 底下這些多半只出現在**逐項結果**裡（applyPlan／emptyQuarantine 的
+  // 逐檔 try/catch），整個請求仍然 200 —— 一個檔失敗不該讓另外九個檔的成功消失。
+  // 列在這裡是為了萬一它們真的穿到路由層時不會掉進未知分支。
+  CHANGED: 500,
+  MISSING: 500,
+  PURGED: 500,
+  PROTECTED: 500,
+  OUTSIDE_ROOT: 500,
+  NO_DUPLICATE: 500,
+  VERIFY_FAILED: 500,
+}
+
+/**
+ * 認不得的 code 走 **500**。
+ *
+ * 400 等於告訴 C「你打錯了」，它會改 body 重試，永遠修不好 ——
+ * 第二輪才修過一模一樣的 bug（後端故障回 400 + SQLite 原文）。
+ * 不知道是誰的錯的時候，說「不是你的錯」比較安全。
+ */
+export function statusFor(code: string | undefined): number {
+  if (code && Object.prototype.hasOwnProperty.call(HTTP_FOR_CODE, code)) return HTTP_FOR_CODE[code]
+  return 500
+}
+
+/**
  * 清理相關的唯讀 route。**認得就處理並回 true，不認得回 false** 讓下一個接手。
  *
  * apply／undo／dismiss 不在這裡 —— 那些會真的動檔案，是 B 的範圍。
  */
+/** 組出 B 要的 ExecOptions。thunk 在這裡才求值 —— 唯讀的 route 不該去碰設定檔。 */
+function execOptions(ctx: RouteCtx): ExecOptions {
+  return {
+    roots: typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots,
+    quarantine: ctx.quarantine,
+    maxBytes: typeof ctx.maxBytes === 'function' ? ctx.maxBytes() : (ctx.maxBytes ?? 0),
+    readonly: typeof ctx.readonly === 'function' ? ctx.readonly() : ctx.readonly,
+  }
+}
+
 export function cleanupRoutes(ctx: RouteCtx): boolean {
   // **整支包起來。** 不包的話例外會穿到 server.ts 的 catch，那裡回的是
   // 400 + SQLite 原文 —— 伺服器故障卻告訴 C「你打錯了」，而且原文可能帶路徑。
   try { return route(ctx) }
   catch (e: any) {
+    // B 的 CleanupError 訊息都是寫好的人話而且不含路徑（cleanupProblem 負責），
+    // 所以可以直接送出去。其他例外一律換成罐頭訊息。
+    if (e instanceof CleanupError) {
+      const status = statusFor(e.code)
+      // 5xx 才值得記進 lastError —— 4xx 是呼叫端的事，記了只會把 doctor 洗版
+      if (status >= 500) reportError(ctx.db, e)
+      fail(ctx.send, status, e.message, e.code)
+      return true
+    }
     reportError(ctx.db, e)
     fail(ctx.send, 500, '後端出錯了，這一步沒有搬動或刪除任何檔案。', 'INTERNAL')
     return true
@@ -656,6 +821,73 @@ function route(ctx: RouteCtx): boolean {
       reportError(ctx.db, e)
       fail(send, 500, '掃描的時候出錯了，沒有搬動或刪除任何檔案。', 'INTERNAL')
     }
+    return true
+  }
+
+  // ── B 的執行層 ────────────────────────────────────────────
+
+  if (p === '/cleanup/plans' && method === 'POST') {
+    send(200, createPlan(ctx.db, {
+      candidateIds: ctx.body?.candidateIds,
+      requestId: ctx.body?.requestId,
+    }))
+    return true
+  }
+
+  const plan = /^\/cleanup\/plans\/([^/]+)(?:\/(apply|undo|dismiss))?$/.exec(p)
+  if (plan) {
+    const id = decodeURIComponent(plan[1])
+    const action = plan[2]
+    if (!action && method === 'GET') { send(200, getPlan(ctx.db, id)); return true }
+    if (action && method === 'POST') {
+      if (action === 'dismiss') { send(200, dismissPlan(ctx.db, id)); return true }
+      const opts = execOptions(ctx)
+      send(200, action === 'apply'
+        ? applyPlan(ctx.db, id, { ...opts, skippedIds: ctx.body?.skippedIds })
+        : undoPlan(ctx.db, id, opts))
+      return true
+    }
+    fail(send, 405, '這個路徑不收這個方法。', 'BAD_METHOD')
+    return true
+  }
+
+  if (p === '/cleanup/quarantine' && method === 'GET') {
+    const items = listQuarantine(ctx.db)
+    send(200, {
+      items,
+      total: items.length,
+      bytes: items.reduce((n, i) => n + i.bytes, 0),
+    })
+    return true
+  }
+
+  if (p === '/cleanup/quarantine/empty' && method === 'POST') {
+    // **一個路由兩個階段。** 不帶 token = 預覽；帶 token + confirmed = 真的刪。
+    // `phase` 一定要回，不然 C 分不出自己拿到的是預覽還是結果。
+    const token = ctx.body?.token
+    if (!token) {
+      // 預覽是唯讀動作。現在沒有滿七天的檔就回 itemCount 0，
+      // 不要丟錯 —— 對一個唯讀動作丟錯很沒道理。
+      send(200, { phase: 'preview', ...prepareEmptyQuarantine(ctx.db, execOptions(ctx)) })
+      return true
+    }
+    // **`confirmed` 原封不動傳給 B。** 不可以 Boolean() ——
+    // body 是 `{"confirmed":"false"}` 的話，字串 "false" 在 JS 是 truthy，
+    // 而這是整個專案唯一會真的刪檔的路徑。
+    send(200, { phase: 'done', ...emptyQuarantine(ctx.db, {
+      ...execOptions(ctx), token, confirmed: ctx.body?.confirmed,
+    }) })
+    return true
+  }
+
+  if (p === '/pet/state' && method === 'GET') {
+    const roots = typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
+    const h = healthSnapshot(ctx.db, { roots, quarantine: ctx.quarantine })
+    send(200, petState(h, {
+      proposedPlans: safe(() => (ctx.db.prepare(
+        `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
+      activeQuarantine: h.quarantine.items,
+    }))
     return true
   }
 

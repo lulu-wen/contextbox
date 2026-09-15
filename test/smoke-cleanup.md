@@ -199,8 +199,12 @@ node cli.mjs cleanup apply                  # 建 plan 並套用，記下 plan i
 node cli.mjs cleanup apply <同一個 plan-id>
 ```
 
-第二次要回 `409 PLAN_ALREADY_APPLIED`（CLI 上是一句人話 + 離開碼 1），
-**不可以真的再搬一次**。
+第二次要**回同樣的結果、離開碼 0**，而且「搬進隔離區 N 個」的 N **不可以變大** ——
+那代表真的搬了第二次。
+
+> 這一份原本寫「第二次回 409 + 離開碼 1」。實作出來是冪等重播，而那是對的：
+> CLI 逾時後被腳本重試是正常的，不該算失敗。兩種做法都守住「不可以真的再搬一次」，
+> 但冪等對呼叫端友善得多。改文件，不改實作。
 
 ---
 
@@ -212,6 +216,16 @@ node cli.mjs cleanup quarantine --empty
 ```
 
 剛剛才放進去的東西**不到七天**，所以要被擋下來，訊息要講得出「還要等幾天」。
+
+滿七天之後 `--empty` 會先印預覽與一個 token，**不會刪任何東西**。
+要真的刪得再打一次：
+
+```bash
+node cli.mjs cleanup quarantine --empty --yes <token>
+```
+
+> 這是整個專案唯一會永久刪檔的路徑，所以一定要打兩次。
+> token 五分鐘後失效。
 
 ---
 
