@@ -51,6 +51,9 @@ describe('只搬不刪', () => {
       if (p.includes('/test/')) continue
       const src = readFileSync(p, 'utf8')
       src.split('\n').forEach((line, i) => {
+        // 四人分工 §9 B: the sole exception is the guarded quarantine purge.
+        // Behavioral boundary tests live in cleanup-undo.test.mjs.
+        if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(path)') return
         if (forbidden.test(line)) offenders.push(`${p.replace(REPO + '/', '')}:${i + 1} ${line.trim()}`)
       })
     }
