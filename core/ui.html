@@ -137,6 +137,20 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
 }
 .foot{color:var(--faint); font-size:12px; text-align:center; padding:8px 0 0}
 </style>
+<style>
+  #quaso { position: fixed; right: 20px; bottom: 16px; z-index: 50; width: 220px; }
+  #quaso-stage { width: 220px; height: 220px; }
+  #quaso-stage canvas { display: block; width: 100%; height: 100%; }
+  #quaso-status { margin: 0; padding: 10px 14px; border: 1px solid #dfd7ca;
+    border-radius: 16px; background: #fffaf0; color: #514637; font-size: 13px;
+    box-shadow: 0 4px 18px #0000000d; }
+  #quaso-controls { display: flex; gap: 8px; justify-content: center; }
+  #quaso-controls button { border: 1px solid #dfd7ca; border-radius: 12px;
+    padding: 6px 12px; background: #fffaf0; color: #514637; cursor: pointer; }
+  @media (max-width: 700px) {
+    #quaso { position: relative; margin: 20px auto; right: auto; bottom: auto; }
+  }
+</style>
 </head>
 <body>
 
@@ -163,6 +177,23 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <p class="foot">ContextBox —— 一個認識你的本機 agent</p>
 </main>
 
+<aside id="quaso" aria-label="Quaso 寵物">
+  <p id="quaso-status" role="status">Quaso 正在醒來……</p>
+  <div id="quaso-stage" role="img" aria-label="Quaso 的 3D 模型"></div>
+  <div id="quaso-controls">
+    <button id="quaso-turn" type="button" disabled>轉個身</button>
+    <button id="quaso-motion" type="button" disabled>暫停動畫</button>
+    <button id="quaso-retry" type="button" hidden>重新載入</button>
+  </div>
+</aside>
+<script type="module">
+  import('/assets/pet-viewer.js').catch(() => {
+    document.getElementById('quaso-status').textContent = 'Quaso 載入失敗，請確認伺服器已啟動，再重新載入。'
+    const retry = document.getElementById('quaso-retry')
+    retry.hidden = false
+    retry.onclick = () => location.reload()
+  })
+</script>
 <script>
 /* ───────────────────────────────────────────────────────────────
    token 由 server 在送出這一頁的時候直接印進來，使用者不用自己貼。

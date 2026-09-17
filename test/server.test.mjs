@@ -30,6 +30,32 @@ test('健康檢查不用 token', async () => {
   assert.equal(r.status, 200)
 })
 
+test('寵物公開素材可載入，模型格式正確，HEAD 不回 body', async () => {
+  const r = await call('/assets/quaso_v8.glb', { token: null, origin: null })
+  assert.equal(r.status, 200)
+  assert.equal(r.headers.get('content-type'), 'model/gltf-binary')
+  assert.equal(Buffer.from(await r.arrayBuffer()).subarray(0, 4).toString(), 'glTF')
+  const head = await call('/assets/quaso_v8.glb', { method: 'HEAD', token: null, origin: null })
+  assert.equal(head.status, 200)
+  assert.equal(await head.text(), '')
+  for (const file of ['pet-viewer.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
+    const script = await call('/assets/' + file, { token: null, origin: null })
+    assert.equal(script.status, 200, file)
+    assert.match(script.headers.get('content-type'), /javascript/)
+    await script.arrayBuffer()
+  }
+})
+
+test('素材路由只允許清單內檔案，維持來源與個資防線', async () => {
+  for (const path of ['/assets/token', '/assets/server.ts', '/assets/%2e%2e%2fserver.ts']) {
+    const r = await call(path, { token: null, origin: null })
+    assert.equal(r.status, 404)
+  }
+  assert.equal((await call('/assets/quaso_v8.glb', { origin: 'https://evil.example.com' })).status, 403)
+  assert.equal((await call('/assets/quaso_v8.glb', { method: 'POST' })).status, 405)
+  assert.equal((await call('/facts', { token: null, origin: null })).status, 401)
+})
+
 test('沒帶 token 讀不到資料', async () => {
   const r = await call('/facts', { token: null })
   assert.equal(r.status, 401)
