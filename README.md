@@ -78,6 +78,13 @@ node core/server.ts          # 本機 server，印出網址與鑰匙
 
 打開它印的網址（`http://127.0.0.1:7391/`），把基本資料填一填。鑰匙已經幫你帶好了。
 
+首頁右下角會載入 `core/assets/quaso_v8.glb`，可轉身與暫停動畫。
+模型由 `core/assets/pet-viewer.js` 顯示；更新 server 程式後請重啟再重新整理頁面。
+目前這是 3D 寵物展示，尚未接上清理面板或後端寵物狀態。
+前端 3D 顯示使用隨專案保存的 Three.js 0.180.0（MIT），是下述零外部依賴規則的例外；
+後端仍無外部依賴，仍不需 `npm install`，頁面不連外部 CDN。
+來源與授權見 [core/assets/vendor/README.md](core/assets/vendor/README.md)。
+
 ### 擴充套件
 
 1. Chrome／Edge 開 `chrome://extensions`
