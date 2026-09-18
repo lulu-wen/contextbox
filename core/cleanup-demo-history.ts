@@ -24,7 +24,7 @@ export function recordDemo(db: DatabaseSync, body: any) {
   ids(body?.candidateIds)
   if (typeof body?.requestId !== 'string' || !body.requestId || body.requestId.length > 200) throw new Error('缺少操作識別碼，請重新整理後再試。')
   const selection = JSON.stringify([...new Set(body.candidateIds)].sort())
-  const fixture = JSON.parse(readFileSync(new URL('../docs/api/cleanup-candidates.json', import.meta.url), 'utf8'))
+  const fixture = JSON.parse(readFileSync(new URL('./assets/demo-candidates.json', import.meta.url), 'utf8'))
   const known = new Set(fixture.candidates.flatMap((i: any) => i.candidateIds))
   if (body.candidateIds.some((id: string) => !known.has(id))) throw new Error('範例候選已變更，請重新整理。')
   const selected = new Set(body.candidateIds)

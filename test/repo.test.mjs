@@ -86,3 +86,15 @@ test('不帶 token 的 health 範例不可以有資料夾名或錯誤原文', ()
   assert.equal(keys(lean.watcher), keys(full.watcher))
   assert.equal(keys(lean.quarantine), keys(full.quarantine))
 })
+
+test('demo 資料跟 API 形狀契約不可以共用同一個檔', () => {
+  // docs/api/cleanup-candidates.json 是從真的程式輸出產生的，會隨實作重產。
+  // demo 需要穩定、好看的手寫資料。兩者共用的話，每次重產契約就會弄壞 demo
+  // 與它的測試 —— 2026-09-18 合併 C 的面板時真的發生過（9 條紅）。
+  const readers = ['core/server.ts', 'core/cleanup-demo-history.ts', 'test/cleanup-demo.test.mjs']
+  for (const f of readers) {
+    const s = readFileSync(join(REPO, f), 'utf8')
+    assert.ok(!/docs\/api\/cleanup-candidates\.json/.test(s),
+      `${f} 又去讀 docs/api/cleanup-candidates.json 了 —— demo 要用 core/assets/demo-candidates.json`)
+  }
+})

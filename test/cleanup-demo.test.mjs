@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createDemo } from '../core/assets/cleanup-demo-state.js'
 
-const fixture = JSON.parse(readFileSync(new URL('../docs/api/cleanup-candidates.json', import.meta.url)))
+const fixture = JSON.parse(readFileSync(new URL('../core/assets/demo-candidates.json', import.meta.url)))
 
 test('restoring historical operations returns missing candidates without duplicating existing files', () => {
   const demo = createDemo(fixture)
