@@ -722,7 +722,9 @@ describe('m 失敗原因在 applyPlan 裡面記（不經過 route）', () => {
     const f = fixture(t, {})
     writeFileSync(join(f.downloads, 'r.pdf'), 'same')
     writeFileSync(join(f.downloads, 'r (1).pdf'), 'same')
-    f.scan()
+    // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
+    // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
+    scanner.scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
     const p = plans.createPlan(f.db)
     const r = routes.withOutcomes(f.db, exec.applyPlan(f.db, p.id, f.opts))
     const failed = r.items.filter(i => i.outcome === 'failed')
@@ -735,7 +737,7 @@ describe('m 失敗原因在 applyPlan 裡面記（不經過 route）', () => {
     assert.match(later.why, /十分鐘內還在變動/, `重掃之後原因不見了：${later.why}`)
   })
 
-  test('（推論）同一份計畫重試成功 → 失敗紀錄刪掉', t => {
+  test('（推論）同一份計畫接著做成功 → 失敗紀錄刪掉', t => {
     const f = fixture(t, { 'a.zip': 'aaa', 'b.zip': 'bbb' })
     const p = plans.createPlan(f.db)
     const b = join(f.downloads, 'b.zip')
@@ -743,6 +745,9 @@ describe('m 失敗原因在 applyPlan 裡面記（不經過 route）', () => {
     utimesSync(b, f.old, f.old)
     assert.equal(exec.applyPlan(f.db, p.id, f.opts).status, 'partial')
     assert.equal(f.db.prepare('SELECT count(*) n FROM cleanup_item_errors WHERE plan_id=?').get(p.id).n, 1)
+    // 跑完的計畫（partial）是一次性的、不重試（稽核第二輪 R2-3）；會接著做的只有中斷的 proposed。
+    // 把狀態撥回 proposed，模擬「b 失敗之後、寫計畫狀態之前被砍」
+    f.db.prepare(`UPDATE cleanup_plans SET status='proposed' WHERE id=?`).run(p.id)
     writeFileSync(b, 'bbb')                             // 改回原樣（內容、大小、時間都一樣）
     utimesSync(b, f.old, f.old)
     assert.equal(exec.applyPlan(f.db, p.id, f.opts).status, 'applied')

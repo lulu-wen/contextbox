@@ -23,9 +23,17 @@
     "truncated": false
   },
   "pendingCandidates": 2,
-  "needsHumanCount": 3,
+  "needsHumanCount": 2,
   "lastError": "有，帶 token 才看得到",
   "lastErrorAt": null,
   "lastOkAt": null,
+  "lastErrorKind": null,
+  "lastOkByKind": {
+    "scan": null,
+    "apply": null,
+    "undo": null,
+    "empty": null
+  },
+  "scanProblems": [],
   "facts": 0
 }

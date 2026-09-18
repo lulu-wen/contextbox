@@ -1,19 +1,19 @@
 {
-  "id": "d88ef619-3857-46f3-9b79-b36ca97be0b6",
+  "id": "6e615245-9827-4e63-bdb3-2fba38cc86a2",
   "status": "dismissed",
   "itemCount": 1,
-  "createdAt": "2026-09-18T20:59:45.694Z",
+  "createdAt": "2026-09-18T23:18:45.042Z",
   "appliedAt": null,
   "error": null,
   "bytes": 22,
   "items": [
     {
-      "itemId": "c321e676-82a0-4ead-a37f-8dd6ccef1a84",
+      "itemId": "c5ff5844-f9b9-4554-bdc4-ae09bd469d3a",
       "name": "很舊的.bin",
       "bytes": 22,
-      "mtime": "2026-03-02T20:59:45.092Z",
+      "mtime": "2026-03-02T23:18:44.455Z",
       "candidateIds": [
-        "360bd3cf-c921-438d-a68f-d04056c2cdac"
+        "b994724b-77d5-4669-8913-5c5f65a7db79"
       ],
       "skipped": false,
       "reasons": [

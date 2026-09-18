@@ -40,7 +40,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 認證 | header `x-contextbox-token`。只有 `GET /health` 不用 |
 | 頁面 | `GET /` 要帶 `?k=<token>`（`node cli.mjs open` 與 server 印出來的網址都帶好了）；沒帶回 401 純文字，**不含 token** |
 | 來源 | Origin 只放行：沒有 Origin、`chrome-extension://…`、server 自己；其他 403 |
-| body | 一定是 JSON 物件。空的 body 等於 `{}`；看不懂（壞掉的 JSON、`null`、陣列、字串、form 格式）→ 400 `BAD_BODY`，**不會被當成「什麼都沒帶」**；超過 1 MB → 413 `BODY_TOO_LARGE` |
+| body | 一定是 JSON 物件。空的 body 等於 `{}`；看不懂（壞掉的 JSON、`null`、陣列、字串、form 格式）→ 400 `BAD_BODY`，**不會被當成「什麼都沒帶」**；**帶了這條路徑不認得的欄位**（拼錯的 `candidateID`、`skippedIDs`、snake_case 的 `candidate_ids`）也是 400 `BAD_BODY`，什麼都不做（各路徑收哪些欄位見下面「各路徑收的 body」）；超過 1 MB → 413 `BODY_TOO_LARGE` |
 | 方法 | 認得的路徑用錯方法 → 405 `BAD_METHOD`，帶 `Allow` header |
 | 重送 | `apply`、`undo`、`dismiss`、`release`、清空確認（同一個 token）重送都拿到同樣的結果，不會做第二次。建計畫靠 `requestId`（見下） |
 | 時間 | 一律 ISO 8601，UTC |
@@ -60,13 +60,13 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 
 | HTTP | code | 什麼時候 | 呼叫端該做什麼 |
 |---|---|---|---|
-| 400 | `BAD_BODY` | body 看不懂；欄位型別不對（`candidateIds: null`、`confirmed: "true"`）；計畫 id 的 `%xx` 壞掉；分頁參數不對；略過清單有不屬於這份計畫的 id | 改請求再送 |
+| 400 | `BAD_BODY` | body 看不懂；帶了這條路徑不認得的欄位（`candidateID`、`skippedIDs`…）；欄位型別不對（`candidateIds: null`、`confirmed: "true"`）；計畫 id 的 `%xx` 壞掉；分頁參數不對；略過清單有不屬於這份計畫的 id | 改請求再送 |
 | 401 | （沒有） | token 不對或沒帶 | 重新拿 token |
 | 403 | `READ_ONLY` | 唯讀模式：不建計畫、不搬檔 | 告訴使用者，不要重試 |
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
 | 404 | `NOT_FOUND` | 那份計畫不存在 | 重新拿清單 |
 | 405 | `BAD_METHOD` | 認得的路徑用錯方法 | 看 `Allow` header |
-| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`）；已經開始的計畫再 dismiss／release；**已經有復原紀錄**（開始放回過任何一個檔，不管放回成功沒有）的計畫再 apply，例如復原停在 `partial` 的。復原時還沒開始放回就出錯的**不算**：例如隔離區的檔被改過、第一個檔就 `CHANGED` 而停在 `error` 的，再 apply 回 200、狀態變成 `applied`，檔還在隔離區、不會再搬。全部放回的 `restored` 再 apply 也回 200、原樣回傳，不會再搬 | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
+| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`；它的 `started` 是 true 時只能繼續或放回，不能放棄）；已經開始的計畫再 dismiss／release；**已經有復原紀錄**（開始放回過任何一個檔，不管放回成功沒有）的計畫再 apply，例如復原停在 `partial` 的。復原時還沒開始放回就出錯的**不算**：例如隔離區的檔被改過、第一個檔就 `CHANGED` 而停在 `error` 的，再 apply 回 200、狀態變成 `applied`，檔還在隔離區、不會再搬。全部放回的 `restored` 再 apply 也回 200、原樣回傳，不會再搬 | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
 | 409 | `STALE_CANDIDATE` | 送來的 id 不在目前的清單上（清單變了、太大、不在清理範圍） | 一個都不搬；重新載入清單給使用者再看一眼 |
 | 409 | `EMPTY_PLAN` | 沒有勾任何東西（`candidateIds: []`），或預設清理沒東西可清 | 不是錯：Downloads 很乾淨 |
 | 409 | `TOO_FRESH` | 檔案十分鐘內還在變動（多半只出現在逐項結果的 `why`） | 等一下再試 |
@@ -97,6 +97,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 萬一穿到路由層，才會變成 500。
 
 5xx 裡只有**真的意外**會記成 `/health` 的 `lastError`：`BUSY` 不算（等一下就好），4xx 也不算。
+另外，回 200 但**每一項都失敗**的套用、復原、清空（計畫 `status` 是 `error`、清空一個都沒刪掉）也記成 `lastError`，
+不記成功 —— 整份計畫全部 EXDEV 的時候，寵物不可以說沒事。記的時候帶種類（`lastErrorKind`），見 `GET /health`。
 
 ## 路徑怎麼給 UI
 
@@ -108,6 +110,18 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 
 「在檔案總管打開」要走一個獨立的 `POST /cleanup/reveal { itemId }`，由後端自己組路徑 ——
 **路徑永遠不離開後端**。這條還沒做（回 501）。
+
+## 各路徑收的 body
+
+**只收下表的欄位**，多帶一個（包括拼錯的）→ 400 `BAD_BODY`，什麼都不做。
+以前拼錯的 key 被當成「沒帶」：只勾一個檔、送成 `candidateID`，清掉的是清單上打 ✔ 的全部（稽核第二輪 R2-7）。
+
+| 路徑 | 收的欄位 |
+|---|---|
+| `POST /cleanup/plans` | `candidateIds`、`requestId` |
+| `POST /cleanup/plans/:id/apply` | `skippedIds` |
+| `POST /cleanup/plans/:id/undo`、`…/dismiss`、`…/release` | 不收任何欄位（空的 body 或 `{}`） |
+| `POST /cleanup/quarantine/empty` | `token`、`confirmed` |
 
 ## 檔案清單
 
@@ -138,14 +152,22 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 **不帶 token 也回**（擴充套件與寵物用它判斷後端活著沒），所以不帶 token 的那一份**不給任何名字、路徑或時間**：
 `watcher.watching` 是空陣列、`watcher.lastHeartbeatAt` 與 `watcher.pid` 是 `null`、`lastError` 只說
 「有，帶 token 才看得到」、`lastErrorAt` 與 `lastOkAt` 是 `null`（同機任何行程都讀得到，時間會洩漏
-「使用者什麼時候清理過」）、`quarantine.canEmptyAt` 與 `quarantine.oldestMtimeAt` 也是 `null`（同一個理由：
+「使用者什麼時候清理過」）、`lastErrorKind` 是 `null`、`lastOkByKind` 底下四個時間（`lastOkByKind.scan`、
+`lastOkByKind.apply`、`lastOkByKind.undo`、`lastOkByKind.empty`）都是 `null`、`scanProblems` 是空陣列、
+`quarantine.canEmptyAt` 與 `quarantine.oldestMtimeAt` 也是 `null`（同一個理由：
 `canEmptyAt` 減七天就是清理的時間）。`quarantine.canEmptyNow` 是布林、不帶時間，兩份都照給。
 兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
-寵物要比那兩個時間，走要 token 的 `GET /pet/state`。
+**後端壞掉時也一樣**：資料庫或事實庫讀不到，照樣回完整的欄位，`ok` 與 `db.ok` 是 false、數字退回 0。
+寵物要比那些時間，走要 token 的 `GET /pet/state`。
+
+**`?nonce=<32 個 hex>`**：帶了就多回一個 `proof` ＝ HMAC-SHA256（key 是 token、訊息是 nonce）的 hex，
+免 token 也回（proof 反推不出 token）。`open` 與第二個 `pet` 用它確認那個埠上的是真的 pet，才把帶鑰匙的網址交出去：
+自己產生 nonce、自己算一次來比。算法是 `core/server.ts` 的 `healthProof(token, nonce)`。
+nonce 格式不對（不是剛好 32 個 hex）就**沒有** `proof` 欄位，不報錯；沒帶 nonce 也沒有這個欄位。
 
 | 欄位 | 意思 |
 |---|---|
-| `ok`、`db.ok` | 後端能不能用（資料庫問得到）。跟 watcher 有沒有在跑無關 |
+| `ok`、`db.ok` | 後端能不能用（資料庫問得到、事實庫讀得到）。跟 watcher 有沒有在跑無關 |
 | `version` | 後端版本 |
 | `watcher.ok` | pet 或 watch 正在跑、心跳五分鐘內、清理資料夾都在 |
 | `watcher.lastHeartbeatAt`、`watcher.pid` | 最後一次心跳、那個行程（帶 token 才有） |
@@ -160,8 +182,12 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `quarantine.truncated` | 隔離區沒看完（讀不到、太深）。這時 `canEmptyNow` 一律 false |
 | `pendingCandidates` | 清單上有幾個檔（跟 `GET /cleanup/candidates` 同一套篩選） |
 | `needsHumanCount` | 「需要你查看」有幾個 |
-| `lastError` | 最近一次**真的意外**：帶 token 是「ISO 時間 空白 人話」，不帶原文、不帶路徑 |
-| `lastErrorAt`、`lastOkAt` | 最近一次意外、最近一次成功的掃描／套用／復原／清空（帶 token 才有）。**寵物只在 `lastErrorAt` 比 `lastOkAt` 新的時候擔心** |
+| `lastError` | 最近一次**真的意外**，或一次**每一項都失敗**的套用／復原／清空：帶 token 是「ISO 時間 空白 人話」，不帶原文、不帶路徑 |
+| `lastErrorAt`、`lastOkAt` | 最近一次錯、最近一次成功（任何一種）的時間（帶 token 才有） |
+| `lastErrorKind` | 那次錯是哪一種動作：`scan`／`apply`／`undo`／`empty`，說不出來（舊資料、查詢的意外）是 `null`（帶 token 才有） |
+| `lastOkByKind` | 底下的 `scan`、`apply`、`undo`、`empty` 各是那一種動作最近一次成功的時間，沒成功過是 `null`（帶 token 才有）。**寵物只在「錯之後，同一種動作還沒成功過」時擔心**：套用壞了，背景重掃成功不算數；`lastErrorKind` 是 `null` 的錯，任何一次成功（`lastOkAt`）都算 |
+| `scanProblems` | 最近一次完整掃描回報的問題（保險絲、打不開的資料夾、讀不到的檔），人話、不帶路徑、控制字元換成「·」，最多 50 條；沒問題是空陣列（帶 token 才有內容） |
+| `proof` | 只有帶了 `?nonce=<32 個 hex>` 才有，見上 |
 | `facts` | 已確認的事實筆數（擴充套件不帶 token 讀它） |
 
 > **欄位改過名。** 舊文件的 `quarantine.lastQuarantinedAt`（最新一筆的隔離時間）拿掉了 —— 七天要從**最早**
@@ -183,6 +209,12 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 受保護的檔（`.ini`、`.lnk`、`.pem`、隱藏檔…）與清理範圍外的檔**不會**出現在清單上 ——
 列出來的就要搬得動。
 
+**截圖資料夾只清截圖。** 設定開了 `cleanup.screenshots`，截圖資料夾會加進清理範圍，但那底下**只列截圖類**
+（`kind` 是 `screenshot-noise`，之後的連拍也算），壓縮檔、安裝檔、很久沒動的檔都不列，它們的 id 送來建計畫是
+409 `STALE_CANDIDATE`。**macOS 的截圖資料夾就是桌面** —— 開這個開關不會把整個桌面交給清理。
+比截圖資料夾更深、自己寫在 `cleanup.roots` 裡的資料夾（例如 `桌面/清理區`）照一般規則。
+徽章（`pendingCandidates`）、預設清理、建計畫都是同一套篩選。
+
 ## `POST /cleanup/plans` —— 建計畫要帶**勾了的 id**
 
 `POST /cleanup/plans { candidateIds, requestId }`：
@@ -196,9 +228,12 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 - `requestId`：**同一份勾選重送時沿用同一個**。回應在網路上丟了再按一次，拿到同一份計畫，
   不會多建、也不會多搬。勾選改了才換新的；同一個 `requestId` 配不同的勾選 → 409 `CONFLICT`
 - 唯讀模式 → 403 `READ_ONLY`，**一份計畫都不建**
-- 撞到 409 `CONFLICT`：回應多一個 `blockingPlan: { id, status, createdAt, items: [{ itemId, name, bytes }] }`，
+- 撞到 409 `CONFLICT`：回應多一個 `blockingPlan: { id, status, createdAt, started, items: [{ itemId, name, bytes }] }`，
   是**擋住這次勾選的那一份**（它的檔跟這次勾的有交集）。UI 用它，不要自己去猜是哪一份。
-  給使用者兩個選擇：「繼續那份」（`POST …/apply`）或「放棄那份」（`POST …/release`）
+  - `started` 是 **false**（還沒搬過任何一個）：給使用者兩個選擇，「繼續那份」（`POST …/apply`）或「放棄那份」（`POST …/release`）
+  - `started` 是 **true**（套用到一半中斷：被砍、斷電、鎖被接走，計畫還是 `proposed`，但已經有檔搬進隔離區）：
+    **只能「繼續那份」（`POST …/apply`）或「放回」（`POST …/undo`），不能放棄** —— `release` 會回 409 `CONFLICT`。
+    不要跟使用者說「放棄：不動任何檔案」，那時已經有檔搬走了
 - **只有還沒套用（`proposed`）的計畫會佔住檔案。** 套用過的計畫（applied／partial／error）不再擋新計畫：
   失敗的那幾個可以直接收進下一份。重試 ＝ 新計畫
 
@@ -219,11 +254,15 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 
 | 欄位 | 值 |
 |---|---|
-| `outcome` | `pending`（還沒做）／`moved`（在隔離區）／`skipped`（你略過的）／`failed`（沒搬成）／`restored`（已放回）／`purged`（滿七天已刪除）／`unknown`（搬到一半中斷，檔案可能已經在隔離區）／`cancelled`（計畫被放棄了，沒動過） |
+| `outcome` | `pending`（還沒做）／`moved`（在隔離區）／`skipped`（你略過的）／`failed`（沒搬成）／`restored`（已放回）／`purged`（滿七天已刪除）／`unknown`（搬到一半中斷，檔案可能已經在隔離區）／`cancelled`（沒動過：計畫被放棄了；或計畫跑過，但這一項從來沒處理到 —— 例如套用中斷在前幾項、之後按了復原，後面那些就是 `cancelled`，不是「原因不明」的 `failed`） |
 | `why` | `failed` 與 `unknown` 一定有；`moved` 在**復原失敗過**時是沒放回來的原因；其他是 `null`。人話、**不帶路徑** |
 | `restoredAs` | 只有 `restored` 而且**被改名**的才有：放回來時原位置已被佔，實際的檔名（例如 `素材包.zip.restored`） |
 
 `failed` 的原因在套用當下就存起來了，之後重新掃描也不會變成「原因不明」。
+
+**復原（`POST …/undo`）放回的範圍比清理寬**：清理範圍 ∪ 截圖的監看資料夾（`watch`）。RC15 之前的舊版用 `watch`
+清過（macOS 含桌面），那些檔要放得回原位；放回原位不會擴大清理範圍。套用與清空只用清理範圍。
+不存在、路徑含捷徑的資料夾略過（跟 CLI 的 `cleanup undo` 同一個規則）。
 
 **UI 不可以用「勾了幾個」去推算搬了幾個。** 要看 `quarantinedCount` 與每一項的 `outcome`。
 CLI 那邊踩過一次：一律印 ✔，全失敗時畫面上是一排 ✔ 後面接「搬進隔離區 0 個」。

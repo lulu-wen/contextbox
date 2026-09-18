@@ -148,6 +148,12 @@ describe('B 逐項結果要照實講', () => {
       '報告.pdf': { days: 0, content: 'SMOKE 同一份' },
       '報告 (1).pdf': { days: 0, content: 'SMOKE 同一份' },
     })
+    // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
+    // 用 minStableMs: 0 再掃一次，做出「計畫裡有一個還在十分鐘內的檔」
+    const { scanDownloads } = await import('../core/cleanup-scanner.ts')
+    const { open } = await import('../core/db.ts')
+    const db = open(s.dbPath)
+    try { scanDownloads({ db, roots: [s.downloads], maxBytes: 20 * 1024 * 1024, minStableMs: 0 }) } finally { db.close() }
     const real = createReal(s.api)
     await real.load()
     assert.equal(real.candidates.length, 1, '前提：只有其中一份被提議')

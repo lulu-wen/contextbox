@@ -1,6 +1,6 @@
 {
-  "state": "found",
-  "message": "找到 2 個可以清的檔案。",
+  "state": "worried",
+  "message": "後端出了點狀況，先看一下 doctor。",
   "pendingCount": 2,
   "quarantinedCount": 1,
   "undoable": true

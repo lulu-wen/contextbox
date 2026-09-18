@@ -502,6 +502,9 @@ export const LEGACY_DISMISSED_REPAIR_KEY = 'cleanup_repair_legacy_dismissed_v1'
  * 分辨方法：**使用者真的拒絕過的，一定經過 dismissPlan**，掛在一份 status='dismissed'
  * 的計畫底下。不在任何 dismissed 計畫裡的 dismissed 候選，就是掃描器自己作廢的，
  * 改成 skipped；這一輪掃描條件還成立的話，upsert 會把它改回 proposed。
+ * **release 過的計畫不算**（有 release 標記）：它也停在 dismissed，但意思是「這份卡住了、不要了」，
+ * 候選本來就該留著。以前算進去，升級後先 release、才第一次掃描的話，被舊版誤作廢的候選永遠
+ * 修不回來（稽核第二輪 R2-12）。
  *
  * meta 記一次，只跑一次（新版不會再產生這種 dismissed）。回傳改了幾列（已經跑過回 0）。
  */
@@ -522,7 +525,8 @@ export function repairLegacyDismissed(db: DatabaseSync): number {
           WHERE status='dismissed'
             AND id NOT IN (SELECT pi.candidate_id FROM cleanup_plan_items pi
                              JOIN cleanup_plans p ON p.id = pi.plan_id
-                            WHERE p.status = 'dismissed')`
+                            WHERE p.status = 'dismissed'
+                              AND p.id NOT IN (SELECT plan_id FROM cleanup_plan_releases))`
       ).run()
       db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(LEGACY_DISMISSED_REPAIR_KEY,
         `${new Date().toISOString()} ${Number(r.changes)}`)
@@ -632,6 +636,11 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
  *   執行層只接受根目錄底下的保留者；舊設定留下的桌面列從來不會被對帳（檔案早就刪了也還是「活的」），
  *   拿它當保留者的話，Downloads 那份會列得出、永遠 NO_DUPLICATE（第一波驗證 v8-keeper-root）。
  *   scanDownloads 一律傳自己的 roots。
+ * - **status 是 new 的（十分鐘內還在變動、或 mtime 在未來）不提議、不改成 candidate。**
+ *   collect 只列建得了計畫的狀態（排除 new），執行層也一定回 TOO_FRESH；以前這裡無條件
+ *   提升，剛下載的重複檔列得出、預設打勾、算進徽章，套用卻一個都搬不動（稽核第二輪 R2-2）。
+ *   它不算「多出來的」，身上舊的 proposed 重複檔候選由 skipStaleDuplicates 收成 skipped，
+ *   靜置之後重掃時 upsert 會改回 proposed。它還是可以當保留者（執行層會重新量它的指紋）。
  */
 export function addDuplicateCandidates(
   db: DatabaseSync, nowIso = new Date().toISOString(), onlyItemIds?: string[], roots?: string[],
@@ -652,7 +661,7 @@ export function addDuplicateCandidates(
     ).all(g.sha256) as CleanupFileItem[]).filter(r => !pre || pre.some(x => fold(r.path).startsWith(x)))
     if (rows.length < 2) continue
     for (const item of rows.slice(1)) {
-      if (execRefusesName(item.name)) continue
+      if (execRefusesName(item.name) || item.status === 'new') continue
       extra.add(item.id)
       if (only && !only.has(item.id)) continue
       upsertCandidate(db, item.id, duplicateDraft(rows.length), nowIso)

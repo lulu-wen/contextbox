@@ -1,19 +1,19 @@
 {
-  "id": "751026e6-2bf7-4a7e-a4bd-e2d49df53c48",
+  "id": "b66f69e7-6084-4f89-9a4b-59333dfc91bc",
   "status": "partial",
-  "itemCount": 3,
-  "createdAt": "2026-09-18T20:59:45.621Z",
-  "appliedAt": "2026-09-18T20:59:45.674Z",
-  "error": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。",
-  "bytes": 51,
+  "itemCount": 2,
+  "createdAt": "2026-09-18T23:18:44.977Z",
+  "appliedAt": "2026-09-18T23:18:45.019Z",
+  "error": "檔案或資料夾不見了，請確認後重試。",
+  "bytes": 29,
   "items": [
     {
-      "itemId": "a08f734b-3615-40d4-bb7e-6c2491bca7e4",
+      "itemId": "b02e186f-0309-4866-b5e9-46fad3e90e2b",
       "name": "發票.zip",
       "bytes": 13,
-      "mtime": "2026-08-04T20:59:45.093Z",
+      "mtime": "2026-08-04T23:18:44.455Z",
       "candidateIds": [
-        "034f969c-1589-4850-95f6-3e55779437fe"
+        "0d333bff-174c-4d13-9193-d9e11cabd1e1"
       ],
       "skipped": false,
       "reasons": [
@@ -28,32 +28,12 @@
       "why": null
     },
     {
-      "itemId": "5a4f1237-7e58-454d-bc86-2af18c58c400",
-      "name": "照片.jpg",
-      "bytes": 22,
-      "mtime": "2026-09-18T20:59:45.093Z",
-      "candidateIds": [
-        "60c8c45a-c5f4-4e98-b129-08fa9575e638"
-      ],
-      "skipped": false,
-      "reasons": [
-        {
-          "kind": "duplicate",
-          "confidence": 98,
-          "reason": "同內容的重複檔案",
-          "evidence": "同一個 sha256 還有 1 份檔案存在"
-        }
-      ],
-      "outcome": "failed",
-      "why": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。"
-    },
-    {
-      "itemId": "7a052b3a-e07b-4a08-a8de-20fe2e94232f",
+      "itemId": "73eb52a3-0824-4388-92bc-92634480e052",
       "name": "下載中.iso.crdownload",
       "bytes": 16,
-      "mtime": "2026-09-15T20:59:45.093Z",
+      "mtime": "2026-09-15T23:18:44.455Z",
       "candidateIds": [
-        "8a088c69-fee4-46a8-a381-2ec1c54ff202"
+        "b97908d6-074c-4103-a129-27270e0b1ec3"
       ],
       "skipped": false,
       "reasons": [

@@ -25,11 +25,19 @@ cd contextbox
 node cli.mjs doctor
 ```
 
-`doctor` 會告訴你它打算看哪個資料夾。**先確認那是你真的在用的 Downloads** ——
-Win11 綁 Microsoft 帳號時，已知資料夾移轉可能把它搬到
-`%USERPROFILE%\OneDrive\Downloads`。
+`doctor` 會告訴你它打算清哪個資料夾（「清理範圍」）。預設一律是 `%USERPROFILE%\Downloads`，
+**不會自動改用 `%USERPROFILE%\OneDrive\Downloads`** —— 從 OneDrive 同步的資料夾搬進隔離區，
+等於在雲端與你所有的裝置上刪掉。
 
-不對的話改 `%USERPROFILE%\.contextbox\config.json` 的 `watch`。
+**先確認那是你真的在用的 Downloads。** 不對的話改 `%USERPROFILE%\.contextbox\config.json` 的
+`cleanup.roots`（清理只看它）：
+
+```json
+{ "cleanup": { "roots": ["D:\\Downloads"] } }
+```
+
+**不是 `watch`** —— `watch` 是截圖功能的監看資料夾，改它不會改到清理範圍。
+你的 Downloads 真的在 OneDrive 裡、也確定要清它，才自己把那個路徑寫進 `cleanup.roots`。
 
 ```powershell
 node cli.mjs pet
@@ -61,6 +69,11 @@ node cli.mjs pet
 ```
 
 第一次跑會跳「ContextBox 想要存取你的下載檔案夾」，要按允許。
+
+> **macOS 的截圖資料夾就是桌面。** 設定檔的 `cleanup.screenshots` 預設是 `false`；打開的話，
+> 桌面會加進清理範圍，但**桌面上只清截圖**（檔名 `Screenshot`、`截圖`、`螢幕快照` 開頭，放了 30 天以上的），
+> 桌面上的壓縮檔、安裝檔、文件都不會被列出來。要清整個桌面，得自己把它寫進 `cleanup.roots`
+> 而且不開這個開關。
 
 ---
 

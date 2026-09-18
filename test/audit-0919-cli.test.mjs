@@ -613,9 +613,10 @@ describe('scan 印出 problem、成功記 lastOk；apply 存失敗原因', () =>
     const s = sandbox(t)
     s.put('報告.pdf', 0, 'SMOKE 報告')
     s.put('報告 (1).pdf', 0, 'SMOKE 報告')
-    s.run(['cleanup', 'scan'])
     const d = s.db()
-    // 剛 cp 出來的重複檔：規則成立（重複檔），但還在十分鐘內 → 執行層回 TOO_FRESH
+    // 剛 cp 出來的重複檔：規則成立（重複檔），但還在十分鐘內 → 執行層回 TOO_FRESH。
+    // 稽核第二輪 R2-2 之後正常掃描不會把它提升成候選，所以用 minStableMs: 0 掃
+    scanDownloads({ db: d, roots: [s.dl], maxBytes: 20971520, minStableMs: 0 })
     const p = createPlan(d)
     const r = s.run(['cleanup', 'apply', p.id])
     assert.equal(r.code, 3, r.out)

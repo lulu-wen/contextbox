@@ -93,4 +93,6 @@ node cli.mjs cleanup quarantine
 
 - [ ] 在乾淨的 Windows 機器上實測一次，把結果寫進 `docs/smoke-log/`
 - [ ] 圖示（現在捷徑是 cmd 的預設圖示）
-- [ ] 確認 OneDrive 已知資料夾移轉時 `doctor` 抓對 Downloads
+- [ ] 確認 OneDrive 已知資料夾移轉時 `doctor` 抓對 Downloads。清理範圍的預設已經改成一律
+  `%USERPROFILE%\Downloads`、不自動挑 `OneDrive\Downloads`（稽核第二輪 R2-11）；要實測的是
+  「Downloads 其實在 OneDrive 裡」的機器上，`doctor` 會不會清楚講出清理範圍不存在、要改 `cleanup.roots`

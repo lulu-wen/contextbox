@@ -190,6 +190,16 @@ CREATE TABLE IF NOT EXISTS cleanup_item_errors (
   at      TEXT NOT NULL,
   PRIMARY KEY (plan_id, item_id)
 );
+
+-- 「放棄」（release）過的計畫。release 與 dismiss 都讓計畫停在 dismissed，
+-- 但意思不一樣：release 是「這份卡住了，我不要它」（候選不動），dismiss 是「我拒絕這些檔」
+-- （候選作廢）。只看 status 分不出來的話，先 release 再 dismiss 會變成 no-op，
+-- 舊版遷移也會把 release 過的當成「使用者拒絕過」（稽核第二輪 R2-12）。
+-- 放在這裡而不是清理的懶建表：掃描器的遷移在任何清理動作之前就會讀它。
+CREATE TABLE IF NOT EXISTS cleanup_plan_releases (
+  plan_id TEXT PRIMARY KEY REFERENCES cleanup_plans(id),
+  at      TEXT NOT NULL
+);
 `
 
 /**

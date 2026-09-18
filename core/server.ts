@@ -24,7 +24,8 @@ import { createServer, type IncomingMessage } from 'node:http'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 import { open, DEFAULT_DB } from './db.ts'
 import { Facts } from './facts.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
@@ -63,6 +64,33 @@ export const sameToken = (a: string, b: string): boolean => {
   if (!a || !b) return false
   const x = Buffer.from(a), y = Buffer.from(b)
   return x.length === y.length && timingSafeEqual(x, y)
+}
+
+/**
+ * `/health?nonce=<32 個 hex>` 回的 proof：HMAC-SHA256，key 是 token、訊息是 nonce，hex（第二輪 R2-9a）。
+ *
+ * `open` 與第二個 `pet` 要確定那個埠上的真的是自己的 pet，才把帶鑰匙的網址交出去。
+ * 形狀可以模仿、pid 會被重用（稽核 C-e5）；**算得出 proof 的只有手上有 token 的那一個**。
+ * proof 不洩漏 token（HMAC 反推不回 key），所以免 token 的 /health 也回 —— 問的一方還不知道對方是誰，
+ * 不可以先把 token 送過去。呼叫端自己產生 nonce（每次不同），拿同一支算一次來比。
+ */
+export function healthProof(token: string, nonce: string): string {
+  return createHmac('sha256', token).update(nonce).digest('hex')
+}
+
+/** nonce 的格式：剛好 32 個 hex（16 bytes）。不對就不回 proof，也不報錯。 */
+const NONCE = /^[0-9a-f]{32}$/i
+
+/**
+ * 資料庫整個不能用時，拿來組 /health 的替身：每一次查詢都丟例外。
+ * healthSnapshot 每一段都包了 safe()，拿它算出來的就是「欄位齊全、ok 是 false」的那一份 ——
+ * 不另外手寫第三種形狀（稽核 B-r5：以前 catch 路徑回 { ok, db, why }，CLI 把它判成「不是 ContextBox」）。
+ */
+const DEAD_DB = { prepare() { throw new Error('資料庫不能用') } } as unknown as DatabaseSync
+
+/** 任何一段丟例外都退回預設值。泛型用函式宣告，箭頭會被當成 JSX。 */
+function safe<T>(fn: () => T, fallback: T): T {
+  try { return fn() } catch { return fallback }
 }
 
 /**
@@ -143,6 +171,14 @@ export function start(opts: {
   port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string
   /** 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。 */
   maxBytes?: number; readonly?: boolean
+  /**
+   * 復原（放回原位）用的範圍（第二輪 R2-4）。有給就用它；沒給就用 roots ∪ 設定的 watch ——
+   * **但只在 server 自己讀了設定的時候**（roots／maxBytes／readonly 有一個沒給）。全部給了的呼叫端
+   * （pet、測試）不為了它去讀設定檔：pet 要自己傳（cli.mjs 的 undoRoots()）。
+   */
+  restoreRoots?: string[]
+  /** 截圖資料夾（config 的 cleanup.screenshotsDir）。沒給：roots 也沒給就用設定的，否則是 null。 */
+  screenshotsDir?: string | null
 } = {}) {
   const port = opts.port ?? 7391
   // 給了空的（或只有空白的）token 等於沒給：不可以用空 token 跑起來
@@ -166,6 +202,13 @@ export function start(opts: {
   // 清理只看 cleanup.roots（預設只有 Downloads），**不是**截圖功能的 watch（RC15）
   const cleanupRoots = opts.roots ?? cfg().cleanup.roots
   const roots = () => cleanupRoots
+  // 放回原位的範圍：清理範圍 ∪ 截圖的 watch（R2-4）。RC15 之前舊版用 watch 清過，桌面的檔可能還在隔離區。
+  // 不存在、含捷徑的資料夾由 route 在每次復原時略過（checkedPath），這裡只列。
+  const restoreRootList = opts.restoreRoots
+    ?? (loaded ? [...new Set([...cleanupRoots, ...cfg().watch])] : cleanupRoots)
+  // 截圖資料夾只收截圖類（R2-8）。roots 是呼叫端給的，就只認呼叫端給的截圖資料夾
+  const screenshotsDir = opts.screenshotsDir !== undefined ? opts.screenshotsDir
+    : opts.roots === undefined ? cfg().cleanup.screenshotsDir : null
   const QUARANTINE = opts.quarantine
     ?? process.env.CONTEXTBOX_QUARANTINE
     ?? join(homedir(), '.contextbox', 'quarantine')
@@ -289,18 +332,30 @@ export function start(opts: {
       //
       // 而且健康檢查失敗**本身就是健康狀態**，不該回 500。
       const hasToken = sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)
-      try {
-        return send(200, {
-          ...healthSnapshot(F.db, { roots: roots, quarantine: QUARANTINE, full: hasToken }),
-          // facts 是純計數，沒有路徑也沒有名字，跟 pendingCandidates 同級。
-          // 把它移到 token 後面會打壞 extension/background.js —— 它不帶 token
-          // 讀 r.data.facts，會靜靜變成永遠 0。
-          facts: F.list('confirmed').length,
-        })
-      } catch (e: any) {
+      // proof：帶了格式正確的 nonce 才回（R2-9a）。免 token 也回 —— proof 不洩漏 token
+      const nonce = url.searchParams.get('nonce')
+      const proof = nonce !== null && NONCE.test(nonce) ? { proof: healthProof(token, nonce) } : {}
+      const hopts = { roots, screenshotsDir, quarantine: QUARANTINE, full: hasToken }
+      let snap
+      try { snap = healthSnapshot(F.db, hopts) }
+      catch (e: any) {
         console.error('[contextbox] /health 自我檢查失敗：', (e && e.message) || e)
-        return send(200, { ok: false, db: { ok: false }, why: '後端自我檢查失敗' })
+        // **回應形狀永遠跟正常時一樣**（R2-11）：拿不能用的資料庫再算一次，每一段都退回預設值
+        snap = healthSnapshot(DEAD_DB, { ...hopts, roots: [] })
       }
+      // facts 是純計數，沒有路徑也沒有名字，跟 pendingCandidates 同級。
+      // 把它移到 token 後面會打壞 extension/background.js —— 它不帶 token
+      // 讀 r.data.facts，會靜靜變成永遠 0。
+      // **一樣包起來**：facts 表壞掉時以前整個掉進 catch，回第三種形狀（稽核 B-r5）。
+      // 讀不到就是 0，而且後端不算好的（ok false）—— 事實庫是這台後端的另一半。
+      const facts = safe(() => F.list('confirmed').length, null)
+      return send(200, {
+        ...snap,
+        ok: snap.ok && facts !== null,
+        db: { ...snap.db, ok: snap.db.ok && facts !== null },
+        facts: facts ?? 0,
+        ...proof,
+      })
     }
     // 鎖 2：其他全部要 token
     if (!sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)) {
@@ -342,6 +397,8 @@ export function start(opts: {
         // 立刻求值，連 /facts 這種跟清理無關的路徑都會去讀（甚至建立）
         // 使用者的設定檔 —— 延後讀取的修正等於沒做。
         db: F.db, roots, quarantine: QUARANTINE,
+        // 復原用放回的範圍（R2-4）；截圖資料夾只收截圖類（R2-8）
+        restoreRoots: () => restoreRootList, screenshotsDir: () => screenshotsDir,
         // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,

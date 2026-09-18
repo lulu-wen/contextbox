@@ -9,7 +9,7 @@ import {
   activeQuarantine, checkedQuarantinePath, checkOptions, fingerprint, moveFingerprint,
   quarantineCompletedAt, RETENTION_MS, type ExecOptions,
 } from './cleanup-exec.ts'
-import { CleanupError, cleanupProblem, withCleanupLock, type JournalRow } from './cleanup-journal.ts'
+import { CleanupError, cleanupProblem, transaction, withCleanupLock, type JournalRow } from './cleanup-journal.ts'
 
 function eligible(db: DatabaseSync, seq: number): boolean {
   return Date.now() - Date.parse(quarantineCompletedAt(db, seq)) >= RETENTION_MS
@@ -27,10 +27,26 @@ function restoring(db: DatabaseSync, row: JournalRow): boolean {
     AND status='started' LIMIT 1`).get(row.plan_id, row.item_id))
 }
 
+/**
+ * 過期超過一天的預覽列刪掉（RC28）。不然每按一次預覽就多一列，永遠不會少。
+ * 以前只有 HTTP 路由會清，CLI 的預覽（每晚跑的腳本）照樣只增不減（稽核第二輪 R2-12）；
+ * 放在這裡，誰預覽都一樣。過期不到一天的留著：重送會拿到「已過期」，而不是「確認碼無效」。
+ * 做到一半的進度（cleanup_empty_progress）跟著它的預覽一起走。
+ */
+function pruneEmptyRequests(db: DatabaseSync) {
+  db.prepare('DELETE FROM cleanup_empty_requests WHERE expires_at < ?')
+    .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString())
+  db.prepare('DELETE FROM cleanup_empty_progress WHERE token NOT IN (SELECT token FROM cleanup_empty_requests)').run()
+}
+
 /** First click: preview and bind a token to exactly these journal entries. */
 export function prepareEmptyQuarantine(db: DatabaseSync, opts: ExecOptions) {
   checkOptions(opts)
   return withCleanupLock(db, () => {
+    try { pruneEmptyRequests(db) } catch (e: any) {
+      // 清不掉只是表多幾列，不可以讓預覽本身失敗
+      console.error('[contextbox] 清空預覽的舊紀錄清不掉：', e?.message ?? e)
+    }
     const entries = activeQuarantine(db).filter(r => !restoring(db, r) && eligible(db, r.seq))
     const token = randomUUID()
     const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
@@ -42,7 +58,16 @@ export function prepareEmptyQuarantine(db: DatabaseSync, opts: ExecOptions) {
   })
 }
 
-/** Second click. Replays return the original result; unrelated/new files are excluded. */
+type EmptyResult = { deletedCount: number; deletedBytes: number; errors: { seq: number; error: string }[] }
+
+/**
+ * Second click. Replays return the original result; unrelated/new files are excluded.
+ *
+ * **每處理完一項就把進度存起來**（cleanup_empty_progress，跟那一項的清空紀錄同一個交易）。
+ * 以前結果要整個迴圈跑完才寫：中途被 BUSY 打斷（鎖被接走）時已經刪了幾個，同一個確認碼重送
+ * 只數得到剩下的，報少了；確認碼過期之後就再也查不到（稽核第二輪 R2-6）。現在重送從停下來的
+ * 那一項接著做，總數含之前刪掉的。過期的確認碼不會接著刪（照樣回「已過期」）。
+ */
 export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: string; confirmed: boolean }) {
   checkOptions(opts)
   if (opts.confirmed !== true || typeof opts.token !== 'string' || !opts.token) {
@@ -54,10 +79,14 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
     if (!request) throw new CleanupError('CONFIRMATION_REQUIRED', '清空確認無效，請重新預覽。')
     if (request.result) return JSON.parse(request.result)
     if (Date.now() >= Date.parse(request.expires_at)) throw new CleanupError('CONFIRMATION_EXPIRED', '清空確認已過期，請重新預覽。')
-    const result: { deletedCount: number; deletedBytes: number; errors: { seq: number; error: string }[] } =
-      { deletedCount: 0, deletedBytes: 0, errors: [] }
+    const progress = db.prepare('SELECT next, result FROM cleanup_empty_progress WHERE token=?').get(opts.token) as
+      { next: number; result: string } | undefined
+    let result: EmptyResult = progress ? JSON.parse(progress.result) : { deletedCount: 0, deletedBytes: 0, errors: [] }
+    const saveProgress = (next: number, r: EmptyResult) => db.prepare(`INSERT INTO cleanup_empty_progress(token,next,result)
+      VALUES (?,?,?) ON CONFLICT(token) DO UPDATE SET next=excluded.next, result=excluded.result`).run(opts.token, next, JSON.stringify(r))
     const seqs = JSON.parse(request.entries) as number[]
-    for (const [index, seq] of seqs.entries()) {
+    for (let index = progress?.next ?? 0; index < seqs.length; index++) {
+      const seq = seqs[index]
       // 每處理一項就續約（見 withCleanupLock）
       renew()
       opts.onProgress?.(index, seqs.length)
@@ -90,16 +119,24 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
           }
           unlinkSync(path)
         }
-        db.prepare(`UPDATE cleanup_purges SET status='done',error=NULL WHERE seq=?`).run(seq)
-        result.deletedCount++
-        result.deletedBytes += expected.size
+        // 清空紀錄與進度一起寫：兩個之間被砍的話，重送會少算（紀錄說刪了、進度說還沒）
+        const next = { ...result, deletedCount: result.deletedCount + 1, deletedBytes: result.deletedBytes + expected.size }
+        transaction(db, () => {
+          db.prepare(`UPDATE cleanup_purges SET status='done',error=NULL WHERE seq=?`).run(seq)
+          saveProgress(index + 1, next)
+        })
+        result = next
       } catch (e) {
         const error = cleanupProblem(e)
         // Do not overwrite a started intent: deletion may have succeeded before DB failure.
-        result.errors.push({ seq, error })
+        result = { ...result, errors: [...result.errors, { seq, error }] }
+        saveProgress(index + 1, result)
       }
     }
-    db.prepare('UPDATE cleanup_empty_requests SET result=? WHERE token=?').run(JSON.stringify(result), opts.token)
+    transaction(db, () => {
+      db.prepare('UPDATE cleanup_empty_requests SET result=? WHERE token=?').run(JSON.stringify(result), opts.token)
+      db.prepare('DELETE FROM cleanup_empty_progress WHERE token=?').run(opts.token)
+    })
     return result
   })
 }

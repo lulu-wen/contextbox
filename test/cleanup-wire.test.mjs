@@ -14,6 +14,7 @@ import { fixture } from './helpers/cleanup.mjs'
 import { cleanupRoutes, healthSnapshot, statusFor, petState, HTTP_FOR_CODE } from '../core/cleanup-routes.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan } from '../core/cleanup-exec.ts'
+import { scanDownloads } from '../core/cleanup-scanner.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -713,7 +714,9 @@ describe('剛動過的檔不搬 —— 但要說實話', () => {
     const f = fixture(t, {})
     writeFileSync(join(f.downloads, '報告.pdf'), 'SMOKE 報告')
     writeFileSync(join(f.downloads, '報告 (1).pdf'), 'SMOKE 報告')
-    f.scan()
+    // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
+    // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
+    scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
     const p = createPlan(f.db)
     const r = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
 

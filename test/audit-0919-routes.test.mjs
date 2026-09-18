@@ -267,12 +267,17 @@ describe('RC5 lastError 只記真的意外、不帶路徑、成功之後寵物�
     assert.notEqual(call(f, 'GET', '/pet/state').body.state, 'worried', '成功掃描之後不可以還在擔心')
   })
 
-  test('成功的套用之後也不再擔心', t => {
+  // 第二輪 R2-10 改了這一條的期望：以前「掃描的錯 → 成功的套用 → 不擔心」。
+  // 稽核紀錄的根因（第二輪）定案：寵物只在**同一種動作**之後成功過才不擔心 —— 任何成功都算的話，
+  // pet 每 30 分鐘的背景重掃會蓋掉一直壞著的套用（C-e6）。反過來也一樣：套用成功不替掃描說「好了」。
+  test('成功的套用之後也不再擔心（第二輪 R2-10：要同一種動作 —— 掃描的錯等掃描成功）', t => {
     const f = fixture(t)
     call(f, 'POST', '/cleanup/scan', {}, { scan: () => { throw new Error('boom') } })
     assert.equal(call(f, 'GET', '/pet/state').body.state, 'worried')
     const p = call(f, 'POST', '/cleanup/plans', {}).body
     assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {}).code, 200)
+    assert.equal(call(f, 'GET', '/pet/state').body.state, 'worried', '套用成功不替掃描的錯說「好了」')
+    assert.equal(call(f, 'POST', '/cleanup/scan', {}).code, 200)
     assert.notEqual(call(f, 'GET', '/pet/state').body.state, 'worried')
   })
 
@@ -391,7 +396,9 @@ describe('RC11 失敗原因只有一套翻譯、要保存、「需要你查看�
     const f = fixture(t, {})
     writeFileSync(join(f.downloads, '報告.pdf'), 'SMOKE 報告')
     writeFileSync(join(f.downloads, '報告 (1).pdf'), 'SMOKE 報告')
-    f.scan()
+    // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
+    // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
+    scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
     const p = createPlan(f.db)
     const applied = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     assert.equal(applied.code, 200)

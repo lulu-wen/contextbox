@@ -574,8 +574,9 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
 
   // 第三波之二：README 以前寫「開始復原之後停在 partial／error 的計畫再 apply → 409」，太寬。
   // 復原時第一個檔就 CHANGED（隔離區的檔被改過）是在寫 restore journal **之前**丟的 ——
-  // 沒有任何復原紀錄，applyPlan 不擋，狀態從 error 變回 applied。釘住這個行為；README 的寫法由錯誤表（RC20）那一條看。
-  test('apply：復原時還沒開始放回就出錯（error，隔離區的檔被改過）→ 不丟錯，狀態變成 applied，不會再搬', () => {
+  // 沒有任何復原紀錄，applyPlan 不擋（不是 409）。第二輪 R2-3 起跑完過的計畫原樣回傳（以前狀態會從 error
+  // 變回 applied）。釘住這個行為；README 的寫法由錯誤表（RC20）那一條看。
+  test('apply：復原時還沒開始放回就出錯（error，隔離區的檔被改過）→ 不丟錯，原樣回傳 error，不會再搬', () => {
     put('e1.zip', 'E ONE', 60)
     const id = planOf(['e1.zip'])
     assert.equal(applyPlan(db, id, opts).quarantinedCount, 1)
@@ -585,7 +586,8 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
     const restores = () => db.prepare(`SELECT count(*) n FROM cleanup_journal WHERE plan_id=? AND op='restore'`).get(id).n
     assert.equal(restores(), 0, '前提：CHANGED 在寫復原紀錄之前')
     const again = applyPlan(db, id, opts)
-    assert.equal(again.status, 'applied', '不是 409：沒有任何復原紀錄')
+    // 計畫是一次性的（稽核第二輪 R2-3）：跑完過的 partial／error 原樣回傳，不重試
+    assert.equal(again.status, 'error', '不是 409：沒有任何復原紀錄；也不重試')
     assert.equal(again.quarantinedCount, 1)
     assert.deepEqual(readdirSync(join(q, id)), [item], '沒有再搬一次')
     assert.ok(!existsSync(join(dl, 'e1.zip')), '檔還在隔離區')

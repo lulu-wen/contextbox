@@ -69,6 +69,11 @@ export function initCleanup(db: DatabaseSync) {
       seq INTEGER PRIMARY KEY REFERENCES cleanup_journal(seq),
       ts TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('started','done','failed')), error TEXT
     );
+    -- 清空做到一半（被 BUSY 打斷、行程被砍）時已經處理到哪、刪了幾個。
+    -- 同一個確認碼重送從 next 接著做，總數才對；做完寫進 cleanup_empty_requests.result、刪掉這一列。
+    CREATE TABLE IF NOT EXISTS cleanup_empty_progress (
+      token TEXT PRIMARY KEY, next INTEGER NOT NULL, result TEXT NOT NULL
+    );
   `)
 }
 
