@@ -15,18 +15,20 @@
  * CLI 與 HTTP route 都呼叫 `listCandidates()`。
  * **只有一個地方決定 defaultChecked**，不准有第二份。
  */
-import { statSync, readdirSync, existsSync } from 'node:fs'
+import { readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
-import { KIND_CONFIDENCE, CLEANUP_KINDS, CLEANUP_RULE_VERSION, PARTIAL_EXT } from './cleanup-rules.ts'
 import {
-  RETENTION_MS, applyPlan, undoPlan, listQuarantine, type ExecOptions,
+  KIND_CONFIDENCE, CLEANUP_KINDS, CLEANUP_RULE_VERSION, PARTIAL_EXT, classifyByRules,
+} from './cleanup-rules.ts'
+import {
+  RETENTION_MS, applyPlan, undoPlan, type ExecOptions,
 } from './cleanup-exec.ts'
-import { createPlan, getPlan, dismissPlan } from './cleanup-plans.ts'
+import { createPlan, getPlan, dismissPlan, releasePlan, validateIds } from './cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './cleanup-quarantine.ts'
-import { CleanupError } from './cleanup-journal.ts'
+import { CleanupError, transaction } from './cleanup-journal.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -38,7 +40,24 @@ export const META = {
   heartbeat: 'watch_heartbeat',
   pid: 'watch_pid',
   lastError: 'cleanup_last_error',
+  /** 最近一次成功的掃描／套用／復原／清空。寵物只在 lastError 比它新的時候擔心。 */
+  lastOk: 'cleanup_last_ok',
 } as const
+
+/**
+ * 後端意外（非 CleanupError）時給呼叫端的話。**要中性。**
+ *
+ * 上一版寫「這一步沒有搬動或刪除任何檔案」—— 但例外可能發生在檔案已經搬走、
+ * 或已經刪掉之後（例如刪完檔、寫回結果時資料庫出錯）。稽查實測過：檔案已經永久刪了，
+ * 訊息卻說沒有（C-C5）。我們不知道的時候，就說不知道。
+ */
+export const INTERNAL_MESSAGE = '後端出錯了，這一步可能沒有完成。請重新整理後看目前的狀態。'
+
+/** 太大、算不出指紋的檔：執行層一定拒收，所以不列成候選，改列在「需要你查看」。 */
+export const TOO_LARGE_WHY = '檔案太大，這個工具不處理，要不要留請自己決定。'
+
+/** 預設清理（不帶 id）一次最多幾個檔。超過的下次再清（RC12）。 */
+export const DEFAULT_PLAN_MAX_FILES = 1000
 
 /**
  * 信心到多少才預設打勾。
@@ -106,6 +125,13 @@ export type CandidateList = {
   /** 被 limit 砍掉了嗎。沒有這個旗標，UI 會把 500 當成全部 */
   truncated: boolean
   bytes: number
+  /**
+   * **全部**預設打勾的有幾個檔、多大 —— 不受顯示上限影響。
+   * CLI 的清單頁尾與唯讀試跑要用這兩個，不可以自己數 candidates（那只是前 500 個）。
+   * 注意：預設清理一次最多 DEFAULT_PLAN_MAX_FILES 個，超過的部分見 defaultSelection().remaining。
+   */
+  defaultCheckedCount: number
+  defaultCheckedBytes: number
   generatedAt: string
   candidates: CandidateRow[]
   /** 全部有幾筆（needsHuman 陣列會被砍到 50） */
@@ -118,40 +144,40 @@ type ItemRow = {
   id: string; path: string; name: string; bytes: number
   mtime: string; status: string; error: string | null
   sha256?: string | null
+  last_seen_at?: string
 }
 
 /**
  * 有沒有「絕對不要幫他勾」的理由。回 null 代表沒有。
  *
- * 這是註解裡那個「否決旗標」的第一個實例。max 取最高信心，所以
- * 「不要動」這種規則**不可以做成一條低信心候選** —— 會被蓋掉。
+ * 這是「否決旗標」的位置。max 取最高信心，所以「不要動」這種規則
+ * **不可以做成一條低信心候選** —— 會被蓋掉。將來的「使用者釘選」「最近開過」放這裡。
  *
- * 目前只有一條：**大到算不出指紋的檔**。spec 第 2 節規則 5 說它們要
- * 「先列為需要人工看」，但 scanner 把它們標成 candidate 而不是 error，
- * 而 archive／installer／old-download 這幾條規則只看副檔名與 mtime、
- * 根本不需要 sha256 —— 所以最大、最可能是重要備份的那批檔，
- * 走的是風險最高的路徑：沒有內容指紋，卻預設勾。
+ * 原本這裡的第一個實例是「大到算不出指紋的檔」。那一條已經升級成**不列**
+ * （見 noFingerprint）：否決只是不預設勾，使用者還是勾得起來、建得了計畫，
+ * 而執行層對它**永遠**拒收 —— 計畫卡在 partial，檔案被永久佔住（稽核 RC4）。
+ * 列出來的就要搬得動。
  */
 function vetoReason(item: ItemRow): string | null {
   if (item.error) return '這個檔案讀的時候出過問題，請自己看一眼'
-
-  // **判準要用這一列自己的事實，不可以用讀取時的門檻。**
-  //
-  // 上一版寫 `bytes > maxBytes`，有三個問題：
-  //   1. 大的半下載檔會被誤殺 —— 而下載會中斷通常就是因為檔案大
-  //   2. 讀取時的 maxBytes 跟掃描時用的可能不同。使用者把設定調大
-  //      （合法操作），那個 8GB 沒有指紋的備份檔就自己恢復預設勾
-  //   3. 完全不傳 maxBytes 時保護整個消失
-  //
-  // 真正的事實是「有沒有算出指紋」，而它就在這一列上。
-  // 例外是半下載檔 —— scanner 對那些**刻意**不算指紋，那是正常的，
-  // 不是「有問題」。
-  const partial = PARTIAL_EXT.has(extname(item.name).toLowerCase())
-  if (item.sha256 === null && item.bytes > 0 && !partial) {
-    return '沒有算出內容指紋（通常是檔案太大），請自己確認'
-  }
   return null
 }
+
+/**
+ * 這個檔**沒有內容指紋**（通常是超過大小上限）嗎？
+ *
+ * **判準要用這一列自己的事實，不可以用讀取時的門檻。** 用 `bytes > maxBytes`
+ * 的話：大的半下載檔會被誤殺；使用者把上限調大（合法操作、不用重掃）時，
+ * 那個 8GB 沒有指紋的備份檔會自己回到清單上；完全不傳 maxBytes 時保護整個消失。
+ * 真正的事實是「有沒有算出指紋」，而它就在這一列上。
+ *
+ * 例外：半下載檔 scanner **刻意**不算指紋，那是正常的；0 byte 的檔沒有東西可算。
+ */
+function noFingerprint(item: ItemRow): boolean {
+  const partial = PARTIAL_EXT.has(extname(item.name).toLowerCase())
+  return item.sha256 == null && item.bytes > 0 && !partial
+}
+
 type CandRow = {
   id: string; item_id: string; kind: string
   confidence: number; reason: string; evidence: string
@@ -206,7 +232,7 @@ export function displayPath(path: string, roots: string[]): { folder: string; su
  * 他沒辦法知道「我還留著一份」。這裡把留下來的那個檔名補進去。
  */
 function enrichDuplicate(db: DatabaseSync, item: ItemRow, evidence: string, roots: string[]): string {
-  const sha = (db.prepare(`SELECT sha256 FROM file_items WHERE id=?`).get(item.id) as { sha256: string | null })?.sha256
+  const sha = item.sha256
   if (!sha) return evidence
   const keep = db.prepare(
     `SELECT id, name, path FROM file_items
@@ -228,33 +254,103 @@ function enrichDuplicate(db: DatabaseSync, item: ItemRow, evidence: string, root
  *   `EACCES: permission denied, open '/home/u/Downloads/薪資單.pdf'`
  * 原文裡有完整路徑，而這個欄位會出現在畫面上、也會出現在不需要 token 的
  * /health 旁邊。稽查實測過真的漏出去。原文只留在資料庫裡給人查。
+ *
+ * **對外只用 safeWhy。** 這一支是 safeWhy 內部用的：直接拿它翻所有字串的話，
+ * B 寫好的人話（「十分鐘內還在變動」）會被吃成「讀不到這個檔案」（稽核 RC11）。
  */
 export function humanError(raw: string | null): string {
   const s = String(raw ?? '')
-  if (/EACCES|EPERM|permission denied/i.test(s)) return '沒有權限讀這個檔案'
+  if (/EACCES|EPERM|permission denied/i.test(s)) {
+    // 建隔離區資料夾、搬檔時的權限錯誤不是「讀不到」，講錯的話使用者會去查錯的地方
+    if (/\bmkdir\b/.test(s)) return '沒有權限建立資料夾'
+    if (/\brename\b/.test(s)) return '沒有權限搬動這個檔案'
+    return '沒有權限讀這個檔案'
+  }
   if (/ENOENT|no such file/i.test(s)) return '這個檔案已經不在了'
   if (/EISDIR/i.test(s)) return '這是一個資料夾，不是檔案'
   if (/EMFILE|ENFILE/i.test(s)) return '同時開太多檔案了，等一下會再試'
   if (/EBUSY|EAGAIN/i.test(s)) return '這個檔案正在被別的程式使用'
-  if (/too large|太大/i.test(s)) return '檔案太大，沒有算指紋'
+  if (/too large|太大|超過.*上限/i.test(s)) return TOO_LARGE_WHY
   return '讀不到這個檔案'
 }
 
+/**
+ * 失敗原因要能給 UI 看。**全專案唯一一個翻譯函式**（RC11）。
+ *
+ * B 的 `cleanupProblem()` 寫進去的已經是人話而且不帶路徑 —— **原樣通過**，
+ * 不然「十分鐘內還在變動，等一下再試」這種有用的話會被翻成「讀不到這個檔案」。
+ * 但 `file_items.error` 也可能是 scanner 寫的 fs 原文，那種帶完整路徑。
+ * 所以：**看起來帶路徑或 fs 錯誤碼的才翻譯**。
+ */
+export function safeWhy(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const s = String(raw)
+  if (/[\/\\]|\bE[A-Z]{2,}\b/.test(s)) return humanError(s)
+  return s.slice(0, 200)
+}
+
 export type ListOptions = {
-  /** 監看資料夾。用來把絕對路徑換成顯示用的 folder/subdir */
+  /** 清理的根目錄（cleanup.roots）。**只看這底下的候選**，也用來換算顯示用的 folder/subdir */
   roots: string[]
   limit?: number
 }
 
-/**
- * 清理候選，以**檔案**為單位。
- * HTTP route 與 CLI 都用這一支 —— 不准有第二份組裝邏輯。
- */
-export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateList {
-  const limit = opts.limit ?? 500
+// ── 候選的正本：清單、徽章、預設清理、建計畫都從這裡來 ────────────
 
+const fold = (p: string) => process.platform === 'win32' ? p.toLowerCase() : p
+
+/**
+ * 根目錄的比對前綴。原樣與真路徑都算 —— file_items.path 存的是 realpath，
+ * macOS 的 /var → /private/var 這種情況只比原樣會一個都對不到。
+ *
+ * **前綴比對在 JS 做，不用 SQL 的 substr。** 根目錄含 emoji 等 astral 字元時，
+ * JS 的 length（UTF-16）跟 SQLite 的 substr（字元）對不上（稽核 RC1）。
+ */
+function rootPrefixes(roots: string[]): string[] {
+  const out = new Set<string>()
+  for (const r of roots) {
+    if (!r) continue
+    const forms = [resolve(r)]
+    try { forms.push(realpathSync(r)) } catch { /* 不存在就只用原樣 */ }
+    for (const f of forms) out.add(fold(f.endsWith(sep) ? f : f + sep))
+  }
+  return [...out]
+}
+
+const underAny = (path: string, prefixes: string[]) => {
+  const p = fold(path)
+  return prefixes.some(pre => p.startsWith(pre))
+}
+
+/**
+ * 建得了計畫的檔案狀態。**跟 cleanup-plans.ts 的 createPlan 一致**（那邊是 B 的，寫死在 SQL 裡）。
+ * new ＝ 十分鐘內還在變動，執行層一定拒收；quarantined／missing／error 就更不用說。
+ */
+const PLANNABLE_STATUSES = `'candidate','kept','restored'`
+
+type Group = { item: ItemRow; cands: CandRow[] }
+type Collected = {
+  /** 列得出來、建得了計畫的檔，依清單順序（信心高的在前） */
+  rows: Group[]
+  /** 跟清理有關、但要你自己看一眼的檔，最近看到的在前 */
+  needsHuman: { item: ItemRow; why: string }[]
+}
+
+/**
+ * 候選的**唯一一份**篩選。清單、徽章數字（/health、/pet/state）、預設清理、
+ * 建計畫前的檢查全部從這裡來 —— 兩份篩選遲早會分歧，而分歧的後果是
+ * 「清單上有、按下去卻 STALE」或「徽章說 7 個、清單只有 5 個」。
+ *
+ * 三條規則：
+ *   1. **只看目前清理根目錄底下的**（RC15）。舊設定留下的桌面候選不再出現
+ *   2. **列出來的就要搬得動**（RC4）。沒指紋（太大）的檔執行層一定拒收，改列到「需要你查看」
+ *   3. **「需要你查看」只列跟清理有關的**（RC11）。一個沒命中任何規則的大 mp4 不關清理的事
+ */
+function collect(db: DatabaseSync, roots: string[]): Collected {
+  const pre = rootPrefixes(roots)
   const cands = db.prepare(
-    `SELECT c.id, c.item_id, c.kind, c.confidence, c.reason, c.evidence
+    `SELECT c.id, c.item_id, c.kind, c.confidence, c.reason, c.evidence,
+            i.path, i.name, i.bytes, i.mtime, i.status, i.error, i.sha256, i.last_seen_at
      FROM cleanup_candidates c
      JOIN file_items i ON i.id = c.item_id
      -- rule_version 一定要過濾。scanner 只清當前版本的候選，舊版本的
@@ -262,38 +358,155 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
      -- （max 取的是「這個檔歷史上拿過的最高分」），而且同一個 kind
      -- 會在 reasons 裡出現兩次、舊版的 id 也會被送去 apply。
      WHERE c.status='proposed' AND c.rule_version = ?
-       -- 'error' 也要排除，不然讀不到的檔會同時出現在
+       -- **跟 B 的 createPlan 用同一組條件**（檔案狀態白名單、理由與證據不可以是空的）。
+       -- 上一版寫 NOT IN ('quarantined','missing','error')，放進了 'new'（十分鐘內還在變動）——
+       -- 列得出來、建計畫卻回 STALE（結構化隨機測試抓到）。
+       -- 'error' 一定要排除，不然讀不到的檔會同時出現在
        -- 「幫你勾好了」與「你自己看一眼」兩區，而且兩邊講的話互相矛盾
-       AND i.status NOT IN ('quarantined','missing','error')
-       -- **有 error 文字的也要排除**（status 可能還是 candidate：B 搬移失敗、
-       -- scanner 的太大檔都是這樣寫的）。原本只排 status='error'，漏了這一半。
-       -- 而且 B 的 createPlan 本來就拒收 error 不是 NULL 的檔 —— 列在清單上
+       AND i.status IN (${PLANNABLE_STATUSES})
+       AND trim(c.reason) <> '' AND trim(c.evidence) <> ''
+       -- **有 error 文字的也要排除**（status 可能還是 candidate：B 搬移失敗就是這樣寫的）。
+       -- B 的 createPlan 本來就拒收 error 不是 NULL 的檔 —— 列在清單上
        -- 等於放一個永遠勾不成功的勾選框：前端保留勾選 → 建計畫回 STALE →
        -- 重載 → 還是勾著 → 又 STALE，死循環。**列出來的就要建得了計畫。**
        -- 重掃會清掉 error（upsertFile 的 error=excluded.error），所以會自己回來。
        AND i.error IS NULL
      -- tie-break 一定要穩定。原本是 c.id（UUID），兩條規則同分時
-     -- 卡片標題每次重掃都會亂跳（實測 12 次 6:6）。
-     ORDER BY c.confidence DESC, c.kind`
-  ).all(CLEANUP_RULE_VERSION) as CandRow[]
+     -- 卡片標題每次重掃都會亂跳（實測 12 次 6:6）。最後補 item_id，
+     -- 預設清理一次只收前 1000 個檔，是哪 1000 個也要每次都一樣。
+     ORDER BY c.confidence DESC, c.kind, c.item_id`
+  ).all(CLEANUP_RULE_VERSION) as (CandRow & ItemRow)[]
 
-  const byItem = new Map<string, CandRow[]>()
+  const byItem = new Map<string, Group>()
+  const outside = new Set<string>()
   for (const c of cands) {
-    const list = byItem.get(c.item_id)
-    if (list) list.push(c)
-    else byItem.set(c.item_id, [c])
+    let g = byItem.get(c.item_id)
+    if (!g) {
+      if (outside.has(c.item_id)) continue
+      if (!underAny(c.path, pre)) { outside.add(c.item_id); continue }
+      g = {
+        item: { id: c.item_id, path: c.path, name: c.name, bytes: c.bytes, mtime: c.mtime,
+          status: c.status, error: c.error, sha256: c.sha256, last_seen_at: c.last_seen_at },
+        cands: [],
+      }
+      byItem.set(c.item_id, g)
+    }
+    g.cands.push({ id: c.id, item_id: c.item_id, kind: c.kind, confidence: c.confidence,
+      reason: c.reason, evidence: c.evidence })
   }
 
-  const rows: CandidateRow[] = []
-  let bytes = 0
-  for (const [itemId, list] of byItem) {
-    const item = db.prepare(
-      `SELECT id, path, name, bytes, mtime, status, error, sha256 FROM file_items WHERE id=?`
-    ).get(itemId) as ItemRow | undefined
-    if (!item) continue
+  const rows: Group[] = []
+  const needsHuman: Collected['needsHuman'] = []
+  for (const g of byItem.values()) {
+    if (noFingerprint(g.item)) needsHuman.push({ item: g.item, why: TOO_LARGE_WHY })
+    else rows.push(g)
+  }
+  needsHuman.push(...brokenForHuman(db, pre))
+  needsHuman.sort((a, b) => cmpDesc(a.item.last_seen_at, b.item.last_seen_at) || (a.item.id < b.item.id ? -1 : 1))
+  return { rows, needsHuman }
+}
 
+/**
+ * 讀不到、搬不動的檔要讓使用者知道，但**不可以把路徑帶出去**。
+ * **不可以只看 status='error'**：B 搬移失敗是寫 error 文字、status 留在 candidate。
+ */
+function brokenForHuman(db: DatabaseSync, pre: string[]): Collected['needsHuman'] {
+  const broken = db.prepare(
+    `SELECT i.id, i.path, i.name, i.bytes, i.mtime, i.status, i.error, i.sha256, i.last_seen_at,
+            EXISTS (SELECT 1 FROM cleanup_candidates c WHERE c.item_id = i.id
+                      AND c.status='proposed' AND c.rule_version = ?) AS proposed
+       FROM file_items i
+      WHERE (i.status='error' OR i.error IS NOT NULL) AND i.status NOT IN ('quarantined','missing')`
+  ).all(CLEANUP_RULE_VERSION) as (ItemRow & { proposed: number })[]
+  const now = Date.now()
+  const out: Collected['needsHuman'] = []
+  for (const b of broken) {
+    if (!underAny(b.path, pre) || !cleanupRelated(b, now)) continue
+    out.push({ item: b, why: needsHumanWhy(b) })
+  }
+  return out
+}
+
+/**
+ * 只要數字的版本（/health、/pet/state 的徽章）。**篩選條件跟 collect 一模一樣**，
+ * 只是不把每一條候選的理由與證據都讀出來 —— /health 不需要 token，
+ * 任何網頁都能用 <img> 連發，7000 個檔時完整版要 30 多 ms，這一版不到十分之一。
+ * test/audit-0919-routes.test.mjs 有一條拿兩版對照。
+ */
+function collectCounts(db: DatabaseSync, roots: string[]): { pending: number; needsHuman: number } {
+  const pre = rootPrefixes(roots)
+  const items = db.prepare(
+    `SELECT i.id, i.path, i.name, i.bytes, i.sha256 FROM file_items i
+      WHERE i.status IN (${PLANNABLE_STATUSES}) AND i.error IS NULL
+        AND EXISTS (SELECT 1 FROM cleanup_candidates c WHERE c.item_id = i.id
+                      AND c.status='proposed' AND c.rule_version = ?
+                      AND trim(c.reason) <> '' AND trim(c.evidence) <> '')`
+  ).all(CLEANUP_RULE_VERSION) as ItemRow[]
+  let pending = 0, tooLarge = 0
+  for (const i of items) {
+    if (!underAny(i.path, pre)) continue
+    if (noFingerprint(i)) tooLarge++
+    else pending++
+  }
+  return { pending, needsHuman: tooLarge + brokenForHuman(db, pre).length }
+}
+
+const cmpDesc = (a = '', b = '') => a < b ? 1 : a > b ? -1 : 0
+
+/**
+ * 這個有問題的檔跟清理有沒有關係。
+ *
+ * 讀不到（status=error）一定算 —— 它可能就是垃圾，只是我們看不到。
+ * 其餘的要「原本會是候選」：已經是候選（搬移失敗）、還有提議中的候選，
+ * 或拿同一套規則問一次會命中（scanner 對太大的檔可能根本沒分類）。
+ * 一個沒命中任何規則的大 mp4 不列 —— 它不是清理的事，列了只是讓清單變吵。
+ */
+function cleanupRelated(b: ItemRow & { proposed: number }, now: number): boolean {
+  if (b.status === 'error' || b.status === 'candidate' || b.proposed) return true
+  const mtimeMs = Date.parse(b.mtime)
+  if (!Number.isFinite(mtimeMs)) return false
+  return classifyByRules({
+    path: b.path, name: b.name, ext: extname(b.name), bytes: b.bytes, mtimeMs, nowMs: now, sha256: b.sha256,
+  }).length > 0
+}
+
+function needsHumanWhy(b: ItemRow): string {
+  // 太大是事實（沒有指紋），不看 scanner 寫了什麼字 —— 那句「超過清理掃描上限」
+  // 以前被翻成「讀不到這個檔案」（稽核 RC11）。
+  if (b.status !== 'error' && noFingerprint(b)) return TOO_LARGE_WHY
+  return safeWhy(b.error) ?? '讀不到這個檔案'
+}
+
+const isDefaultChecked = (g: Group) =>
+  vetoReason(g.item) === null && g.cands[0].confidence >= DEFAULT_CHECK_MIN
+
+/**
+ * 清理候選，以**檔案**為單位。
+ * HTTP route 與 CLI 都用這一支 —— 不准有第二份組裝邏輯。
+ */
+export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateList {
+  const limit = opts.limit ?? 500
+  const all = collect(db, opts.roots)
+
+  const rows: CandidateRow[] = []
+  let bytes = 0, checkedCount = 0, checkedBytes = 0
+  for (const g of all.rows) {
+    // 一個檔一個決定，用**最高**信心那條。
+    //
+    // 為什麼是 max 不是 min：每一條規則都是「這是垃圾」的獨立證據，
+    // 多命中一條是證據變多不是變少。取 min 的話，加規則會讓系統變得
+    // 更不敢清 —— 200 天的 zip 反而比 40 天的難清掉，那很荒謬。
+    //
+    // **陷阱**：將來要加「使用者釘選」「最近開過」這種「絕對不要動」的規則，
+    // **必須做成否決旗標，不可以做成一條低信心候選** —— max 會把它蓋掉。
+    const checked = isDefaultChecked(g)
+    // 預設打勾的數字要算**全部**，不受顯示上限影響（RC12）
+    if (checked) { checkedCount++; checkedBytes += g.item.bytes }
+    if (rows.length >= limit) continue
+
+    const item = g.item
     // 已經照 confidence DESC 抓出來了，第一筆就是最高的
-    const reasons: CandidateReason[] = list.map(c => ({
+    const reasons: CandidateReason[] = g.cands.map(c => ({
       kind: c.kind,
       confidence: c.confidence,
       reason: c.reason,
@@ -301,61 +514,38 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
     }))
     const top = reasons[0]
     const { folder, subdir } = displayPath(item.path, opts.roots)
-    const veto = vetoReason(item)
-
     rows.push({
-      itemId, name: item.name, folder, subdir,
+      itemId: item.id, name: item.name, folder, subdir,
       bytes: item.bytes, mtime: item.mtime,
       kind: top.kind,
       confidence: top.confidence,
-      // 一個檔一個決定，用**最高**信心那條。
-      //
-      // 為什麼是 max 不是 min：每一條規則都是「這是垃圾」的獨立證據，
-      // 多命中一條是證據變多不是變少。取 min 的話，加規則會讓系統變得
-      // 更不敢清 —— 200 天的 zip 反而比 40 天的難清掉，那很荒謬。
-      //
-      // **陷阱**：將來要加「使用者釘選」「最近開過」這種「絕對不要動」的規則，
-      // **必須做成否決旗標，不可以做成一條低信心候選** —— max 會把它蓋掉。
-      // 否決旗標優先於信心。沒有這一條的話，一個 8GB 的備份檔
-      // 會因為副檔名是 .zip 又超過 30 天，帶著 65 分被預設勾起來。
-      defaultChecked: veto === null && top.confidence >= DEFAULT_CHECK_MIN,
-      vetoed: veto,
-      candidateIds: list.map(c => c.id),
+      defaultChecked: checked,
+      vetoed: vetoReason(item),
+      candidateIds: g.cands.map(c => c.id),
       reasons,
     })
     bytes += item.bytes
-    if (rows.length >= limit) break
   }
 
-  // 讀不到的檔案要讓使用者知道，但**不可以把路徑帶出去**
-  // **不可以只看 status='error'。** scanner 對「太大，算不出 sha256」的檔
-  // 是寫 error 文字但 status 留在 candidate，所以那批檔會完全不出現在這裡。
   const NEEDS_HUMAN_LIMIT = 50
-  const brokenTotal = (db.prepare(
-    `SELECT count(*) n FROM file_items
-     WHERE (status='error' OR error IS NOT NULL) AND status NOT IN ('quarantined','missing')`
-  ).get() as { n: number }).n
-  const broken = db.prepare(
-    `SELECT id, path, name, bytes, mtime, status, error, sha256 FROM file_items
-     WHERE (status='error' OR error IS NOT NULL) AND status NOT IN ('quarantined','missing')
-     ORDER BY last_seen_at DESC LIMIT ?`
-  ).all(NEEDS_HUMAN_LIMIT) as ItemRow[]
-
+  const nh = all.needsHuman
   return {
     total: rows.length,
-    totalAvailable: byItem.size,
-    truncated: byItem.size > rows.length,
+    totalAvailable: all.rows.length,
+    truncated: all.rows.length > rows.length,
     bytes,
+    defaultCheckedCount: checkedCount,
+    defaultCheckedBytes: checkedBytes,
     generatedAt: new Date().toISOString(),
     candidates: rows,
-    needsHumanTotal: brokenTotal,
-    needsHumanTruncated: brokenTotal > broken.length,
-    needsHuman: broken.map(b => ({
-      itemId: b.id,
-      name: b.name,
-      folder: displayPath(b.path, opts.roots).folder,
-      bytes: b.bytes,
-      why: humanError(b.error),
+    needsHumanTotal: nh.length,
+    needsHumanTruncated: nh.length > NEEDS_HUMAN_LIMIT,
+    needsHuman: nh.slice(0, NEEDS_HUMAN_LIMIT).map(({ item, why }) => ({
+      itemId: item.id,
+      name: item.name,
+      folder: displayPath(item.path, opts.roots).folder,
+      bytes: item.bytes,
+      why,
     })),
   }
 }
@@ -556,12 +746,15 @@ export function invalidateQuarantineCache() { countCache = null }
  * response 的時候自己播的動畫，不該由這裡回報。
  */
 export function petState(
-  h: { db: { ok: boolean }; watcher: { ok: boolean }; pendingCandidates: number; lastError: unknown },
+  h: {
+    db: { ok: boolean }; watcher: { ok: boolean }; pendingCandidates: number; lastError: unknown
+    lastErrorAt?: string | null; lastOkAt?: string | null
+  },
   counts: { proposedPlans: number; activeQuarantine: number },
 ) {
   const state =
     // 壞掉的時候顯示「找到 7 個可以清」是在騙人
-    !h.db.ok || h.lastError ? 'worried'
+    !h.db.ok || errorStillActive(h) ? 'worried'
     // 使用者正在等確認，這時候跳「找到東西了」會蓋掉待辦
     : counts.proposedPlans > 0 ? 'waiting'
     : h.pendingCandidates > 0 ? 'found'
@@ -584,6 +777,76 @@ export function petState(
   }
 }
 
+/**
+ * 上一次的錯還「算數」嗎？**之後有成功過就不算。**
+ *
+ * 稽查抓到（A-M4、C-C3）：lastError 寫了就永遠不清，一次 BUSY、一次打錯的網址
+ * 就讓寵物永久擔心。修法是記「最近一次成功」，比時間。
+ * 沒有時間可比（舊格式、或呼叫端只給了 lastError）的時候倒向擔心 —— 寧可多看一眼。
+ */
+function errorStillActive(h: { lastError: unknown; lastErrorAt?: string | null; lastOkAt?: string | null }): boolean {
+  if (!h.lastError) return false
+  const e = Date.parse(h.lastErrorAt ?? ''), o = Date.parse(h.lastOkAt ?? '')
+  return !(Number.isFinite(e) && Number.isFinite(o) && o > e)
+}
+
+/** meta 裡的 lastError 是「ISO 時間 空白 訊息」。舊資料可能帶路徑，讀出來一律再翻一次。 */
+function parseLastError(raw: string | null): { at: string | null; why: string | null } {
+  if (!raw) return { at: null, why: null }
+  const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z)\s+([\s\S]*)$/.exec(raw)
+  const at = m && Number.isFinite(Date.parse(m[1])) ? m[1] : null
+  return { at, why: safeWhy(m ? m[2] : raw) ?? '後端出錯了' }
+}
+
+const setMeta = (db: DatabaseSync, k: string, v: string) =>
+  db.prepare(`INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).run(k, v)
+
+/**
+ * 時間戳要**嚴格晚於**另一個。同一毫秒內先錯後成功（或先成功後錯），
+ * 單看時鐘分不出先後；寵物要看得出哪個在後。時鐘往回跳也一樣成立。
+ */
+function laterThan(other: string | null): string {
+  const o = other ? Date.parse(other) : NaN
+  return new Date(Number.isFinite(o) ? Math.max(Date.now(), o + 1) : Date.now()).toISOString()
+}
+
+/**
+ * 這個錯值不值得記。**只記真的意外**（RC5）：
+ * - 不是 CleanupError（程式或資料庫壞了）
+ * - CleanupError 而且對到 5xx，但**不是 BUSY** —— BUSY 是「等一下就好」，
+ *   記了寵物就為了一件自己會好的事擔心
+ * 4xx 是呼叫端的事，記了只會把 doctor 洗版。
+ */
+export function isSurprise(e: unknown): boolean {
+  if (!(e instanceof CleanupError)) return true
+  return statusFor(e.code) >= 500 && e.code !== 'BUSY'
+}
+
+/**
+ * 記一筆後端意外。不是意外（見 isSurprise）就什麼都不做，回 false。
+ *
+ * **存的是翻過的人話（safeWhy）＋時間，不存原文。** 原文只進 console ——
+ * fs 的錯誤訊息一律帶完整路徑，而 lastError 會出現在 /health。
+ * CLI 也要用這一支，不要自己寫 meta。
+ */
+export function recordCleanupError(db: DatabaseSync, e: unknown): boolean {
+  if (!isSurprise(e)) return false
+  const raw = String((e as any)?.message ?? e).slice(0, 300)
+  console.error('[contextbox] 清理出錯：', raw)
+  try {
+    const why = safeWhy(raw) ?? '後端出錯了'
+    setMeta(db, META.lastError, `${laterThan(safe(() => getMeta(db, META.lastOk), null))} ${why}`)
+  } catch { /* 連 meta 都寫不進去就算了 */ }
+  return true
+}
+
+/** 一次成功的掃描、套用、復原、清空都要記。寵物只在 lastError 比這個新的時候擔心。 */
+export function recordCleanupOk(db: DatabaseSync): void {
+  try {
+    setMeta(db, META.lastOk, laterThan(parseLastError(getMeta(db, META.lastError)).at))
+  } catch { /* 寫不進去就算了：頂多寵物多擔心一下 */ }
+}
+
 export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
   const rootList = typeof opts.roots === 'function' ? opts.roots() : opts.roots
   // **每一段各自 try/catch。** 這支是唯一免 token 的端點，它必須
@@ -591,7 +854,9 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
   // 的第三種形狀，UI 會直接 TypeError。
   // 而且 lastError 要**最先**讀：資料庫壞掉正是它唯一要處理的情境，
   // 排在後面的話會先被別的查詢炸掉，整條回饋迴路失效。
-  const lastError = safe(() => getMeta(db, META.lastError), null)
+  const lastErrorRaw = safe(() => getMeta(db, META.lastError), null)
+  const lastErr = parseLastError(lastErrorRaw)
+  const lastOkAt = safe(() => getMeta(db, META.lastOk), null)
   const beat = safe(() => getMeta(db, META.heartbeat), null)
   const pid = Number(safe(() => getMeta(db, META.pid), null))
   const running = Boolean(beat) && alive(pid)
@@ -601,18 +866,11 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
   const q = safe(() => quarantineFromJournal(db, opts.quarantine),
     { items: 0, bytes: 0, oldestMtimeAt: null, canEmptyAt: null, orphans: 0, truncated: true })
 
-  const pending = safe(() => (db.prepare(
-    `SELECT count(DISTINCT c.item_id) n FROM cleanup_candidates c
-     JOIN file_items i ON i.id = c.item_id
-     WHERE c.status='proposed' AND c.rule_version = ?
-       AND i.status NOT IN ('quarantined','missing','error')
-       AND i.error IS NULL`
-  ).get(CLEANUP_RULE_VERSION) as { n: number }).n, 0)
-
-  const errors = safe(() => (db.prepare(
-    `SELECT count(*) n FROM file_items
-     WHERE (status='error' OR error IS NOT NULL) AND status NOT IN ('quarantined','missing')`
-  ).get() as { n: number }).n, 0)
+  // 徽章數字跟清單**同一套篩選**（collectCounts 是 collect 的只數數字版）。各自寫一條 COUNT 的話，
+  // 清單排掉的（桌面上的、太大的、跟清理無關的大檔）這裡還會算進去。
+  const counted = safe(() => collectCounts(db, rootList), { pending: 0, needsHuman: 0 })
+  const pending = counted.pending
+  const errors = counted.needsHuman
 
   // 真的問資料庫一次。寫死 true 的話，資料庫壞到其他每一條 route 都在噴，
   // /health 還會說一切正常 —— 那這個端點就沒有輸入，只是一個裝飾。
@@ -662,70 +920,167 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
     },
     pendingCandidates: pending,
     needsHumanCount: errors,
-    // lastError 的內容只給帶 token 的 —— 那個欄位設計上會放錯誤訊息，
-    // 而這個系統的錯誤字串帶完整路徑（fs 的 message 一律含 path）。
-    lastError: full ? lastError : (lastError ? '有，帶 token 才看得到' : null),
+    // lastError 的內容只給帶 token 的。存進去的時候已經翻成人話（recordCleanupError），
+    // 讀出來再翻一次 —— 舊版存的是原文，帶完整路徑（fs 的 message 一律含 path）。
+    lastError: full
+      ? (lastErrorRaw ? (lastErr.at ? `${lastErr.at} ${lastErr.why}` : lastErr.why) : null)
+      : (lastErrorRaw ? '有，帶 token 才看得到' : null),
+    // 時間不帶路徑也不帶名字，兩版都給（形狀一致）。寵物拿它們比「錯在成功之後嗎」。
+    lastErrorAt: lastErr.at,
+    lastOkAt,
   }
 }
 
 // ── 預設要清哪些 ─────────────────────────────────────────────
 
+/** createPlan 的 validateIds 上限。一個檔最多命中五、六條規則，1000 個檔不會超過 —— 但防線不靠估計。 */
+const MAX_PLAN_IDS = 5000
+
 /**
- * 「預設清理」要清的候選 id。**跟清單上打 ✔ 的一模一樣。**
+ * 「預設清理」要清的候選。**跟清單上打 ✔ 的一模一樣，但一次最多 maxFiles 個檔**（RC12）。
  *
- * B 的 createPlan 不帶 id 時有自己的預設（信心 ≥ 50），但它**不看否決** ——
- * 太大、沒有指紋的檔在清單上是 ☐，卻會被收進預設計畫。使用者把大小上限調大
- * （合法操作、不用重掃）之後，它就直接被搬走了。獨立重推實測抓到。
- *
+ * B 的 createPlan 不帶 id 時有自己的預設（信心 ≥ 50），但它**不看否決**、也不看清理根目錄。
  * 所以 route 與 CLI 一律用這支算出明確的 id 再交給 createPlan：
  * **defaultChecked 只有 listCandidates 一個地方在決定**（spec 不變量 2）。
- * 不受顯示上限影響 —— 清單只列 500 個，但預設清理要清的是全部打 ✔ 的。
+ *
+ * 不受顯示上限影響（清單只列 500 個，預設清理看的是全部打 ✔ 的），
+ * 但一次只收前 maxFiles 個 —— 上一版不設上限，超過 5000 個 id 時 createPlan
+ * 直接回 BAD_BODY，使用者什麼都清不了（A-C7）。剩下幾個放在 remaining，
+ * 呼叫端要講清楚「剩下 N 個下次再清」。
  */
-export function defaultCandidateIds(db: DatabaseSync, roots: string[]): string[] {
-  return listCandidates(db, { roots, limit: Number.MAX_SAFE_INTEGER }).candidates
-    .filter(c => c.defaultChecked).flatMap(c => c.candidateIds)
+export function defaultSelection(db: DatabaseSync, roots: string[], maxFiles: number = DEFAULT_PLAN_MAX_FILES) {
+  const checked = collect(db, roots).rows.filter(isDefaultChecked)
+  const candidateIds: string[] = []
+  let files = 0, bytes = 0
+  for (const g of checked) {
+    if (files >= maxFiles || candidateIds.length + g.cands.length > MAX_PLAN_IDS) break
+    for (const c of g.cands) candidateIds.push(c.id)
+    files++
+    bytes += g.item.bytes
+  }
+  return { candidateIds, files, bytes, remaining: checked.length - files }
+}
+
+/**
+ * 同 defaultSelection，回候選 id 陣列（可以直接交給 createPlan）。
+ * 陣列上另外掛兩個**不列舉**的屬性：`files`（這次收了幾個檔）與 `remaining`（還剩幾個下次再清）。
+ */
+export function defaultCandidateIds(db: DatabaseSync, roots: string[]): string[] & { files: number; remaining: number } {
+  const s = defaultSelection(db, roots)
+  return Object.defineProperties(s.candidateIds, {
+    files: { value: s.files },
+    remaining: { value: s.remaining },
+  }) as string[] & { files: number; remaining: number }
+}
+
+/**
+ * 建計畫，但**只收目前清單上列得出來的候選**（RC4、RC15）。
+ *
+ * createPlan（B）不知道清理根目錄，也不知道「太大」的檔執行層一定拒收。
+ * 不在這裡擋的話：舊資料庫裡桌面的候選 id、太大的檔的 id 都建得成計畫，
+ * 然後永遠搬不動、把檔案佔住。清單與建計畫要用**同一套篩選**（collect）。
+ *
+ * 同一個 requestId 的重送不檢查 —— 那是網路斷線後的重播，檔案可能已經搬走了
+ * （所以不在清單上），createPlan 會認出它並回原本那份（冪等）。
+ *
+ * route 與 CLI 都用這一支。
+ */
+export function createPlanForRoots(db: DatabaseSync, roots: string[], opts: { candidateIds: unknown; requestId?: unknown }) {
+  validateIds(opts.candidateIds)
+  const ids = opts.candidateIds
+  const replay = typeof opts.requestId === 'string' && opts.requestId.length > 0 && safe(() => Boolean(
+    db.prepare('SELECT 1 FROM cleanup_plan_requests WHERE request_id=?').get(opts.requestId as string)), false)
+  if (!replay) {
+    const listed = new Set(collect(db, roots).rows.flatMap(g => g.cands.map(c => c.id)))
+    if (ids.some(id => !listed.has(id))) {
+      throw new CleanupError('STALE_CANDIDATE', '候選已變更，請重新掃描並建立計畫。')
+    }
+  }
+  return createPlan(db, { candidateIds: ids, requestId: opts.requestId as string | undefined })
+}
+
+/**
+ * 撞到 CONFLICT 的時候，**擋住這次勾選的是哪一份計畫**（RC7）。
+ *
+ * UI 原本自己去拿「最新一份還沒做完的」—— 那一份不一定跟這次勾的有關係。
+ * 稽查實測：舊計畫佔著 a、新計畫只有 z，使用者只勾 a，面板請他「繼續上次那份」，
+ * 結果搬走的是 z（A-M2、C-M2）。
+ *
+ * 找的是檔案跟這次勾選有交集、而且還佔著檔案的計畫。proposed 優先
+ * （執行層改過之後只有它會佔檔），同一類取最新的。找不到回 null。
+ */
+export function blockingPlanFor(db: DatabaseSync, candidateIds: string[]) {
+  if (!candidateIds.length) return null
+  const ready = (db.prepare(
+    `SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='cleanup_snapshots'`).get() as { n: number }).n
+  if (!ready) return null
+  const p = db.prepare(
+    `SELECT p.id, p.status, p.created_at FROM cleanup_plans p
+      WHERE p.status IN ('proposed','partial','error')
+        AND EXISTS (SELECT 1 FROM cleanup_snapshots s
+                     WHERE s.plan_id = p.id
+                       AND s.item_id IN (SELECT item_id FROM cleanup_candidates
+                                          WHERE id IN (SELECT value FROM json_each(?))))
+      ORDER BY (p.status = 'proposed') DESC, p.created_at DESC, p.rowid DESC LIMIT 1`
+  ).get(JSON.stringify([...new Set(candidateIds)])) as { id: string; status: string; created_at: string } | undefined
+  if (!p) return null
+  const items = (db.prepare('SELECT snapshot FROM cleanup_snapshots WHERE plan_id=? ORDER BY rowid').all(p.id) as { snapshot: string }[])
+    .map(r => JSON.parse(r.snapshot) as { id: string; name: string; bytes: number })
+    .map(i => ({ itemId: i.id, name: i.name, bytes: i.bytes }))
+  return { id: p.id, status: p.status, createdAt: p.created_at, items }
 }
 
 // ── 計畫的逐項結果 ───────────────────────────────────────────
 
-/**
- * 失敗原因要能給 UI 看。
- *
- * B 的 `cleanupProblem()` 寫進去的已經是人話而且不帶路徑 —— **原樣通過**，
- * 不然「十分鐘內還在變動，等一下再試」這種有用的話會被 humanError 吃成
- * 「讀不到這個檔案」。但 `file_items.error` 也可能是 scanner 寫的 fs 原文，
- * 那種帶完整路徑。所以：**看起來帶路徑或 fs 錯誤碼的才翻譯**。
- */
-function safeWhy(raw: string | null | undefined): string | null {
-  if (!raw) return null
-  const s = String(raw)
-  if (/[\/\\]|\bE[A-Z]{2,}\b/.test(s)) return humanError(s)
-  return s.slice(0, 200)
-}
-
-export type ItemOutcome = 'pending' | 'moved' | 'skipped' | 'failed' | 'restored' | 'purged'
+export type ItemOutcome =
+  | 'pending' | 'moved' | 'skipped' | 'failed' | 'restored' | 'purged'
+  /** journal 停在 started：搬（或復原）到一半中斷，檔案在哪裡不確定 */
+  | 'unknown'
+  /** 計畫被放棄了（dismiss／release），這個檔沒有動過 */
+  | 'cancelled'
 type Outcome = { outcome: ItemOutcome; why: string | null; restoredAs?: string }
 
 /**
- * 計畫裡每個檔現在的下場。**這是唯一一份算法**，route 與 CLI 共用。
- *
- * CLI 那邊踩過一次：一律印 ✔，全失敗時畫面上是一排 ✔ 後面接「搬進隔離區 0 個」。
- * 前端自己用「勾了幾個」去推算，會踩同一個坑。
- *
- * 失敗原因有兩個地方：搬移失敗寫在 journal；**檢查沒過（例如 TOO_FRESH）
- * 根本不會寫 journal**，只寫 `file_items.error`。只查一處的話最常見的失敗會沒有原因。
+ * 搬到一半中斷的話。**不可以說「沒有搬動」** —— rename 可能已經完成、只是還沒寫 done
+ * （kill -9、斷電）。稽查實測：檔案在隔離區，畫面說「沒有搬動，原因不明」（A-M3）。
+ * 再套用一次同一份計畫會把它接完（performMove 認得「已經到了」）。
  */
-export function planOutcomes(db: DatabaseSync, planId: string): Map<string, Outcome> {
+const MOVE_INTERRUPTED = '搬到一半中斷，檔案可能已經在隔離區。再套用一次這份計畫會把它接完。'
+const RESTORE_INTERRUPTED = '復原到一半中斷，檔案可能已經放回原位。再按一次復原會把它接完。'
+
+const tableExists = (db: DatabaseSync, name: string) =>
+  Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name))
+
+/** 已經確認清空的隔離紀錄。列很多份計畫的時候**只讀一次**（RC19）。 */
+function purgedSeqs(db: DatabaseSync): Set<number> {
+  if (!tableExists(db, 'cleanup_purges')) return new Set()
+  return new Set((db.prepare(`SELECT seq FROM cleanup_purges WHERE status='done'`).all() as { seq: number }[]).map(r => r.seq))
+}
+
+function storedWhys(db: DatabaseSync, planId: string): Map<string, string> {
+  return new Map(safe(() => db.prepare('SELECT item_id, why FROM cleanup_item_errors WHERE plan_id=?')
+    .all(planId) as { item_id: string; why: string }[], []).map(r => [r.item_id, r.why]))
+}
+
+type OutcomeOptions = {
+  /** 呼叫端已經讀好的清空紀錄（列很多份的時候共用一份） */
+  purged?: Set<number>
+  /** false ＝ 不讀 cleanup_item_errors，只看 journal 與 file_items（recordItemErrors 用） */
+  stored?: boolean
+}
+
+/**
+ * 算逐項結果。`raw` 是「這次從 journal／file_items 讀到的原因」，
+ * 讀不到就是 null —— recordItemErrors 靠它判斷要不要蓋掉舊的紀錄。
+ */
+function outcomesOf(db: DatabaseSync, planId: string, opts: OutcomeOptions = {}): Map<string, Outcome & { raw: string | null }> {
   const plan = db.prepare('SELECT status FROM cleanup_plans WHERE id=?').get(planId) as { status: string } | undefined
-  const out = new Map<string, Outcome>()
+  const out = new Map<string, Outcome & { raw: string | null }>()
   if (!plan) return out
-  const hasPurges = (db.prepare(
-    `SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='cleanup_purges'`).get() as { n: number }).n > 0
-  const purged = new Set(hasPurges
-    ? (db.prepare(`SELECT seq FROM cleanup_purges WHERE status='done'`).all() as { seq: number }[]).map(r => r.seq)
-    : [])
+  const purged = opts.purged ?? purgedSeqs(db)
+  const stored = opts.stored === false ? new Map<string, string>() : storedWhys(db, planId)
   const lastQ = new Map<string, { seq: number; status: string; error: string | null }>()
-  const lastR = new Map<string, { status: string; to_path: string | null }>()
+  const lastR = new Map<string, { status: string; error: string | null; to_path: string | null }>()
   for (const j of db.prepare(
     `SELECT seq, item_id, op, status, error, to_path FROM cleanup_journal WHERE plan_id=? ORDER BY seq`
   ).all(planId) as { seq: number; item_id: string; op: string; status: string; error: string | null; to_path: string | null }[]) {
@@ -734,26 +1089,41 @@ export function planOutcomes(db: DatabaseSync, planId: string): Map<string, Outc
   }
   const ran = plan.status !== 'proposed' && plan.status !== 'dismissed'
   const items = db.prepare(
-    `SELECT DISTINCT c.item_id, max(p.skipped) skipped, f.error, f.name
+    `SELECT c.item_id, max(p.skipped) skipped, f.error, f.name, f.status
        FROM cleanup_plan_items p
        JOIN cleanup_candidates c ON c.id = p.candidate_id
        LEFT JOIN file_items f ON f.id = c.item_id
       WHERE p.plan_id = ? GROUP BY c.item_id`
-  ).all(planId) as { item_id: string; skipped: number; error: string | null; name: string }[]
+  ).all(planId) as { item_id: string; skipped: number; error: string | null; name: string; status: string | null }[]
   for (const i of items) {
     const q = lastQ.get(i.item_id)
     const r = lastR.get(i.item_id)
-    let outcome: ItemOutcome, why: string | null = null
+    let outcome: ItemOutcome, why: string | null = null, raw: string | null = null
     if (i.skipped) outcome = 'skipped'
-    else if (q?.status === 'done' && r?.status === 'done') outcome = 'restored'
-    else if (q?.status === 'done' && purged.has(q.seq)) outcome = 'purged'
-    else if (q?.status === 'done') outcome = 'moved'
-    else if (!ran && !q) outcome = 'pending'
+    else if (q?.status === 'done') {
+      if (r?.status === 'done') outcome = 'restored'
+      else if (purged.has(q.seq)) outcome = 'purged'
+      else if (r?.status === 'started') { outcome = 'unknown'; why = RESTORE_INTERRUPTED }
+      else {
+        outcome = 'moved'
+        // 還在隔離區。復原失敗過的話要講得出為什麼沒放回來（UI 的「沒放回」要用）。
+        // 搬進隔離區成功時 markMoved 會清掉 file_items.error，所以隔離中的檔身上有 error，
+        // 就是之後的復原失敗寫的（驗證沒過的那種不會寫 journal）。
+        why = (r?.status === 'failed' ? safeWhy(r.error) : null)
+          ?? (i.status === 'quarantined' ? safeWhy(i.error) : null)
+      }
+    }
+    else if (q?.status === 'started') { outcome = 'unknown'; why = MOVE_INTERRUPTED }
+    else if (!ran && !q) outcome = plan.status === 'dismissed' ? 'cancelled' : 'pending'
     else {
       outcome = 'failed'
-      why = safeWhy(q?.error) ?? safeWhy(i.error) ?? '沒有搬動，原因不明'
+      // 失敗原因有兩個地方：搬移失敗寫在 journal；**檢查沒過（例如 TOO_FRESH）
+      // 根本不會寫 journal**，只寫 file_items.error —— 而那一欄下一次掃描就被改寫。
+      // 所以先讀套用當下存起來的（cleanup_item_errors），再看 journal，最後才是 file_items。
+      raw = safeWhy(q?.error) ?? safeWhy(i.error)
+      why = stored.get(i.item_id) ?? raw ?? '沒有搬動，原因不明'
     }
-    const o: Outcome = { outcome, why }
+    const o: Outcome & { raw: string | null } = { outcome, why, raw }
     // **原位置被佔的時候，放回來的那份會改名**（B 的 restoreTarget：X.zip.restored）。
     // 不講的話使用者會以為「放回原位」—— 其實原位是後來那個檔。只給檔名，不給路徑。
     if (outcome === 'restored' && r?.to_path) {
@@ -765,10 +1135,83 @@ export function planOutcomes(db: DatabaseSync, planId: string): Map<string, Outc
   return out
 }
 
+/**
+ * 計畫裡每個檔現在的下場。**這是唯一一份算法**，route 與 CLI 共用。
+ *
+ * CLI 那邊踩過一次：一律印 ✔，全失敗時畫面上是一排 ✔ 後面接「搬進隔離區 0 個」。
+ * 前端自己用「勾了幾個」去推算，會踩同一個坑。
+ *
+ * outcome 的全部種類：pending（還沒做）、moved（在隔離區）、skipped（你略過了）、
+ * failed（沒搬成，why 講原因）、restored（放回去了）、purged（已清空）、
+ * unknown（搬到一半中斷）、cancelled（計畫放棄了）。
+ * moved 的 why 通常是 null；復原失敗過的話是沒放回來的原因。
+ */
+export function planOutcomes(db: DatabaseSync, planId: string, opts: { purged?: Set<number> } = {}): Map<string, Outcome> {
+  const out = new Map<string, Outcome>()
+  for (const [k, { raw: _raw, ...o }] of outcomesOf(db, planId, opts)) out.set(k, o)
+  return out
+}
+
+/**
+ * 套用完**馬上**把失敗的原因存起來（RC11）。回存了幾筆。
+ *
+ * 檢查沒過的失敗（TOO_FRESH、CHANGED…）只寫在 file_items.error，而那一欄下一次掃描
+ * 就被改寫 —— 重掃一次，計畫的逐項結果就從「十分鐘內還在變動」變成「原因不明」。
+ * route 在 apply 之後呼叫；**CLI 套用完也要呼叫**。
+ *
+ * - 失敗、而且這次讀得到原因 → 寫入（蓋掉舊的）
+ * - 失敗、但這次讀不到原因（file_items 已經被重掃改寫）→ 保留舊的，不要蓋成「原因不明」
+ * - 不是失敗（重試成功了）→ 刪掉，不然它會掛在一個已經搬走的檔上
+ */
+export function recordItemErrors(db: DatabaseSync, planId: string): number {
+  const o = outcomesOf(db, planId, { stored: false })
+  if (!o.size) return 0
+  const at = new Date().toISOString()
+  let n = 0
+  transaction(db, () => {
+    for (const [itemId, x] of o) {
+      if (x.outcome === 'failed') {
+        if (!x.raw) continue
+        db.prepare(`INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)
+                    ON CONFLICT(plan_id,item_id) DO UPDATE SET why=excluded.why, at=excluded.at`)
+          .run(planId, itemId, x.raw, at)
+        n++
+      } else {
+        db.prepare('DELETE FROM cleanup_item_errors WHERE plan_id=? AND item_id=?').run(planId, itemId)
+      }
+    }
+  })
+  return n
+}
+
 /** 把逐項結果掛到 B 的計畫 DTO 上。 */
 export function withOutcomes<T extends { id: string; items: { itemId: string }[] }>(db: DatabaseSync, dto: T): T {
   const o = planOutcomes(db, dto.id)
   return { ...dto, items: dto.items.map(i => ({ ...i, ...(o.get(i.itemId) ?? { outcome: 'pending', why: null }) })) }
+}
+
+/** 還可能有「還沒做完」的項目的計畫狀態。 */
+const OPEN_STATUSES = ['proposed', 'partial', 'error']
+
+/**
+ * 隔離區裡**現在**還有這份計畫的東西的計畫 id。一次查詢算完（RC19）。
+ *
+ * 條件要跟 outcomesOf 的 moved 一模一樣：搬進去了（done）、沒放回來（restore 不是 done）、
+ * 沒在復原中（restore 不是 started —— 那是 unknown）、沒被清空。
+ * test/audit-0919-routes.test.mjs 有一條拿慢的參考算法對照。
+ */
+function undoablePlanIds(db: DatabaseSync): Set<string> {
+  const purgeClause = tableExists(db, 'cleanup_purges')
+    ? `AND NOT EXISTS (SELECT 1 FROM cleanup_purges p WHERE p.seq = q.seq AND p.status = 'done')`
+    : ''
+  return new Set((db.prepare(
+    `SELECT DISTINCT q.plan_id FROM cleanup_journal q
+      WHERE q.op = 'quarantine' AND q.status = 'done'
+        AND NOT EXISTS (SELECT 1 FROM cleanup_journal r
+                         WHERE r.plan_id = q.plan_id AND r.item_id = q.item_id
+                           AND r.op = 'restore' AND r.status IN ('done','started'))
+        ${purgeClause}`
+  ).all() as { plan_id: string }[]).map(r => r.plan_id))
 }
 
 /**
@@ -778,7 +1221,11 @@ export function withOutcomes<T extends { id: string; items: { itemId: string }[]
  * `filter`：
  * - `undoable`：隔離區裡**現在**還有東西的。已復原、已被清空的都不算 ——
  *   說能復原但其實檔案已經永久刪除，是在騙人。`items` 只列還能放回去的那些。
- * - `pending`：還沒做完、還佔著檔案的（proposed／partial／error）。給「接續上次那份」用。
+ * - `pending`：還沒做完、還佔著檔案的（proposed／partial／error 裡有 pending、failed、unknown 的項目）。
+ *   給「接續上次那份」用。
+ *
+ * **先篩、先分頁，只對這一頁算細節**（RC19）。上一版每一份都算完整逐項結果再篩，
+ * 3000 份計畫要 4.9 秒，而 server 是單執行緒 —— 那段時間整台 server 停住。
  *
  * **不上鎖**，純讀。
  */
@@ -788,40 +1235,95 @@ export function listPlans(db: DatabaseSync, opts: { filter?: 'undoable' | 'pendi
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0) {
     throw new CleanupError('BAD_BODY', '分頁參數不正確：limit 要是 1 到 100，offset 不可以是負的。')
   }
-  const ready = (db.prepare(
-    `SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='cleanup_snapshots'`).get() as { n: number }).n
-  if (!ready) return { total: 0, offset: 0, limit, operations: [] }
+  if (!tableExists(db, 'cleanup_snapshots')) return { total: 0, offset: 0, limit, operations: [] }
 
   const plans = db.prepare(
     `SELECT id, status, created_at, applied_at FROM cleanup_plans ORDER BY created_at DESC, rowid DESC`
   ).all() as { id: string; status: string; created_at: string; applied_at: string | null }[]
+  const purged = purgedSeqs(db)
+  const want = opts.filter === 'undoable' ? ['moved']
+    : opts.filter === 'pending' ? ['pending', 'failed', 'unknown'] : null
 
-  const rows = []
-  for (const p of plans) {
-    if (opts.filter === 'pending' && !['proposed', 'partial', 'error'].includes(p.status)) continue
-    const o = planOutcomes(db, p.id)
+  const cache = new Map<string, ReturnType<typeof detail>>()
+  function detail(p: (typeof plans)[number]) {
+    const o = planOutcomes(db, p.id, { purged })
     const snaps = (db.prepare('SELECT snapshot FROM cleanup_snapshots WHERE plan_id=? ORDER BY rowid')
       .all(p.id) as { snapshot: string }[]).map(r => JSON.parse(r.snapshot) as { id: string; name: string; bytes: number })
-    const want = opts.filter === 'undoable' ? ['moved']
-      : opts.filter === 'pending' ? ['pending', 'failed'] : null
     const items = snaps.filter(i => !want || want.includes(o.get(i.id)?.outcome ?? ''))
       .map(i => ({ itemId: i.id, name: i.name, bytes: i.bytes }))
     const canUndo = snaps.some(i => o.get(i.id)?.outcome === 'moved')
-    if (opts.filter === 'undoable' && !canUndo) continue
-    if (opts.filter === 'pending' && !items.length) continue
     const restored = db.prepare(
       `SELECT max(ts) ts FROM cleanup_journal WHERE plan_id=? AND op='restore' AND status='done'`
     ).get(p.id) as { ts: string | null }
-    rows.push({
+    return {
       id: p.id, status: p.status, createdAt: p.created_at, appliedAt: p.applied_at,
       restoredAt: restored.ts, canUndo,
       itemCount: items.length, bytes: items.reduce((n, i) => n + i.bytes, 0), items,
-    })
+    }
   }
-  const total = rows.length
+  const detailOf = (p: (typeof plans)[number]) => {
+    let d = cache.get(p.id)
+    if (!d) { d = detail(p); cache.set(p.id, d) }
+    return d
+  }
+
+  let chosen = plans
+  if (opts.filter === 'undoable') {
+    const active = undoablePlanIds(db)
+    chosen = plans.filter(p => active.has(p.id))
+  } else if (opts.filter === 'pending') {
+    // 還佔著檔案的狀態才可能有沒做完的項目。這種通常只有幾份，逐份算沒關係。
+    chosen = plans.filter(p => OPEN_STATUSES.includes(p.status)).filter(p => detailOf(p).items.length > 0)
+  }
+  const total = chosen.length
   // 跟 C 的 demo 歷史一樣：offset 超過最後一頁就夾回最後一頁，不回空白頁
   offset = Math.min(offset, Math.max(0, Math.ceil(total / limit) - 1) * limit)
-  return { total, offset, limit, operations: rows.slice(offset, offset + limit) }
+  return { total, offset, limit, operations: chosen.slice(offset, offset + limit).map(detailOf) }
+}
+
+/**
+ * 隔離區清單，**不上鎖**（RC5）。
+ *
+ * B 的 listQuarantine() 會拿清理鎖，所以 CLI 正在套用的時候，面板打開隔離區清單
+ * 會收到 BUSY —— 一個純讀的畫面不該跟真正的動作搶鎖。這裡自己下唯讀查詢，
+ * 回的形狀跟 listQuarantine 一樣。B 的表是懶建的，還沒建過就是空的。
+ */
+export function quarantineItems(db: DatabaseSync) {
+  if (!['cleanup_snapshots', 'cleanup_move_details', 'cleanup_purges'].every(t => tableExists(db, t))) return []
+  const rows = db.prepare(
+    `SELECT q.seq, q.plan_id, q.item_id, s.snapshot, d.completed_at
+       FROM cleanup_journal q
+       JOIN cleanup_snapshots s ON s.plan_id = q.plan_id AND s.item_id = q.item_id
+       LEFT JOIN cleanup_move_details d ON d.seq = q.seq
+      WHERE q.op='quarantine' AND q.status='done'
+        AND NOT EXISTS (SELECT 1 FROM cleanup_journal r WHERE r.plan_id=q.plan_id AND r.item_id=q.item_id
+                          AND r.op='restore' AND r.status='done')
+        AND NOT EXISTS (SELECT 1 FROM cleanup_purges p WHERE p.seq=q.seq AND p.status='done')
+      ORDER BY q.seq`
+  ).all() as { seq: number; plan_id: string; item_id: string; snapshot: string; completed_at: string | null }[]
+  const now = Date.now()
+  return rows.map(r => {
+    const snap = JSON.parse(r.snapshot) as { name: string; bytes: number }
+    const done = r.completed_at ? Date.parse(r.completed_at) : NaN
+    // 跟 B 的 quarantineCompletedAt 一樣：算不出七天就不猜
+    if (!Number.isFinite(done)) throw new CleanupError('UNSAFE_JOURNAL', '缺少隔離完成時間，無法清空。')
+    return {
+      seq: r.seq, planId: r.plan_id, itemId: r.item_id, name: snap.name, bytes: snap.bytes,
+      quarantinedAt: r.completed_at!, canEmptyAt: new Date(done + RETENTION_MS).toISOString(),
+      canEmptyNow: now >= done + RETENTION_MS,
+    }
+  })
+}
+
+/** 清空預覽留下的列，過期超過一天的順便刪掉（RC28）。不然每按一次預覽就多一列，永遠不會少。 */
+function pruneEmptyRequests(db: DatabaseSync) {
+  try {
+    db.prepare('DELETE FROM cleanup_empty_requests WHERE expires_at < ?')
+      .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString())
+  } catch (e: any) {
+    // 清不掉只是表多幾列，不可以讓預覽本身失敗
+    console.error('[contextbox] 清空預覽的舊紀錄清不掉：', e?.message ?? e)
+  }
 }
 
 // ── HTTP ─────────────────────────────────────────────────────
@@ -836,14 +1338,15 @@ export type RouteCtx = {
   url: URL
   method: string
   body: any
-  send: (code: number, payload: unknown) => void
+  /** 第三個參數是額外的 response header（例如 BUSY 的 Retry-After、405 的 Allow）。 */
+  send: (code: number, payload: unknown, headers?: Record<string, string>) => void
   /** 手動掃一次。由呼叫端注入，這一支不直接相依 scanner。 */
   scan: () => { scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean }
 }
 
 /** 錯誤沿用既有 server 的 { error: 字串 }，多一個 code 給程式分支。 */
-const fail = (send: RouteCtx['send'], code: number, error: string, tag: string) =>
-  send(code, { error, code: tag })
+const fail = (send: RouteCtx['send'], code: number, error: string, tag: string, headers?: Record<string, string>) =>
+  send(code, { error, code: tag }, headers)
 
 /**
  * B 的 CleanupError code → HTTP 狀態碼。
@@ -909,11 +1412,6 @@ export function statusFor(code: string | undefined): number {
   return 500
 }
 
-/**
- * 清理相關的唯讀 route。**認得就處理並回 true，不認得回 false** 讓下一個接手。
- *
- * apply／undo／dismiss 不在這裡 —— 那些會真的動檔案，是 B 的範圍。
- */
 /** 組出 B 要的 ExecOptions。thunk 在這裡才求值 —— 唯讀的 route 不該去碰設定檔。 */
 function execOptions(ctx: RouteCtx): ExecOptions {
   return {
@@ -924,39 +1422,68 @@ function execOptions(ctx: RouteCtx): ExecOptions {
   }
 }
 
+/**
+ * 清理相關的 route。**認得就處理並回 true，不認得回 false** 讓下一個接手。
+ * 真的動檔案的部分（apply／undo／empty）交給 B 的執行層，這裡只負責接線與翻譯錯誤。
+ */
 export function cleanupRoutes(ctx: RouteCtx): boolean {
   // **整支包起來。** 不包的話例外會穿到 server.ts 的 catch，那裡回的是
   // 400 + SQLite 原文 —— 伺服器故障卻告訴 C「你打錯了」，而且原文可能帶路徑。
   try { return route(ctx) }
   catch (e: any) {
+    // 只記真的意外（非 CleanupError、或 5xx 而且不是 BUSY），見 isSurprise。
+    // 錯誤吞掉的話 /health 的 lastError 永遠是 null；什麼都記的話寵物永遠在擔心。
+    recordCleanupError(ctx.db, e)
     // B 的 CleanupError 訊息都是寫好的人話而且不含路徑（cleanupProblem 負責），
     // 所以可以直接送出去。其他例外一律換成罐頭訊息。
     if (e instanceof CleanupError) {
-      const status = statusFor(e.code)
-      // 5xx 才值得記進 lastError —— 4xx 是呼叫端的事，記了只會把 doctor 洗版
-      if (status >= 500) reportError(ctx.db, e)
-      fail(ctx.send, status, e.message, e.code)
+      // BUSY 是「等一下就好」：告訴呼叫端多久之後再試（RC5）
+      fail(ctx.send, statusFor(e.code), e.message, e.code, e.code === 'BUSY' ? { 'retry-after': '2' } : undefined)
       return true
     }
-    reportError(ctx.db, e)
-    fail(ctx.send, 500, '後端出錯了，這一步沒有搬動或刪除任何檔案。', 'INTERNAL')
+    fail(ctx.send, 500, INTERNAL_MESSAGE, 'INTERNAL')
     return true
   }
 }
 
-/** 錯誤要留下來。吞掉的話 /health 的 lastError 永遠是 null。 */
-function reportError(db: DatabaseSync, e: any) {
-  const msg = String((e && e.message) || e).slice(0, 300)
-  console.error('[contextbox] cleanup route 出錯：', msg)
-  try {
-    db.prepare(`INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`)
-      .run(META.lastError, `${new Date().toISOString()} ${msg}`)
-  } catch { /* 連 meta 都寫不進去就算了 */ }
+/**
+ * 認得的路徑與它們收的方法。**已知的路徑用錯方法回 405，不是 501**（RC24）——
+ * 501 是「這個功能還沒做」，會讓呼叫端以為要等新版。
+ */
+const KNOWN: [RegExp, string[]][] = [
+  [/^\/cleanup\/candidates$/, ['GET']],
+  [/^\/cleanup\/scan$/, ['POST']],
+  [/^\/cleanup\/plans$/, ['GET', 'POST']],
+  [/^\/cleanup\/plans\/[^/]+$/, ['GET']],
+  [/^\/cleanup\/plans\/[^/]+\/(?:apply|undo|dismiss|release)$/, ['POST']],
+  [/^\/cleanup\/quarantine$/, ['GET']],
+  [/^\/cleanup\/quarantine\/empty$/, ['POST']],
+  [/^\/pet\/state$/, ['GET']],
+]
+
+/**
+ * body 一定要是物件。**看不懂的 body 不可以被當成「什麼都沒帶」**（RC6）——
+ * 「什麼都沒帶」在建計畫那條的意思是「清單上打 ✔ 的全部」。
+ * undefined（呼叫端根本沒給）才算沒帶。
+ */
+function bodyOf(ctx: RouteCtx): Record<string, any> {
+  const b = ctx.body
+  if (b === undefined) return {}
+  if (b === null || typeof b !== 'object' || Array.isArray(b)) throw new CleanupError('BAD_BODY', '看不懂送來的資料。')
+  return b
 }
+
+const rootsOf = (ctx: RouteCtx) => typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
 
 function route(ctx: RouteCtx): boolean {
   const { url, method, send } = ctx
   const p = url.pathname
+
+  const known = KNOWN.find(([re]) => re.test(p))
+  if (known && !known[1].includes(method)) {
+    fail(send, 405, `這個路徑只收 ${known[1].join('、')}。`, 'BAD_METHOD', { allow: known[1].join(', ') })
+    return true
+  }
 
   if (p === '/cleanup/candidates' && method === 'GET') {
     const raw = url.searchParams.get('limit')
@@ -965,8 +1492,7 @@ function route(ctx: RouteCtx): boolean {
       fail(send, 400, 'limit 要是 1 到 1000 之間的整數。', 'BAD_BODY')
       return true
     }
-    const roots = typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
-    send(200, listCandidates(ctx.db, { roots, limit }))
+    send(200, listCandidates(ctx.db, { roots: rootsOf(ctx), limit }))
     return true
   }
 
@@ -976,17 +1502,20 @@ function route(ctx: RouteCtx): boolean {
     // 同一個行程裡第二個請求根本沒機會在旗標為 true 時被處理（實測 4 個併發全部 200）。
     // 而真正的風險是**多個行程**（右鍵一次選 20 個檔 = 20 個行程），
     // module 層變數對那個一點用都沒有。要做就得用 meta 表的租約鎖。
+    let r
     try {
-      const r = ctx.scan()
-      send(200, r)
+      r = ctx.scan()
     } catch (e: any) {
       // 掃描壞掉不可以把路徑吐給 UI，但**錯誤本身不可以消失** ——
       // 吞掉的話連續失敗十次，doctor 與 /health 都會說一切正常。
-      // （檔案沒被搬動是真的，但 scanner 逐檔寫入沒有交易，
-      //   掃到一半炸掉時資料庫已經改了一半，所以措辭是「沒有搬動或刪除」。）
-      reportError(ctx.db, e)
-      fail(send, 500, '掃描的時候出錯了，沒有搬動或刪除任何檔案。', 'INTERNAL')
+      // scanner 逐檔寫入沒有交易，掃到一半炸掉時資料庫已經改了一半，
+      // 所以只說「可能沒有完成」；掃描本身從來不搬也不刪，那一句是真的。
+      recordCleanupError(ctx.db, e)
+      fail(send, 500, '掃描的時候出錯了，這次掃描可能沒有完成。掃描不會搬動或刪除任何檔案。', 'INTERNAL')
+      return true
     }
+    recordCleanupOk(ctx.db)
+    send(200, r)
     return true
   }
 
@@ -1003,42 +1532,71 @@ function route(ctx: RouteCtx): boolean {
   }
 
   if (p === '/cleanup/plans' && method === 'POST') {
+    const body = bodyOf(ctx)
     // **唯讀模式一份都不可以建。** createPlan 不看 readonly（只有 applyPlan 看），
     // 建了再被 apply 擋下的話，那份計畫卡在 proposed、永遠佔住那些檔，
     // 之後任何人建計畫都撞 CONFLICT。CLI 那輪修過一模一樣的 bug。
     const ro = typeof ctx.readonly === 'function' ? ctx.readonly() : ctx.readonly
     if (ro) throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會建立清理計畫，也不會搬動任何檔案。')
-    const roots = typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
-    send(200, withOutcomes(ctx.db, createPlan(ctx.db, {
-      // 不帶 id ＝「清單上打 ✔ 的」。不交給 B 的預設 —— 那個不看否決。
-      candidateIds: ctx.body?.candidateIds ?? defaultCandidateIds(ctx.db, roots),
-      requestId: ctx.body?.requestId,
-    })))
+    const roots = rootsOf(ctx)
+    // **只有完全沒帶 candidateIds 才是預設**（清單上打 ✔ 的，一次最多 1000 個檔）。
+    // `null` 是看不懂，不是沒帶 —— 上一版用 `??`，null 就變成「全部打 ✔ 的」（RC6）。
+    let candidateIds: unknown = body.candidateIds
+    let remaining = 0
+    if (candidateIds === undefined) {
+      const sel = defaultSelection(ctx.db, roots)
+      candidateIds = sel.candidateIds
+      remaining = sel.remaining
+    }
+    let plan
+    try {
+      plan = createPlanForRoots(ctx.db, roots, { candidateIds, requestId: body.requestId })
+    } catch (e: any) {
+      // 撞到別的計畫：**回擋住這次勾選的那一份**，UI 用它，不要自己猜（RC7）
+      if (e instanceof CleanupError && e.code === 'CONFLICT') {
+        send(409, { error: e.message, code: e.code,
+          blockingPlan: blockingPlanFor(ctx.db, Array.isArray(candidateIds) ? candidateIds as string[] : []) })
+        return true
+      }
+      throw e
+    }
+    // remaining：預設清理這次沒收進去、下次再清的檔數。指定 id 的時候永遠是 0。
+    send(200, { ...withOutcomes(ctx.db, plan), remaining })
     return true
   }
 
-  const plan = /^\/cleanup\/plans\/([^/]+)(?:\/(apply|undo|dismiss))?$/.exec(p)
+  const plan = /^\/cleanup\/plans\/([^/]+)(?:\/(apply|undo|dismiss|release))?$/.exec(p)
   if (plan) {
-    const id = decodeURIComponent(plan[1])
+    let id: string
+    // 壞掉的 %xx 是呼叫端送錯，不是後端故障（RC5）—— 上一版丟 URIError，變成 500 + lastError
+    try { id = decodeURIComponent(plan[1]) }
+    catch { throw new CleanupError('BAD_BODY', '計畫 id 的格式不正確。') }
     const action = plan[2]
     // 每個回應都帶逐項結果（outcome／why）。UI 不可以自己用「勾了幾個」推算。
-    if (!action && method === 'GET') { send(200, withOutcomes(ctx.db, getPlan(ctx.db, id))); return true }
-    if (action && method === 'POST') {
-      if (action === 'dismiss') { send(200, withOutcomes(ctx.db, dismissPlan(ctx.db, id))); return true }
-      const opts = execOptions(ctx)
-      const r = action === 'apply'
-        ? applyPlan(ctx.db, id, { ...opts, skippedIds: ctx.body?.skippedIds })
-        : undoPlan(ctx.db, id, opts)
-      invalidateQuarantineCache()   // 隔離區剛變了，孤兒對帳的快取不可以再用
-      send(200, withOutcomes(ctx.db, r))
-      return true
+    if (!action) { send(200, withOutcomes(ctx.db, getPlan(ctx.db, id))); return true }
+    const body = bodyOf(ctx)
+    if (action === 'dismiss') { send(200, withOutcomes(ctx.db, dismissPlan(ctx.db, id))); return true }
+    // 放棄還沒開始的那份：計畫作廢、候選不動（RC4／RC8 的「放棄上次那份」）
+    if (action === 'release') { send(200, withOutcomes(ctx.db, releasePlan(ctx.db, id))); return true }
+    const opts = execOptions(ctx)
+    const r = action === 'apply'
+      ? applyPlan(ctx.db, id, { ...opts, skippedIds: body.skippedIds })
+      : undoPlan(ctx.db, id, opts)
+    invalidateQuarantineCache()   // 隔離區剛變了，孤兒對帳的快取不可以再用
+    if (action === 'apply') {
+      // 失敗原因馬上存起來，下一次掃描會改寫 file_items.error（RC11）。
+      // 存不進去不可以讓整個回應失敗 —— 檔案已經搬了，回 500 就是在說謊（RC17）。
+      try { recordItemErrors(ctx.db, id) }
+      catch (e: any) { console.error('[contextbox] 失敗原因存不進去：', e?.message ?? e) }
     }
-    fail(send, 405, '這個路徑不收這個方法。', 'BAD_METHOD')
+    recordCleanupOk(ctx.db)
+    send(200, withOutcomes(ctx.db, r))
     return true
   }
 
   if (p === '/cleanup/quarantine' && method === 'GET') {
-    const items = listQuarantine(ctx.db)
+    // 純讀，不上鎖（RC5）—— CLI 正在套用的時候打開隔離區清單不該收到 BUSY
+    const items = quarantineItems(ctx.db)
     send(200, {
       items,
       total: items.length,
@@ -1048,27 +1606,33 @@ function route(ctx: RouteCtx): boolean {
   }
 
   if (p === '/cleanup/quarantine/empty' && method === 'POST') {
+    const body = bodyOf(ctx)
     // **一個路由兩個階段。** 不帶 token = 預覽；帶 token + confirmed = 真的刪。
     // `phase` 一定要回，不然 C 分不出自己拿到的是預覽還是結果。
-    const token = ctx.body?.token
+    const token = body.token
     if (!token) {
       // 預覽是唯讀動作。現在沒有滿七天的檔就回 itemCount 0，
       // 不要丟錯 —— 對一個唯讀動作丟錯很沒道理。
-      send(200, { phase: 'preview', ...prepareEmptyQuarantine(ctx.db, execOptions(ctx)) })
+      const preview = prepareEmptyQuarantine(ctx.db, execOptions(ctx))
+      pruneEmptyRequests(ctx.db)
+      send(200, { phase: 'preview', ...preview })
       return true
     }
     // **`confirmed` 原封不動傳給 B。** 不可以 Boolean() ——
     // body 是 `{"confirmed":"false"}` 的話，字串 "false" 在 JS 是 truthy，
     // 而這是整個專案唯一會真的刪檔的路徑。
-    send(200, { phase: 'done', ...emptyQuarantine(ctx.db, {
-      ...execOptions(ctx), token, confirmed: ctx.body?.confirmed,
-    }) })
+    // 帶了但不是布林是**送錯**（400），跟「還沒確認」（沒帶或 false，428）分開（RC23）。
+    if (body.confirmed !== undefined && typeof body.confirmed !== 'boolean') {
+      throw new CleanupError('BAD_BODY', 'confirmed 要是 true 或 false。')
+    }
+    const result = emptyQuarantine(ctx.db, { ...execOptions(ctx), token, confirmed: body.confirmed })
+    recordCleanupOk(ctx.db)
+    send(200, { phase: 'done', ...result })
     return true
   }
 
   if (p === '/pet/state' && method === 'GET') {
-    const roots = typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
-    const h = healthSnapshot(ctx.db, { roots, quarantine: ctx.quarantine })
+    const h = healthSnapshot(ctx.db, { roots: rootsOf(ctx), quarantine: ctx.quarantine })
     send(200, petState(h, {
       proposedPlans: safe(() => (ctx.db.prepare(
         `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
@@ -1078,11 +1642,10 @@ function route(ctx: RouteCtx): boolean {
   }
 
   // 還沒實作的（B 的範圍）要回一句人話，不是 404 —— 404 會讓 C 以為自己打錯網址。
-  // 第一版漏了 apply／undo／dismiss／reveal／quarantine/empty，它們照樣掉到 404，
-  // 也就是這段註解本來要避免的那件事。
   // **反過來列白名單。** 逐條列黑名單一定會漏（第一版漏了 apply／undo／
   // dismiss／reveal／quarantine/empty，第二版還漏 restore／empty），
   // 而漏掉的後果就是這段註解要避免的那件事。
+  // 認得的路徑用錯方法在最上面就回 405 了，走到這裡的是真的不認得的路徑。
   if (p.startsWith('/cleanup/') || p.startsWith('/pet/')) {
     fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED')
     return true

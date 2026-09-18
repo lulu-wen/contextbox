@@ -6,11 +6,21 @@ import {
 import { homedir } from 'node:os'
 import { dirname, join, parse, relative, resolve, sep } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { DENY_DIRS, DENY_FILES, under } from './guard.ts'
-import { CleanupError, cleanupProblem, transaction, withCleanupLock, type JournalRow } from './cleanup-journal.ts'
+import { DENY_DIRS, under } from './guard.ts'
+import {
+  CleanupError, cleanupProblem, execRefusesName, transaction, withCleanupLock, type JournalRow,
+} from './cleanup-journal.ts'
 import { candidateIdsFor, getPlan, planRow, planSnapshots, validateIds, type PlanSnapshot } from './cleanup-plans.ts'
 
 export const DEFAULT_QUARANTINE = join(homedir(), '.contextbox', 'quarantine')
+
+/**
+ * 執行層拒收的檔名規則。**名單只有一份**（定義在 cleanup-journal.ts 這個葉模組，
+ * 理由寫在那邊），這裡匯出同一個物件、originalPath 拿它擋；規則層拿它決定不提議。
+ * 加一個受保護副檔名只需要改那一行，清單與執行層會一起變。
+ */
+export { EXEC_PROTECTED_EXT, execRefusesName } from './cleanup-journal.ts'
+
 export const RETENTION_MS = 7 * 24 * 60 * 60_000
 export type ExecOptions = { roots: string[]; quarantine?: string; maxBytes: number; readonly?: boolean }
 export type Fingerprint = { dev: number; ino: number; size: number; mtime: string; sha256: string }
@@ -92,9 +102,7 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
   }
   const segments = target.split(/[\\/]+/).filter(Boolean).map(s => s.toLowerCase())
   const name = segments.at(-1)!
-  if (segments.some(s => s.startsWith('.') || DENY_DIRS.includes(s))
-      || DENY_FILES.some(f => name === f || name.startsWith(f + '.'))
-      || /\.(db|sqlite|sqlite3|pem|key|p12|pfx|ini|cfg|conf|lnk|url)$/i.test(name)) {
+  if (segments.slice(0, -1).some(s => s.startsWith('.') || DENY_DIRS.includes(s)) || execRefusesName(name)) {
     throw new CleanupError('PROTECTED', '這是受保護的檔案，請人工處理。')
   }
   if (!allowMissing) checkedPath(target)
@@ -128,7 +136,14 @@ function verifySnapshot(item: PlanSnapshot, opts: ExecOptions): Fingerprint {
   return f
 }
 
-function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecOptions, selected: Set<string>) {
+/**
+ * 只有重複檔理由的檔，搬之前要確認**另外真的還有一份**會留著。
+ *
+ * `self` 是要搬的那個檔剛量到的指紋。保留者的 dev／ino 必須跟它不同：
+ * 資料庫裡兩列可能指向同一個實體檔（Windows 不分大小寫，`A.zip` 與 `a.zip`
+ * 是兩列；同一條路徑的兩種寫法也是），把自己當成自己的保留者等於搬走唯一的一份。
+ */
+function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecOptions, selected: Set<string>, self: Fingerprint) {
   if (!item.reasons.every(r => r.kind === 'duplicate')) return
   const others = db.prepare(`SELECT id,path FROM file_items WHERE sha256=? AND id<>?
     AND status NOT IN ('quarantined','missing','error')`).all(item.sha256, item.id) as { id: string; path: string }[]
@@ -136,6 +151,7 @@ function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecO
     if (selected.has(other.id)) continue
     try {
       const f = fingerprint(originalPath(other.path, opts), opts.maxBytes)
+      if (f.dev === self.dev && f.ino === self.ino) continue
       if (f.sha256 === item.sha256) return
     } catch { /* A stale duplicate record is not evidence of an existing copy. */ }
   }
@@ -295,7 +311,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
       try {
         if (!row) {
           const f = verifySnapshot(item, opts)
-          verifyDuplicateKeeper(db, item, opts, selected)
+          verifyDuplicateKeeper(db, item, opts, selected, f)
           const dir = join(q, id, item.id)
           if (!/^[\w-]+$/.test(id) || !/^[\w-]+$/.test(item.id)) throw new CleanupError('UNSAFE_PATH', '檔案識別碼不合法。')
           if (!exists(join(q, id))) mkdirSync(join(q, id), { mode: 0o700 })
@@ -307,8 +323,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
         checkedQuarantinePath(db, row, opts)
         originalPath(item.path, opts, true)
         performMove(db, row, opts, () => {
-          verifySnapshot(item, opts)
-          verifyDuplicateKeeper(db, item, opts, selected)
+          verifyDuplicateKeeper(db, item, opts, selected, verifySnapshot(item, opts))
         })
         markMoved(db, row)
         done++

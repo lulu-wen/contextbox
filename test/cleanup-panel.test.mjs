@@ -582,8 +582,9 @@ describe('獨立重推抓到的', () => {
     // 不看否決 —— 不帶 id 建計畫的話它會被收進去。
     const s = await serve(t, { 'a.zip': { days: 60 }, 'big.zip': { days: 60, content: 'x'.repeat(30 * 1024 * 1024) } })
     const list = await s.api('/cleanup/candidates')
-    const big = list.candidates.find(c => c.name === 'big.zip')
-    assert.equal(big?.defaultChecked, false, '前提：big.zip 在清單上是 ☐')
+    // 2026-09-19 稽核 RC4：太大沒指紋的檔不再列成 ☐，而是不列、改列在「需要你查看」
+    assert.ok(!list.candidates.some(c => c.name === 'big.zip'), '前提：big.zip 不在候選清單上')
+    assert.ok(list.needsHuman.some(h => h.name === 'big.zip'), '前提：big.zip 在「需要你查看」')
     const plan = await s.api('/cleanup/plans', { method: 'POST', body: '{}' })
     assert.deepEqual(plan.items.map(i => i.name), ['a.zip'], '不帶 id 的預設要跟清單上的 ✔ 一模一樣')
   })

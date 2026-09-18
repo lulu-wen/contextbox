@@ -13,10 +13,14 @@
  *      大小寫變形的 HTTPS，全部包含在內。
  *
  * 為什麼鎖 3 要用白名單不用黑名單：手填頁面（GET /）會把 token 直接印在
- * 回傳的 HTML 裡，所以那一條路徑不可能再檢查 token，鎖 3 是它唯一的守門員。
+ * 回傳的 HTML 裡，所以那一條路徑不能用 header 驗 token（瀏覽器直接開網址不會帶）。
  * 黑名單放得過去的東西（Origin: null、HTTPS://…）就等於放行去讀 token。
+ *
+ * 鎖 3 擋得住網頁，擋不住**本機其他行程** —— 它們不帶 Origin，跟瀏覽器直接開網址
+ * 長得一樣。這個 PR 之後 token 能搬檔、能刪檔，所以 GET / 另外要帶 `?k=<token>`
+ * （server 印出來的網址、`node cli.mjs open` 會帶好），沒帶就 401（稽核 RC16）。
  */
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage } from 'node:http'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
@@ -47,6 +51,55 @@ const sameToken = (a: string, b: string) => {
   const x = Buffer.from(a), y = Buffer.from(b)
   return x.length === y.length && timingSafeEqual(x, y)
 }
+
+/**
+ * 寵物與清理面板的網址，**帶鑰匙**（`?k=`）。server 自己印的、CLI 印的都要用這一支 ——
+ * 不帶 k 的網址打開是 401。頁面載入後會用 history.replaceState 把 k 從網址列拿掉。
+ */
+export function uiUrl(port: number, token: string): string {
+  return `http://127.0.0.1:${port}/?k=${encodeURIComponent(token)}`
+}
+
+/** POST body 的上限。超過回 413，不是直接斷線（斷線的話呼叫端分不出是網路還是自己送太多）。 */
+const MAX_BODY = 1_000_000
+/** 超過上限之後還願意讀掉（丟棄）多少，讀完才回 413；再多就真的斷線。 */
+const MAX_DRAIN = 16 * MAX_BODY
+
+/**
+ * 讀 POST body。回 { tooLarge } 或 { text }；連線中途斷掉（或送太多被我們切斷）就 reject。
+ *
+ * 超過上限之後**繼續讀、但丟掉**，讀完才回 413 —— 一邊還在送就回應並關連線的話，
+ * 呼叫端多半收到的是 ECONNRESET 而不是 413，又回到「分不出原因」。
+ */
+function readBody(req: IncomingMessage): Promise<{ tooLarge: true } | { tooLarge: false; text: string }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0, ended = false
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size <= MAX_BODY) chunks.push(c)
+      else if (size > MAX_DRAIN) req.destroy()
+    })
+    req.on('end', () => {
+      ended = true
+      resolve(size > MAX_BODY ? { tooLarge: true } : { tooLarge: false, text: Buffer.concat(chunks).toString('utf8') })
+    })
+    req.on('close', () => { if (!ended) reject(new Error('連線在送完之前就斷了')) })
+    req.on('error', reject)
+  })
+}
+
+/**
+ * server 自己（不是清理那條線）的路徑與方法。已知的路徑用錯方法回 405（RC24）。
+ * 清理與寵物的路徑在 cleanup-routes.ts 的 KNOWN。
+ */
+const OWN_ROUTES: [RegExp, string[]][] = [
+  [/^\/schema$/, ['GET']],
+  [/^\/form\/plan$/, ['POST']],
+  [/^\/facts$/, ['GET', 'POST']],
+  [/^\/facts\/[\w-]+\/(?:confirm|reject)$/, ['POST']],
+  [/^\/undo$/, ['POST']],
+]
 
 /** 手填頁面。跟這支放在同一個資料夾，每次請求才讀，改完不用重開 server。 */
 const UI_PATH = new URL('./ui.html', import.meta.url)
@@ -85,18 +138,20 @@ export function start(opts: {
 
   // 清理那條線要看哪些資料夾、隔離區放哪。
   //
-  // **呼叫端沒給就不要自己去讀使用者的設定檔。** 稽查抓到：
+  // **呼叫端全部給了就不要去讀使用者的設定檔。** 稽查抓到：
   // `start({ db: ':memory:' })` 這種明顯是測試的呼叫，cleanupRoots 還是綁到
-  // 使用者真的 Downloads，/health 會走訪使用者真的隔離區，而
-  // POST /cleanup/scan 那條線已經接好了 —— 任何人加一條測試就會對
-  // 真的 Downloads 做一次含 sha256 的全量掃描。而且 loadConfig() 會
-  // 在沒有設定檔的機器上「建立」一個，測試因此有副作用。
+  // 使用者真的 Downloads，/health 會走訪使用者真的隔離區。測試一律全部給
+  // （而且 test/helpers/isolate-home.mjs 把家目錄換掉了）。
   //
-  // 所以：只有兩個都沒給的時候才讀設定，而且是**延後到真的用到才讀**。
-  let cfgCache: ReturnType<typeof loadConfig> | null = null
-  const cfg = () => (cfgCache ??= loadConfig()).config
-  const cleanupRoots = opts.roots ?? null
-  const roots = () => cleanupRoots ?? cfg().watch
+  // **有任何一個沒給，就在啟動的時候讀，不要延後到請求進來才讀**（稽核 RC16、C-M4）。
+  // 延後讀的話，第一個觸發它的常常是免 token 的 /health —— 任何網頁用 <img src> 就能打 ——
+  // 而 loadConfig() 在沒有設定檔的機器上會「建立」一個：一個外部請求讓我們寫檔。
+  const needCfg = opts.roots === undefined || opts.maxBytes === undefined || opts.readonly === undefined
+  const loaded = needCfg ? loadConfig() : null
+  const cfg = () => loaded!.config
+  // 清理只看 cleanup.roots（預設只有 Downloads），**不是**截圖功能的 watch（RC15）
+  const cleanupRoots = opts.roots ?? cfg().cleanup.roots
+  const roots = () => cleanupRoots
   const QUARANTINE = opts.quarantine
     ?? process.env.CONTEXTBOX_QUARANTINE
     ?? join(homedir(), '.contextbox', 'quarantine')
@@ -156,8 +211,8 @@ export function start(opts: {
       return h
     }
 
-    const send = (code: number, body: unknown) => {
-      res.writeHead(code, { ...baseHeaders(), 'content-type': 'application/json; charset=utf-8' })
+    const send = (code: number, body: unknown, extra: Record<string, string> = {}) => {
+      res.writeHead(code, { ...baseHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra })
       res.end(JSON.stringify(body))
     }
 
@@ -181,12 +236,18 @@ export function start(opts: {
       return
     }
 
-    // 手填頁面。它自己帶 token，所以這一條不能要求 token。
+    // 手填頁面。瀏覽器直接開網址不會帶 header，所以這一條用網址上的 ?k= 驗 token。
     if (url.pathname === '/' && req.method === 'GET') {
       // 瀏覽器直接開網址是 document；網頁用 fetch 或 iframe 來拿的一律不給
       const dest = String(req.headers['sec-fetch-dest'] ?? '')
       if (dest && dest !== 'document') {
         return send(403, { error: '這一頁只能用瀏覽器直接開' })
+      }
+      // **沒帶對的 k 不給頁面** —— 頁面裡印著 token，而本機任何行程都能不帶 Origin 來拿（RC16）。
+      // 回純文字：這是給人在瀏覽器分頁裡看的。
+      if (!sameToken(url.searchParams.get('k') ?? '', token)) {
+        res.writeHead(401, { ...baseHeaders(), 'content-type': 'text/plain; charset=utf-8' })
+        return res.end('這個網址少了鑰匙。請用 `node cli.mjs open` 或 server 啟動時印出來的網址打開。\n')
       }
       let html: string
       try { html = uiHtml(token) }
@@ -230,13 +291,32 @@ export function start(opts: {
       return send(401, { error: 'token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。' })
     }
 
-    const body = req.method === 'POST'
-      ? await new Promise<any>(r => {
-          let s = ''
-          req.on('data', c => { s += c; if (s.length > 1e6) req.destroy() })
-          req.on('end', () => { try { r(JSON.parse(s || '{}')) } catch { r({}) } })
-        })
-      : {}
+    // 已知的路徑用錯方法回 405，不是掉到 404（RC24）
+    const own = OWN_ROUTES.find(([re]) => re.test(url.pathname))
+    if (own && !own[1].includes(req.method ?? '')) {
+      return send(405, { error: `這個路徑只收 ${own[1].join('、')}。`, code: 'BAD_METHOD' }, { allow: own[1].join(', ') })
+    }
+
+    // **看不懂的 body 回 400，不可以當成 {}**（RC6）。
+    // 上一版解析失敗就給 {}，而 POST /cleanup/plans 的 {} 是「清單上打 ✔ 的全部」——
+    // 使用者只勾一個，client 送出的 JSON 多一個逗號，就變成全部清掉。
+    // 空的 body 才是「什麼都沒帶」。body 必須是物件（null、陣列、字串都是看不懂）。
+    let body: any = {}
+    if (req.method === 'POST') {
+      let got
+      try { got = await readBody(req) }
+      catch { return }   // 連線自己斷了，沒有人在等回應
+      if (got.tooLarge) {
+        return send(413, { error: '送來的資料太大（上限 1 MB）。', code: 'BODY_TOO_LARGE' }, { connection: 'close' })
+      }
+      if (got.text.trim()) {
+        try { body = JSON.parse(got.text) }
+        catch { return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' }) }
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' })
+        }
+      }
+    }
 
     try {
       if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
@@ -303,7 +383,8 @@ if (process.argv[1]?.endsWith('server.ts')) {
   const { ready, token } = start()
   const port = await ready
   console.log(`ContextBox 在 http://127.0.0.1:${port}`)
-  console.log(`手填頁面：http://127.0.0.1:${port}/　（token 已經幫你帶好，直接開就能用）`)
+  // 網址帶鑰匙（?k=）。不帶的網址打開是 401。
+  console.log(`手填頁面：${uiUrl(port, token)}　（鑰匙已經幫你帶好，直接開就能用）`)
   console.log(`token：${token}`)
   console.log(`（也存在 ${TOKEN_PATH}，貼進擴充套件設定）`)
 }

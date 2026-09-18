@@ -86,10 +86,13 @@ export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; re
       selected.add(c.item_id)
     }
     if (!selected.size) throw new CleanupError('EMPTY_PLAN', '沒有選擇可清理的檔案。')
-    // Reserve files for a single outstanding plan (including failed, retryable plans).
+    // **只有還沒套用的（proposed）計畫佔住檔案。** 計畫是一次性的：套用過的
+    // （applied／partial／error）不再佔住，失敗的檔要重試就建一份新計畫。
+    // 以前連 partial／error 都佔住，一個永遠搬不動的檔會讓之後每一次清理都撞
+    // CONFLICT（CLI 每晚回 2）。重送同一份（同一個 requestId）在上面就回舊計畫了，仍然冪等。
     for (const id of selected) {
       if (db.prepare(`SELECT 1 FROM cleanup_snapshots s JOIN cleanup_plans p ON p.id=s.plan_id
-        WHERE s.item_id=? AND p.status IN ('proposed','partial','error') LIMIT 1`).get(id)) {
+        WHERE s.item_id=? AND p.status='proposed' LIMIT 1`).get(id)) {
         throw new CleanupError('CONFLICT', '這個檔案已有待處理的清理計畫。')
       }
     }
@@ -121,6 +124,28 @@ export function dismissPlan(db: DatabaseSync, id: string) {
     }
     db.prepare(`UPDATE cleanup_candidates SET status='dismissed' WHERE id IN
       (SELECT candidate_id FROM cleanup_plan_items WHERE plan_id=?)`).run(id)
+    db.prepare(`UPDATE cleanup_plans SET status='dismissed' WHERE id=?`).run(id)
+    return getPlan(db, id)
+  }))
+}
+
+/**
+ * 放棄一份**還沒開始**的計畫：計畫設成 dismissed，**候選不動**。
+ *
+ * 跟 dismissPlan 的差別：dismissPlan 是「使用者拒絕這些檔」，會把候選一起作廢；
+ * 這一支是「上次那份卡住了，我不要它了」—— 那些檔還是候選，下一份計畫要收得進去。
+ * 面板撞到卡住的計畫時給的「放棄上次那份」就是呼叫這一支（RC4／RC8）。
+ *
+ * 只允許沒有任何 journal 的 proposed 計畫：一旦開始搬，就只能用復原，不能假裝沒發生過。
+ * 已經是 dismissed 的再送一次回原樣（冪等）—— 網路斷線後重送不該變成錯誤。
+ */
+export function releasePlan(db: DatabaseSync, id: string) {
+  return withCleanupLock(db, () => transaction(db, () => {
+    const p = planRow(db, id)
+    if (p.status === 'dismissed') return getPlan(db, id)
+    if (p.status !== 'proposed' || db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id)) {
+      throw new CleanupError('CONFLICT', '這份計畫已經開始執行，不能放棄；要還原請用復原。')
+    }
     db.prepare(`UPDATE cleanup_plans SET status='dismissed' WHERE id=?`).run(id)
     return getPlan(db, id)
   }))

@@ -1,4 +1,5 @@
 import { basename, extname } from 'node:path'
+import { execRefusesName } from './cleanup-journal.ts'
 
 export const CLEANUP_RULE_VERSION = 'cleanup-rules-v1'
 
@@ -128,6 +129,10 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
   const ext = extOf(input)
   const name = nameOf(input)
   const out: CleanupCandidateDraft[] = []
+
+  // **執行層不收的檔一律不提議。** 名單跟執行層是同一份（見 cleanup-journal.ts）。
+  // 提議了也搬不動：列得出、勾得起、建得了計畫，套用時永遠回 PROTECTED。
+  if (execRefusesName(name)) return out
 
   if (PARTIAL_EXT.has(ext) && days >= 1) {
     out.push(draft(

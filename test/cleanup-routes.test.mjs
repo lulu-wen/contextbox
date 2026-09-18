@@ -429,9 +429,10 @@ describe('B4 信心打平時，卡片標題要穩定', () => {
     for (let i = 0; i < 10; i++) {
       const d = open(':memory:')
       const now = new Date().toISOString()
-      d.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
-                 VALUES (?,?,?,?,?,?,?,?,?)`)
-        .run('i1', '/r/Screenshot x.png', 'Screenshot x.png', '.png', 10, now, now, now, 'candidate')
+      // 要有 sha256：沒指紋（太大）的檔不列成候選（2026-09-19 稽核 RC4）
+      d.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run('i1', '/r/Screenshot x.png', 'Screenshot x.png', '.png', 10, 'sha-i1', now, now, now, 'candidate')
       for (const k of ['old-download', 'screenshot-noise']) {
         d.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?)`)
@@ -451,9 +452,10 @@ describe('舊版規則的候選不可以還活著', () => {
     // 讀取層不過濾的話，max 取的是「這個檔歷史上拿過的最高分」——
     // 調降信心這個動作永遠不會有效果。
     const now = new Date().toISOString()
-    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
-                VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run('i1', join(dl, 'a.zip'), 'a.zip', '.zip', 10, now, now, now, 'candidate')
+    // 要有 sha256：沒指紋（太大）的檔不列成候選（2026-09-19 稽核 RC4）
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run('i1', join(dl, 'a.zip'), 'a.zip', '.zip', 10, 'sha-i1', now, now, now, 'candidate')
     const ins = (id, ver, conf) => db.prepare(
       `INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
        VALUES (?,?,?,?,?,?,?,?,?)`).run(id, 'i1', 'archive', ver, conf, 'r', 'e', 'proposed', now)
@@ -490,9 +492,10 @@ describe('limit 截斷要有訊號', () => {
   test('total 是這次的，totalAvailable 是全部的', () => {
     const now = new Date().toISOString()
     for (let i = 0; i < 5; i++) {
-      db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
-                  VALUES (?,?,?,?,?,?,?,?,?)`)
-        .run('i' + i, join(dl, i + '.zip'), i + '.zip', '.zip', 100, now, now, now, 'candidate')
+      // 要有 sha256：沒指紋（太大）的檔不列成候選（2026-09-19 稽核 RC4）
+      db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
+                  VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run('i' + i, join(dl, i + '.zip'), i + '.zip', '.zip', 100, 'sha-' + i, now, now, now, 'candidate')
       db.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
                   VALUES (?,?,?,?,?,?,?,?,?)`)
         .run('c' + i, 'i' + i, 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
@@ -587,10 +590,13 @@ describe('否決旗標', () => {
                 VALUES (?,?,?,?,?,?,?,?,?)`)
       .run('c1', 'big', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
 
-    const c = listCandidates(db, { roots: [dl], maxBytes: 20 * 1024 * 1024 }).candidates[0]
-    assert.equal(c.confidence, 65, '信心還是 65')
-    assert.equal(c.defaultChecked, false, '但否決旗標要蓋過信心')
-    assert.match(c.vetoed, /太大/)
+    // 2026-09-19 稽核 RC4：只「不預設勾」不夠 —— 使用者還是勾得起來、建得了計畫，
+    // 而執行層對它永遠拒收，計畫卡住、檔案被佔住。所以**不列成候選**，改列在「需要你查看」。
+    const r = listCandidates(db, { roots: [dl], maxBytes: 20 * 1024 * 1024 })
+    assert.equal(r.candidates.length, 0, '不可以列成候選（連 ☐ 都不行）')
+    const h = r.needsHuman.find(x => x.name === '婚禮影片備份.zip')
+    assert.ok(h, '要在「需要你查看」')
+    assert.match(h.why, /太大/)
   })
 
   test('**大的**半下載檔也不可以誤殺', () => {
@@ -622,11 +628,11 @@ describe('否決旗標', () => {
                 VALUES (?,?,?,?,?,?,?,?,?)`)
       .run('cn', 'nb', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
 
-    // 不管呼叫端傳什麼，結論都一樣
+    // 不管呼叫端傳什麼，結論都一樣（2026-09-19 稽核 RC4 之後的結論是「不列，改列需要你查看」）
     for (const opts of [{ roots: [dl] }, { roots: [dl], limit: 10 }]) {
-      const c = listCandidates(db, opts).candidates[0]
-      assert.equal(c.defaultChecked, false)
-      assert.match(c.vetoed, /指紋/)
+      const r = listCandidates(db, opts)
+      assert.equal(r.candidates.length, 0)
+      assert.match(r.needsHuman.find(x => x.name === '備份.zip')?.why ?? '', /太大/)
     }
   })
 })
@@ -648,7 +654,10 @@ describe('免 token 的 /health 要瘦身', () => {
     assert.equal(lean.watcher.pid, null, 'null 不是 undefined')
     assert.ok('lastHeartbeatAt' in lean.watcher, '欄位要在，只是遮蔽')
     assert.ok(!JSON.stringify(lean).includes('/home/alice'), 'lastError 的內容不可以無條件送出')
-    assert.ok(JSON.stringify(full).includes('/home/alice'), '帶 token 就給得出來')
+    // 2026-09-19 稽核 RC5：帶 token 也**不給原文**，只給翻過的人話（原文只進 console）
+    assert.ok(full.lastError, '帶 token 就給得出來')
+    assert.ok(!JSON.stringify(full).includes('/home/alice'), '帶 token 也不可以有路徑')
+    assert.match(full.lastError, /沒有權限/)
   })
 
   test('監看資料夾不存在時 watcher 不是 ok', () => {

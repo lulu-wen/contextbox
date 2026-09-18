@@ -185,8 +185,9 @@ describe('D 清空隔離區', () => {
     const prep = call(f, 'POST', '/cleanup/quarantine/empty', {})
     const r = call(f, 'POST', '/cleanup/quarantine/empty',
       { token: prep.body.token, confirmed: 'false' })
-    assert.equal(r.code, 428)
-    assert.equal(r.body.code, 'CONFIRMATION_REQUIRED')
+    // 2026-09-19 稽核 RC23：帶了但不是布林是送錯（400），沒帶或 false 才是還沒確認（428）
+    assert.equal(r.code, 400)
+    assert.equal(r.body.code, 'BAD_BODY')
   })
 
   test('沒先預覽就直接確認回 428', t => {

@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, watch } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { cleanupWalk, scanDownloads, type CleanupScanResult } from './cleanup-scanner.ts'
+import { cleanupWalk, isGoneError, markMissing, scanDownloads, type CleanupScanResult } from './cleanup-scanner.ts'
 
 export type CleanupWatcherOptions = {
   db: DatabaseSync
@@ -18,7 +18,21 @@ export type CleanupWatcherOptions = {
 }
 
 type Fingerprint = { size: number; mtimeMs: number }
-type Pending = Fingerprint & { since: number; stable: number }
+/** gone：這條路徑在等「確定不見了」，節流跟新檔一樣（settleMs＋兩個 tick）。 */
+type Pending = Fingerprint & { since: number; stable: number; gone: boolean }
+type Probe = { state: 'file'; fp: Fingerprint } | { state: 'gone' } | { state: 'other' }
+
+/**
+ * 看一眼這條路徑現在是什麼。
+ * **只有 ENOENT／ENOTDIR 算不見了**；EACCES、EIO 這些是暫時讀不到，當成 other（不處理）。
+ */
+function probe(path: string): Probe {
+  let st
+  try { st = lstatSync(path) }
+  catch (e) { return isGoneError(e) ? { state: 'gone' } : { state: 'other' } }
+  if (!st.isFile() || st.isSymbolicLink()) return { state: 'other' }
+  return { state: 'file', fp: { size: st.size, mtimeMs: st.mtimeMs } }
+}
 
 export function createCleanupWatcher(opts: CleanupWatcherOptions) {
   const settleMs = opts.settleMs ?? 1000
@@ -38,38 +52,64 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
   const problem = (msg: string) => { if (opts.onProblem) opts.onProblem(msg) }
 
   function fingerprint(path: string): Fingerprint | null {
-    try {
-      const st = lstatSync(path)
-      if (!st.isFile() || st.isSymbolicLink()) return null
-      return { size: st.size, mtimeMs: st.mtimeMs }
-    } catch {
-      return null
-    }
+    const p = probe(path)
+    return p.state === 'file' ? p.fp : null
   }
 
   function remember(path: string, fp: Fingerprint) {
     seen.set(path, fp)
   }
 
+  const goneEntry = (since: number): Pending => ({ size: -1, mtimeMs: -1, since, stable: 0, gone: true })
+
   function notice(path: string) {
     if (stopped) return
-    const fp = fingerprint(path)
-    if (!fp) return
-    const old = seen.get(path)
-    if (old && old.size === fp.size && old.mtimeMs === fp.mtimeMs) return
+    const p = probe(path)
+    if (p.state === 'other') return
     const waiting = pending.get(path)
-    if (waiting && waiting.size === fp.size && waiting.mtimeMs === fp.mtimeMs) return
-    pending.set(path, { ...fp, since: Date.now(), stable: 0 })
+    // **刪除事件也要處理。** 以前路徑不存在就直接 return，pet 模式（只有 watcher、
+    // 沒有全量掃描）裡使用者自己刪掉的檔會永遠留在清單與徽章數字上。
+    if (p.state === 'gone') {
+      if (!waiting?.gone) pending.set(path, goneEntry(Date.now()))
+      return
+    }
+    const fp = p.fp
+    if (!waiting?.gone) {
+      const old = seen.get(path)
+      if (old && old.size === fp.size && old.mtimeMs === fp.mtimeMs) return
+      if (waiting && waiting.size === fp.size && waiting.mtimeMs === fp.mtimeMs) return
+    }
+    pending.set(path, { ...fp, since: Date.now(), stable: 0, gone: false })
+  }
+
+  /** 確定不見了：標 missing（不動候選、避開 quarantined，見 markMissing）。 */
+  function settleGone(path: string, prev: Pending, now: number) {
+    pending.delete(path)
+    // 同內容、同 mtime 放回來的時候不可以被「看過了」吃掉
+    seen.delete(path)
+    try { markMissing(opts.db, path, opts.roots) }
+    catch (e: any) {
+      pending.set(path, { ...prev, since: now, stable: 0 })
+      problem(`記錄 ${basename(path)} 不見了的時候出錯：${e?.message ?? e}，等一下會再試一次。`)
+    }
   }
 
   function tick() {
     if (stopped || !pending.size) return
     const now = Date.now()
     for (const [path, prev] of [...pending]) {
-      const fp = fingerprint(path)
-      if (!fp) { pending.delete(path); seen.delete(path); continue }
-      if (fp.size !== prev.size || fp.mtimeMs !== prev.mtimeMs) {
-        pending.set(path, { ...fp, since: now, stable: 0 })
+      const p = probe(path)
+      if (p.state === 'other') { pending.delete(path); seen.delete(path); continue }
+      if (p.state === 'gone') {
+        if (!prev.gone) { pending.set(path, goneEntry(now)); continue }
+        const stable = prev.stable + 1
+        if (now - prev.since < settleMs || stable < 2) { pending.set(path, { ...prev, stable }); continue }
+        settleGone(path, prev, now)
+        continue
+      }
+      const fp = p.fp
+      if (prev.gone || fp.size !== prev.size || fp.mtimeMs !== prev.mtimeMs) {
+        pending.set(path, { ...fp, since: now, stable: 0, gone: false })
         continue
       }
       const stable = prev.stable + 1

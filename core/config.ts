@@ -30,6 +30,20 @@ export type ModelConfig = {
   keyEnv: string
 }
 
+/**
+ * 清理（搬進隔離區）的範圍。**跟截圖功能的 watch 分開。**
+ *
+ * 稽查抓到（C-B1）：清理原本沿用 watch，而 macOS 的 watch 預設含**桌面**、
+ * Windows／Linux 含截圖資料夾 —— 45 天前放在桌面上的客戶提案 zip 會被當成垃圾搬走。
+ * spec 明寫清理只碰 Downloads。
+ */
+export type CleanupConfig = {
+  /** 清理掃描與搬移的根目錄。預設只有 Downloads（Windows 會先看 OneDrive 那一個）。 */
+  roots: string[]
+  /** true 才把截圖資料夾加進清理範圍（給之後的連拍功能用）。看不懂一律當成 false。 */
+  screenshots: boolean
+}
+
 export type Config = {
   watch: string[]
   filed: string
@@ -37,7 +51,11 @@ export type Config = {
   readonly: boolean
   pdfPages: number
   maxBytes: number
+  cleanup: CleanupConfig
 }
+
+/** 算預設路徑用的「這台機器」。測試可以換成別的作業系統與家目錄。 */
+export type SysInfo = { os?: string; home?: string }
 
 export const CONFIG_PATH = process.env.CONTEXTBOX_CONFIG
   ?? join(homedir(), '.contextbox', 'config.json')
@@ -52,29 +70,27 @@ const KEY_ENV_OK = /^CONTEXTBOX_[A-Z0-9_]+$/
  * 預設是開的，真正的路徑會變成 %USERPROFILE%\OneDrive\Pictures\Screenshots。
  * 所以兩個都列，取實際存在的那一個。
  */
-export function osDefaults(os: string = platform(), home: string = homedir()): { watch: string[]; filed: string } {
+export function osDefaults(os: string = platform(), home: string = homedir()):
+  { watch: string[]; filed: string; downloads: string; screenshots: string } {
   const pick = (...candidates: string[]) => candidates.find(existsSync) ?? candidates[0]
+  let screenshots: string, downloads: string
   if (os === 'win32') {
-    return {
-      watch: [
-        pick(join(home, 'OneDrive', 'Pictures', 'Screenshots'), join(home, 'Pictures', 'Screenshots')),
-        pick(join(home, 'OneDrive', 'Downloads'), join(home, 'Downloads')),
-      ],
-      filed: join(home, 'Documents', 'Filed'),
-    }
-  }
-  if (os === 'darwin') {
+    screenshots = pick(join(home, 'OneDrive', 'Pictures', 'Screenshots'), join(home, 'Pictures', 'Screenshots'))
+    downloads = pick(join(home, 'OneDrive', 'Downloads'), join(home, 'Downloads'))
+  } else if (os === 'darwin') {
     // macOS 預設截圖落在桌面，除非使用者改過 com.apple.screencapture location
-    return { watch: [join(home, 'Desktop'), join(home, 'Downloads')], filed: join(home, 'Documents', 'Filed') }
+    screenshots = join(home, 'Desktop')
+    downloads = join(home, 'Downloads')
+  } else {
+    screenshots = join(home, 'Pictures', 'Screenshots')
+    downloads = join(home, 'Downloads')
   }
-  return {
-    watch: [join(home, 'Pictures', 'Screenshots'), join(home, 'Downloads')],
-    filed: join(home, 'Documents', 'Filed'),
-  }
+  // watch 是截圖功能的（截圖 + Downloads）；清理只用 downloads，見 CleanupConfig
+  return { watch: [screenshots, downloads], filed: join(home, 'Documents', 'Filed'), downloads, screenshots }
 }
 
-export function defaults(): Config {
-  const d = osDefaults()
+export function defaults(sys: SysInfo = {}): Config {
+  const d = osDefaults(sys.os, sys.home)
   return {
     watch: d.watch,
     filed: d.filed,
@@ -82,6 +98,7 @@ export function defaults(): Config {
     readonly: false,
     pdfPages: 3,
     maxBytes: 20 * 1024 * 1024,
+    cleanup: { roots: [d.downloads], screenshots: false },
   }
 }
 
@@ -191,8 +208,9 @@ function checkBaseUrl(raw: string, problems: string[]): string {
  * 不丟例外 —— 設定檔手改壞了不該讓整個服務起不來。
  * 回 { config, problems }，problems 給健康列顯示。
  */
-export function normalize(raw: unknown): { config: Config; problems: string[] } {
-  const d = defaults()
+export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; problems: string[] } {
+  const d = defaults(sys)
+  const shots = osDefaults(sys.os, sys.home).screenshots
   const problems: string[] = []
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
 
@@ -247,9 +265,54 @@ export function normalize(raw: unknown): { config: Config; problems: string[] } 
       readonly: readonlyOf(o.readonly, problems),
       pdfPages: ranged(o.pdfPages, 1, 10, d.pdfPages, 'pdfPages', problems),
       maxBytes: ranged(o.maxBytes, 1024, 200 * 1024 * 1024, d.maxBytes, 'maxBytes', problems),
+      cleanup: cleanupOf(o.cleanup, d.cleanup.roots, shots, problems),
     },
     problems,
   }
+}
+
+/**
+ * 清理範圍。**這是會搬檔的範圍，所以每一個看不懂的地方都倒向「範圍小」那一邊。**
+ *
+ * - 沒寫 → 只有 Downloads
+ * - roots 裡指到家目錄、磁碟根目錄、金鑰資料夾的 → **拿掉**並出聲
+ *   （watch 那邊只警告不拿掉，因為看不會動到檔案；這裡會搬檔，不可以照收）
+ * - roots 全部不能用 → 退回 Downloads
+ * - screenshots 不是布林 → 當成 false（多清一個資料夾是擴大範圍，不可以因為打錯字就開）
+ */
+function cleanupOf(v: unknown, dfltRoots: string[], screenshotsDir: string, problems: string[]): CleanupConfig {
+  const fallback = () => dfltRoots.map(realOrAbs)
+  let c: Record<string, unknown> = {}
+  if (v !== undefined) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) c = v as Record<string, unknown>
+    else problems.push('cleanup 設定看不懂，清理範圍改用預設（只有 Downloads）。')
+  }
+
+  let screenshots = false
+  if (c.screenshots !== undefined) {
+    if (typeof c.screenshots === 'boolean') screenshots = c.screenshots
+    else problems.push(`cleanup.screenshots 要寫 true 或 false（你寫的是 ${JSON.stringify(c.screenshots)}）。`
+      + '看不懂的時候一律當成關著，只清 Downloads。')
+  }
+
+  let roots: string[]
+  if (c.roots === undefined) roots = fallback()
+  else {
+    roots = Array.isArray(c.roots)
+      ? c.roots.filter(x => typeof x === 'string' && x.trim()).map(x => realOrAbs(x as string))
+      : []
+    roots = roots.filter(r => {
+      const p = filedProblem(r)
+      if (p) problems.push(`清理資料夾 ${r}：${p.replace('歸檔資料夾', '清理資料夾')}，已經從清理範圍拿掉。`)
+      return !p
+    })
+    if (!roots.length) {
+      problems.push('cleanup.roots 看不懂或全部不能用，清理範圍改用預設（只有 Downloads）。')
+      roots = fallback()
+    }
+  }
+  if (screenshots) roots.push(realOrAbs(screenshotsDir))
+  return { roots: [...new Set(roots)], screenshots }
 }
 
 export type Loaded = { config: Config; problems: string[]; path: string; created: boolean }

@@ -177,6 +177,18 @@ CREATE TABLE IF NOT EXISTS cleanup_journal (
   error     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_journal_plan ON cleanup_journal(plan_id, seq);
+
+-- 套用失敗的原因。**file_items.error 會被下一次掃描改寫**（upsert 的 error=excluded.error），
+-- 只存在那裡的話，重掃一次，計畫的逐項結果就從「十分鐘內還在變動」變成「原因不明」。
+-- 套用完馬上寫進這張表（cleanup-routes.ts 的 recordItemErrors），planOutcomes 先讀它。
+-- why 一定是翻過的人話、不帶路徑。
+CREATE TABLE IF NOT EXISTS cleanup_item_errors (
+  plan_id TEXT NOT NULL REFERENCES cleanup_plans(id),
+  item_id TEXT NOT NULL,
+  why     TEXT NOT NULL,
+  at      TEXT NOT NULL,
+  PRIMARY KEY (plan_id, item_id)
+);
 `
 
 /**

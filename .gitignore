@@ -3,3 +3,6 @@ node_modules/
 .data/
 .env.local
 *.db
+
+# Claude Code 的暫時工作目錄
+.claude/worktrees/
