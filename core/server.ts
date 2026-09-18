@@ -28,6 +28,7 @@ import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
+import { initDemoHistory, demoHistoryRoutes } from './cleanup-demo-history.ts'
 
 export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
   ?? `${homedir()}/.contextbox/token`
@@ -54,6 +55,9 @@ const UI_PATH = new URL('./ui.html', import.meta.url)
 const PET_ASSETS = new Map([
   ['/assets/quaso_v8.glb', ['assets/quaso_v8.glb', 'model/gltf-binary']],
   ['/assets/pet-viewer.js', ['assets/pet-viewer.js', 'text/javascript; charset=utf-8']],
+  ['/assets/cleanup-demo.js', ['assets/cleanup-demo.js', 'text/javascript; charset=utf-8']],
+  ['/assets/cleanup-demo-state.js', ['assets/cleanup-demo-state.js', 'text/javascript; charset=utf-8']],
+  ['/assets/demo-candidates.json', ['../docs/api/cleanup-candidates.json', 'application/json; charset=utf-8']],
   ...['three.module.js', 'three.core.js', 'GLTFLoader.js', 'BufferGeometryUtils.js'].map(name =>
     [`/assets/vendor/${name}`, [`assets/vendor/${name}`, 'text/javascript; charset=utf-8']]),
 ] as [string, [string, string]][])
@@ -72,6 +76,7 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
   const port = opts.port ?? 7391
   const token = opts.token ?? loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
+  initDemoHistory(F.db)
 
   // 清理那條線要看哪些資料夾、隔離區放哪。只算一次。
   const cfg = loadConfig().config
@@ -203,6 +208,7 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
       : {}
 
     try {
+      if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
         db: F.db, roots: cleanupRoots, quarantine: QUARANTINE,

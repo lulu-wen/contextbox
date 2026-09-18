@@ -3,10 +3,48 @@ import { GLTFLoader } from './vendor/GLTFLoader.js'
 
 const stage = document.getElementById('quaso-stage')
 const status = document.getElementById('quaso-status')
-const turn = document.getElementById('quaso-turn')
-const motion = document.getElementById('quaso-motion')
+const dialog = document.getElementById('quaso-dialog')
+const settings = document.getElementById('quaso-settings')
+const settingsToggle = document.getElementById('quaso-settings-toggle')
+const animation = document.getElementById('quaso-animation')
 const retry = document.getElementById('quaso-retry')
 retry.onclick = () => location.reload()
+document.addEventListener('quaso:notice', event => {
+  status.textContent = event.detail.message
+  showDialog(true)
+})
+function showDialog(open) {
+  dialog.hidden = !open
+  stage.setAttribute('aria-expanded', String(open))
+  closeSettings()
+}
+function closeSettings() {
+  settings.hidden = true
+  settingsToggle.setAttribute('aria-expanded', 'false')
+}
+stage.onclick = () => showDialog(dialog.hidden)
+settingsToggle.onclick = () => {
+  const open = settings.hidden
+  showDialog(false)
+  settings.hidden = !open
+  settingsToggle.setAttribute('aria-expanded', String(open))
+}
+document.addEventListener('click', event => {
+  if (!settings.contains(event.target) && !settingsToggle.contains(event.target)) closeSettings()
+  if (!document.getElementById('quaso').contains(event.target)
+    && !document.getElementById('cleanup-panel')?.contains(event.target)
+    && !document.getElementById('cleanup-history-panel')?.contains(event.target)
+    && event.target.id !== 'cleanup-demo-start'
+    && event.target.id !== 'backend-mock-toggle') showDialog(false)
+})
+document.getElementById('quaso').addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    const wasSettingsOpen = !settings.hidden
+    showDialog(false)
+    if (wasSettingsOpen) settingsToggle.focus()
+    else stage.focus()
+  }
+})
 
 async function init() {
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true })
@@ -39,24 +77,34 @@ async function init() {
   camera.position.set(0, 0.25, 4.8)
   camera.lookAt(0, 0, 0)
   const mixer = new THREE.AnimationMixer(model)
-  const clip = gltf.animations.find(a => /idle/i.test(a.name)) ?? gltf.animations[0]
-  if (clip) mixer.clipAction(clip).play()
-  let paused = matchMedia('(prefers-reduced-motion: reduce)').matches
-  const updateLabel = () => { motion.textContent = paused ? '播放動畫' : '暫停動畫' }
-  updateLabel()
-  turn.disabled = motion.disabled = false
-  turn.onclick = () => { pivot.rotation.y += Math.PI / 4 }
-  motion.onclick = () => { paused = !paused; updateLabel() }
-  status.textContent = '我是 Quaso，今天也陪著你！'
+  const clip = gltf.animations.find(a => /jump/i.test(a.name))
+  let mode = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'paused' : 'jump'
+  let activeMode = 'jump'
+  function selectAnimation() {
+    mode = animation.value
+    if (mode === 'paused') return // 保留目前姿勢，停止更新。
+    mixer.stopAllAction()
+    pivot.rotation.y = 0
+    pivot.position.y = 0
+    elapsed = 0
+    activeMode = mode
+    if (mode === 'jump' && clip) mixer.clipAction(clip).reset().play()
+  }
   let previous = performance.now(), elapsed = 0
+  animation.value = mode
+  animation.disabled = false
+  animation.onchange = selectAnimation
+  selectAnimation()
+  // 載入完成不覆蓋清理提醒。
   renderer.setAnimationLoop(now => {
     const delta = Math.min((now - previous) / 1000, 0.05)
     previous = now
     if (document.hidden) return
-    if (!paused) {
+    if (mode !== 'paused' && document.getElementById('quaso').dataset.petState !== 'worried') {
       elapsed += delta
-      if (clip) mixer.update(delta)
-      else pivot.position.y = Math.sin(elapsed * 2) * 0.035
+      if (activeMode === 'spin') pivot.rotation.y = (elapsed * Math.PI / 3) % (Math.PI * 2)
+      else if (clip) mixer.update(delta)
+      else pivot.position.y = Math.abs(Math.sin(elapsed * 3)) * 0.2
     }
     renderer.render(scene, camera)
   })
@@ -64,6 +112,7 @@ async function init() {
     event.preventDefault()
     renderer.setAnimationLoop(null)
     status.textContent = '3D 顯示暫時中斷，請重新載入。'
+    showDialog(true)
     retry.hidden = false
   })
   window.addEventListener('pagehide', () => { renderer.setAnimationLoop(null); renderer.dispose() }, { once: true })
@@ -72,5 +121,6 @@ async function init() {
 init().catch(error => {
   console.error('Quaso viewer:', error)
   status.textContent = 'Quaso 暫時無法顯示。請確認伺服器與瀏覽器的 3D 功能，再重新載入。'
+  showDialog(true)
   retry.hidden = false
 })

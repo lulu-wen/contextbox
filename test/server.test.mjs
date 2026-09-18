@@ -30,6 +30,22 @@ test('健康檢查不用 token', async () => {
   assert.equal(r.status, 200)
 })
 
+test('模擬操作歷史需 token，支援儲存、讀取與選取復原', async () => {
+  assert.equal((await call('/demo/cleanup/history', { token: null })).status, 401)
+  assert.equal((await call('/demo/cleanup/undo', { method: 'POST', token: null })).status, 401)
+  assert.equal((await call('/demo/cleanup/history', { origin: 'https://evil.example.com' })).status, 403)
+  const r = await call('/demo/cleanup/history', { method: 'POST', body: JSON.stringify({ requestId: 'http-1', candidateIds: ['c_7Qa'] }) })
+  assert.equal(r.status, 200)
+  const entry = await r.json()
+  const history = await (await call('/demo/cleanup/history')).json()
+  assert.equal(history.total, 1)
+  assert.equal(history.operations[0].id, entry.id)
+  const undone = await call('/demo/cleanup/undo', { method: 'POST', body: JSON.stringify({ operationIds: [entry.id] }) })
+  assert.equal(undone.status, 200)
+  assert.equal((await undone.json()).restored, 1)
+  assert.equal((await call('/demo/cleanup/history?limit=0')).status, 400)
+})
+
 test('寵物公開素材可載入，模型格式正確，HEAD 不回 body', async () => {
   const r = await call('/assets/quaso_v8.glb', { token: null, origin: null })
   assert.equal(r.status, 200)
@@ -38,12 +54,15 @@ test('寵物公開素材可載入，模型格式正確，HEAD 不回 body', asyn
   const head = await call('/assets/quaso_v8.glb', { method: 'HEAD', token: null, origin: null })
   assert.equal(head.status, 200)
   assert.equal(await head.text(), '')
-  for (const file of ['pet-viewer.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
+  for (const file of ['pet-viewer.js', 'pet-state.js', 'cleanup-demo.js', 'cleanup-demo-state.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
     const script = await call('/assets/' + file, { token: null, origin: null })
     assert.equal(script.status, 200, file)
     assert.match(script.headers.get('content-type'), /javascript/)
     await script.arrayBuffer()
   }
+  const fixture = await call('/assets/demo-candidates.json', { token: null, origin: null })
+  assert.equal(fixture.status, 200)
+  assert.equal((await fixture.json()).candidates.length, 4)
 })
 
 test('素材路由只允許清單內檔案，維持來源與個資防線', async () => {
