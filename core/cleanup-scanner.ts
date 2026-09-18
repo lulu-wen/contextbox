@@ -398,6 +398,42 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   }
 
   addDuplicateCandidates(opts.db, nowIso, touched)
+
+  // **全量掃描要對帳：掃描根目錄底下、檔案已經不存在的列，標成 missing。**
+  //
+  // 上面的迴圈只處理「走訪時看到的」檔。markPathMissing 原本只在「走訪時還在、
+  // 檢查時不見」這個極小的競態窗才會被叫到 —— watcher 沒開的期間被刪掉的檔
+  // 永遠不會被標成 missing，它的候選一直是 proposed：使用者自己刪掉的檔還在
+  // 清理清單上、徽章數字是錯的、還能被勾進計畫然後搬移失敗。
+  //
+  // 判準用 existsSync 而不是「這次有沒有走訪到」：走訪有深度上限與檔數上限，
+  // 沒走訪到不代表不存在。**只有檔案真的不在了才標**，不會誤殺。
+  //
+  // 單檔模式（watcher 的 paths:[path]）不跑。**不是因為會誤殺**（判準是 existsSync，
+  // 跑了也只會標真的不見的檔），而是 watcher 每個檔案事件都會叫一次 scanDownloads ——
+  // 一次瀏覽器下載就是一串事件，每次都對幾千列做 stat 是白做工，而且會把寫入範圍
+  // 從「這一個檔」擴大成「整個資料夾」。單檔掃描只碰它被給的那個檔；刪檔事件本身
+  // 就會讓 watcher 掃到那個路徑、走 markPathMissing。
+  // 隔離區裡的不算：它們的原路徑本來就沒有檔，那是被搬走，不是不見。
+  if (!opts.paths) {
+    for (const given of opts.roots) {
+      if (!existsSync(given)) continue
+      // file_items.path 存的是 realpath。根目錄要用同一種形式比，不然 macOS 的
+      // /var → /private/var 這種情況前綴一個都對不到，對帳就靜靜地什麼都沒做。
+      // （跟 inspectPath 一樣的正規化。）
+      let root: string
+      try { root = realpathSync(given) } catch { root = resolve(given) }
+      const rows = opts.db.prepare(
+        `SELECT path FROM file_items
+          WHERE status NOT IN ('missing','quarantined')
+            AND (path = ? OR substr(path, 1, ?) = ?)`
+      ).all(root, root.length + 1, root + sep) as { path: string }[]
+      for (const r of rows) {
+        if (!existsSync(r.path)) markPathMissing(opts.db, r.path, nowIso)
+      }
+    }
+  }
+
   result.candidates = (opts.db.prepare(
     `SELECT count(*) n FROM cleanup_candidates WHERE status='proposed' AND rule_version=?`
   ).get(CLEANUP_RULE_VERSION) as { n: number }).n

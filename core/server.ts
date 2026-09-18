@@ -57,6 +57,7 @@ const PET_ASSETS = new Map([
   ['/assets/pet-viewer.js', ['assets/pet-viewer.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-demo.js', ['assets/cleanup-demo.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-demo-state.js', ['assets/cleanup-demo-state.js', 'text/javascript; charset=utf-8']],
+  ['/assets/cleanup-real-state.js', ['assets/cleanup-real-state.js', 'text/javascript; charset=utf-8']],
   ['/assets/demo-candidates.json', ['assets/demo-candidates.json', 'application/json; charset=utf-8']],
   ...['three.module.js', 'three.core.js', 'GLTFLoader.js', 'BufferGeometryUtils.js'].map(name =>
     [`/assets/vendor/${name}`, [`assets/vendor/${name}`, 'text/javascript; charset=utf-8']]),
@@ -72,7 +73,11 @@ function uiHtml(token: string): string {
     .replaceAll('__TOKEN__', JSON.stringify(token).replace(/</g, '\\u003c'))
 }
 
-export function start(opts: { port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string } = {}) {
+export function start(opts: {
+  port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string
+  /** 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。 */
+  maxBytes?: number; readonly?: boolean
+} = {}) {
   const port = opts.port ?? 7391
   const token = opts.token ?? loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
@@ -242,10 +247,10 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
         // 使用者的設定檔 —— 延後讀取的修正等於沒做。
         db: F.db, roots, quarantine: QUARANTINE,
         // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
-        maxBytes: () => cfg().maxBytes,
-        readonly: () => cfg().readonly,
+        maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
+        readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => scanDownloads({ db: F.db, roots: roots(), maxBytes: cfg().maxBytes }),
+        scan: () => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes }),
       })) return
 
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。

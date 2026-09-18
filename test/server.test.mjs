@@ -1,6 +1,7 @@
+import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { start } from '../core/server.ts'
@@ -10,7 +11,11 @@ const TOKEN = 'test-token-abc'
 let S, base
 
 before(async () => {
-  S = start({ port: 0, db: join(dir, 'test.db'), token: TOKEN })
+  // roots／quarantine／maxBytes／readonly 全部給 —— 不給的話 /health 會去讀
+  // （乾淨的機器上是建立）使用者真的 ~/.contextbox/config.json。
+  mkdirSync(join(dir, 'Downloads'))
+  S = start({ port: 0, db: join(dir, 'test.db'), token: TOKEN,
+    roots: [join(dir, 'Downloads')], quarantine: join(dir, 'q'), maxBytes: 1e7, readonly: false })
   base = `http://127.0.0.1:${await S.ready}`
 })
 after(() => S.server.close())
@@ -159,4 +164,42 @@ test('免 token 的 /health 不可以有檔名或路徑', async () => {
   const s = JSON.stringify(body)
   assert.ok(!/\/home\/|\/Users\/|C:\\\\/.test(s), `/health 洩漏了路徑：${s}`)
   assert.deepEqual(body.watcher.watching, [], '免 token 不給資料夾顯示名')
+})
+
+test('**素材模組 import 的每一個檔都要被端出來**', async () => {
+  // 素材路由是白名單。新增一個模組、在別的模組 import 它、卻忘了登記的話，
+  // 瀏覽器拿到 404，**整個 import 圖失敗** —— 不只新功能壞，連本來好好的
+  // 面板（包括 demo 模式）都一起不執行。單元測試抓不到，只有開瀏覽器才看得到。
+  // 2026-09-18 接真的清理時真的發生過。
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const assets = join(dirname(fileURLToPath(import.meta.url)), '..', 'core', 'assets')
+  const html = readFileSync(join(assets, '..', 'ui.html'), 'utf8')
+  // 起點：<script src="/assets/…"> 與 inline 裡的動態 import('/assets/…')（3D 寵物是這樣載的）
+  const roots = [...html.matchAll(/(?:src="|import\(\s*['"])\/assets\/([^"']+\.js)/g)].map(m => m[1])
+  assert.ok(roots.length, '從 ui.html 找不到任何 /assets/*.js，正規式壞了')
+  const seen = new Set()
+  const queue = [...roots]
+  while (queue.length) {
+    const file = queue.shift()
+    if (seen.has(file)) continue
+    seen.add(file)
+    const r = await call('/assets/' + file, { token: null, origin: null })
+    assert.equal(r.status, 200, `/assets/${file} 回了 ${r.status} —— 它被 import 了卻不在 server.ts 的 PET_ASSETS 裡`)
+    const src = await r.text()
+    const dir = file.includes('/') ? file.slice(0, file.lastIndexOf('/') + 1) : ''
+    for (const m of src.matchAll(/(?:import|export)[^'"]*?from\s*['"](\.\/[^'"]+)['"]/g)) {
+      queue.push(dir + m[1].slice(2))
+    }
+  }
+  assert.ok(seen.has('cleanup-real-state.js'), '前提：真的清理模組有被走到')
+  assert.ok(seen.has('vendor/three.core.js'), '前提：3D 寵物那條 import 鏈也有被走到')
+})
+
+test('**跑完不可以在家目錄留下任何東西**', async () => {
+  // 放在最後：前面每一條都跑過了，還是乾淨的才算數
+  await call('/health', { token: null })
+  assert.ok(!existsSync(join(FAKE_HOME, '.contextbox')),
+    '測試在家目錄建了 .contextbox —— 有路徑去讀了使用者的設定檔')
 })

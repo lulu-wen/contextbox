@@ -98,3 +98,18 @@ test('demo 資料跟 API 形狀契約不可以共用同一個檔', () => {
       `${f} 又去讀 docs/api/cleanup-candidates.json 了 —— demo 要用 core/assets/demo-candidates.json`)
   }
 })
+
+test('起 server 或載入設定的測試檔，第一個 import 一定是 isolate-home', () => {
+  // core/config.ts 在模組載入時就算好設定檔路徑。不先把家目錄換掉的話，
+  // 測試會讀（開發機）甚至建立（乾淨的機器）使用者真的 ~/.contextbox/config.json。
+  const dir = join(REPO, 'test')
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.test.mjs'))) {
+    const src = readFileSync(join(dir, f), 'utf8')
+    if (!/from\s+['"]\.\.\/core\/server\.ts['"]/.test(src)) continue
+    const first = /^import\s[^\n]*$/m.exec(src)?.[0] ?? ''
+    assert.match(first, /helpers\/isolate-home\.mjs/, `${f} 的第一個 import 不是 isolate-home：${first}`)
+    for (const m of src.matchAll(/\bstart\(\{([^}]*)\}\)/g)) {
+      assert.match(m[1], /roots/, `${f} 起 server 沒給 roots —— /health 會去讀使用者的設定檔`)
+    }
+  }
+})

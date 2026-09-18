@@ -16,11 +16,11 @@ import { admit } from './core/guard.ts'
 import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
 import { Items } from './core/items.ts'
-import { listCandidates, healthSnapshot, META } from './core/cleanup-routes.ts'
+import { listCandidates, healthSnapshot, META, planOutcomes, defaultCandidateIds } from './core/cleanup-routes.ts'
 import { applyPlan, undoPlan, listQuarantine } from './core/cleanup-exec.ts'
-import { createPlan } from './core/cleanup-plans.ts'
+import { createPlan, getPlan } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
-import { CleanupError, listJournal } from './core/cleanup-journal.ts'
+import { CleanupError } from './core/cleanup-journal.ts'
 import { scanDownloads } from './core/cleanup-scanner.ts'
 import { existsSync } from 'node:fs'
 import { basename, resolve, join } from 'node:path'
@@ -413,7 +413,10 @@ switch (cmd) {
       let plan
       try {
         // 給了 id 就套用那一份，沒給就用目前的候選建一份新的
-        plan = args[1] ? { id: args[1] } : createPlan(db)
+        // 沒給 id ＝「cleanup list 上打 ✔ 的」。**不交給 B 的預設** —— 那個不看否決，
+        // 清單上顯示 ☐ 的大檔會被收進去，大小上限一調大就直接被搬走。
+        plan = args[1] ? { id: args[1] }
+          : createPlan(db, { candidateIds: defaultCandidateIds(db, config.watch) })
       } catch (e) {
         if (e instanceof CleanupError && e.code === 'CONFLICT') {
           // 有 plan 卡著的話要講得出**怎麼往下走**，不然使用者只能去翻資料庫
@@ -444,7 +447,9 @@ switch (cmd) {
       catch (e) {
         if (e instanceof CleanupError && e.code === 'READ_ONLY') {
           // smoke 第 0 步就靠這個確認「只說不做」。回非 0 會讓那一步永遠紅。
-          const n = plan.items?.length ?? 0
+          // 帶 id 進來的時候 plan 只有 { id }，要去問那份計畫有幾個 —— 不然會印「會清掉 0 個」
+          let n = plan.items?.length
+          if (n === undefined) { try { n = getPlan(db, plan.id).items.length } catch { n = 0 } }
           say(`唯讀模式：會清掉 ${n} 個檔案，但這次一個都沒動。`)
           break
         }
@@ -457,22 +462,15 @@ switch (cmd) {
       // **逐項的勾要看 journal，不可以看「有沒有被略過」。**
       // 一律印 ✔ 的話，全失敗時會印出五個 ✔ 後面接「搬進隔離區 0 個」——
       // 畫面在說謊，而這支工具的全部價值就是使用者信得過它動了什麼。
-      const byItem = new Map()
-      for (const j of listJournal(db, r.id)) {
-        if (j.op === 'quarantine') byItem.set(j.item_id, j)
-      }
-      // **失敗原因有兩個地方。** 檢查沒過的話（檔案變了、是重複檔的留存者、
-      // 不在白名單資料夾）根本不會寫 journal —— markFailure 只把訊息寫進
-      // file_items.error。只查 journal 的話，最常見的那種失敗印出來是一句
-      // 「沒有搬動」，使用者完全不知道發生什麼事。
-      // spec 第 6 節：沒有 reason 就是 bug。
-      const itemError = db.prepare('SELECT error FROM file_items WHERE id=?')
+      // 逐項結果跟 HTTP 那邊用**同一份算法**（planOutcomes）。
+      // 這裡原本自己查 journal + file_items.error，兩份算法遲早會分歧 ——
+      // 而這支工具的全部價值就是使用者信得過它說它動了什麼。
+      const outcomes = planOutcomes(db, r.id)
       for (const i of r.items) {
-        const j = byItem.get(i.itemId)
-        if (i.skipped) { say(`  － ${i.name}　${mb(i.bytes)}　（你略過了）`); continue }
-        if (j?.status === 'done') { say(`  ✔ ${i.name}　${mb(i.bytes)}`); continue }
-        const why = j?.error ?? itemError.get(i.itemId)?.error ?? '沒有搬動，原因不明'
-        say(`  ✘ ${i.name}　${mb(i.bytes)}　—— ${why}`)
+        const o = outcomes.get(i.itemId)
+        if (o?.outcome === 'skipped') { say(`  － ${i.name}　${mb(i.bytes)}　（你略過了）`); continue }
+        if (o?.outcome === 'moved') { say(`  ✔ ${i.name}　${mb(i.bytes)}`); continue }
+        say(`  ✘ ${i.name}　${mb(i.bytes)}　—— ${o?.why ?? '沒有搬動，原因不明'}`)
       }
       say(`\n搬進隔離區 ${r.quarantinedCount} 個，${mb(r.quarantinedBytes)}。`)
       if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
@@ -501,11 +499,18 @@ switch (cmd) {
       }
       // 只列**真的放回去**的那些。列全部的話會出現「放回去 2 個檔案」
       // 後面接三行 ↩ —— 跟 apply 那邊一律印 ✔ 是同一類的畫面說謊。
-      const restored = new Set(
-        listJournal(db, id).filter(j => j.op === 'restore' && j.status === 'done')
-          .map(j => j.item_id))
-      say(`放回去 ${r.restoredCount} 個檔案。`)
-      for (const i of r.items) if (restored.has(i.itemId)) say(`  ↩ ${i.name}`)
+      // **不要講「之後不會再被提議」。** 那不一定是真的：之後符合新的理由會再出現；
+      // 原位置被佔時放回來的那份會改名成 .restored，重掃後以重複檔的身分被預設勾起來。
+      // 只講發生了什麼。
+      const outcomes = planOutcomes(db, id)
+      say(`放回 Downloads ${r.restoredCount} 個檔案。`)
+      for (const i of r.items) {
+        const o = outcomes.get(i.itemId)
+        if (o?.outcome !== 'restored') continue
+        say(o.restoredAs
+          ? `  ↩ ${i.name}　→ 原位置已經有同名檔案，放回來的這份叫 ${o.restoredAs}（沒有覆蓋任何檔案）`
+          : `  ↩ ${i.name}`)
+      }
       if (r.status === 'partial' || r.status === 'error') process.exitCode = EXIT.partial
       break
     }

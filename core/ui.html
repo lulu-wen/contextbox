@@ -234,7 +234,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   .cleanup-file p { margin: 6px 0 0 28px; font-size: 13px; line-height: 1.5; }
   .cleanup-file .evidence { color: #796c5b; }
-  #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; }
+  #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
   #cleanup-summary { font-weight: 600; }
   @media (max-width: 700px) {
@@ -376,8 +376,15 @@ async function api(path, init = {}) {
   const r = await fetch(path, { ...init, headers: HEAD, cache: 'no-store' })
   let data = {}
   try { data = await r.json() } catch (_) {}
-  // server 的錯誤訊息本來就寫得像人話，原樣往上丟，不要自己重寫
-  if (!r.ok) throw new Error(data.error || ('伺服器回了 ' + r.status))
+  // server 的錯誤訊息本來就寫得像人話，原樣往上丟，不要自己重寫。
+  // code 與 status 也要帶上來：只有人話的話，分不出「候選過期（要重載）」、
+  // 「有計畫卡著（要接續）」、「忙碌中（要重試）」—— 三種要做的事完全不同。
+  if (!r.ok) {
+    const e = new Error(data.error || ('伺服器回了 ' + r.status))
+    e.code = data.code
+    e.status = r.status
+    throw e
+  }
   return data
 }
 

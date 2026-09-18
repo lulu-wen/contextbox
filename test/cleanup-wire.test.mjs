@@ -633,7 +633,7 @@ test('undo 只列真的放回去的，數字跟行數要對得上', t => {
            CONTEXTBOX_QUARANTINE: f.opts.quarantine },
   })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
-  const n = Number(/放回去 (\d+) 個/.exec(out)?.[1])
+  const n = Number(/放回 Downloads (\d+) 個/.exec(out)?.[1])
   const lines = (out.match(/↩/g) ?? []).length
   assert.equal(lines, n, `說放回去 ${n} 個，卻列了 ${lines} 行：\n${out}`)
   assert.doesNotMatch(out, /↩ a\.zip/, 'a.zip 根本沒被搬走，不可以說它被放回去了')
@@ -693,5 +693,51 @@ describe('剛動過的檔不搬 —— 但要說實話', () => {
       assert.ok(touched.includes(`touch -d`) && new RegExp(`touch -d[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(touched),
         `${name} 沒有 touch -d，照著做會搬不動`)
     }
+  })
+})
+
+describe('獨立重推抓到的（CLI）', () => {
+  const runCli = (f, args, env = {}, maxBytes = f.opts.maxBytes) => {
+    const cfg = join(f.dir, 'config.json')
+    writeFileSync(cfg, JSON.stringify({
+      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
+      readonly: false, pdfPages: 3, maxBytes,
+    }))
+    const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+             CONTEXTBOX_QUARANTINE: f.opts.quarantine, ...env },
+    })
+    return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
+  }
+
+  test('**CLI 的 cleanup apply 只清 cleanup list 上打 ✔ 的**', t => {
+    const f = fixture(t, { 'a.zip': 'aaa', 'big.zip': 'x'.repeat(2 * 1024 * 1024) })
+    f.db.prepare(`UPDATE file_items SET sha256=NULL WHERE name='big.zip'`).run()   // 太大、沒有指紋 → 否決
+    // **上限要調大**：掃描時的上限小（所以沒有指紋、被否決），但現在的上限夠大 ——
+    // 使用者調大設定是合法操作。上限沒調大的話，它會被收進計畫、只是搬移時因為
+    // 太大而失敗，測試就會因為錯的理由通過（第一版就是這樣）。
+    const r = runCli(f, ['cleanup', 'apply'], {}, 50 * 1024 * 1024)
+    assert.ok(existsSync(join(f.downloads, 'big.zip')), `清單上是 ☐ 的 big.zip 被搬走了：\n${r.out}`)
+    assert.ok(!existsSync(join(f.downloads, 'a.zip')))
+  })
+
+  test('唯讀模式帶 plan id，要講得出那份計畫有幾個', t => {
+    const f = fixture(t)
+    const p = createPlan(f.db)
+    const r = runCli(f, ['cleanup', 'apply', p.id], { CONTEXTBOX_READONLY: '1' })
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /會清掉 2 個/, `印成：\n${r.out}`)
+  })
+
+  test('復原訊息不可以說「之後不會再被提議」—— 那不一定是真的', t => {
+    const f = fixture(t)
+    const p = createPlan(f.db)
+    applyPlan(f.db, p.id, f.opts)
+    writeFileSync(join(f.downloads, 'a.zip'), '後來又下載了一個同名的')
+    const r = runCli(f, ['cleanup', 'undo', p.id])
+    assert.doesNotMatch(r.out, /不會再被提議/, '放回來的那份改名後會以重複檔的身分再被提議')
+    assert.match(r.out, /a\.zip\.restored/, '改了名要講出來')
   })
 })

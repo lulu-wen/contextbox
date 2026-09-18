@@ -1,0 +1,29 @@
+{
+  "total": 1,
+  "offset": 0,
+  "limit": 20,
+  "operations": [
+    {
+      "id": "760fc946-fede-4d40-ba91-bf7920df686e",
+      "status": "partial",
+      "createdAt": "2026-09-18T15:30:30.721Z",
+      "appliedAt": "2026-09-18T15:30:30.770Z",
+      "restoredAt": null,
+      "canUndo": true,
+      "itemCount": 2,
+      "bytes": 4900,
+      "items": [
+        {
+          "itemId": "82598040-4bdc-4361-b8ea-a6e38d95039d",
+          "name": "報告.pdf",
+          "bytes": 900
+        },
+        {
+          "itemId": "53c84154-8280-46e1-bc6e-098f28be8679",
+          "name": "安裝檔.msi",
+          "bytes": 4000
+        }
+      ]
+    }
+  ]
+}

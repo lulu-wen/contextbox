@@ -1,41 +1,89 @@
 {
-  "id": "p_2026091302",
+  "id": "760fc946-fede-4d40-ba91-bf7920df686e",
   "status": "partial",
-  "quarantined": 3,
-  "skipped": 1,
-  "failed": 1,
-  "bytesFreed": 2894,
-  "appliedAt": "2026-09-13T09:01:44.000Z",
-  "canUndo": true,
-  "note": "**搬到一半壞掉也要能復原已經搬成功的。** UI 不可以只畫成功的樣子。",
+  "itemCount": 3,
+  "createdAt": "2026-09-18T15:30:30.721Z",
+  "appliedAt": "2026-09-18T15:30:30.770Z",
+  "error": "檔案或資料夾不見了，請確認後重試。",
+  "bytes": 6900,
   "items": [
     {
-      "candidateId": "c_7Qa",
-      "name": "report (1).pdf",
-      "outcome": "quarantined"
+      "itemId": "82598040-4bdc-4361-b8ea-a6e38d95039d",
+      "name": "報告.pdf",
+      "bytes": 900,
+      "mtime": "2026-05-21T15:30:30.624Z",
+      "candidateIds": [
+        "5a29ad4b-b465-4a9e-b721-4f00c8aadb33"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "duplicate",
+          "confidence": 98,
+          "reason": "同內容的重複檔案",
+          "evidence": "同一個 sha256 還有 1 份檔案存在"
+        }
+      ],
+      "outcome": "moved",
+      "why": null
     },
     {
-      "candidateId": "c_8Bz",
-      "name": "a.crdownload",
-      "outcome": "quarantined"
+      "itemId": "53c84154-8280-46e1-bc6e-098f28be8679",
+      "name": "安裝檔.msi",
+      "bytes": 4000,
+      "mtime": "2026-05-21T15:30:30.624Z",
+      "candidateIds": [
+        "48ec4545-9a13-4703-9551-8b3037ea9080",
+        "142cebcd-afd6-4181-b87c-c4ffe61c0dd8"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "installer",
+          "confidence": 70,
+          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
+          "evidence": ".msi 安裝檔，而且 120 天沒有變動"
+        },
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "120 天沒有變動，且副檔名 .msi 不在保護清單"
+        }
+      ],
+      "outcome": "moved",
+      "why": null
     },
     {
-      "candidateId": "c_9Cy",
-      "name": "空的.txt",
-      "outcome": "quarantined"
-    },
-    {
-      "candidateId": "c_1Dx",
-      "name": "Setup.msi",
-      "outcome": "skipped",
-      "why": "你取消了這一項"
-    },
-    {
-      "candidateId": "c_2Ew",
-      "name": "素材包.zip",
+      "itemId": "537140ba-d98f-49ac-b059-44e800056c86",
+      "name": "素材.zip",
+      "bytes": 2000,
+      "mtime": "2026-05-21T15:30:30.624Z",
+      "candidateIds": [
+        "e29dbc13-7bac-4716-85ba-54edab18b7a3",
+        "b092d570-3a73-4738-ac44-d748f9ba5625"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "舊壓縮檔通常是一次性下載",
+          "evidence": ".zip 壓縮檔，而且 120 天沒有變動"
+        },
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "120 天沒有變動，且副檔名 .zip 不在保護清單"
+        }
+      ],
       "outcome": "failed",
-      "why": "檔案正在被別的程式使用，這次沒搬成功。等一下再試一次。",
-      "code": "EBUSY"
+      "why": "檔案或資料夾不見了，請確認後重試。"
     }
-  ]
+  ],
+  "quarantinedCount": 2,
+  "restoredCount": 0,
+  "quarantinedBytes": 4900,
+  "undoable": true
 }
