@@ -28,6 +28,7 @@ import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
+import { initDemoHistory, demoHistoryRoutes } from './cleanup-demo-history.ts'
 
 export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
   ?? `${homedir()}/.contextbox/token`
@@ -50,6 +51,17 @@ const sameToken = (a: string, b: string) => {
 /** 手填頁面。跟這支放在同一個資料夾，每次請求才讀，改完不用重開 server。 */
 const UI_PATH = new URL('./ui.html', import.meta.url)
 
+// 只提供明列的公開素材，不將 URL 拼成本機檔案路徑。
+const PET_ASSETS = new Map([
+  ['/assets/quaso_v8.glb', ['assets/quaso_v8.glb', 'model/gltf-binary']],
+  ['/assets/pet-viewer.js', ['assets/pet-viewer.js', 'text/javascript; charset=utf-8']],
+  ['/assets/cleanup-demo.js', ['assets/cleanup-demo.js', 'text/javascript; charset=utf-8']],
+  ['/assets/cleanup-demo-state.js', ['assets/cleanup-demo-state.js', 'text/javascript; charset=utf-8']],
+  ['/assets/demo-candidates.json', ['../docs/api/cleanup-candidates.json', 'application/json; charset=utf-8']],
+  ...['three.module.js', 'three.core.js', 'GLTFLoader.js', 'BufferGeometryUtils.js'].map(name =>
+    [`/assets/vendor/${name}`, [`assets/vendor/${name}`, 'text/javascript; charset=utf-8']]),
+] as [string, [string, string]][])
+
 /**
  * 把 token 直接塞進頁面，使用者就不用自己去複製那一串。
  * JSON.stringify 會連引號一起產生合法的 JS 字面值，再把 < 換成跳脫寫法，
@@ -64,6 +76,7 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
   const port = opts.port ?? 7391
   const token = opts.token ?? loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
+  initDemoHistory(F.db)
 
   // 清理那條線要看哪些資料夾、隔離區放哪。
   //
@@ -149,6 +162,20 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
     }
     if (req.method === 'OPTIONS') return send(204, {})
 
+    if (url.pathname.startsWith('/assets/')) {
+      const asset = PET_ASSETS.get(url.pathname)
+      if (!asset) return send(404, { error: '找不到素材' })
+      if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { error: '素材只供讀取' })
+      try {
+        const data = readFileSync(new URL(asset[0], import.meta.url))
+        res.writeHead(200, { ...baseHeaders(), 'content-type': asset[1],
+          'content-length': data.length, 'x-content-type-options': 'nosniff',
+          'cross-origin-resource-policy': 'same-origin' })
+        res.end(req.method === 'HEAD' ? undefined : data)
+      } catch { send(404, { error: '找不到素材' }) }
+      return
+    }
+
     // 手填頁面。它自己帶 token，所以這一條不能要求 token。
     if (url.pathname === '/' && req.method === 'GET') {
       // 瀏覽器直接開網址是 document；網頁用 fetch 或 iframe 來拿的一律不給
@@ -164,8 +191,8 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
         'content-type': 'text/html; charset=utf-8',
         // 這一頁只准跟自己講話：token 印在裡面，連 img 都不准往外連
         'content-security-policy':
-          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-          + "connect-src 'self'; img-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+          "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "
+          + "connect-src 'self' blob:; img-src data: blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
       })
       res.end(html)
       return
@@ -207,6 +234,7 @@ export function start(opts: { port?: number; db?: string; token?: string; roots?
       : {}
 
     try {
+      if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
         // **這些都要是 thunk。** 上一版 `maxBytes: cfg().maxBytes` 是每個請求
