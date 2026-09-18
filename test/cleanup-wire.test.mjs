@@ -6,7 +6,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync, utimesSync } from 'node:fs'
+import { existsSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -38,10 +38,20 @@ describe('A 錯誤代碼對到 HTTP 狀態碼', () => {
     // 手寫一張表就是上一輪 KIND_CONFIDENCE 的重演：B 新增一個 code，
     // 表沒更新，它靜靜變成預設值，沒有任何測試會紅。
     // 所以真實來源是**原始碼**，不是我腦中的清單。
-    const src = ['cleanup-exec', 'cleanup-plans', 'cleanup-quarantine', 'cleanup-journal']
-      .map(f => readFileSync(join(REPO, 'core', f + '.ts'), 'utf8')).join('\n')
-    const thrown = [...src.matchAll(/CleanupError\('([A-Z_]+)'/g)].map(m => m[1])
+    //
+    // 2026-09-19 稽核 RC21：上一版的正規式只認單引號，檔案也是手寫的四支 ——
+    // `CleanupError("NEW", …)`、`` CleanupError(`NEW`, …) ``、或寫在 cleanup-routes.ts 裡的，
+    // 全部漏掉，測試照樣綠。現在三種引號都認，而且掃 core/ 底下**每一支** .ts。
+    const coreDir = join(REPO, 'core')
+    const src = readdirSync(coreDir).filter(f => f.endsWith('.ts'))
+      .map(f => readFileSync(join(coreDir, f), 'utf8')).join('\n')
+    const thrown = [...src.matchAll(/CleanupError\(\s*(['"`])([A-Z_]+)\1/g)].map(m => m[2])
     assert.ok(thrown.length >= 15, `只抓到 ${thrown.length} 個 code，正規式壞了`)
+    // 三種引號都要認得（正規式自己的檢查，不靠原始碼剛好用了哪一種）
+    for (const q of ["'", '"', '`']) {
+      assert.deepEqual([...`new CleanupError(${q}X_Y${q}, 'z')`.matchAll(/CleanupError\(\s*(['"`])([A-Z_]+)\1/g)].map(m => m[2]), ['X_Y'],
+        `正規式不認 ${q} 引號`)
+    }
     const missing = [...new Set(thrown)].filter(c => !(c in HTTP_FOR_CODE))
     assert.deepEqual(missing, [], `這些 code 沒有對應，會掉到預設值：${missing.join('、')}`)
   })
@@ -181,13 +191,40 @@ describe('D 清空隔離區', () => {
 
   test('**`{"confirmed":"false"}` 不可以被當成同意**', t => {
     // 字串 "false" 在 JS 是 truthy。這一條會真的刪掉使用者的檔。
+    //
+    // 2026-09-19 稽核 RC21／RC23：上一版只送了 "false"，而且隔離區裡**根本沒有滿七天的檔** ——
+    // 就算被當成同意也刪不到東西，「沒帶 confirmed 就當成 true」這種突變照樣全綠。
+    // 現在先把兩個檔撥到八天前（被誤判成同意就會真的刪掉），再逐一送：
+    //   沒帶、false → 428（還沒確認）；帶了但不是布林 → 400（送錯）。
+    // 每送一次都確認隔離區還是兩個。
     const f = fixture(t)
+    const p = createPlan(f.db)
+    applyPlan(f.db, p.id, f.opts)
+    f.db.prepare('UPDATE cleanup_move_details SET completed_at=?')
+      .run(new Date(Date.now() - 8 * 86400_000).toISOString())
     const prep = call(f, 'POST', '/cleanup/quarantine/empty', {})
-    const r = call(f, 'POST', '/cleanup/quarantine/empty',
-      { token: prep.body.token, confirmed: 'false' })
-    // 2026-09-19 稽核 RC23：帶了但不是布林是送錯（400），沒帶或 false 才是還沒確認（428）
-    assert.equal(r.code, 400)
-    assert.equal(r.body.code, 'BAD_BODY')
+    assert.equal(prep.body.itemCount, 2, '前提：預覽裡真的有兩個可以刪')
+    const token = prep.body.token
+    const cases = [
+      ['沒帶 confirmed', { token }, 428, 'CONFIRMATION_REQUIRED'],
+      ['confirmed: false', { token, confirmed: false }, 428, 'CONFIRMATION_REQUIRED'],
+      ['confirmed: "false"', { token, confirmed: 'false' }, 400, 'BAD_BODY'],
+      ['confirmed: "true"', { token, confirmed: 'true' }, 400, 'BAD_BODY'],
+      ['confirmed: 1', { token, confirmed: 1 }, 400, 'BAD_BODY'],
+      ['confirmed: null', { token, confirmed: null }, 400, 'BAD_BODY'],
+      ['confirmed: [true]', { token, confirmed: [true] }, 400, 'BAD_BODY'],
+      ['confirmed: {}', { token, confirmed: {} }, 400, 'BAD_BODY'],
+    ]
+    for (const [label, body, status, code] of cases) {
+      const r = call(f, 'POST', '/cleanup/quarantine/empty', body)
+      assert.equal(r.code, status, `${label} 回了 ${r.code}：${JSON.stringify(r.body)}`)
+      assert.equal(r.body.code, code, label)
+      assert.equal(call(f, 'GET', '/cleanup/quarantine').body.total, 2, `${label} 之後隔離區少了東西 —— 被當成同意了`)
+    }
+    // 對照組：同一個 token 帶布林 true 才真的刪（證明上面每一條「沒刪」是因為被擋，不是因為沒東西可刪）
+    const ok = call(f, 'POST', '/cleanup/quarantine/empty', { token, confirmed: true })
+    assert.equal(ok.code, 200)
+    assert.equal(ok.body.deletedCount, 2)
   })
 
   test('沒先預覽就直接確認回 428', t => {
@@ -293,9 +330,10 @@ describe('C 七天窗改用 journal', () => {
     const f = fixture(t)
     const p = createPlan(f.db)
     applyPlan(f.db, p.id, f.opts)
-    // 假裝另一個行程正握著鎖
+    // 假裝另一個行程正握著鎖。owner 要是新格式（剛拿的時間戳）：
+    // 沒有時間戳的舊格式現在一律當殘留，會被接走 —— 那樣就驗不到 /health 有沒有去搶鎖。
     f.db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)')
-      .run(process.pid, 'someone-else')
+      .run(process.pid, `${new Date().toISOString()} someone-else`)
     try {
       const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine })
       assert.equal(h.quarantine.items, 2, '有人握著鎖，/health 還是要答得出來')
@@ -385,17 +423,21 @@ describe('E 寵物狀態的優先序', () => {
 
 describe('B CLI 離開碼', () => {
   const CLI = join(REPO, 'cli.mjs')
-  /** 在隔離的暫存環境跑 CLI。絕不碰真的 Downloads 或 ~/.contextbox。 */
+  /**
+   * 在隔離的暫存環境跑 CLI。絕不碰真的 Downloads 或 ~/.contextbox。
+   * **HOME 也要換掉**（稽核 RC22）：清理範圍（cleanup.roots）沒寫的時候預設是 ~/Downloads，
+   * 子行程帶著真的 HOME 就會去掃使用者真的 Downloads。設定檔裡也明寫 cleanup.roots。
+   */
   function cli(f, args, env = {}) {
     const cfg = join(f.dir, 'config.json')
     writeFileSync(cfg, JSON.stringify({
-      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
       model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
       readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
     }))
     const r = spawnSync(process.execPath, [CLI, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+      env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
              CONTEXTBOX_QUARANTINE: f.opts.quarantine, ...env },
     })
     return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
@@ -426,10 +468,13 @@ describe('B CLI 離開碼', () => {
     assert.equal(r.code, 1, r.out)
   })
 
-  test('undo 少給 plan id 是 1', t => {
+  test('undo 不給 id、也沒有可以復原的計畫是 1', t => {
+    // 2026-09-19 稽核 RC13：不給 id ＝ 最近一份可復原的（docs/cli.md）。這個 fixture 什麼都還沒套用，
+    // 沒有東西可以復原，所以還是 1 —— 但原因從「少給 id」變成「沒有這樣的計畫」。
     const f = fixture(t)
     const r = cli(f, ['cleanup', 'undo'])
     assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /沒有可以復原/)
   })
 
   test('**全部失敗是 3 不是 2** —— 動作執行了，只是檔案沒搬成', t => {
@@ -475,18 +520,32 @@ describe('重送 apply 不可以搬第二次', () => {
     // smoke 文件原本寫「第二次回 409 + 離開碼 1」，但 B 做的是冪等重播。
     // B 是對的：CLI 逾時後被腳本重試是正常的，那不該算失敗。
     // 兩種做法都守住「不可以真的再搬一次」，但冪等對呼叫端友善得多。
+    //
+    // 2026-09-19 稽核 RC21：quarantinedCount 是 `SELECT DISTINCT item_id` 算的，
+    // **真的再跑一次也不會超過 2** —— 「重送時忘了已經搬過、重新驗證原檔（原檔已經不在，
+    // 失敗並寫下錯誤）」這種突變，上一版的斷言照樣全綠。
+    // 要驗的是「第二次什麼都沒寫」：journal 的列數與內容、每個檔的 status／error、計畫狀態都不變。
     const f = fixture(t)
     const p = createPlan(f.db)
+    const journal = () => f.db.prepare(
+      'SELECT seq, op, status, error FROM cleanup_journal WHERE plan_id=? ORDER BY seq').all(p.id)
+    const files = () => f.db.prepare('SELECT id, status, error FROM file_items ORDER BY id').all()
     const first = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     assert.equal(first.code, 200)
     assert.equal(first.body.quarantinedCount, 2)
+    const before = { journal: journal(), files: files() }
+    assert.ok(before.journal.length >= 2, '前提：第一次套用有寫 journal')
 
     const second = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     assert.equal(second.code, 200, '重試不該變成錯誤')
     assert.equal(second.body.quarantinedCount, 2, '不可以變成 4 —— 那代表真的搬了第二次')
+    assert.equal(second.body.status, first.body.status, '重送把計畫狀態改掉了')
+    assert.equal(journal().length, before.journal.length, '重送多寫了 journal —— 那代表又跑了一次搬移')
+    assert.deepEqual(journal(), before.journal, '重送改了 journal')
+    assert.deepEqual(files(), before.files, '重送改了 file_items 的 status／error')
     assert.deepEqual(
-      second.body.items.map(i => i.itemId).sort(),
-      first.body.items.map(i => i.itemId).sort(),
+      second.body.items.map(i => [i.itemId, i.outcome, i.why]).sort(),
+      first.body.items.map(i => [i.itemId, i.outcome, i.why]).sort(),
     )
   })
 
@@ -496,13 +555,13 @@ describe('重送 apply 不可以搬第二次', () => {
     applyPlan(f.db, p.id, f.opts)
     const cfg = join(f.dir, 'config.json')
     writeFileSync(cfg, JSON.stringify({
-      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
       model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
       readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
     }))
     const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'cleanup', 'apply', p.id], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+      env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
              CONTEXTBOX_QUARANTINE: f.opts.quarantine },
     })
     assert.equal(r.status, 0, (r.stdout ?? '') + (r.stderr ?? ''))
@@ -513,13 +572,13 @@ describe('apply 的畫面不可以說謊', () => {
   const runCli = (f, args) => {
     const cfg = join(f.dir, 'config.json')
     writeFileSync(cfg, JSON.stringify({
-      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
       model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
       readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
     }))
     const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+      env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
              CONTEXTBOX_QUARANTINE: f.opts.quarantine },
     })
     return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
@@ -555,13 +614,13 @@ describe('唯讀試跑不可以弄壞下一次真的跑', () => {
   const runCli = (f, args, env = {}) => {
     const cfg = join(f.dir, 'config.json')
     writeFileSync(cfg, JSON.stringify({
-      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
       model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
       readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
     }))
     const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+      env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
              CONTEXTBOX_QUARANTINE: f.opts.quarantine, ...env },
     })
     return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
@@ -583,12 +642,16 @@ describe('唯讀試跑不可以弄壞下一次真的跑', () => {
   })
 
   test('真的有 plan 卡住時，訊息要講得出怎麼往下走', t => {
+    // 2026-09-19 稽核：只有還沒套用的（proposed）計畫會卡住。「不清了」改成 release
+    // （放棄那一份、不動任何檔案）—— 以前給的 undo，對一份 partial 的計畫照做會把已經清掉的檔放回來。
+    // 重試一百次也一樣，要換個做法才過得去，所以離開碼是 1 不是 2。
     const f = fixture(t)
-    createPlan(f.db)
+    const p = createPlan(f.db)
     const r = runCli(f, ['cleanup', 'apply'])
-    assert.equal(r.code, 2)
-    assert.match(r.out, /cleanup apply /, '要給「接著清」的指令')
-    assert.match(r.out, /cleanup undo /, '要給「不清了」的指令')
+    assert.equal(r.code, 1, r.out)
+    assert.ok(r.out.includes(`cleanup apply ${p.id}`), '要給「接著清」的指令')
+    assert.ok(r.out.includes(`cleanup release ${p.id}`), '要給「放棄那一份」的指令')
+    assert.doesNotMatch(r.out, /cleanup undo /, '不可以叫人用 undo 解開卡住的計畫')
   })
 })
 
@@ -601,10 +664,10 @@ test('**檢查沒過的失敗也要講得出原因**（那種不會寫 journal�
   writeFileSync(join(f.downloads, 'a.zip'), '內容被改掉了')   // 指紋對不上
   const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'cleanup', 'apply', p.id], {
     encoding: 'utf8',
-    env: { ...process.env, CONTEXTBOX_CONFIG: (() => {
+    env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: (() => {
       const cfg = join(f.dir, 'config.json')
       writeFileSync(cfg, JSON.stringify({
-        watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+        watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
         model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
         readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
       }))
@@ -624,13 +687,13 @@ test('undo 只列真的放回去的，數字跟行數要對得上', t => {
   applyPlan(f.db, p.id, f.opts)
   const cfg = join(f.dir, 'config.json')
   writeFileSync(cfg, JSON.stringify({
-    watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+    watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
     model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
     readonly: false, pdfPages: 3, maxBytes: f.opts.maxBytes,
   }))
   const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'cleanup', 'undo', p.id], {
     encoding: 'utf8',
-    env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+    env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
            CONTEXTBOX_QUARANTINE: f.opts.quarantine },
   })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
@@ -701,13 +764,13 @@ describe('獨立重推抓到的（CLI）', () => {
   const runCli = (f, args, env = {}, maxBytes = f.opts.maxBytes) => {
     const cfg = join(f.dir, 'config.json')
     writeFileSync(cfg, JSON.stringify({
-      watch: f.opts.roots, filed: join(f.dir, 'Filed'),
+      watch: f.opts.roots, cleanup: { roots: f.opts.roots }, filed: join(f.dir, 'Filed'),
       model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
       readonly: false, pdfPages: 3, maxBytes,
     }))
     const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
+      env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: f.dbPath,
              CONTEXTBOX_QUARANTINE: f.opts.quarantine, ...env },
     })
     return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }

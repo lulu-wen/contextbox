@@ -1,0 +1,38 @@
+{
+  "id": "393287a0-7595-44d2-813d-8317f25f8c15",
+  "status": "dismissed",
+  "itemCount": 1,
+  "createdAt": "2026-09-18T18:58:52.588Z",
+  "appliedAt": null,
+  "error": null,
+  "bytes": 16,
+  "items": [
+    {
+      "itemId": "1dfa7409-113a-4a4b-bcac-90435d74fec0",
+      "name": "Screenshot 2026-01-02 141203.png",
+      "bytes": 16,
+      "mtime": "2026-05-21T18:58:51.851Z",
+      "candidateIds": [
+        "cd62efb7-b390-444f-b1c1-a1b0a99e67a5",
+        "e360a318-035d-456f-a3da-b9f33981cb45"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "120 天沒有變動，且副檔名 .png 不在保護清單"
+        },
+        {
+          "kind": "screenshot-noise",
+          "confidence": 35,
+          "reason": "舊截圖常常是暫時資訊",
+          "evidence": "檔名是 Screenshot 2026-01-02 141203.png，而且 120 天沒有變動"
+        }
+      ],
+      "outcome": "cancelled",
+      "why": null
+    }
+  ]
+}

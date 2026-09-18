@@ -1,19 +1,39 @@
 {
-  "id": "760fc946-fede-4d40-ba91-bf7920df686e",
+  "id": "95322cf1-97cd-4a37-a50a-57543354a638",
   "status": "partial",
   "itemCount": 3,
-  "createdAt": "2026-09-18T15:30:30.721Z",
-  "appliedAt": "2026-09-18T15:30:30.770Z",
-  "error": "檔案或資料夾不見了，請確認後重試。",
-  "bytes": 6900,
+  "createdAt": "2026-09-18T18:58:52.387Z",
+  "appliedAt": "2026-09-18T18:58:52.439Z",
+  "error": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。",
+  "bytes": 51,
   "items": [
     {
-      "itemId": "82598040-4bdc-4361-b8ea-a6e38d95039d",
-      "name": "報告.pdf",
-      "bytes": 900,
-      "mtime": "2026-05-21T15:30:30.624Z",
+      "itemId": "321f2ef6-d74a-4e15-8474-d7d2dc589184",
+      "name": "發票.zip",
+      "bytes": 13,
+      "mtime": "2026-08-04T18:58:51.851Z",
       "candidateIds": [
-        "5a29ad4b-b465-4a9e-b721-4f00c8aadb33"
+        "0b88dd83-d67a-4e18-990f-e2c67b6cbe64"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "舊壓縮檔通常是一次性下載",
+          "evidence": ".zip 壓縮檔，而且 45 天沒有變動"
+        }
+      ],
+      "outcome": "moved",
+      "why": null
+    },
+    {
+      "itemId": "8b42f132-6e78-46ff-9b55-dc14ff4b9348",
+      "name": "照片.jpg",
+      "bytes": 22,
+      "mtime": "2026-09-18T18:58:51.851Z",
+      "candidateIds": [
+        "891019dd-3ea8-403f-9d18-34bb6bd7cc3e"
       ],
       "skipped": false,
       "reasons": [
@@ -24,66 +44,32 @@
           "evidence": "同一個 sha256 還有 1 份檔案存在"
         }
       ],
-      "outcome": "moved",
-      "why": null
+      "outcome": "failed",
+      "why": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。"
     },
     {
-      "itemId": "53c84154-8280-46e1-bc6e-098f28be8679",
-      "name": "安裝檔.msi",
-      "bytes": 4000,
-      "mtime": "2026-05-21T15:30:30.624Z",
+      "itemId": "94f029d4-eee9-499c-83fa-bfb4d12e2093",
+      "name": "下載中.iso.crdownload",
+      "bytes": 16,
+      "mtime": "2026-09-15T18:58:51.851Z",
       "candidateIds": [
-        "48ec4545-9a13-4703-9551-8b3037ea9080",
-        "142cebcd-afd6-4181-b87c-c4ffe61c0dd8"
+        "7ecf27f0-39e0-4b67-ba7f-a6221236d28c"
       ],
       "skipped": false,
       "reasons": [
         {
-          "kind": "installer",
-          "confidence": 70,
-          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
-          "evidence": ".msi 安裝檔，而且 120 天沒有變動"
-        },
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "120 天沒有變動，且副檔名 .msi 不在保護清單"
-        }
-      ],
-      "outcome": "moved",
-      "why": null
-    },
-    {
-      "itemId": "537140ba-d98f-49ac-b059-44e800056c86",
-      "name": "素材.zip",
-      "bytes": 2000,
-      "mtime": "2026-05-21T15:30:30.624Z",
-      "candidateIds": [
-        "e29dbc13-7bac-4716-85ba-54edab18b7a3",
-        "b092d570-3a73-4738-ac44-d748f9ba5625"
-      ],
-      "skipped": false,
-      "reasons": [
-        {
-          "kind": "archive",
-          "confidence": 65,
-          "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 120 天沒有變動"
-        },
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "120 天沒有變動，且副檔名 .zip 不在保護清單"
+          "kind": "partial",
+          "confidence": 95,
+          "reason": "下載中斷留下的半成品",
+          "evidence": ".crdownload 副檔名，而且 3 天沒有變動"
         }
       ],
       "outcome": "failed",
       "why": "檔案或資料夾不見了，請確認後重試。"
     }
   ],
-  "quarantinedCount": 2,
+  "quarantinedCount": 1,
   "restoredCount": 0,
-  "quarantinedBytes": 4900,
+  "quarantinedBytes": 13,
   "undoable": true
 }

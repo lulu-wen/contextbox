@@ -1,5 +1,7 @@
 import { createDemo } from './cleanup-demo-state.js'
-import { createReal, createRealHistory } from './cleanup-real-state.js'
+import {
+  createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
+} from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
 const panel = $('cleanup-panel')
@@ -25,8 +27,13 @@ const realHistory = createRealHistory((path, init) => window.api(path, init))
 const historyApi = (path, body) => (demoEnabled ? demoHistoryApi : realHistory)(path, body)
 const session = () => demo ?? real
 const isDemo = () => Boolean(demo)
-const bytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GB'
-  : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'
+const bytes = formatBytes
+// 歷史面板的說明跟著模式走（稽核 RC10）。本機模式以前也寫著「模擬…不會更動真實檔案」——
+// 那是在騙人：本機的復原會真的把檔案放回原位。
+const HISTORY_NOTE = {
+  demo: '模擬操作紀錄 · 每次清理為一筆，勾選後會復原該次全部檔案。不會更動真實檔案。',
+  local: '每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。',
+}
 
 function notice(message) {
   $('quaso-status').textContent = message
@@ -72,6 +79,9 @@ function summary() {
   $('cleanup-apply').textContent = applyLabel(s)
   $('cleanup-undo').hidden = !s.canUndo
   $('cleanup-undo').disabled = busy
+  // 撞到擋住的那份時的第二個出口（RC8）：放棄它，不動任何檔
+  $('cleanup-release').hidden = isDemo() || !s.pendingPlan
+  $('cleanup-release').disabled = busy
   $('cleanup-dismiss').hidden = s.canUndo
   $('cleanup-dismiss').disabled = busy
   $('cleanup-reset').disabled = busy
@@ -104,7 +114,7 @@ function render() {
     check.disabled = busy || s.canUndo || Boolean(s.locked)
     check.onchange = () => { s.select(item.itemId, check.checked); request = null; summary() }
     const name = document.createElement('strong')
-    name.textContent = item.name
+    name.textContent = safeName(item.name)
     label.append(check, name)
     card.append(label, paragraph(`${[item.folder, item.subdir].filter(Boolean).join('/')} · ${bytes(item.bytes)} · 信心 ${item.confidence}%`))
     for (const reason of item.reasons) {
@@ -116,7 +126,7 @@ function render() {
   if (!s.candidates.length) $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
   $('cleanup-needs-human').replaceChildren()
   for (const item of (isDemo() ? data.needsHuman : s.needsHuman) ?? []) {
-    $('cleanup-needs-human').append(paragraph(`需要你查看：${item.name} — ${item.why}（未列入清理）`))
+    $('cleanup-needs-human').append(paragraph(`需要你查看：${safeName(item.name)} — ${safeName(item.why)}（未列入清理）`))
   }
   summary()
 }
@@ -141,7 +151,9 @@ async function toggleDemo() {
   if (busy || historyBusy) return
   demoEnabled = !demoEnabled
   document.documentElement.dataset.mockCandidates = String(demoEnabled)
+  // 兩個面板都關掉：開著的那個是另一個模式的資料（歷史面板的說明與復原也跟著模式走）
   panel.close()
+  historyPanel.close()
   $('quaso-dialog').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   if (!demoEnabled) {
@@ -168,7 +180,7 @@ alertButton.onclick = async () => {
   // 本機模式：真的清理。模擬的資料與真的資料**永遠不混用** ——
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
   $('cleanup-needs-human').replaceChildren()
@@ -180,7 +192,8 @@ alertButton.onclick = async () => {
   try {
     await real.load()
     render()
-    if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
+    if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
+    else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
   } catch { $('cleanup-list').replaceChildren(paragraph('讀取失敗，請確認伺服器已啟動，關閉面板後點垃圾桶重試。')) }
 }
 $('cleanup-close').onclick = () => panel.close()
@@ -201,29 +214,26 @@ async function operateReal(kind) {
       return
     }
     if (r.status === 'pending-plan') {
-      const names = r.plan.items.map(i => i.name).join('、')
-      result(`上次有一份清理沒做完：${names}（${r.plan.items.length} 個）。`
-        + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。')
+      result(pendingPlanMessage(r.plan))
       return
     }
-    const lines = [`搬進隔離區 ${r.moved} 個檔案，${bytes(r.bytesFreed)}。七天內可以復原。`]
-    if (r.failed.length) {
-      lines.push(`有 ${r.failed.length} 個沒搬（原檔都還在原位，沒有任何東西被刪除）：`)
-      for (const f of r.failed) lines.push(`・${f.name} —— ${f.why}`)
-    }
-    result(lines.join('\n'))
-    notice(r.moved ? '整理好了！想改變心意，隨時可以復原這次清理。' : '這次一個都沒搬成，原因寫在面板上。')
+    const m = applyMessage(r)
+    result(m.text)
+    notice(m.notice)
+  } else if (kind === 'release') {
+    result('正在放棄上次那份……')
+    const r = await real.release()
+    result(`已放棄上次那份（${r.items.length} 個檔案），沒有動任何檔案。現在可以重新勾選再清理。`
+      + (r.reloadFailed ? '\n（清單沒有重新整理成功。關掉面板再打開就會更新。）' : ''))
   } else {
+    result('正在放回原位……')
     const r = await real.undo()
     // 只講發生了什麼。**不講「之後不會再被提議」**：之後符合新的理由會再出現；
     // 原位置被佔時放回來的那份會改名，重掃後以重複檔的身分被預設勾起來。
-    const lines = [`放回 Downloads ${r.restored} 個檔案。`]
-    for (const x of r.renamed) {
-      lines.push(`・${x.name} 的原位置已經有同名檔案，放回來的這份叫 ${x.restoredAs}（沒有覆蓋任何檔案）。`)
-    }
-    if (r.failed.length) lines.push(`有 ${r.failed.length} 個還在隔離區，可以從「復原最近動作」再試一次。`)
-    result(lines.join('\n'))
-    notice('都幫你放回來了！')
+    // 寵物的話也看結果：全部放回、部分放回、一個都沒放回，三種不同的話（RC9）。
+    const m = undoMessage(r)
+    result(m.text)
+    notice(m.notice)
   }
   pollHealth()   // 徽章數字馬上更新，不用等五秒
 }
@@ -235,7 +245,14 @@ async function operate(kind) {
   if (!isDemo()) {
     try { await operateReal(kind) }
     catch (error) {
-      result(error.message + (real.locked ? '\n結果還沒確認。按「再試一次」會沿用同一份，不會多搬。' : ''))
+      // 伺服器明確回的錯（有 status）結果是確定的：只講原因，勾選照樣可以改（RC8）。
+      // 只有網路斷了才是「結果不明」。
+      const lines = [safeName(error.message)]
+      if (real.uncertain) {
+        lines.push(real.pendingPlan ? '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。'
+          : '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
+      }
+      result(lines.join('\n'))
     } finally {
       busy = false
       render()
@@ -277,9 +294,10 @@ $('cleanup-apply').onclick = () => {
     panel.close()
     notice('這次整理完成了，需要時可以勾選最近動作來復原。')
   }
-  else operate('apply')
+  else return operate('apply')
 }
 $('cleanup-undo').onclick = () => operate('undo')
+$('cleanup-release').onclick = () => operate('release')
 $('cleanup-reset').onclick = () => {
   if (busy) return
   demo.reset()
@@ -320,7 +338,7 @@ function renderHistory() {
       historyControls()
     }
     label.append(check, document.createTextNode(`${new Date(operation.createdAt).toLocaleString('zh-TW')} · 清理 ${operation.itemCount} 個檔案 · ${bytes(operation.bytes)}`))
-    card.append(label, paragraph(operation.items.map(i => i.name).join('、')),
+    card.append(label, paragraph(operation.items.map(i => safeName(i.name)).join('、')),
       paragraph(operation.canUndo ? '可復原' : `已復原 · ${new Date(operation.restoredAt).toLocaleString('zh-TW')}`, 'evidence'))
     list.append(card)
   }
@@ -332,6 +350,7 @@ async function refreshHistory() {
   historyBusy = true
   historySelected.clear()
   historyControls()
+  $('cleanup-history-note').textContent = demoEnabled ? HISTORY_NOTE.demo : HISTORY_NOTE.local
   $('cleanup-history-list').replaceChildren(paragraph('正在讀取操作紀錄……'))
   try {
     historyData = await historyApi(`history?offset=${historyOffset}&limit=20`)
@@ -378,12 +397,11 @@ $('cleanup-history-undo').onclick = async () => {
       if (real && !real.locked) real = null
       if (panel.open && panel.dataset.mode === 'local') panel.close()
       pollHealth()
-      message = `已復原 ${response.restored} 次清理，共 ${response.restoredFiles} 個檔案放回 Downloads。`
-        + (response.alreadyRestored ? `另有 ${response.alreadyRestored} 筆先前已復原。` : '')
-        + (response.renamed?.length
-          ? `其中 ${response.renamed.map(x => `${x.name} → ${x.restoredAs}`).join('、')}（原位置已經有同名檔案，沒有覆蓋）。`
-          : '')
-      notice('都幫你放回來了！')
+      // 放回幾個、沒放回哪幾個（附原因）照轉接器算好的講；寵物的話也看結果（RC9）。
+      // 以前不管結果一律說「都幫你放回來了」—— 一個都沒放回的時候也是。
+      const m = historyUndoMessage(response)
+      message = m.text
+      notice(m.notice)
     } else {
     const currentDemo = demo ?? savedDemo
     if (currentOperation && response.operationIds.includes(currentOperation) && currentDemo?.canUndo) {

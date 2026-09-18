@@ -15,14 +15,17 @@
   },
   "quarantine": {
     "items": 1,
-    "bytes": 1,
-    "oldestMtimeAt": "2026-08-16T03:12:37.694Z",
-    "lastQuarantinedAt": "2026-09-15T03:12:37.694Z",
-    "canEmptyAt": "2026-09-22T03:12:37.694Z",
-    "canEmptyNow": false,
+    "bytes": 13,
+    "oldestMtimeAt": "2026-08-04T18:58:51.851Z",
+    "canEmptyAt": "2026-09-17T18:58:52.612Z",
+    "canEmptyNow": true,
+    "orphans": 0,
     "truncated": false
   },
-  "pendingCandidates": 0,
-  "needsHumanCount": 0,
-  "lastError": "有，帶 token 才看得到"
+  "pendingCandidates": 2,
+  "needsHumanCount": 3,
+  "lastError": "有，帶 token 才看得到",
+  "lastErrorAt": null,
+  "lastOkAt": null,
+  "facts": 0
 }

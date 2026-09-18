@@ -11,7 +11,7 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync, realpathSync, chmodSync,
+  mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync, realpathSync, chmodSync, renameSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -231,7 +231,8 @@ describe('RC5 lastError 只記真的意外、不帶路徑、成功之後寵物�
     await s.api('POST', '/cleanup/scan', {})
     const plan = (await s.api('POST', '/cleanup/plans', {})).json
     const d = new DatabaseSync(s.dbPath)
-    d.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, 'someone-else')
+    // 第二波：沒有時間戳的舊格式一律視為殘留，「別人正握著鎖」要寫新格式（剛拿的）
+    d.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, `${new Date().toISOString()} someone-else`)
     try {
       const r = await s.api('POST', `/cleanup/plans/${plan.id}/apply`, {})
       assert.equal(r.status, 503)
@@ -319,7 +320,8 @@ describe('RC5 lastError 只記真的意外、不帶路徑、成功之後寵物�
     const f = fixture(t)
     const p = createPlan(f.db)
     applyPlan(f.db, p.id, f.opts)
-    f.db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, 'someone-else')
+    // 第二波：沒有時間戳的舊格式一律視為殘留，「別人正握著鎖」要寫新格式（剛拿的）
+    f.db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, `${new Date().toISOString()} someone-else`)
     try {
       const r = call(f, 'GET', '/cleanup/quarantine')
       assert.equal(r.code, 200, JSON.stringify(r.body))
@@ -721,17 +723,25 @@ function seedPlans(db, PLANS, PER = 3) {
   db.exec('COMMIT')
 }
 
-/** 慢但顯然正確的參考算法：每一份都算完整逐項結果，再篩、再分頁。 */
+/**
+ * 慢但顯然正確的參考算法：每一份都算完整逐項結果，再篩、再分頁。
+ *
+ * 2026-09-19 第二波改了兩條語意（稽核第二波 f、g）：
+ * - pending 只算 proposed 計畫（計畫是一次性的，partial／error 不佔檔、不算「上次那份」）
+ * - 「可以復原」包含復原到一半中斷的項目（outcome 是 unknown、why 是「復原到一半中斷…」）
+ */
 function slowListPlans(db, { filter, offset = 0, limit = 20 } = {}) {
   const plans = db.prepare(`SELECT id, status, created_at, applied_at FROM cleanup_plans ORDER BY created_at DESC, rowid DESC`).all()
   const rows = []
+  const canRestore = x => x?.outcome === 'moved' || (x?.outcome === 'unknown' && /復原到一半中斷/.test(x.why ?? ''))
   for (const p of plans) {
-    if (filter === 'pending' && !['proposed', 'partial', 'error'].includes(p.status)) continue
+    if (filter === 'pending' && p.status !== 'proposed') continue
     const o = routes.planOutcomes(db, p.id)
     const snaps = db.prepare('SELECT snapshot FROM cleanup_snapshots WHERE plan_id=? ORDER BY rowid').all(p.id).map(r => JSON.parse(r.snapshot))
-    const want = filter === 'undoable' ? ['moved'] : filter === 'pending' ? ['pending', 'failed', 'unknown'] : null
-    const items = snaps.filter(i => !want || want.includes(o.get(i.id)?.outcome ?? '')).map(i => ({ itemId: i.id, name: i.name, bytes: i.bytes }))
-    const canUndo = snaps.some(i => o.get(i.id)?.outcome === 'moved')
+    const want = filter === 'pending' ? ['pending', 'failed', 'unknown'] : null
+    const items = snaps.filter(i => filter === 'undoable' ? canRestore(o.get(i.id)) : !want || want.includes(o.get(i.id)?.outcome ?? ''))
+      .map(i => ({ itemId: i.id, name: i.name, bytes: i.bytes }))
+    const canUndo = snaps.some(i => canRestore(o.get(i.id)))
     if (filter === 'undoable' && !canUndo) continue
     if (filter === 'pending' && !items.length) continue
     const restored = db.prepare(`SELECT max(ts) ts FROM cleanup_journal WHERE plan_id=? AND op='restore' AND status='done'`).get(p.id)
@@ -764,7 +774,7 @@ describe('RC19 /cleanup/plans 要快', () => {
 
   test('性質：快的 listPlans 跟慢的參考算法一模一樣（各種狀態混在一起）', t => {
     const files = {}
-    for (let i = 0; i < 14; i++) files[`f${i}.zip`] = `內容 ${i}`
+    for (let i = 0; i < 17; i++) files[`f${i}.zip`] = `內容 ${i}`
     const f = fixture(t, files)
     const list = routes.listCandidates(f.db, { roots: f.opts.roots })
     const ids = n => idsOf(list, `f${n}.zip`)
@@ -781,6 +791,16 @@ describe('RC19 /cleanup/plans 要快', () => {
     rmSync(join(f.downloads, 'f10.zip')); rmSync(join(f.downloads, 'f11.zip'))
     const allFailed = mk(10, 11); applyPlan(f.db, allFailed.id, f.opts)
     const skipped = mk(12, 13); applyPlan(f.db, skipped.id, { ...f.opts, skippedIds: ids(13) })
+    // 第二波加的三種：復原到一半中斷、另一份 proposed、搬到一半中斷（proposed 裡的 unknown）
+    const restoring = mk(14); applyPlan(f.db, restoring.id, f.opts); undoPlan(f.db, restoring.id, f.opts)
+    const rr = f.db.prepare(`SELECT * FROM cleanup_journal WHERE plan_id=? AND op='restore'`).get(restoring.id)
+    renameSync(rr.to_path, rr.from_path)
+    f.db.prepare(`UPDATE cleanup_journal SET status='started' WHERE seq=?`).run(rr.seq)
+    f.db.prepare(`UPDATE cleanup_plans SET status='applied' WHERE id=?`).run(restoring.id)
+    mk(15)
+    const moving = mk(16); applyPlan(f.db, moving.id, f.opts)
+    f.db.prepare(`UPDATE cleanup_journal SET status='started' WHERE plan_id=?`).run(moving.id)
+    f.db.prepare(`UPDATE cleanup_plans SET status='proposed', applied_at=NULL WHERE id=?`).run(moving.id)
 
     let compared = 0
     for (const filter of [undefined, 'undoable', 'pending']) {
@@ -793,6 +813,8 @@ describe('RC19 /cleanup/plans 要快', () => {
     // 驗收：三種篩選都真的有東西，不是一堆空陣列在互相比
     assert.ok(routes.listPlans(f.db, { filter: 'undoable' }).total >= 3)
     assert.ok(routes.listPlans(f.db, { filter: 'pending' }).total >= 3)
+    assert.ok(routes.listPlans(f.db, { filter: 'undoable' }).operations.some(o => o.id === restoring.id), '復原中斷的要真的走到')
+    assert.ok(routes.listPlans(f.db, { filter: 'pending' }).operations.some(o => o.id === moving.id), '搬到一半中斷的要真的走到')
     assert.equal(compared, 15)
   })
 })

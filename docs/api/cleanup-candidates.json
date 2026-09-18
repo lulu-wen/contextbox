@@ -1,188 +1,236 @@
 {
-  "total": 7,
-  "totalAvailable": 7,
+  "total": 9,
+  "totalAvailable": 9,
   "truncated": false,
-  "bytes": 8000000039,
-  "generatedAt": "2026-09-15T02:36:12.704Z",
+  "bytes": 161,
+  "defaultCheckedCount": 7,
+  "defaultCheckedBytes": 123,
+  "generatedAt": "2026-09-18T18:58:52.221Z",
   "candidates": [
     {
-      "itemId": "7242a026-639d-48f0-8f7a-2945c0f278d0",
-      "name": "report.pdf",
+      "itemId": "8b42f132-6e78-46ff-9b55-dc14ff4b9348",
+      "name": "照片.jpg",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 15,
-      "mtime": "2026-08-26T02:36:12.700Z",
+      "bytes": 22,
+      "mtime": "2026-09-18T18:58:51.851Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "ef16bf85-2c5d-4bcf-9188-809f2b532a6a"
+        "891019dd-3ea8-403f-9d18-34bb6bd7cc3e"
       ],
       "reasons": [
         {
           "kind": "duplicate",
           "confidence": 98,
           "reason": "同內容的重複檔案",
-          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「report (1).pdf」"
+          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「照片 (1).jpg」"
         }
       ]
     },
     {
-      "itemId": "9de54315-89d9-4dea-aa8b-938cf92c25d1",
-      "name": "新增文字文件.txt",
+      "itemId": "f9386abd-43ba-4110-ab19-081bbbd1e592",
+      "name": "報告.pdf",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 34,
+      "mtime": "2026-09-18T16:58:51.851Z",
+      "kind": "duplicate",
+      "confidence": 98,
+      "defaultChecked": true,
+      "vetoed": null,
+      "candidateIds": [
+        "f9fad298-9cd3-4f12-a7cc-9bc07a5a64f9"
+      ],
+      "reasons": [
+        {
+          "kind": "duplicate",
+          "confidence": 98,
+          "reason": "同內容的重複檔案",
+          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「報告 (1).pdf」"
+        }
+      ]
+    },
+    {
+      "itemId": "e0b845bb-e2a2-4083-ac12-f8c8758d8ffe",
+      "name": "空的.txt",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 0,
-      "mtime": "2026-09-07T02:36:12.700Z",
+      "mtime": "2026-09-15T18:58:51.851Z",
       "kind": "empty",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "dfb53428-4ec4-4f6f-a78c-101f67c9a2d3"
+        "5d613538-0ea3-4931-a174-00ca99726eaa"
       ],
       "reasons": [
         {
           "kind": "empty",
           "confidence": 95,
           "reason": "空檔案",
-          "evidence": "檔案大小是 0 byte，而且 8 天沒有變動"
+          "evidence": "檔案大小是 0 byte，而且 3 天沒有變動"
         }
       ]
     },
     {
-      "itemId": "e8bcf10b-4690-4241-8f7c-ae5941b0fe88",
-      "name": "ubuntu.iso.crdownload",
+      "itemId": "94f029d4-eee9-499c-83fa-bfb4d12e2093",
+      "name": "下載中.iso.crdownload",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 4,
-      "mtime": "2026-09-03T02:36:12.700Z",
+      "bytes": 16,
+      "mtime": "2026-09-15T18:58:51.851Z",
       "kind": "partial",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "c47c2a5d-8756-4c76-b6dd-90fed830aa19"
+        "7ecf27f0-39e0-4b67-ba7f-a6221236d28c"
       ],
       "reasons": [
         {
           "kind": "partial",
           "confidence": 95,
           "reason": "下載中斷留下的半成品",
-          "evidence": ".crdownload 副檔名，而且 12 天沒有變動"
+          "evidence": ".crdownload 副檔名，而且 3 天沒有變動"
         }
       ]
     },
     {
-      "itemId": "68607b44-1be4-45e2-86f9-51aea9acbe84",
-      "name": "NodeSetup-24.6.0.msi",
+      "itemId": "408452ff-aa19-46fb-b6ff-20270a68aaca",
+      "name": "安裝檔.msi",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 9,
-      "mtime": "2026-08-22T02:36:12.700Z",
+      "bytes": 19,
+      "mtime": "2026-08-19T18:58:51.851Z",
       "kind": "installer",
       "confidence": 70,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "06e1b90b-b445-4571-bc96-98fdaeeb6b2f"
+        "abbb705e-2ea2-4032-b218-67ade3e1a6cf"
       ],
       "reasons": [
         {
           "kind": "installer",
           "confidence": 70,
           "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
-          "evidence": ".msi 安裝檔，而且 24 天沒有變動"
+          "evidence": ".msi 安裝檔，而且 30 天沒有變動"
         }
       ]
     },
     {
-      "itemId": "d76576e0-9e65-447e-b768-65b03b313daa",
-      "name": "素材包.zip",
+      "itemId": "321f2ef6-d74a-4e15-8474-d7d2dc589184",
+      "name": "發票.zip",
       "folder": "Downloads",
-      "subdir": "2026/07",
-      "bytes": 7,
-      "mtime": "2026-07-12T02:36:12.700Z",
+      "subdir": "2026/09",
+      "bytes": 13,
+      "mtime": "2026-08-04T18:58:51.851Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "a86f8653-385d-4cb8-99a9-bfab1b65d0c3"
+        "0b88dd83-d67a-4e18-990f-e2c67b6cbe64"
       ],
       "reasons": [
         {
           "kind": "archive",
           "confidence": 65,
           "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 65 天沒有變動"
+          "evidence": ".zip 壓縮檔，而且 45 天沒有變動"
         }
       ]
     },
     {
-      "itemId": "big",
-      "name": "婚禮影片備份.zip",
+      "itemId": "630b06e9-5fbc-46a3-a0bd-a008cfee50dd",
+      "name": "素材包.zip",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 8000000000,
-      "mtime": "2026-09-15T02:36:12.704Z",
+      "bytes": 19,
+      "mtime": "2026-07-20T18:58:51.851Z",
       "kind": "archive",
       "confidence": 65,
-      "defaultChecked": false,
-      "vetoed": "檔案太大，沒有算指紋，請自己確認",
+      "defaultChecked": true,
+      "vetoed": null,
       "candidateIds": [
-        "c-big"
+        "200d18de-d9b3-46ae-92c6-dc62927db58c"
       ],
       "reasons": [
         {
           "kind": "archive",
           "confidence": 65,
           "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 120 天沒有變動"
+          "evidence": ".zip 壓縮檔，而且 60 天沒有變動"
         }
       ]
     },
     {
-      "itemId": "ca141d4d-2492-4765-8da8-284fe8ff514f",
-      "name": "Screenshot 2026-06-02 141203.png",
+      "itemId": "0bf203b4-a614-47d6-b1fa-1759e7f481d0",
+      "name": "很舊的.bin",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 4,
-      "mtime": "2026-06-02T02:36:12.700Z",
+      "bytes": 22,
+      "mtime": "2026-03-02T18:58:51.851Z",
       "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
       "vetoed": null,
       "candidateIds": [
-        "3c8905b7-76e3-4104-86f4-25ee81d794c8",
-        "b735744b-a0e3-4956-9600-cb3faa04287f"
+        "8f2683a5-235a-4c14-b7a6-c53d7788a82b"
       ],
       "reasons": [
         {
           "kind": "old-download",
           "confidence": 35,
           "reason": "很久沒有動過的下載檔",
-          "evidence": "105 天沒有變動，且副檔名 .png 不在保護清單"
+          "evidence": "200 天沒有變動，且副檔名 .bin 不在保護清單"
+        }
+      ]
+    },
+    {
+      "itemId": "1dfa7409-113a-4a4b-bcac-90435d74fec0",
+      "name": "Screenshot 2026-01-02 141203.png",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 16,
+      "mtime": "2026-05-21T18:58:51.851Z",
+      "kind": "old-download",
+      "confidence": 35,
+      "defaultChecked": false,
+      "vetoed": null,
+      "candidateIds": [
+        "cd62efb7-b390-444f-b1c1-a1b0a99e67a5",
+        "e360a318-035d-456f-a3da-b9f33981cb45"
+      ],
+      "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "120 天沒有變動，且副檔名 .png 不在保護清單"
         },
         {
           "kind": "screenshot-noise",
           "confidence": 35,
           "reason": "舊截圖常常是暫時資訊",
-          "evidence": "檔名是 Screenshot 2026-06-02 141203.png，而且 105 天沒有變動"
+          "evidence": "檔名是 Screenshot 2026-01-02 141203.png，而且 120 天沒有變動"
         }
       ]
     }
   ],
-  "needsHumanTotal": 0,
+  "needsHumanTotal": 1,
   "needsHumanTruncated": false,
-  "needsHuman": [],
-  "_註": [
-    "**這份是跑真的程式產生的**，不是手寫的。改了回應形狀就重新產一次。",
-    "一列是一個檔案，不是一條規則。reasons 可能有多筆，defaultChecked 用最高信心決定（門檻 50）。",
-    "vetoed 不是 null 的時候，不管信心多高都不預設勾 —— 例如太大算不出指紋的檔。",
-    "勾選送出要送 candidateIds 整包，不是只送第一個。",
-    "truncated 為 true 時 total 只是這一頁，totalAvailable 才是全部。",
-    "沒有絕對路徑。要在檔案總管打開請走 POST /cleanup/reveal（目前回 501）。"
+  "needsHuman": [
+    {
+      "itemId": "bc81fe57-bfee-4180-b4d8-cb733f75d755",
+      "name": "備份.tar",
+      "folder": "Downloads",
+      "bytes": 66560,
+      "why": "檔案太大，這個工具不處理，要不要留請自己決定。"
+    }
   ]
 }

@@ -36,11 +36,25 @@ before(() => {
 })
 after(() => rmSync(root, { recursive: true, force: true }))
 
+/**
+ * 子行程的環境：**家目錄、隔離區、token 全部指到暫存資料夾**（稽核 RC22）。
+ * 清理範圍（cleanup.roots）沒寫的時候預設是 ~/Downloads —— 帶著真的 HOME 跑 `cleanup scan`，
+ * 就是去掃使用者真的 Downloads；沒給 CONTEXTBOX_QUARANTINE 的話隔離區是真的 ~/.contextbox/quarantine。
+ * 這裡的 HOME 是 root，所以預設的清理範圍剛好就是 watchDir（root/Downloads）。
+ */
+const sandboxEnv = (extra = {}) => ({
+  ...process.env,
+  HOME: root, USERPROFILE: root,
+  CONTEXTBOX_CONFIG: cfgPath, CONTEXTBOX_DB: dbPath,
+  CONTEXTBOX_QUARANTINE: join(root, 'quarantine'), CONTEXTBOX_TOKEN_PATH: join(root, 'token'),
+  ...extra,
+})
+
 /** 跑一次 CLI。回 { code, out } */
 function run(...args) {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, CONTEXTBOX_CONFIG: cfgPath, CONTEXTBOX_DB: dbPath },
+    env: sandboxEnv(),
   })
   return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
 }
@@ -202,7 +216,7 @@ describe('設定有問題的時候每個指令都要講', () => {
     for (const cmd of [['list'], ['search', 'x'], ['propose', put('e.png')]]) {
       const r = spawnSync(process.execPath, [CLI, ...cmd], {
         encoding: 'utf8',
-        env: { ...process.env, CONTEXTBOX_CONFIG: bad, CONTEXTBOX_DB: dbPath },
+        env: sandboxEnv({ CONTEXTBOX_CONFIG: bad }),
       })
       const out = (r.stdout ?? '') + (r.stderr ?? '')
       assert.match(out, /CONTEXTBOX_/, `${cmd[0]} 應該要顯示設定的警告`)
@@ -231,7 +245,7 @@ describe('cleanup 的離開碼契約', () => {
     writeFileSync(broken, 'this is not a sqlite file at all')
     const r = spawnSync(process.execPath, [CLI, 'cleanup', 'list'], {
       encoding: 'utf8',
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfgPath, CONTEXTBOX_DB: broken },
+      env: sandboxEnv({ CONTEXTBOX_DB: broken }),
     })
     assert.equal(r.status, 2, `回了 ${r.status}`)
     const out = (r.stdout ?? '') + (r.stderr ?? '')

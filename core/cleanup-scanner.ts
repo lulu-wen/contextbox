@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  statSync,
   closeSync,
 } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -98,6 +99,18 @@ function fold(p: string): string {
 function under(root: string, p: string): boolean {
   const rel = relative(fold(resolve(root)), fold(resolve(p)))
   return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel)
+}
+
+/** 根目錄的比對前綴（原樣與 realpath，結尾帶分隔符號、Windows 摺成小寫）。file_items.path 存的是 realpath。 */
+function rootPrefixes(roots: string[]): string[] {
+  const out = new Set<string>()
+  for (const r of roots) {
+    if (!r) continue
+    const forms = [resolve(r)]
+    try { forms.push(realpathSync(r)) } catch { /* 不存在就只用原樣 */ }
+    for (const f of forms) out.add(fold(f.endsWith(sep) ? f : f + sep))
+  }
+  return [...out]
 }
 
 function problem(opts: CleanupScanOptions, msg: string) {
@@ -372,7 +385,8 @@ function fileList(opts: CleanupScanOptions): { files: string[]; truncated: boole
   const files: string[] = []
   let truncated = false
   for (const root of opts.roots) {
-    if (!existsSync(root)) { problem(opts, `掃描資料夾不存在：${root}`); continue }
+    // 只給資料夾名稱，不給完整路徑：這句話會經由 POST /cleanup/scan 回到 UI
+    if (!existsSync(root)) { problem(opts, `掃描資料夾「${basename(root) || root}」不存在，這次沒有掃。`); continue }
     let rootFailed = false
     let dirsFailed = 0
     const r = cleanupWalk(root, opts.maxDepth ?? 3, opts.maxFiles ?? 5000, dir => {
@@ -388,8 +402,19 @@ function fileList(opts: CleanupScanOptions): { files: string[]; truncated: boole
   return { files: [...new Set(files)], truncated }
 }
 
-/** 大量消失的保險絲：已知的活檔至少這麼多個，而且這一輪會標成不見的至少一半，就整批不標。 */
+/** 大量消失的保險絲：根目錄是空的時候，已知的活檔至少這麼多個才整批不標。 */
 export const MASS_MISSING_MIN_KNOWN = 10
+
+/** meta 裡記「這個根目錄上次成功掃描時的 st_dev」的 key。`realRoot` 是 realpath。 */
+export function rootDevKey(realRoot: string): string {
+  return 'cleanup_root_dev:' + fold(realRoot)
+}
+
+const getMeta = (db: DatabaseSync, k: string): string | null =>
+  ((db.prepare('SELECT v FROM meta WHERE k=?').get(k) as { v: string } | undefined)?.v) ?? null
+
+const setMeta = (db: DatabaseSync, k: string, v: string) => waitForDb(() =>
+  db.prepare('INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(k, v))
 
 /**
  * **全量掃描要對帳：根目錄底下、檔案已經不存在的列，標成 missing。**
@@ -398,11 +423,16 @@ export const MASS_MISSING_MIN_KNOWN = 10
  * 才會被標成 missing，不然使用者自己刪掉的檔會一直留在清單上、徽章數字是錯的。
  * 判準是逐列 lstat，不是「這次有沒有走訪到」：走訪有深度與檔數上限。
  *
- * 會錯的地方，每一條都真的發生過（2026-09-19 稽核 RC1）：
+ * 會錯的地方，每一條都真的發生過（2026-09-19 稽核 RC1 與第一波驗證）：
  * - **只有 ENOENT／ENOTDIR 才算不見。** EACCES、EPERM、EIO 是暫時讀不到，
  *   跳過並記 problem。以前用 existsSync，子資料夾權限被拿掉一次，裡面的檔就永久消失。
- * - **大量消失的保險絲。** 外接碟沒掛上時掛載點是空的，每個檔都是 ENOENT。
- *   已知 ≥ MASS_MISSING_MIN_KNOWN 個、而且會標的 ≥ 50% 就整批不標，記一條 problem。
+ * - **大量消失的保險絲，看「碟」不看比例。** 外接碟沒掛上時掛載點是空的，每個檔都是 ENOENT。
+ *   上一版用「會標的 ≥ 50%」判斷，分不出「使用者自己一次刪掉一大半」—— 那些檔就變成
+ *   永遠留在清單上的幽靈，每次掃描都說「碟沒掛上？」。現在只在兩種情況整批不標：
+ *     1. 根目錄的 st_dev 跟上次成功掃描時不同（換了碟，或碟沒掛上、看到的是底下的空資料夾）
+ *     2. 根目錄一個項目都沒有、已知的活檔全部不見、而且已知 ≥ MASS_MISSING_MIN_KNOWN
+ *   新的 st_dev 每次都記下來（保險絲跳了也記）：碟真的換了的話，只跳一次，下一次照常對帳；
+ *   碟還沒掛上的話，下一次由第 2 條接手。標錯也不會丟資料 —— 候選不動，檔案回來就回到清單。
  * - **前綴在 JS 比。** SQLite 的 substr 數字元、JS 的 length 數 UTF-16，
  *   根目錄名字有 emoji（「下載📥」）的時候兩邊對不上，對帳什麼都不做。
  * - **不動候選、避開 quarantined**：見 markMissing。
@@ -413,8 +443,14 @@ export const MASS_MISSING_MIN_KNOWN = 10
 function reconcileRoot(opts: CleanupScanOptions, given: string, nowIso: string) {
   // file_items.path 存的是 realpath，根目錄要用同一種形式比（macOS 的 /var → /private/var）。
   // 根目錄本身 realpath 不到（不存在、讀不到）就整個跳過 —— fileList 已經報過了。
-  let root: string
-  try { root = realpathSync(given) } catch { return }
+  let root: string, dev: string
+  try { root = realpathSync(given); dev = String(statSync(root).dev) } catch { return }
+  const devKey = rootDevKey(root)
+  const lastDev = getMeta(opts.db, devKey)
+  // 根目錄裡有幾個項目（含隱藏檔與資料夾）。讀不到就是 null：說不出它是不是空的。
+  let entries: number | null
+  try { entries = readdirSync(root).length } catch { entries = null }
+
   const prefix = fold(root.endsWith(sep) ? root : root + sep)
   const live = (opts.db.prepare(
     `SELECT path FROM file_items WHERE status NOT IN ('missing','quarantined')`
@@ -433,19 +469,79 @@ function reconcileRoot(opts: CleanupScanOptions, given: string, nowIso: string) 
   if (unreadable) {
     problem(opts, `「${label}」裡有 ${unreadable} 個已知的檔這次讀不到（沒有權限或磁碟出錯），先當成還在。`)
   }
-  if (!gone.length) return
-  if (live.length >= MASS_MISSING_MIN_KNOWN && gone.length * 2 >= live.length) {
-    problem(opts, `監看資料夾「${label}」看起來整個不見了（外接碟沒掛上？）：`
-      + `${live.length} 個已知的檔有 ${gone.length} 個找不到，這次一個都不標成不見。`)
-    return
+  try {
+    if (!gone.length) return
+    if (lastDev !== null && lastDev !== dev) {
+      problem(opts, `監看資料夾「${label}」跟上次掃描時不在同一顆碟上（換了碟，或外接碟沒掛上？）：`
+        + `${live.length} 個已知的檔有 ${gone.length} 個找不到，這次一個都不標成不見。`)
+      return
+    }
+    // 根目錄讀不到：打不開的資料夾 fileList 已經報過了，不猜它是不是空的
+    if (entries === null) return
+    if (entries === 0 && gone.length === live.length && live.length >= MASS_MISSING_MIN_KNOWN) {
+      problem(opts, `監看資料夾「${label}」看起來整個不見了（外接碟沒掛上？）：`
+        + `${live.length} 個已知的檔全部找不到、資料夾是空的，這次一個都不標成不見。`)
+      return
+    }
+    for (const p of gone) markMissing(opts.db, p, [], nowIso)
+  } finally {
+    setMeta(opts.db, devKey, dev)
   }
-  for (const p of gone) markMissing(opts.db, p, [], nowIso)
+}
+
+/** meta 裡記「舊資料修復已經跑過」的 key。 */
+export const LEGACY_DISMISSED_REPAIR_KEY = 'cleanup_repair_legacy_dismissed_v1'
+
+/**
+ * **一次性遷移：舊版掃描器錯誤作廢的候選改回 skipped。**
+ *
+ * 舊版把「規則這次沒產出」（重複檔第二次掃描、檔案剛被改過、讀不到、碟沒掛上）
+ * 一律改成 dismissed，而 dismissed 永久保留 —— 升級之後這些候選還是永遠不會回來
+ * （稽核 RC1／RC3 的舊資料）。
+ *
+ * 分辨方法：**使用者真的拒絕過的，一定經過 dismissPlan**，掛在一份 status='dismissed'
+ * 的計畫底下。不在任何 dismissed 計畫裡的 dismissed 候選，就是掃描器自己作廢的，
+ * 改成 skipped；這一輪掃描條件還成立的話，upsert 會把它改回 proposed。
+ *
+ * meta 記一次，只跑一次（新版不會再產生這種 dismissed）。回傳改了幾列（已經跑過回 0）。
+ */
+export function repairLegacyDismissed(db: DatabaseSync): number {
+  if (getMeta(db, LEGACY_DISMISSED_REPAIR_KEY) !== null) return 0
+  // **用 SAVEPOINT，不用 BEGIN。** 呼叫端可能已經在交易裡（CLI 在交易裡呼叫
+  // scanDownloads），BEGIN 會丟「cannot start a transaction within a transaction」。
+  // SAVEPOINT 在交易內外都能用：外面沒有交易時它自己開一個，有的話就巢狀進去。
+  // 兩個行程同時跑：後寫的那個在 WAL 下升級寫鎖會拿到 BUSY，waitForDb 整段重來，
+  // 重來時旗標已經有了，直接回 0。
+  return waitForDb(() => {
+    db.exec('SAVEPOINT repair_legacy_dismissed')
+    try {
+      // 另一個行程可能剛跑完
+      if (getMeta(db, LEGACY_DISMISSED_REPAIR_KEY) !== null) { db.exec('RELEASE repair_legacy_dismissed'); return 0 }
+      const r = db.prepare(
+        `UPDATE cleanup_candidates SET status='skipped'
+          WHERE status='dismissed'
+            AND id NOT IN (SELECT pi.candidate_id FROM cleanup_plan_items pi
+                             JOIN cleanup_plans p ON p.id = pi.plan_id
+                            WHERE p.status = 'dismissed')`
+      ).run()
+      db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(LEGACY_DISMISSED_REPAIR_KEY,
+        `${new Date().toISOString()} ${Number(r.changes)}`)
+      db.exec('RELEASE repair_legacy_dismissed')
+      return Number(r.changes)
+    } catch (e) {
+      db.exec('ROLLBACK TO repair_legacy_dismissed')
+      db.exec('RELEASE repair_legacy_dismissed')
+      throw e
+    }
+  })
 }
 
 export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   const now = opts.now ?? new Date()
   const nowIso = now.toISOString()
   const result: CleanupScanResult = { scanned: 0, candidates: 0, skipped: 0, errors: 0, truncated: false }
+  // 舊版留下的錯誤作廢要在 upsert 之前改回 skipped，這一輪條件還成立的才會回到 proposed
+  repairLegacyDismissed(opts.db)
   const { files, truncated } = fileList(opts)
   result.truncated = truncated
   const touched: string[] = []
@@ -509,7 +605,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
     for (const given of opts.roots) reconcileRoot(opts, given, nowIso)
   }
 
-  addDuplicateCandidates(opts.db, nowIso, touched)
+  addDuplicateCandidates(opts.db, nowIso, touched, opts.roots)
 
   // 只算清單上真的會出現的：候選在 missing 的檔上會留在 proposed（見 markMissing），
   // 不過濾的話刪掉的檔還會算進這個數字。
@@ -530,9 +626,16 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
  * - 不再是「多出來的」那些（保留者、內容變了、另一份不在了），候選改 **skipped**
  *   而不是 dismissed：之後又變回重複檔時 upsert 會把它改回 proposed。這一步看所有活著的檔，
  *   不限 onlyItemIds —— 保留者被刪掉時，剩下那份不是這一輪碰到的檔，但它已經是唯一的一份。
- * - 執行層不收的檔名（`.ini`、`.url`…）不提議；它們可以當保留者。
+ * - 執行層不收的檔名（`.ini`、`.url`…）不提議；它們可以當保留者（執行層的 keeperPath 不擋檔名）。
+ * - 有給 `roots` 的話，**只有這些根目錄底下的檔算數**（當保留者、被提議都是）。
+ *   執行層只接受根目錄底下的保留者；舊設定留下的桌面列從來不會被對帳（檔案早就刪了也還是「活的」），
+ *   拿它當保留者的話，Downloads 那份會列得出、永遠 NO_DUPLICATE（第一波驗證 v8-keeper-root）。
+ *   scanDownloads 一律傳自己的 roots。
  */
-export function addDuplicateCandidates(db: DatabaseSync, nowIso = new Date().toISOString(), onlyItemIds?: string[]) {
+export function addDuplicateCandidates(
+  db: DatabaseSync, nowIso = new Date().toISOString(), onlyItemIds?: string[], roots?: string[],
+) {
+  const pre = roots ? rootPrefixes(roots) : null
   const groups = db.prepare(
     `SELECT sha256, count(*) n FROM file_items
      WHERE sha256 IS NOT NULL AND status NOT IN ('quarantined','missing','error')
@@ -542,10 +645,11 @@ export function addDuplicateCandidates(db: DatabaseSync, nowIso = new Date().toI
   const only = onlyItemIds ? new Set(onlyItemIds) : null
   const extra = new Set<string>()
   for (const g of groups) {
-    const rows = db.prepare(
+    const rows = (db.prepare(
       `SELECT * FROM file_items WHERE sha256=? AND status NOT IN ('quarantined','missing','error')
        ORDER BY first_seen_at, path`
-    ).all(g.sha256) as CleanupFileItem[]
+    ).all(g.sha256) as CleanupFileItem[]).filter(r => !pre || pre.some(x => fold(r.path).startsWith(x)))
+    if (rows.length < 2) continue
     for (const item of rows.slice(1)) {
       if (execRefusesName(item.name)) continue
       extra.add(item.id)

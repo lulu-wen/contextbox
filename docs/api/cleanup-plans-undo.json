@@ -1,67 +1,19 @@
 {
-  "id": "760fc946-fede-4d40-ba91-bf7920df686e",
+  "id": "8fa3f93e-b75e-49fe-a36e-758a836dbe71",
   "status": "restored",
   "itemCount": 3,
-  "createdAt": "2026-09-18T15:30:30.721Z",
-  "appliedAt": "2026-09-18T15:30:30.770Z",
+  "createdAt": "2026-09-18T18:58:52.256Z",
+  "appliedAt": "2026-09-18T18:58:52.333Z",
   "error": null,
-  "bytes": 6900,
+  "bytes": 38,
   "items": [
     {
-      "itemId": "82598040-4bdc-4361-b8ea-a6e38d95039d",
-      "name": "報告.pdf",
-      "bytes": 900,
-      "mtime": "2026-05-21T15:30:30.624Z",
+      "itemId": "630b06e9-5fbc-46a3-a0bd-a008cfee50dd",
+      "name": "素材包.zip",
+      "bytes": 19,
+      "mtime": "2026-07-20T18:58:51.851Z",
       "candidateIds": [
-        "5a29ad4b-b465-4a9e-b721-4f00c8aadb33"
-      ],
-      "skipped": false,
-      "reasons": [
-        {
-          "kind": "duplicate",
-          "confidence": 98,
-          "reason": "同內容的重複檔案",
-          "evidence": "同一個 sha256 還有 1 份檔案存在"
-        }
-      ],
-      "outcome": "restored",
-      "why": null
-    },
-    {
-      "itemId": "53c84154-8280-46e1-bc6e-098f28be8679",
-      "name": "安裝檔.msi",
-      "bytes": 4000,
-      "mtime": "2026-05-21T15:30:30.624Z",
-      "candidateIds": [
-        "48ec4545-9a13-4703-9551-8b3037ea9080",
-        "142cebcd-afd6-4181-b87c-c4ffe61c0dd8"
-      ],
-      "skipped": false,
-      "reasons": [
-        {
-          "kind": "installer",
-          "confidence": 70,
-          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
-          "evidence": ".msi 安裝檔，而且 120 天沒有變動"
-        },
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "120 天沒有變動，且副檔名 .msi 不在保護清單"
-        }
-      ],
-      "outcome": "restored",
-      "why": null
-    },
-    {
-      "itemId": "537140ba-d98f-49ac-b059-44e800056c86",
-      "name": "素材.zip",
-      "bytes": 2000,
-      "mtime": "2026-05-21T15:30:30.624Z",
-      "candidateIds": [
-        "e29dbc13-7bac-4716-85ba-54edab18b7a3",
-        "b092d570-3a73-4738-ac44-d748f9ba5625"
+        "200d18de-d9b3-46ae-92c6-dc62927db58c"
       ],
       "skipped": false,
       "reasons": [
@@ -69,21 +21,56 @@
           "kind": "archive",
           "confidence": 65,
           "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 120 天沒有變動"
-        },
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "120 天沒有變動，且副檔名 .zip 不在保護清單"
+          "evidence": ".zip 壓縮檔，而且 60 天沒有變動"
         }
       ],
-      "outcome": "failed",
-      "why": "檔案或資料夾不見了，請確認後重試。"
+      "outcome": "restored",
+      "why": null,
+      "restoredAs": "素材包.zip.restored"
+    },
+    {
+      "itemId": "408452ff-aa19-46fb-b6ff-20270a68aaca",
+      "name": "安裝檔.msi",
+      "bytes": 19,
+      "mtime": "2026-08-19T18:58:51.851Z",
+      "candidateIds": [
+        "abbb705e-2ea2-4032-b218-67ade3e1a6cf"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "installer",
+          "confidence": 70,
+          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
+          "evidence": ".msi 安裝檔，而且 30 天沒有變動"
+        }
+      ],
+      "outcome": "restored",
+      "why": null
+    },
+    {
+      "itemId": "e0b845bb-e2a2-4083-ac12-f8c8758d8ffe",
+      "name": "空的.txt",
+      "bytes": 0,
+      "mtime": "2026-09-15T18:58:51.851Z",
+      "candidateIds": [
+        "5d613538-0ea3-4931-a174-00ca99726eaa"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "empty",
+          "confidence": 95,
+          "reason": "空檔案",
+          "evidence": "檔案大小是 0 byte，而且 3 天沒有變動"
+        }
+      ],
+      "outcome": "restored",
+      "why": null
     }
   ],
   "quarantinedCount": 0,
-  "restoredCount": 2,
+  "restoredCount": 3,
   "quarantinedBytes": 0,
   "undoable": false
 }

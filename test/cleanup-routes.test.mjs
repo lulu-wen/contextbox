@@ -21,7 +21,7 @@ import { createPlan } from '../core/cleanup-plans.ts'
 import { fixture } from './helpers/cleanup.mjs'
 
 const createPlanFor = (f) => createPlan(f.db)
-import { listCandidates, healthSnapshot, humanError, displayPath, META,
+import { listCandidates, healthSnapshot, safeWhy, displayPath, META,
          cleanupRoutes, invalidateQuarantineCache, canEmptyNow,
          DEFAULT_CHECK_MIN, KIND_CONFIDENCE, CLEANUP_KINDS } from '../core/cleanup-routes.ts'
 
@@ -405,19 +405,22 @@ describe('B1 隔離區的七天保護窗', () => {
 })
 
 describe('B2 錯誤原文不可以直通到 UI', () => {
+  // 2026-09-19 稽核第二波：翻譯只剩 safeWhy 一個入口（humanError 不再匯出）。
+  // 原本直接測 humanError；改測 safeWhy。null 的期望值跟著改：safeWhy 沒有原因就回 null，
+  // 「讀不到這個檔案」這種預設句由呼叫端自己給（needsHumanWhy、outcomesOf 都是）。
   test('每一種 fs 錯誤都換成人話，而且不含路徑', () => {
     const cases = [
       ["EACCES: permission denied, open '/home/u/Downloads/薪資單.pdf'", '沒有權限讀這個檔案'],
       ["ENOENT: no such file or directory, stat '/home/u/Downloads/x.zip'", '這個檔案已經不在了'],
       ["EBUSY: resource busy or locked, rename '/home/u/a' -> '/home/u/b'", '這個檔案正在被別的程式使用'],
       ['某個沒看過的錯誤 /home/u/secret.pdf', '讀不到這個檔案'],
-      [null, '讀不到這個檔案'],
     ]
     for (const [raw, want] of cases) {
-      const got = humanError(raw)
+      const got = safeWhy(raw)
       assert.equal(got, want)
       assert.ok(!got.includes('/'), `換完還有路徑：${got}`)
     }
+    assert.equal(safeWhy(null), null)
   })
 })
 
@@ -704,7 +707,8 @@ describe('心跳的 key 兩支檔案要對得上（端到端）', () => {
 
     // watch 是常駐的，跑一下就殺掉 —— 它一啟動就會寫第一次心跳
     spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'watch'], {
-      env: { ...process.env, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: dbPath },
+      // HOME 也換掉：token、隔離區這些沒指定的路徑都從家目錄算，不可以落到真的 ~/.contextbox
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: dbPath },
       timeout: 2500, encoding: 'utf8',
     })
 

@@ -22,7 +22,7 @@ import { prepareEmptyQuarantine, emptyQuarantine } from '../../core/cleanup-quar
 
 // db 由既有 core/db.ts open() 提供；opts 只能由後端設定產生。
 const opts = {
-  roots: config.watch, // D 應傳 cleanup 專用 roots，預設只有 Downloads
+  roots: config.cleanup.roots, // 清理專用的根目錄，預設只有 Downloads（不是截圖功能的 watch）
   quarantine: DEFAULT_QUARANTINE,
   maxBytes: config.maxBytes,
   readonly: config.readonly,
@@ -63,6 +63,7 @@ const emptied = emptyQuarantine(db, { ...opts, token: body.token, confirmed: bod
 - `requestId` 讓建立計畫重送回同一 plan；相同 requestId 指定不同候選回 `CONFLICT`。D 的 HTTP route 應要求這個欄位（或從 Idempotency-Key header 提供）。
 - apply 開始後，略過決定會固定；重試可以省略 skippedIds 或帶相同選取。已完成、已復原、已取消的 plan 不會再搬檔。
 - partial/error 的 apply 可重試。開始 undo 後只能繼續 undo，不能重新 apply。若檔案已變更，先 undo 結束舊 plan，再掃描、建立新 plan。
+- （2026-09-19 稽核 RC4 之後）**計畫是一次性的**：只有 `proposed` 的計畫會佔住檔案，partial/error 的計畫不再擋新計畫，重試＝建新計畫。舊的 partial 計畫仍可重跑，但檔案如果已經被新計畫搬走，那一項會安全地失敗。還沒開始的計畫可以用 `releasePlan` 放棄（計畫作廢、候選不動）；`dismissPlan` 則是使用者拒絕這些檔。
 - dismiss 只接受未開始執行的 plan；已搬動的計畫請 undo。
 - 清空 token 五分鐘有效，綁定當次預覽的 journal entries。重送同一 token 回原結果；失敗項目要重新預覽、再次確認後重試。
 
@@ -80,7 +81,7 @@ items: [{ itemId, name, bytes, mtime, candidateIds, skipped,
 
 `listQuarantine` 回陣列：`seq, planId, itemId, name, bytes, quarantinedAt, canEmptyAt, canEmptyNow`。`quarantinedBytes` 是 Downloads 搬出的大小；同磁碟隔離不會釋放實際磁碟空間。
 
-頂層 `CleanupError` 可依 `code` 映射 HTTP：`BAD_BODY/EMPTY_PLAN/CONFIRMATION_REQUIRED` → 400、`NOT_FOUND` → 404、`CONFLICT/BUSY/STALE_CANDIDATE/CONFIRMATION_EXPIRED` → 409、`READ_ONLY` → 403。設定與無法預期的錯誤回通用 500；不要把 SQLite/OS exception.message 直接送到 UI。
+頂層 `CleanupError` 的 `code` 對到哪一個 HTTP 狀態碼，**以 `docs/api/README.md` 的錯誤表為準** —— 那是唯一一張，跟 `core/cleanup-routes.ts` 的 `HTTP_FOR_CODE` 一致，`test/repo.test.mjs` 會比。（這裡原本另外寫了一份對應，跟實作不一樣：`EMPTY_PLAN` 其實是 409、`BUSY` 是 503、`CONFIRMATION_EXPIRED` 是 410、`CONFIRMATION_REQUIRED` 是 428。）設定與無法預期的錯誤回通用 500；不要把 SQLite/OS exception.message 直接送到 UI。
 
 `planSnapshots`、`listJournal`、`activeQuarantine` 等為後端內部資料，含原始路徑，**不要直接 JSON 回給 UI**。
 

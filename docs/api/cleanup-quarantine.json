@@ -1,36 +1,16 @@
 {
   "items": [
     {
-      "seq": 1,
-      "planId": "ea40b83a-2a9d-45d8-b0ab-e423eef346ba",
-      "itemId": "c4337e44-4081-4b06-8d90-41bdde142167",
-      "name": "報告.pdf",
-      "bytes": 900,
-      "quarantinedAt": "2026-09-15T14:34:17.976Z",
-      "canEmptyAt": "2026-09-22T14:34:17.976Z",
-      "canEmptyNow": false
-    },
-    {
-      "seq": 2,
-      "planId": "ea40b83a-2a9d-45d8-b0ab-e423eef346ba",
-      "itemId": "6231821d-8230-4466-a17a-9c1c64a5f0ec",
-      "name": "空的.txt",
-      "bytes": 0,
-      "quarantinedAt": "2026-09-15T14:34:17.988Z",
-      "canEmptyAt": "2026-09-22T14:34:17.988Z",
-      "canEmptyNow": false
-    },
-    {
-      "seq": 3,
-      "planId": "ea40b83a-2a9d-45d8-b0ab-e423eef346ba",
-      "itemId": "f53b26e1-f41f-4b5f-858d-170a9abcb380",
-      "name": "安裝檔.msi",
-      "bytes": 4000,
-      "quarantinedAt": "2026-09-15T14:34:18.001Z",
-      "canEmptyAt": "2026-09-22T14:34:18.001Z",
-      "canEmptyNow": false
+      "seq": 4,
+      "planId": "95322cf1-97cd-4a37-a50a-57543354a638",
+      "itemId": "321f2ef6-d74a-4e15-8474-d7d2dc589184",
+      "name": "發票.zip",
+      "bytes": 13,
+      "quarantinedAt": "2026-09-10T18:58:52.612Z",
+      "canEmptyAt": "2026-09-17T18:58:52.612Z",
+      "canEmptyNow": true
     }
   ],
-  "total": 3,
-  "bytes": 4900
+  "total": 1,
+  "bytes": 13
 }

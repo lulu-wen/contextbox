@@ -117,15 +117,18 @@ describe('RC1 對帳：暫時讀不到不是不見了，而且不作廢候選', 
     assert.equal(s.count(), 10)
   })
 
-  // 保險絲的邊界，兩側各一個：已知 ≥ 10 而且會標的 ≥ 50% 才整批不標。
-  test('保險絲邊界：10 個已知、不見 5 個（剛好 50%）→ 一個都不標', t => {
+  // 保險絲的邊界。2026-09-19 第二波改了規則：不再看「會標的 ≥ 50%」（分不出使用者自己一次
+  // 刪掉一大半），改成「st_dev 變了」或「根目錄是空的、已知全部不見、已知 ≥ 10」。
+  // 這一條原本期望「一個都不標」，照新規則改成 5 個照標（同一個裝置、根目錄還有 5 個檔）。
+  // 新規則的釘子在 test/audit-0919-core2.test.mjs 的 a 組。
+  test('保險絲邊界：10 個已知、不見 5 個（剛好 50%，根目錄還有東西、同一個裝置）→ 5 個照標', t => {
     const s = sandbox(t)
     for (let i = 0; i < 10; i++) s.put(`f${i}.zip`)
     s.scan()
     for (let i = 0; i < 5; i++) unlinkSync(join(s.dl, `f${i}.zip`))
     s.scan()
-    assert.equal(s.db.prepare(`SELECT count(*) n FROM file_items WHERE status='missing'`).get().n, 0)
-    assert.ok(s.problems.some(m => m.includes('看起來整個不見了')))
+    assert.equal(s.db.prepare(`SELECT count(*) n FROM file_items WHERE status='missing'`).get().n, 5)
+    assert.ok(!s.problems.some(m => m.includes('看起來整個不見了')))
   })
 
   test('保險絲邊界：10 個已知、不見 4 個（40%）→ 那 4 個照標', t => {
@@ -521,10 +524,12 @@ describe('RC25 殘留鎖：owner 帶時間戳，超過 30 分鐘視為殘留', (
     assert.ok(Math.abs(Date.now() - at) < 5_000, owner)
   })
 
-  test('（推論）沒有時間戳的舊格式鎖＋活著的 pid → 照舊 BUSY（fail closed）', t => {
+  // 2026-09-19 第二波改了：沒有時間戳的舊格式一律視為殘留（升級之後活著的持有者都寫新格式）。
+  // 這一條原本期望 BUSY（fail closed），照新規格改成拿得到。
+  test('沒有時間戳的舊格式鎖＋活著的 pid → 視為殘留，拿得到', t => {
     const { db, hold } = lockDb(t)
     hold('someone-else')
-    assert.throws(() => journal.withCleanupLock(db, () => 'ran'), { code: 'BUSY' })
+    assert.equal(journal.withCleanupLock(db, () => 'ran'), 'ran')
   })
 })
 

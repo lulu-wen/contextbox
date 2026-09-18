@@ -37,17 +37,30 @@ import { initDemoHistory, demoHistoryRoutes } from './cleanup-demo-history.ts'
 export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
   ?? `${homedir()}/.contextbox/token`
 
-/** 第一次跑就生一把，只有自己讀得到 */
+/**
+ * 第一次跑就生一把，只有自己讀得到。
+ *
+ * **檔案是空的（或只有空白）也要重新產生並寫回去。** 空字串不是一把鑰匙：
+ * 上一版讀到 '' 就照用，而 '' 跟「沒帶 header」比對起來是相等的 ——
+ * 同機任何行程不帶 token 就能搬檔、刪檔、拿到手填頁面（稽核第一波驗證）。
+ */
 export function loadToken(path = TOKEN_PATH): string {
-  if (!existsSync(path)) {
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, randomBytes(24).toString('base64url'), { mode: 0o600 })
-    chmodSync(path, 0o600)
-  }
-  return readFileSync(path, 'utf8').trim()
+  const existing = existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
+  if (existing) return existing
+  mkdirSync(dirname(path), { recursive: true })
+  const fresh = randomBytes(24).toString('base64url')
+  writeFileSync(path, fresh, { mode: 0o600 })
+  // writeFileSync 的 mode 只在「建立」時生效；覆寫一個 0644 的空檔要自己改回來
+  chmodSync(path, 0o600)
+  return fresh
 }
 
-const sameToken = (a: string, b: string) => {
+/**
+ * 常數時間比對 token。**空字串一律不算對** —— 就算兩邊都是空的。
+ * token 不應該是空的（loadToken 會重新產生），這是第二道防線。
+ */
+export const sameToken = (a: string, b: string): boolean => {
+  if (!a || !b) return false
   const x = Buffer.from(a), y = Buffer.from(b)
   return x.length === y.length && timingSafeEqual(x, y)
 }
@@ -132,7 +145,8 @@ export function start(opts: {
   maxBytes?: number; readonly?: boolean
 } = {}) {
   const port = opts.port ?? 7391
-  const token = opts.token ?? loadToken()
+  // 給了空的（或只有空白的）token 等於沒給：不可以用空 token 跑起來
+  const token = opts.token && opts.token.trim() ? opts.token : loadToken()
   const F = new Facts(open(opts.db ?? DEFAULT_DB))
   initDemoHistory(F.db)
 
@@ -225,7 +239,9 @@ export function start(opts: {
     if (url.pathname.startsWith('/assets/')) {
       const asset = PET_ASSETS.get(url.pathname)
       if (!asset) return send(404, { error: '找不到素材' })
-      if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { error: '素材只供讀取' })
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return send(405, { error: '素材只供讀取。', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
+      }
       try {
         const data = readFileSync(new URL(asset[0], import.meta.url))
         res.writeHead(200, { ...baseHeaders(), 'content-type': asset[1],
@@ -265,7 +281,7 @@ export function start(opts: {
     }
 
     if (url.pathname === '/health') {
-      if (req.method !== 'GET') return send(405, { error: '這個路徑只收 GET', code: 'BAD_METHOD' })
+      if (req.method !== 'GET') return send(405, { error: '這個路徑只收 GET。', code: 'BAD_METHOD' }, { allow: 'GET' })
       // **這條在 token 檢查之前，所以它是唯一沒有錯誤處理的路徑。**
       // 不包起來的話，healthSnapshot 丟例外會變成 unhandled error ——
       // 整個行程死掉、離開碼 1、client 的連線永遠掛著。
@@ -330,7 +346,8 @@ export function start(opts: {
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes }),
+        // onProblem 一定要傳：保險絲與讀不到的檔只經由它報，回應的 problems 就是這些
+        scan: onProblem => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes, onProblem }),
       })) return
 
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。

@@ -22,7 +22,14 @@ export const DEFAULT_QUARANTINE = join(homedir(), '.contextbox', 'quarantine')
 export { EXEC_PROTECTED_EXT, execRefusesName } from './cleanup-journal.ts'
 
 export const RETENTION_MS = 7 * 24 * 60 * 60_000
-export type ExecOptions = { roots: string[]; quarantine?: string; maxBytes: number; readonly?: boolean }
+export type ExecOptions = {
+  roots: string[]; quarantine?: string; maxBytes: number; readonly?: boolean
+  /**
+   * 每開始處理一項呼叫一次（index 從 0 起算）。在續約鎖之後、動那個檔之前，不在交易裡。
+   * CLI 可以拿來印進度；測試拿它模擬「一次跑超過 30 分鐘」。丟例外會讓整個動作停在那一項。
+   */
+  onProgress?: (index: number, total: number) => void
+}
 export type Fingerprint = { dev: number; ino: number; size: number; mtime: string; sha256: string }
 
 /** Reject every symlink component, including dangling links and redirected parents. */
@@ -112,6 +119,26 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
 }
 
 /**
+ * 重複檔**保留者**（不會被搬的那一份）的路徑檢查。
+ *
+ * 跟 originalPath 一樣：要在清理根目錄底下、父資料夾不可以有捷徑、不可以在隔離區裡。
+ * 但**不擋受保護的檔名**：受保護的意思是「不可以搬它」，拿它當「另外還有一份」的證據沒有問題。
+ * 以前用 originalPath 驗保留者：notes.txt 與內容相同的 desktop.ini 並存時，desktop.ini 被當成
+ * PROTECTED 丟例外、被 catch 當成「不存在」，notes.txt 永遠 NO_DUPLICATE —— 列得出、勾得起、
+ * 永遠搬不動（稽核 RC4-1 的後半）。檔案本身（捷徑、硬鏈結）由 fingerprint 的 checkedPath 檢查。
+ */
+function keeperPath(path: string, opts: ExecOptions): string {
+  const parent = checkedPath(dirname(path), true)
+  const target = join(parent, parse(path).base)
+  if (!opts.roots.some(root => under(checkedPath(root, true), target))) {
+    throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
+  }
+  const q = resolve(opts.quarantine ?? DEFAULT_QUARANTINE)
+  if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', '不可把隔離區當成清理來源。')
+  return target
+}
+
+/**
  * 檔案要「靜置」多久才肯搬。
  *
  * 防的是「還在寫入」—— 下載器、解壓縮、編輯器的暫存寫入都會在幾秒內
@@ -150,7 +177,7 @@ function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecO
   for (const other of others) {
     if (selected.has(other.id)) continue
     try {
-      const f = fingerprint(originalPath(other.path, opts), opts.maxBytes)
+      const f = fingerprint(keeperPath(other.path, opts), opts.maxBytes)
       if (f.dev === self.dev && f.ino === self.ino) continue
       if (f.sha256 === item.sha256) return
     } catch { /* A stale duplicate record is not evidence of an existing copy. */ }
@@ -234,6 +261,10 @@ function performMove(db: DatabaseSync, row: JournalRow, opts: ExecOptions, befor
 
 function markMoved(db: DatabaseSync, row: JournalRow) {
   transaction(db, () => {
+    // 這一項搬成了：先前失敗留下的原因不再成立（同一份計畫重試成功）
+    if (row.op === 'quarantine') {
+      db.prepare('DELETE FROM cleanup_item_errors WHERE plan_id=? AND item_id=?').run(row.plan_id, row.item_id)
+    }
     db.prepare(`UPDATE cleanup_journal SET status='done',error=NULL WHERE seq=?`).run(row.seq)
     db.prepare('UPDATE cleanup_move_details SET completed_at=COALESCE(completed_at,?) WHERE seq=?')
       .run(new Date().toISOString(), row.seq)
@@ -243,11 +274,24 @@ function markMoved(db: DatabaseSync, row: JournalRow) {
   })
 }
 
-function markFailure(db: DatabaseSync, row: JournalRow | undefined, itemId: string, e: unknown) {
+/**
+ * 記一項失敗。`planId` 有給（套用時）就**同時寫進 cleanup_item_errors**。
+ *
+ * 檢查沒過的失敗（TOO_FRESH、CHANGED…）根本不會寫 journal，只寫 file_items.error，
+ * 而那一欄下一次掃描就被改寫 —— 重掃一次，計畫的逐項結果就從「十分鐘內還在變動」變成
+ * 「原因不明」（稽核 RC11）。以前是 route 在套用之後補記，直接呼叫 applyPlan 的 CLI
+ * 就會漏；記在這裡，誰呼叫都一樣。存的是 cleanupProblem 的人話，不帶路徑。
+ */
+function markFailure(db: DatabaseSync, row: JournalRow | undefined, itemId: string, e: unknown, planId?: string) {
   const error = cleanupProblem(e)
   transaction(db, () => {
     if (row) db.prepare(`UPDATE cleanup_journal SET status='failed',error=? WHERE seq=?`).run(error, row.seq)
     db.prepare(`UPDATE file_items SET error=? WHERE id=?`).run(error, itemId)
+    if (planId) {
+      db.prepare(`INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)
+                  ON CONFLICT(plan_id,item_id) DO UPDATE SET why=excluded.why, at=excluded.at`)
+        .run(planId, itemId, error, new Date().toISOString())
+    }
   })
   return error
 }
@@ -265,7 +309,7 @@ function result(db: DatabaseSync, id: string) {
 export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { skippedIds?: string[] }) {
   checkOptions(opts)
   if (opts.skippedIds !== undefined) validateIds(opts.skippedIds)
-  return withCleanupLock(db, () => {
+  return withCleanupLock(db, renew => {
     const plan = planRow(db, id)
     if (['applied', 'restored', 'dismissed'].includes(plan.status)) return result(db, id)
     if (db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(id)) {
@@ -296,7 +340,10 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
     const selected = new Set(getPlan(db, id).items.filter(i => !i.skipped).map(i => i.itemId))
     let done = 0
     const errors: string[] = []
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
+      // 每處理一項就續約：一次跑超過 30 分鐘時，鎖不可以被別的行程當成殘留接走
+      renew()
+      opts.onProgress?.(index, items.length)
       const ids = candidateIdsFor(db, id, item.id)
       const skipped = ids.some(c => (db.prepare('SELECT skipped FROM cleanup_plan_items WHERE plan_id=? AND candidate_id=?').get(id, c) as any).skipped)
       if (skipped) {
@@ -327,7 +374,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
         })
         markMoved(db, row)
         done++
-      } catch (e) { errors.push(markFailure(db, row, item.id, e)) }
+      } catch (e) { errors.push(markFailure(db, row, item.id, e, id)) }
     }
     db.prepare('UPDATE cleanup_plans SET status=?,applied_at=COALESCE(applied_at,?),error=? WHERE id=?')
       .run(errors.length ? (done ? 'partial' : 'error') : 'applied', new Date().toISOString(), errors[0] ?? null, id)
@@ -346,12 +393,15 @@ function restoreTarget(path: string): string {
 
 export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
   checkOptions(opts)
-  return withCleanupLock(db, () => {
+  return withCleanupLock(db, renew => {
     const plan = planRow(db, id)
     if (['restored', 'dismissed'].includes(plan.status)) return result(db, id)
     let restored = 0
     const errors: string[] = []
-    for (const item of planSnapshots(db, id).reverse()) {
+    const items = planSnapshots(db, id).reverse()
+    for (const [index, item] of items.entries()) {
+      renew()
+      opts.onProgress?.(index, items.length)
       const q = latest(db, id, item.id, 'quarantine')
       if (!q) continue
       let row = latest(db, id, item.id, 'restore')

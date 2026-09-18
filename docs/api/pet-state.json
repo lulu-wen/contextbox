@@ -1,7 +1,7 @@
 {
-  "state": "idle",
-  "message": "沒事，在發呆。",
-  "pendingCount": 0,
-  "quarantinedCount": 3,
+  "state": "found",
+  "message": "找到 2 個可以清的檔案。",
+  "pendingCount": 2,
+  "quarantinedCount": 1,
   "undoable": true
 }

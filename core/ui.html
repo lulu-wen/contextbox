@@ -326,6 +326,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <div id="cleanup-result" role="status" hidden></div>
   <div class="cleanup-actions">
     <button id="cleanup-apply" class="primary" type="button">確認模擬清理</button>
+    <button id="cleanup-release" type="button" hidden>放棄上次那份</button>
     <button id="cleanup-undo" type="button" hidden>復原這次清理</button>
     <button id="cleanup-dismiss" type="button">這次略過</button>
     <button id="cleanup-reset" type="button">重新示範</button>
@@ -336,7 +337,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <h2 id="cleanup-history-title">復原最近動作</h2>
     <button id="cleanup-history-close" type="button">關閉</button>
   </div>
-  <p class="cleanup-note">模擬操作紀錄 · 每次清理為一筆，勾選後會復原該次全部檔案。不會更動真實檔案。</p>
+  <p id="cleanup-history-note" class="cleanup-note">每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。</p>
   <p id="cleanup-history-count" aria-live="polite"></p>
   <div id="cleanup-history-list"></div>
   <div class="cleanup-actions">
@@ -355,9 +356,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     document.getElementById('quaso-dialog').hidden = false
     document.getElementById('quaso-stage').setAttribute('aria-expanded', 'true')
     document.getElementById('quaso-status').textContent = 'Quaso 載入失敗，請確認伺服器已啟動，再重新載入。'
-    const retry = document.getElementById('quaso-retry')
-    retry.hidden = false
-    retry.onclick = () => location.reload()
+    // 「重新載入」由 keepKeyOutOfAddressBar() 接手（帶鑰匙重開）。
+    // 不可以直接重新整理：網址上的 k 已經拿掉了，會拿到 401。
+    document.getElementById('quaso-retry').hidden = false
   })
 </script>
 <script>
@@ -366,6 +367,33 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
    這一頁的 CSP 是 connect-src 'self'，所以它只講得動自己那個 server。
    ─────────────────────────────────────────────────────────────── */
 const TOKEN = __TOKEN__
+
+/* ── 網址上的鑰匙（稽核 RC16）──────────────────────────────────
+   這一頁要用帶 ?k=<token> 的網址才打得開。載入之後馬上把 k 從網址列拿掉：
+   不留在網址列、分頁的歷史紀錄裡，截圖、分享畫面、別人從背後看都看不到。
+   其他參數（例如 mockBackend）與 # 原樣留著。
+
+   代價：拿掉之後，瀏覽器的「重新整理」會拿到 401（那一頁會說去哪裡拿帶鑰匙的網址）。
+   頁面自己的「重新載入」按鈕則帶鑰匙重開 —— pet-viewer.js 給它的 onclick 是
+   直接重新整理，所以這裡先掛一個監聽器攔下來（比它早掛，會先跑）。
+   ──────────────────────────────────────────────────────────── */
+function keepKeyOutOfAddressBar(token, loc = location, hist = history, doc = document) {
+  try {
+    const u = new URL(loc.href)
+    if (u.searchParams.has('k')) {
+      u.searchParams.delete('k')
+      hist.replaceState(hist.state, '', u.pathname + u.search + u.hash)
+    }
+  } catch (_) {}
+  const retry = doc.getElementById('quaso-retry')
+  if (retry) retry.addEventListener('click', event => {
+    event.stopImmediatePropagation()
+    const u = new URL(loc.href)
+    u.searchParams.set('k', token)
+    loc.replace(u.href)
+  })
+}
+keepKeyOutOfAddressBar(TOKEN)
 
 const HEAD = { 'content-type': 'application/json', 'x-contextbox-token': TOKEN }
 
@@ -379,10 +407,12 @@ async function api(path, init = {}) {
   // server 的錯誤訊息本來就寫得像人話，原樣往上丟，不要自己重寫。
   // code 與 status 也要帶上來：只有人話的話，分不出「候選過期（要重載）」、
   // 「有計畫卡著（要接續）」、「忙碌中（要重試）」—— 三種要做的事完全不同。
+  // 回應本體也掛上去（data）：撞到 CONFLICT 時，擋住這次勾選的那份計畫在 data.blockingPlan。
   if (!r.ok) {
     const e = new Error(data.error || ('伺服器回了 ' + r.status))
     e.code = data.code
     e.status = r.status
+    e.data = data
     throw e
   }
   return data

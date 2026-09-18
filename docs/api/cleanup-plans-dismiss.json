@@ -1,0 +1,31 @@
+{
+  "id": "9a954cb1-1931-4008-b140-a64d003af055",
+  "status": "dismissed",
+  "itemCount": 1,
+  "createdAt": "2026-09-18T18:58:52.460Z",
+  "appliedAt": null,
+  "error": null,
+  "bytes": 22,
+  "items": [
+    {
+      "itemId": "0bf203b4-a614-47d6-b1fa-1759e7f481d0",
+      "name": "很舊的.bin",
+      "bytes": 22,
+      "mtime": "2026-03-02T18:58:51.851Z",
+      "candidateIds": [
+        "8f2683a5-235a-4c14-b7a6-c53d7788a82b"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "200 天沒有變動，且副檔名 .bin 不在保護清單"
+        }
+      ],
+      "outcome": "cancelled",
+      "why": null
+    }
+  ]
+}

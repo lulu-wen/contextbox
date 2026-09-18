@@ -1,12 +1,8 @@
 {
-  "scanned": 412,
-  "candidates": 9,
-  "skipped": 2,
-  "errors": 1,
+  "scanned": 12,
+  "candidates": 12,
+  "skipped": 0,
+  "errors": 0,
   "truncated": false,
-  "_註": [
-    "candidates 是**規則列數**不是檔案數。要給使用者看的數字請用 /cleanup/candidates 的 totalAvailable。",
-    "errors 是讀不到的檔案，不算掃描失敗 —— 它們會出現在 candidates 的 needsHuman。",
-    "同時只准跑一次掃描，第二個併發請求回 409 SCAN_IN_PROGRESS。"
-  ]
+  "problems": []
 }

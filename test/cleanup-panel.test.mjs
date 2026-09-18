@@ -44,7 +44,7 @@ async function serve(t, files, { readonly = false } = {}) {
   const port = await S.ready
   const calls = []
   let lose = null   // (path, method) => true 的話，請求照送，但回應「在網路上丟了」
-  /** 跟 core/ui.html 的 window.api 同一個行為：錯誤訊息原樣丟、code 與 status 掛上去。 */
+  /** 跟 core/ui.html 的 window.api 同一個行為：錯誤訊息原樣丟、code、status 與回應本體（data）掛上去。 */
   const api = async (path, init = {}) => {
     const method = init.method ?? 'GET'
     calls.push({ path, method, body: init.body ? JSON.parse(init.body) : undefined })
@@ -55,7 +55,7 @@ async function serve(t, files, { readonly = false } = {}) {
     if (lose?.(path, method)) { lose = null; throw new TypeError('Failed to fetch') }
     if (!r.ok) {
       const e = new Error(data.error || '伺服器回了 ' + r.status)
-      e.code = data.code; e.status = r.status
+      e.code = data.code; e.status = r.status; e.data = data   // CONFLICT 的 blockingPlan 在 data 裡（RC7）
       throw e
     }
     return data
@@ -539,7 +539,10 @@ test('**搬失敗的檔要離開候選清單** —— 不然會卡在 STALE 死�
   const r = await real.apply()
   assert.equal(r.status, 'partial')
   assert.ok(!real.candidates.some(c => c.name === 'b.zip'), '失敗的 b 還在候選清單上')
-  assert.ok(real.needsHuman.some(h => h.name === 'b.zip'), '它該出現在「需要你看一眼」，而且講得出為什麼')
+  // 2026-09-19 稽核 RC21：斷言訊息寫了「講得出為什麼」卻沒驗 why —— why 換成「原因不明」也是綠的
+  const b = real.needsHuman.find(h => h.name === 'b.zip')
+  assert.ok(b, '它該出現在「需要你看一眼」')
+  assert.ok(typeof b.why === 'string' && b.why.trim() && !/原因不明/.test(b.why), `而且講得出為什麼：${b.why}`)
   // 剩下沒有可以清的了。再按一次要老實說沒東西可清，不可以回 stale
   await assert.rejects(real.apply(), /至少/)
 })

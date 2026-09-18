@@ -29,6 +29,9 @@
  *   送 { type: 'check' }                      設定頁的「測試連線」用
  *   回 { ok: true, facts: 12, tokenSet: true, tokenOk: true }
  *
+ *   送 { type: 'open-home' }                  content script 的「庫裡沒有 X · 去補」
+ *   回 { ok: true }                          （這一側開一個新分頁到手填頁，網址帶 ?k=<token>）
+ *
  *   失敗一律回 { ok: false, error: '代碼', message: '給人看的中文' }
  *   代碼有：NO_TOKEN、BAD_TOKEN、OFFLINE、TIMEOUT、FORBIDDEN、
  *           BAD_REQUEST、NOT_FOUND、NOT_SENSITIVE、HTTP_xxx、INTERNAL
@@ -45,7 +48,7 @@ const TIMEOUT_MS = 3000              // server 沒開的時候不要讓 content 
 const MAX_KEYS = 200                 // 一頁不該問這麼多，塞爆就是有人在試探
 
 /** 我們認得的訊息。其他的一律不接，免得占住別人的回覆通道 */
-const HANDLED = new Set(['plan', 'reveal', 'health', 'check'])
+const HANDLED = new Set(['plan', 'reveal', 'health', 'check', 'open-home'])
 
 /**
  * token 只能是看得見的 ASCII。
@@ -161,6 +164,13 @@ async function handle(msg, sender) {
     return fail('NO_TOKEN', '還沒設定 token。請打開 ContextBox 的設定頁，貼上 ~/.contextbox/token 的內容。')
   }
   if (!HEADER_SAFE.test(token)) return fail('TOKEN_UNUSABLE', TOKEN_UNUSABLE)
+
+  if (msg.type === 'open-home') {
+    // 手填頁要帶鑰匙（?k=）才打得開（稽核 RC16）。網址**只在這一側組**、直接開分頁：
+    // 不回給 content script —— 它跑在別人的網頁裡，交給它的東西網頁都讀得到。
+    await chrome.tabs.create({ url: `${HOST}:${port}/?k=${encodeURIComponent(token)}` })
+    return { ok: true }
+  }
 
   if (msg.type === 'plan') {
     if (!Array.isArray(msg.keys)) return fail('BAD_REQUEST', 'keys 要是一個字串陣列。')

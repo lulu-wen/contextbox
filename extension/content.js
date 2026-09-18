@@ -75,9 +75,9 @@
   const HAS_FILL = typeof CBFill !== 'undefined' && CBFill.setValue
   if (!HAS_FILL) console.warn('[ContextBox] fill.js 沒有載入，只會標記不會填')
 
-  /** 庫裡沒有的事實去哪裡補。server.ts 的 GET / 就是手填頁面。 */
-  // port 使用者改得動（設定頁），所以跟 background 要，不要寫死。
-  let HOME = 'http://127.0.0.1:7391/'
+  // 庫裡沒有的事實去哪裡補：server 的 GET / 就是手填頁面。那一頁要帶鑰匙（?k=）才打得開
+  // （稽核 RC16），而鑰匙只在 background 那一側 —— 這裡的 DOM 網頁讀得到，網址不可以放在這裡組。
+  // 所以「去補」只送一則 open-home，由 background 自己組網址、開新分頁。
 
   // ── 顏色 ────────────────────────────────────────────────────
   const C = {
@@ -356,10 +356,6 @@
     })
   }
 
-  // 開場先問一次 health，順便把使用者設定的 port 拿回來
-  ask({ type: 'health' }).then(r => { if (r && r.port) HOME = `http://127.0.0.1:${r.port}/` })
-    .catch(() => {})
-
   /** 回來的東西可能有好幾種包法，都收。 */
   function planOf(r) {
     if (Array.isArray(r)) return { plan: r }
@@ -533,16 +529,22 @@
       return n
     }
     if (action === 'missing') {
-      const n = E('a', {
-        ...MARK_BASE, background: C.miss, textDecoration: 'none',
-        cursor: 'pointer', pointerEvents: 'auto',
-      }, `庫裡沒有 ${cut(field.defLabel || p.label || p.key, 10)} · 去補`)
-      n.href = HOME
-      n.target = '_blank'
-      n.rel = 'noreferrer noopener'
-      return n
+      // 按鈕，不是連結：連結的 href 就在網頁的 DOM 裡。手填頁的網址要帶鑰匙，
+      // 只有 background 組得出來，所以這裡只送訊息（button() 會先驗 isTrusted）。
+      return button(field, `庫裡沒有 ${cut(field.defLabel || p.label || p.key, 10)} · 去補`, C.miss,
+        () => openHome(field))
     }
     return null
+  }
+
+  /** 請 background 開手填頁（它會帶鑰匙）。打不開就講原因，不要靜靜沒反應。 */
+  async function openHome(field) {
+    const r = await ask({ type: 'open-home' })
+    if (!r || r.ok !== true) {
+      say(`手填頁打不開：${(r && (r.message || r.error)) || '背景程式沒有回應'}`, true)
+      return
+    }
+    say(`手填頁開在新分頁了。在那裡補上「${field.defLabel || field.key}」，回來重新掃描這一頁就會填得到。`)
   }
 
   function button(field, text, bg, onClick) {

@@ -9,17 +9,29 @@ import {
   activeQuarantine, checkedQuarantinePath, checkOptions, fingerprint, moveFingerprint,
   quarantineCompletedAt, RETENTION_MS, type ExecOptions,
 } from './cleanup-exec.ts'
-import { CleanupError, cleanupProblem, withCleanupLock } from './cleanup-journal.ts'
+import { CleanupError, cleanupProblem, withCleanupLock, type JournalRow } from './cleanup-journal.ts'
 
 function eligible(db: DatabaseSync, seq: number): boolean {
   return Date.now() - Date.parse(quarantineCompletedAt(db, seq)) >= RETENTION_MS
+}
+
+/**
+ * 這一項**復原到一半中斷**嗎（restore 的 journal 停在 started）。
+ *
+ * 那種檔可能還在隔離區，而畫面告訴使用者「再按一次復原會把它接完」——
+ * 清空的時候刪掉它，那句話就變成謊話，而且檔案永久消失（第一波引進的退步）。
+ * 預覽不算它；拿之前的確認碼來清空也跳過它。
+ */
+function restoring(db: DatabaseSync, row: JournalRow): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND item_id=? AND op='restore'
+    AND status='started' LIMIT 1`).get(row.plan_id, row.item_id))
 }
 
 /** First click: preview and bind a token to exactly these journal entries. */
 export function prepareEmptyQuarantine(db: DatabaseSync, opts: ExecOptions) {
   checkOptions(opts)
   return withCleanupLock(db, () => {
-    const entries = activeQuarantine(db).filter(r => eligible(db, r.seq))
+    const entries = activeQuarantine(db).filter(r => !restoring(db, r) && eligible(db, r.seq))
     const token = randomUUID()
     const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
     db.prepare('INSERT INTO cleanup_empty_requests(token,expires_at,entries) VALUES (?,?,?)')
@@ -36,7 +48,7 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
   if (opts.confirmed !== true || typeof opts.token !== 'string' || !opts.token) {
     throw new CleanupError('CONFIRMATION_REQUIRED', '請先預覽，再次確認清空隔離區。')
   }
-  return withCleanupLock(db, () => {
+  return withCleanupLock(db, renew => {
     const request = db.prepare('SELECT * FROM cleanup_empty_requests WHERE token=?').get(opts.token) as
       { expires_at: string; entries: string; result: string | null } | undefined
     if (!request) throw new CleanupError('CONFIRMATION_REQUIRED', '清空確認無效，請重新預覽。')
@@ -44,9 +56,15 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
     if (Date.now() >= Date.parse(request.expires_at)) throw new CleanupError('CONFIRMATION_EXPIRED', '清空確認已過期，請重新預覽。')
     const result: { deletedCount: number; deletedBytes: number; errors: { seq: number; error: string }[] } =
       { deletedCount: 0, deletedBytes: 0, errors: [] }
-    for (const seq of JSON.parse(request.entries) as number[]) {
+    const seqs = JSON.parse(request.entries) as number[]
+    for (const [index, seq] of seqs.entries()) {
+      // 每處理一項就續約（見 withCleanupLock）
+      renew()
+      opts.onProgress?.(index, seqs.length)
       const row = activeQuarantine(db).find(r => r.seq === seq)
       if (!row) continue // Restored or already purged since preview.
+      // 預覽之後有人按了復原、復原到一半中斷：那個檔要留給「再按一次復原」
+      if (restoring(db, row)) continue
       try {
         if (!eligible(db, seq)) throw new CleanupError('TOO_RECENT', '檔案隔離未滿七天，無法清空。')
         const path = checkedQuarantinePath(db, row, opts)
