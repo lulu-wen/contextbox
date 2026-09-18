@@ -697,7 +697,8 @@ test('undo 只列真的放回去的，數字跟行數要對得上', t => {
            CONTEXTBOX_QUARANTINE: f.opts.quarantine },
   })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
-  const n = Number(/放回 Downloads (\d+) 個/.exec(out)?.[1])
+  // 第三波起不寫資料夾名：放回的可能是舊版搬走的桌面檔（C4），不一定在 Downloads
+  const n = Number(/放回原位 (\d+) 個/.exec(out)?.[1])
   const lines = (out.match(/↩/g) ?? []).length
   assert.equal(lines, n, `說放回去 ${n} 個，卻列了 ${lines} 行：\n${out}`)
   assert.doesNotMatch(out, /↩ a\.zip/, 'a.zip 根本沒被搬走，不可以說它被放回去了')

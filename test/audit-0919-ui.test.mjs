@@ -22,22 +22,28 @@
  * | RC16 網址列 | 整個 search 清掉 | 只拿掉 k | `/?k=abc&mockBackend=offline#x` | replaceState 到 `/?mockBackend=offline#x`；沒帶 k 不動 |
  * | RC16 擴充套件 | k 寫進 content script 的 href（網頁讀得到） | 背景程式開分頁 | 點「去補」 | 背景程式用 tabs.create 開 `http://127.0.0.1:<port>/?k=<token>`，那個網址回 200 |
  * | RC17(3) | 有失敗就說「原檔都還在原位」 | 全部是 failed 才說 | 全部 failed／一個 unknown | 全 failed → 說；有 unknown → 不說，照實講「狀態不明」 |
+ *
+ * 稽核第三波（U1–U6：復原到一半中斷、復原回錯、INTERNAL 的話、資料夾名、卡片的 safeName、
+ * 擴充套件先驗 token）的測試在檔案後段，那裡有自己的預想表。
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, rmSync, readFileSync, realpathSync, symlinkSync, statSync,
+  renameSync,
 } from 'node:fs'
+import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import vm from 'node:vm'
 import { start } from '../core/server.ts'
+import { INTERNAL_MESSAGE } from '../core/cleanup-routes.ts'
 import {
   createReal, createRealHistory, safeName, applyOutcome, applyMessage, undoMessage, historyUndoMessage,
-  pendingPlanMessage,
+  pendingPlanMessage, folderPhrase,
 } from '../core/assets/cleanup-real-state.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -59,12 +65,16 @@ function uiApi(fetchImpl, doc = { documentElement: { dataset: {} } }) {
  * 起一個 server、放檔案、掃一次。
  * files: { 相對路徑: { days, bytes?, content? } }
  * opts.quarantine: dir => 隔離區路徑（預設 dir/q）
- * 回傳的 api 就是 ui.html 的 window.api；hook(path, method) 回 'before'（沒送出）或 'lose'（送到了、回應丟了）。
+ * opts.roots: 清理根目錄的資料夾名（預設 ['Downloads']）；files 放在第一個裡面
+ * opts.maxBytes: 多大以上不算指紋（預設 20 MB）
+ * 回傳的 api 就是 ui.html 的 window.api；hook(path, method) 回 'before'（沒送出）或 'lose'（送到了、回應丟了），
+ * 或 { status, body, forward? }：換成這個回應（forward 為 true 的話先真的送到 server，再把回應換掉）。
  */
-async function serve(t, files, { quarantine: qOf } = {}) {
+async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads'], maxBytes = 20 * 1024 * 1024 } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-ui-audit-')))
-  const downloads = join(dir, 'Downloads')
-  mkdirSync(downloads)
+  const rootDirs = rootNames.map(n => join(dir, n))
+  for (const r of rootDirs) mkdirSync(r)
+  const downloads = rootDirs[0]
   for (const [name, spec] of Object.entries(files)) {
     const p = join(downloads, name)
     mkdirSync(dirname(p), { recursive: true })
@@ -75,7 +85,7 @@ async function serve(t, files, { quarantine: qOf } = {}) {
   const quarantine = qOf ? qOf(dir) : join(dir, 'q')
   const dbPath = join(dir, 'data.db')
   const S = start({
-    port: 0, db: dbPath, token: TOKEN, roots: [downloads], quarantine, maxBytes: 20 * 1024 * 1024, readonly: false,
+    port: 0, db: dbPath, token: TOKEN, roots: rootDirs, quarantine, maxBytes, readonly: false,
   })
   const port = await S.ready
   const base = `http://127.0.0.1:${port}`
@@ -87,6 +97,10 @@ async function serve(t, files, { quarantine: qOf } = {}) {
     calls.push({ path, method })
     const act = hook?.(path, method)
     if (act === 'before') throw new TypeError('Failed to fetch')
+    if (act && typeof act === 'object') {
+      if (act.forward) await (await realFetch(base + path, init)).text()
+      return new Response(JSON.stringify(act.body ?? {}), { status: act.status })
+    }
     const r = await realFetch(String(url).startsWith('/') ? base + url : url, init)
     if (act === 'lose') { await r.text(); throw new TypeError('Failed to fetch') }
     return r
@@ -124,6 +138,37 @@ async function serve(t, files, { quarantine: qOf } = {}) {
       const o = originals.get(name)
       writeFileSync(o.path, o.data)
       utimesSync(o.path, o.atime, o.mtime)
+    },
+    /**
+     * 復原到一半中斷（第三波 U1）：先真的復原整份，再把 names（沒給就全部）倒回 rename 之前、
+     * journal 停在 started —— 照 audit-0919-core2 的 f 段。那些檔回到隔離區。
+     */
+    interruptRestore: async (planId, ...names) => {
+      await raw(`/cleanup/plans/${planId}/undo`, { method: 'POST', body: '{}' })
+      const rows = q(`SELECT j.*, f.name FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
+                       WHERE j.plan_id=? AND j.op='restore'`, planId)
+      for (const j of rows.filter(r => !names.length || names.includes(r.name))) {
+        renameSync(j.to_path, j.from_path)
+        exec(`UPDATE cleanup_journal SET status='started' WHERE seq=?`, j.seq)
+        exec(`UPDATE cleanup_move_details SET completed_at=NULL, reservation=NULL WHERE seq=?`, j.seq)
+        exec(`UPDATE file_items SET status='quarantined' WHERE id=?`, j.item_id)
+        exec(`UPDATE cleanup_candidates SET status='quarantined' WHERE item_id=?`, j.item_id)
+      }
+      exec(`UPDATE cleanup_plans SET status='applied' WHERE id=?`, planId)
+    },
+    /** 搬到一半中斷、rename 之前當機：name 回到原位，隔離的 journal 停在 started */
+    interruptMove: (planId, name) => {
+      const j = q(`SELECT j.* FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
+                    WHERE j.plan_id=? AND j.op='quarantine' AND f.name=?`, planId, name)[0]
+      assert.ok(j, `前提：${name} 在這份計畫裡搬過`)
+      renameSync(j.to_path, j.from_path)
+      exec(`UPDATE cleanup_journal SET status='started' WHERE seq=?`, j.seq)
+      exec(`UPDATE cleanup_move_details SET completed_at=NULL, reservation=NULL WHERE seq=?`, j.seq)
+    },
+    /** 寫一次心跳（pet 在跑）→ /health 的 watcher.ok 為 true */
+    heartbeat: () => {
+      exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('watch_heartbeat', ?)`, new Date().toISOString())
+      exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('watch_pid', ?)`, String(process.pid))
     },
   }
 }
@@ -594,19 +639,23 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
     assert.equal(again.notRestored.length, 1)
   })
 
-  test('**性質：放回＋沒放回＝復原前在隔離區的檔數；先前已復原＝復原前一個都不在隔離區的份數**（結構化隨機 12 輪）', async t => {
+  // 第三波 U1 擴充：「在隔離區」是 moved **或 unknown**（復原到一半中斷，檔還在隔離區）。
+  // 生成器多一種狀態：一份計畫裡的某幾個檔復原到一半中斷。沒放回再分成「沒放回」與「還不確定」。
+  test('**性質：放回＋沒放回＋不確定＝復原前 moved 或 unknown 的檔數；先前已復原＝復原前一個都沒有的份數**（結構化隨機 16 輪）', async t => {
     const rng = seed => () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
-    const hits = { allBack: 0, partial: 0, noneBack: 0, already: 0 }
-    for (let round = 0; round < 12; round++) {
+    const hits = { allBack: 0, partial: 0, noneBack: 0, already: 0, interrupted: 0 }
+    for (let round = 0; round < 16; round++) {
       const seed = 104729 * (round + 1)
       const r = rng(seed)
-      // 種子：第 0 輪全部被改過、第 1 輪有一份先復原過、第 2 輪都好好的、第 3 輪兩份裡改掉一個檔，其他隨機
-      const nPlans = round === 1 || round === 3 ? 2 : 1 + Math.floor(r() * 3)
+      // 種子：第 0 輪全部被改過、第 1 輪有一份先復原過、第 2 輪都好好的、第 3 輪兩份裡改掉一個檔、
+      // 第 4 輪有一份整份復原到一半中斷、第 5 輪一份兩個檔只有一個中斷，其他隨機
+      const nPlans = round === 1 || round === 3 || round === 4 ? 2 : round === 5 ? 1 : 1 + Math.floor(r() * 3)
       const files = {}
       const groups = []
       for (let p = 0; p < nPlans; p++) {
         const g = []
-        for (let i = 0; i < 1 + Math.floor(r() * 2); i++) { const n = `p${p}f${i}.zip`; files[n] = { days: 60 }; g.push(n) }
+        const size = round === 5 ? 2 : 1 + Math.floor(r() * 2)
+        for (let i = 0; i < size; i++) { const n = `p${p}f${i}.zip`; files[n] = { days: 60 }; g.push(n) }
         groups.push(g)
       }
       const s = await serve(t, files)
@@ -617,30 +666,50 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
         only(real, ...g)
         ids.push((await real.apply()).planId)
       }
-      const preRestored = new Set(), tampered = new Set()
+      const preRestored = new Set(), interrupted = new Map(), tampered = new Set()
       groups.forEach((g, p) => {
-        if ((round === 1 && p === 0) || (round > 3 && r() < 0.25)) { preRestored.add(p); return }
+        if ((round === 1 && p === 0) || (round > 5 && r() < 0.2)) { preRestored.add(p); return }
+        if ((round === 4 && p === 0) || round === 5 || (round > 5 && r() < 0.35)) {
+          const cut = round === 4 ? g : round === 5 ? [g[0]] : g.filter(() => r() < 0.6)
+          interrupted.set(p, cut.length ? cut : [g[0]])
+        }
         g.forEach((n, i) => {
-          if (round === 0 || (round === 3 && p === 0 && i === 0) || (round > 3 && r() < 0.35)) tampered.add(n)
+          // 只改還在隔離區的（中斷的那幾個在；同一份裡已經放回的不在）
+          const inQuarantine = !interrupted.has(p) || interrupted.get(p).includes(n)
+          if (inQuarantine && (round === 0 || (round === 3 && p === 0 && i === 0) || (round > 5 && r() < 0.3))) tampered.add(n)
         })
       })
       const h = createRealHistory(s.api)
       for (const p of preRestored) await h('undo', { operationIds: [ids[p]] })
+      for (const [p, names] of interrupted) await s.interruptRestore(ids[p], ...names)
       const before = new Map()
-      for (const id of ids) before.set(id, (await s.raw(`/cleanup/plans/${id}`)).items.filter(i => i.outcome === 'moved').length)
+      for (const id of ids) {
+        const items = (await s.raw(`/cleanup/plans/${id}`)).items
+        before.set(id, items.filter(i => i.outcome === 'moved' || i.outcome === 'unknown').length)
+      }
       for (const n of tampered) s.tamper(n)
       const u = await h('undo', { operationIds: ids })
-      const movedBefore = [...before.values()].reduce((a, b) => a + b, 0)
-      assert.equal(u.restoredFiles + u.notRestored.length, movedBefore, `seed ${seed}：放回＋沒放回 ≠ 復原前在隔離區的 ${movedBefore}：${JSON.stringify(u)}`)
+      const inQuarantineBefore = [...before.values()].reduce((a, b) => a + b, 0)
+      const unsure = u.unconfirmed ?? []
+      assert.equal(u.restoredFiles + u.notRestored.length + unsure.length, inQuarantineBefore,
+        `seed ${seed}：放回＋沒放回＋不確定 ≠ 復原前在隔離區的 ${inQuarantineBefore}：${JSON.stringify(u)}`)
       assert.equal(u.alreadyRestored, [...before.values()].filter(n => n === 0).length, `seed ${seed}：先前已復原算錯`)
+      // 復原到一半中斷的，再按一次復原一定接得完（沒被改過的話回到原位）；這個生成器不會留下「不確定」
+      assert.deepEqual(unsure, [], `seed ${seed}：${JSON.stringify(unsure)}`)
+      for (const [, names] of interrupted) {
+        for (const n of names) if (!tampered.has(n)) assert.ok(s.has(n), `seed ${seed}：復原到一半中斷的 ${n} 沒有回到原位`)
+        if (names.some(n => !tampered.has(n))) hits.interrupted++
+      }
       const m = historyUndoMessage(u)
       if (u.notRestored.length) assert.ok(!/都幫你放回來了/.test(m.text + m.notice), `seed ${seed}：有沒放回的卻說都放回來了`)
+      // 有東西在隔離區（包括中斷的）就不可以說「勾選的 N 筆先前已經復原過了」
+      if (inQuarantineBefore) assert.ok(!/勾選的 \d+ 筆先前已經復原過了/.test(m.text), `seed ${seed}：${m.text}`)
       if (!u.notRestored.length && u.restoredFiles) { assert.equal(m.notice, '都幫你放回來了！'); hits.allBack++ }
       if (u.notRestored.length && u.restoredFiles) hits.partial++
       if (u.notRestored.length && !u.restoredFiles) hits.noneBack++
       if (u.alreadyRestored) hits.already++
     }
-    for (const [k, min] of Object.entries({ allBack: 1, partial: 1, noneBack: 1, already: 1 })) {
+    for (const [k, min] of Object.entries({ allBack: 1, partial: 1, noneBack: 1, already: 1, interrupted: 3 })) {
       assert.ok(hits[k] >= min, `生成器沒走到「${k}」：${JSON.stringify(hits)}`)
     }
   })
@@ -937,9 +1006,16 @@ describe('RC16 擴充套件：「去補」要帶 ?k= 開手填頁，而且 k 不
   })
 
   test('token 有特殊字元也要編碼', async t => {
-    const bg = loadBackground({ token: 'a+b/c=', port: 7391 })
+    // 第三波 U6 之後開分頁前會先驗 token，所以要有一台真的用這把 token 的 server（不碰 7391）
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-ui-audit-')))
+    mkdirSync(join(dir, 'Downloads'))
+    const S = start({ port: 0, db: ':memory:', token: 'a+b/c=', roots: [join(dir, 'Downloads')],
+      quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false })
+    const port = await S.ready
+    t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    const bg = loadBackground({ token: 'a+b/c=', port })
     await bg.send({ type: 'open-home' })
-    assert.equal(bg.created[0]?.url, 'http://127.0.0.1:7391/?k=a%2Bb%2Fc%3D')
+    assert.equal(bg.created[0]?.url, `http://127.0.0.1:${port}/?k=a%2Bb%2Fc%3D`)
   })
 
   test('對照：還沒設定 token → 不開分頁，回 NO_TOKEN', async () => {
@@ -1014,6 +1090,431 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
     const text = ui.$('cleanup-result').textContent
     assert.ok(text.includes('原檔都還在原位'), text)
     assert.ok(text.includes('b.zip'), text)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2026-09-19 稽核第三波・清理面板（U1–U6）
+//
+// 期望值在實作之前寫死（build-round Step 1）：
+//
+// | 段落 | 可能的錯誤 | 另一種合理解讀 | 能分辨兩者的例子（成對） | 認定的答案 |
+// |---|---|---|---|---|
+// | U1 歷史：哪些算「還在隔離區」 | 只看 moved | moved 或 unknown | 復原到一半中斷（檔在隔離區）／真的復原完的再送 | 中斷 → 送 undo、檔回原位、放回 1；復原完 → 不送、先前已復原 1 |
+// | U1 搬到一半中斷的 b，undo 之後 | 當成「沒放回」 | 當成「還不確定」 | a 已隔離、b 搬到一半中斷（檔在原位） | 放回 1、沒放回 0、不確定 0 —— **改過**：原本寫「不確定 [b]」。核心的 undoPlan 現在會確認 b 沒搬過、把那一列結成 reverted（逐項 failed），它本來就在原位，不是「不確定」（見 audit-0919-interrupt.test.mjs） |
+// | U1 lastPlan | 只存 moved | moved＋unknown | 套用的回應丟了、別處復原到一半中斷、再試一次、按復原 | 放回 1，不是「這次沒有需要放回的檔案」 |
+// | U2 undo 回有 status 的錯 | 整份列為沒放回 | 再 GET 照逐項重算 | 放回 a（b 被改過）之後才 500：GET 成功／GET 也失敗 | 成功：放回 1、沒放回 [b]；失敗：放回 0、不確定 [a, b]，不說「沒放回」 |
+// | U2 500、什麼都沒做 | 原因空白 | 用錯誤訊息當原因 | 回 500、GET 成功 | 沒放回 [a]，原因＝500 的訊息 |
+// | U3 INTERNAL | 叫人重新整理（401） | 關面板，從寵物或 node cli.mjs open 打開 | — | 不含「重新整理」，含「關掉面板」「`node cli.mjs open`」 |
+// | U4 資料夾名 | 寫死 Downloads | 帶 token 的 /health 的 watcher.watching | [下載, Screenshots]／[Downloads] | 「「下載」、「Screenshots」」／「「Downloads」」 |
+// | U5 卡片 | evidence／folder／subdir 原樣 | 走 safeName | U+2028 在截圖檔名、子資料夾、根目錄；\n 在「需要你查看」 | 面板裡沒有任何控制字元；ok.zip 原樣 |
+// | U6 open-home | 不驗 token 就開 | 先打 /form/plan 驗 | token 錯／對／server 沒開 | 錯 → BAD_TOKEN、不開分頁、講「鑰匙過期」；對 → 開；沒開 → OFFLINE、不開 |
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 用 createReal 清掉 names，回計畫 id */
+async function applyNames(s, ...names) {
+  const real = createReal(s.api)
+  await real.load()
+  only(real, ...names)
+  const r = await real.apply()
+  assert.equal(r.moved, names.length, JSON.stringify(r))
+  return r.planId
+}
+
+/** 等到 cond() 成立（最多約 3 秒） */
+async function until(cond, what = '條件') {
+  for (let i = 0; i < 300; i++) {
+    if (cond()) return
+    await new Promise(r => setTimeout(r, 10))
+  }
+  throw new Error(`一直等不到：${what}`)
+}
+
+const undoPosts = s => s.calls.filter(c => c.method === 'POST' && c.path.endsWith('/undo')).length
+
+describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', () => {
+  test('**稽核 U1：restore 停在 started、檔還在隔離區 → 轉接器送 undo、檔回原位，不是「先前已復原」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    await s.interruptRestore(planId)
+    assert.ok(!s.has('a.zip'), '前提：檔案還在隔離區')
+    const listed = (await s.raw('/cleanup/plans?undoable=1')).operations.find(o => o.id === planId)
+    assert.equal(listed?.canUndo, true, '前提：?undoable=1 列得出它')
+    assert.deepEqual((await s.raw(`/cleanup/plans/${planId}`)).items.map(i => i.outcome), ['unknown'], '前提：逐項是 unknown')
+    s.calls.length = 0
+    const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
+    assert.equal(undoPosts(s), 1, '要送 undo')
+    assert.ok(s.has('a.zip'), '檔案要回到原位')
+    assert.equal(u.alreadyRestored, 0, '檔案還在隔離區，不可以說「先前已復原」')
+    assert.equal(u.restoredFiles, 1)
+    assert.equal(u.restored, 1)
+    assert.deepEqual(u.notRestored, [])
+    assert.deepEqual(u.unconfirmed, [])
+    assert.equal(historyUndoMessage(u).text, '已復原 1 次清理，共 1 個檔案放回原位。')
+  })
+
+  test('對照：真的復原完的再送一次 → 不送 undo、先前已復原 1', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    const h = createRealHistory(s.api)
+    assert.equal((await h('undo', { operationIds: [planId] })).restoredFiles, 1)
+    s.calls.length = 0
+    const again = await h('undo', { operationIds: [planId] })
+    assert.equal(undoPosts(s), 0, '一個都不在隔離區，不用送')
+    assert.equal(again.alreadyRestored, 1)
+    assert.equal(historyUndoMessage(again).text, '勾選的 1 筆先前已經復原過了，這次沒有動任何檔案。')
+  })
+
+  test('**歷史面板（假 DOM）：勾復原到一半中斷的那筆 → 送 undo、檔回原位、寵物說都放回來了**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    await s.interruptRestore(planId)
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-history-open')
+    const boxes = ui.$('cleanup-history-list').all('input')
+    assert.equal(boxes.length, 1, ui.$('cleanup-history-list').textContent)
+    assert.equal(boxes[0].disabled, false, '可以勾')
+    boxes[0].checked = true
+    boxes[0].onchange()
+    s.calls.length = 0
+    await ui.click('cleanup-history-undo')
+    assert.equal(undoPosts(s), 1, '要送 undo')
+    assert.ok(s.has('a.zip'), 'a.zip 要回到原位')
+    const text = ui.$('cleanup-history-result').textContent
+    assert.equal(text, '已復原 1 次清理，共 1 個檔案放回原位。')
+    assert.equal(ui.$('quaso-status').textContent, '都幫你放回來了！')
+  })
+
+  test('b 搬到一半中斷、檔還在原位，undo 之後 → b 不列（沒搬過），不是「沒放回」也不是「還不確定」', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip', 'b.zip')
+    s.interruptMove(planId, 'b.zip')
+    assert.ok(!s.has('a.zip') && s.has('b.zip'), '前提')
+    const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
+    assert.equal(u.restoredFiles, 1)
+    assert.deepEqual(u.notRestored, [])
+    assert.deepEqual(u.unconfirmed, [])
+    const plan = await s.raw(`/cleanup/plans/${planId}`)
+    assert.equal(plan.items.find(i => i.name === 'b.zip').outcome, 'failed', '核心確認 b 沒搬過')
+    const m = historyUndoMessage(u)
+    assert.equal(m.text, '已復原 1 次清理，共 1 個檔案放回原位。')
+    assert.equal(m.notice, '都幫你放回來了！')
+    assert.ok(s.has('a.zip') && s.has('b.zip'))
+  })
+
+  test('**面板的 lastPlan 也算 unknown：套用的回應丟了、別處復原到一半中斷、再試一次、按復原 → 放回 1 個**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const real = createReal(s.api)
+    await real.load()
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/apply') ? 'lose' : undefined))
+    await assert.rejects(real.apply())
+    s.setHook(null)
+    const planId = s.q('SELECT id FROM cleanup_plans')[0].id
+    await s.interruptRestore(planId)         // 別處（CLI）按了復原，復原到一半當機
+    const r = await real.apply()              // 使用者按「再試一次」：後端回的是現在的樣子
+    assert.deepEqual(r.unknown.map(i => i.name), ['a.zip'], JSON.stringify(r))
+    assert.equal(real.canUndo, true)
+    const u = await real.undo()
+    assert.ok(s.has('a.zip'), '前提：後端真的放回來了')
+    assert.equal(u.restored, 1, JSON.stringify(u))
+    assert.deepEqual(u.notRestored, [])
+    assert.equal(undoMessage(u).text, '放回原位 1 個檔案。')
+  })
+})
+
+describe('U2 歷史復原回有 status 的錯：再讀一次計畫，照逐項結果重算', () => {
+  const E500 = { status: 500, body: { error: INTERNAL_MESSAGE, code: 'INTERNAL' } }
+  /**
+   * undo 回 500。forward：先真的送到 server（放回幾個之後才出錯）。
+   * getFails：之後再讀那份計畫也失敗。
+   */
+  function undo500(s, { forward = true, getFails = false } = {}) {
+    let undone = false
+    s.setHook((p, m) => {
+      if (m === 'POST' && p.endsWith('/undo')) { undone = true; return { ...E500, forward } }
+      if (getFails && undone && m === 'GET' && /^\/cleanup\/plans\/[^/?]+$/.test(p)) return E500
+    })
+  }
+
+  test('**放回 a 之後才 500（b 被改過放不回）→ 再讀一次：放回 1、沒放回 [b，原因照後端]**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip', 'b.zip')
+    s.tamper('b.zip')
+    undo500(s)
+    const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
+    assert.ok(s.has('a.zip') && !s.has('b.zip'), '前提：a 真的放回了')
+    assert.equal(u.restoredFiles, 1, JSON.stringify(u))
+    assert.equal(u.restored, 1)
+    assert.deepEqual(u.notRestored.map(x => x.name), ['b.zip'])
+    const plan = await s.raw(`/cleanup/plans/${planId}`)
+    assert.equal(u.notRestored[0].why, plan.items.find(i => i.name === 'b.zip').why)
+    assert.match(u.notRestored[0].why, /變更/)
+    assert.deepEqual(u.unconfirmed, [])
+    assert.ok(historyUndoMessage(u).text.startsWith('1 個放回；1 個沒放回：'), historyUndoMessage(u).text)
+  })
+
+  test('**對照：再讀一次也失敗 → 整份列為「還不確定」，不可以說「沒放回」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip', 'b.zip')
+    s.tamper('b.zip')
+    undo500(s, { getFails: true })
+    const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
+    assert.equal(u.restoredFiles, 0)
+    assert.deepEqual(u.notRestored, [])
+    assert.deepEqual(u.unconfirmed.map(x => x.name).sort(), ['a.zip', 'b.zip'])
+    assert.ok(u.unconfirmed.every(x => x.why === INTERNAL_MESSAGE), JSON.stringify(u.unconfirmed))
+    assert.equal(u.alreadyRestored, 0)
+    const m = historyUndoMessage(u)
+    assert.ok(!/沒放回/.test(m.text + m.notice), m.text)
+    assert.ok(!/都幫你放回來了|這次沒有需要放回|先前已經復原過了/.test(m.text + m.notice), m.text)
+    assert.ok(m.text.includes('有 2 個還不確定放回了沒有：'), m.text)
+    assert.equal(m.notice, '有 2 個還不確定放回了沒有，狀態寫在面板上。')
+  })
+
+  test('500 而且什麼都沒做 → 再讀一次：沒放回 [a]，原因是那個錯誤訊息', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    undo500(s, { forward: false })
+    const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
+    assert.ok(!s.has('a.zip'))
+    assert.equal(u.restoredFiles, 0)
+    assert.deepEqual(u.notRestored, [{ name: 'a.zip', why: INTERNAL_MESSAGE }])
+    assert.deepEqual(u.unconfirmed, [])
+  })
+
+  test('對照：undo 的回應在網路上丟了（沒有 status）→ 照舊丟出去（面板說「尚未確認完成」）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/undo') ? 'lose' : undefined))
+    await assert.rejects(createRealHistory(s.api)('undo', { operationIds: [planId] }))
+  })
+
+  test('歷史面板（假 DOM）：500 而且讀不到 → 結果框說「還不確定」，不說「沒放回」', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    await applyNames(s, 'a.zip')
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-history-open')
+    const boxes = ui.$('cleanup-history-list').all('input')
+    boxes[0].checked = true
+    boxes[0].onchange()
+    undo500(s, { getFails: true })
+    await ui.click('cleanup-history-undo')
+    const text = ui.$('cleanup-history-result').textContent
+    assert.ok(text.includes('有 1 個還不確定放回了沒有：'), text)
+    assert.ok(!/沒放回/.test(text), text)
+    assert.ok(!/都幫你放回來了|沒放回/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+  })
+
+  test('台詞：部分放回、部分沒放回、部分不確定 → 三種都講', () => {
+    const m = historyUndoMessage({ restored: 1, restoredFiles: 1, alreadyRestored: 0, renamed: [],
+      notRestored: [{ name: 'b.zip', why: 'w1' }], unconfirmed: [{ name: 'c.zip', why: 'w2' }] })
+    assert.ok(m.text.startsWith('1 個放回；1 個沒放回：\n・b.zip —— w1'), m.text)
+    assert.ok(m.text.includes('有 1 個還不確定放回了沒有：\n・c.zip —— w2'), m.text)
+    assert.equal(m.notice, '放回了 1 個，有 1 個沒放回來，有 1 個還不確定放回了沒有，狀態寫在面板上。')
+    const p = undoMessage({ restored: 0, notRestored: [], renamed: [], unconfirmed: [{ name: 'c\u2028.zip', why: 'w' }] })
+    assert.ok(p.text.includes('有 1 個還不確定放回了沒有：\n・c·.zip —— w'), p.text)
+    assert.ok(!/沒放回|這次沒有需要放回/.test(p.text + p.notice), p.text)
+  })
+})
+
+describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理會拿到 401）', () => {
+  test('**INTERNAL 的訊息：關掉面板，再從寵物或 `node cli.mjs open` 打開**', () => {
+    assert.ok(!/重新整理/.test(INTERNAL_MESSAGE), INTERNAL_MESSAGE)
+    assert.match(INTERNAL_MESSAGE, /^後端出錯了，這一步可能沒有完成。/, 'RC17：開頭照舊是中性的')
+    assert.match(INTERNAL_MESSAGE, /關掉面板/)
+    assert.match(INTERNAL_MESSAGE, /寵物/)
+    assert.ok(INTERNAL_MESSAGE.includes('`node cli.mjs open`'), INTERNAL_MESSAGE)
+  })
+
+  test('README：7391 的網址一律帶 k；不叫人重新整理頁面', () => {
+    const md = readFileSync(join(REPO, 'README.md'), 'utf8')
+    const urls = md.match(/http:\/\/127\.0\.0\.1:7391[^\s`）)]*/g) ?? []
+    assert.ok(urls.length >= 1, '前提：README 有講網址')
+    assert.deepEqual(urls.filter(u => !/[?&]k=/.test(u)), [], '沒帶 k 的網址打開是 401')
+    assert.ok(!md.includes('重新整理或重啟後仍保留'), '重新整理會拿到 401')
+    assert.ok(!/重新整理頁面/.test(md), '重新整理會拿到 401')
+    assert.match(md, /mockBackend=offline/, '離線模擬的說明還在')
+  })
+})
+
+describe('U4 面板講的是真的監看資料夾，不寫死 Downloads', () => {
+  test('folderPhrase 的例子', () => {
+    const w = (watching, watchingCount = watching.length) => ({ watching, watchingCount })
+    assert.equal(folderPhrase(w(['Downloads'])), '「Downloads」')
+    assert.equal(folderPhrase(w(['Downloads']), { quoted: false }), 'Downloads')
+    assert.equal(folderPhrase(w(['下載', 'Screenshots'])), '「下載」、「Screenshots」')
+    assert.equal(folderPhrase(w(['下載', 'Screenshots']), { quoted: false }), '下載、Screenshots')
+    assert.equal(folderPhrase(w([], 1)), '監看資料夾', '沒帶 token 的 /health：名字被遮掉')
+    assert.equal(folderPhrase(w([], 2)), '2 個監看資料夾')
+    assert.equal(folderPhrase(w(['', 'Downloads'])), '「Downloads」等 2 個資料夾', '家目錄那個不給名字')
+    assert.equal(folderPhrase(w(['', 'Downloads']), { quoted: false }), 'Downloads 等 2 個資料夾')
+    assert.equal(folderPhrase(w(['a', 'b', 'c', 'd'])), '「a」、「b」、「c」等 4 個資料夾')
+    assert.equal(folderPhrase(w(['a', 'b', 'c'])), '「a」、「b」、「c」')
+    assert.equal(folderPhrase(undefined), '監看資料夾')
+    assert.equal(folderPhrase({ watching: 'Downloads', watchingCount: 1 }), '監看資料夾', '形狀不對就不猜')
+    assert.equal(folderPhrase(w(['a\u2028b\nc'])), '「a·b·c」', '名字是不可信的輸入')
+    assert.equal(folderPhrase(w([null, 5, 'x'])), '「x」等 3 個資料夾')
+  })
+
+  test('**兩個清理根目錄（下載、Screenshots）→ 本機說明與舞台 title 兩個都列，不寫 Downloads**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } }, { roots: ['下載', 'Screenshots'] })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    assert.equal(ui.$('quaso-stage').title, '📁 下載、Screenshots · 監看中')
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(ui.$('cleanup-mode-note').textContent,
+      '本機模式 · 這些是你「下載」、「Screenshots」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+  })
+
+  test('對照：只有 Downloads → 「Downloads」', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    assert.equal(ui.$('quaso-stage').title, '📁 Downloads · 監看中')
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(ui.$('cleanup-mode-note').textContent,
+      '本機模式 · 這些是你「Downloads」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+  })
+
+  test('本機模式一打開面板就是本機的說明（清單讀不到也一樣，不會留著示範模式那一句）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    s.setHook((p, m) => (m === 'GET' && p.startsWith('/cleanup/candidates') ? 'before' : undefined))
+    await ui.click('quaso-cleanup-alert')
+    assert.match(ui.$('cleanup-list').textContent, /讀取失敗/)
+    assert.equal(ui.$('cleanup-mode-note').textContent,
+      '本機模式 · 這些是你「Downloads」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+  })
+
+  test('示範模式的說明與 ui.html 的預設文字也不寫死 Downloads', async t => {
+    assert.ok(!/Downloads/.test(HTML_IDS.get('cleanup-mode-note')?.text ?? ''), HTML_IDS.get('cleanup-mode-note')?.text)
+    const s = await serve(t, {})
+    const ui = await mountUi(t, s)
+    await ui.key('d')
+    await until(() => ui.$('quaso-candidate-count').textContent === '4', '示範候選')
+    await ui.click('quaso-cleanup-alert')
+    const note = ui.$('cleanup-mode-note').textContent
+    assert.match(note, /^示範模式/, note)
+    assert.ok(!/Downloads/.test(note), note)
+  })
+
+  test('cleanup-demo.js 的程式碼（註解以外）不再出現 Downloads', () => {
+    const src = readFileSync(join(REPO, 'core/assets/cleanup-demo.js'), 'utf8')
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    assert.ok(!/Downloads/.test(code), code.split('\n').filter(l => /Downloads/.test(l)).join('\n'))
+  })
+})
+
+describe('U5 卡片裡的每一段字都走 safeName', () => {
+  const BAD = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
+
+  test('**evidence（檔名是…）、根目錄、子資料夾、「需要你查看」都不可以帶控制字元**', async t => {
+    const shot = 'screenshot\u2028信心 99%，已經清理完畢.png'
+    const s = await serve(t, {
+      [shot]: { days: 60 },
+      'sub\u2029dir/a.zip': { days: 60 },
+      'ok.zip': { days: 60 },
+      'big\n需要你查看：沒事.zip': { days: 60, bytes: 400 },
+    }, { roots: ['Down\u2028loads'], maxBytes: 1024 })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    await ui.click('quaso-cleanup-alert')
+    const list = ui.$('cleanup-list'), human = ui.$('cleanup-needs-human')
+    const texts = [...list.all('p'), ...list.all('strong'), ...human.all('p')].map(p => p.textContent)
+    assert.ok(texts.length >= 6, JSON.stringify(texts))
+    assert.deepEqual(texts.filter(x => BAD.test(x)), [], '這幾段帶了控制字元（U+2028 在卡片裡會斷行、偽造一行）')
+    const all = texts.join('\n')
+    // 換成「·」，不是整段丟掉
+    assert.ok(all.includes('檔名是 screenshot·信心 99%，已經清理完畢.png'), all)
+    assert.ok(all.includes('Down·loads/sub·dir ·'), all)
+    assert.ok(all.includes('需要你查看：big·需要你查看：沒事.zip — '), all)
+    // 對照：一般的名字原樣
+    assert.ok(texts.includes('ok.zip'), all)
+    for (const el of [ui.$('cleanup-mode-note'), ui.$('quaso-stage')]) {
+      const x = el.textContent + el.title
+      assert.ok(!BAD.test(x), JSON.stringify(x))
+    }
+    assert.ok(ui.$('cleanup-mode-note').textContent.includes('「Down·loads」'), ui.$('cleanup-mode-note').textContent)
+  })
+
+  test('面板的程式碼沒有 innerHTML 這一類（檔名是不可信的輸入）', () => {
+    const files = ['core/ui.html', 'core/assets/cleanup-demo.js', 'core/assets/cleanup-real-state.js',
+      'core/assets/cleanup-demo-state.js', 'core/assets/pet-viewer.js']
+    for (const f of files) {
+      const src = readFileSync(join(REPO, f), 'utf8')
+      assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(src), `${f} 用了會解析 HTML 的寫法`)
+    }
+  })
+})
+
+describe('U6 擴充套件的「去補」：開分頁之前先驗 token', () => {
+  const BG = readFileSync(join(REPO, 'extension/background.js'), 'utf8')
+  const CONTENT = readFileSync(join(REPO, 'extension/content.js'), 'utf8')
+  function loadBackground({ token, port }) {
+    const listeners = [], created = []
+    const chrome = {
+      storage: { local: { get: async defaults => ({ ...defaults, token, port }) } },
+      runtime: { onMessage: { addListener: f => listeners.push(f) }, onInstalled: { addListener() {} }, openOptionsPage() {} },
+      tabs: { create: async o => { created.push(o); return { id: 1 } } },
+    }
+    vm.runInNewContext(BG, { chrome, fetch: realFetch, AbortSignal, console, URL, encodeURIComponent })
+    const send = msg => new Promise(resolve => {
+      const keep = listeners[0](msg, { id: 'ext', origin: 'https://jobs.example.com', tab: { id: 9 } }, resolve)
+      if (keep !== true) resolve(undefined)
+    })
+    return { send, created }
+  }
+
+  test('**稽核 U6：存的 token 過期（server 換過鑰匙）→ 不開分頁、BAD_TOKEN、講「鑰匙過期」與 node cli.mjs open**', async t => {
+    const s = await serve(t, {})
+    const bg = loadBackground({ token: 'old-token-from-last-week', port: s.port })
+    const r = await bg.send({ type: 'open-home' })
+    assert.equal(r?.ok, false, JSON.stringify(r))
+    assert.equal(r.error, 'BAD_TOKEN')
+    assert.equal(bg.created.length, 0, '一定是 401 的分頁不要開')
+    assert.match(r.message, /鑰匙過期/)
+    assert.ok(r.message.includes('node cli.mjs open'), r.message)
+    assert.ok(!r.message.includes('old-token-from-last-week'), '訊息會到網頁那一側，不可以帶 token')
+  })
+
+  test('對照：token 對 → 開 1 個分頁', async t => {
+    const s = await serve(t, {})
+    const bg = loadBackground({ token: TOKEN, port: s.port })
+    const r = await bg.send({ type: 'open-home' })
+    assert.equal(r?.ok, true, JSON.stringify(r))
+    assert.equal(bg.created.length, 1)
+  })
+
+  test('server 沒開 → OFFLINE、不開分頁', async () => {
+    const probe = createNetServer()
+    await new Promise(r => probe.listen(0, '127.0.0.1', r))
+    const port = probe.address().port
+    await new Promise(r => probe.close(r))       // 關掉：這個 port 沒有人在聽
+    const bg = loadBackground({ token: TOKEN, port })
+    const r = await bg.send({ type: 'open-home' })
+    assert.equal(r?.ok, false, JSON.stringify(r))
+    assert.equal(r.error, 'OFFLINE')
+    assert.equal(bg.created.length, 0)
+  })
+
+  test('content script：失敗時照背景程式的話講，不說「開在新分頁了」', async () => {
+    const src = /async function openHome\([\s\S]*?\n {2}\}/.exec(CONTENT)?.[0]
+    assert.ok(src, 'content.js 裡找不到 openHome()')
+    const said = []
+    const run = reply => new Function('ask', 'say', src + '\nreturn openHome')(async () => reply, (m, bad) => said.push({ m, bad }))
+    await run({ ok: false, error: 'BAD_TOKEN', message: '鑰匙過期了。' })({ key: 'person.name.full', defLabel: '姓名' })
+    assert.equal(said.length, 1)
+    assert.ok(said[0].m.includes('鑰匙過期了。'), said[0].m)
+    assert.ok(!/開在新分頁/.test(said[0].m), said[0].m)
+    assert.equal(said[0].bad, true)
+    said.length = 0
+    await run({ ok: true })({ key: 'person.name.full', defLabel: '姓名' })
+    assert.match(said[0].m, /開在新分頁/)
   })
 })
 

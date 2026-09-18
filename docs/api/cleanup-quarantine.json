@@ -2,12 +2,12 @@
   "items": [
     {
       "seq": 4,
-      "planId": "95322cf1-97cd-4a37-a50a-57543354a638",
-      "itemId": "321f2ef6-d74a-4e15-8474-d7d2dc589184",
+      "planId": "e8621e2e-795d-4fc8-a3a3-6e8f14a15b6e",
+      "itemId": "fc6fc5ab-01d2-4d69-ab55-d4a7859deef0",
       "name": "發票.zip",
       "bytes": 13,
-      "quarantinedAt": "2026-09-10T18:58:52.612Z",
-      "canEmptyAt": "2026-09-17T18:58:52.612Z",
+      "quarantinedAt": "2026-09-10T20:14:32.908Z",
+      "canEmptyAt": "2026-09-17T20:14:32.908Z",
       "canEmptyNow": true
     }
   ],

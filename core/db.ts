@@ -180,7 +180,8 @@ CREATE INDEX IF NOT EXISTS ix_cleanup_journal_plan ON cleanup_journal(plan_id, s
 
 -- 套用失敗的原因。**file_items.error 會被下一次掃描改寫**（upsert 的 error=excluded.error），
 -- 只存在那裡的話，重掃一次，計畫的逐項結果就從「十分鐘內還在變動」變成「原因不明」。
--- 套用完馬上寫進這張表（cleanup-routes.ts 的 recordItemErrors），planOutcomes 先讀它。
+-- 所以 applyPlan 每一項失敗的當下就寫進這張表（cleanup-exec.ts 的 markFailure），
+-- 同一份計畫重試成功時刪掉；planOutcomes 先讀它。誰呼叫 applyPlan 都一樣，不靠 route 或 CLI 補記。
 -- why 一定是翻過的人話、不帶路徑。
 CREATE TABLE IF NOT EXISTS cleanup_item_errors (
   plan_id TEXT NOT NULL REFERENCES cleanup_plans(id),

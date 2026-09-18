@@ -11,14 +11,27 @@
 >
 > 做法：開一個**新的終端機分頁**，第 0 步把家目錄、設定檔、資料庫、隔離區、鑰匙
 > 全部指到一個暫存資料夾，清理範圍（`cleanup.roots`）只有沙盒裡的 Downloads。
-> 之後每一個指令都透過第 0 步定義的 `cb`，它會先檢查沙盒還在不在，不在就拒絕執行。
-> **整份跑完之前不要換分頁**；換了分頁，`cb` 不存在，指令會直接失敗 —— 那是故意的。
+> 之後每一個 CLI 指令都透過第 0 步定義的 `cb`，撥檔案時間都透過 `sandbox_touch`；
+> 兩個都會先檢查沙盒還在不在，不在就拒絕執行。
+> **整份跑完之前不要換分頁**；換了分頁，`cb`、`sandbox_touch` 不存在，指令會直接失敗 —— 那是故意的。
 
 ---
 
 ## 0 ・ 建沙盒
 
-在 **repo 根目錄**開一個新的終端機分頁（bash 或 zsh）：
+在 **repo 根目錄**開一個新的終端機分頁（bash 或 zsh）。
+
+**用 zsh 的話，先單獨貼這一行、按 Enter**（bash 貼了也沒事）：
+
+```bash
+[ -n "$ZSH_VERSION" ] && setopt interactivecomments
+```
+
+zsh 預設不認互動模式的行尾註解：下面每一行後面的 `# …` 會被當成指令的參數 ——
+`cb cleanup apply   # …` 會把 `#` 當成 plan id。這一行**要自己一次貼**：跟下面那一大段一起貼的話，
+zsh 會把整段讀完才開始執行，同一次貼上的行尾註解還是不認。
+
+然後貼這一段：
 
 ```bash
 export REPO="$PWD"
@@ -37,8 +50,8 @@ cat > "$CONTEXTBOX_CONFIG" <<EOF
 }
 EOF
 
-# 沙盒守門：環境變數有任何一個不在沙盒裡，就不跑
-cb() {
+# 沙盒守門：環境變數有任何一個不在沙盒裡，就回 1。每一條都是整條路徑一模一樣的比對
+sandbox_ok() {
   if [ -z "$SANDBOX" ] || [ "$HOME" != "$SANDBOX/home" ] \
      || [ "$CONTEXTBOX_CONFIG" != "$SANDBOX/config.json" ] \
      || [ "$CONTEXTBOX_DB" != "$SANDBOX/data.db" ] \
@@ -47,18 +60,32 @@ cb() {
     echo '⚠ 沙盒沒設定好，這一步不跑。回到第 0 步重新設定。' >&2
     return 1
   fi
+}
+
+# 之後每一個 CLI 指令都走 cb
+cb() {
+  sandbox_ok || return 1
   node "$REPO/cli.mjs" "$@"
 }
 
-# macOS 內建的 touch 看不懂「3 days ago」，用 node 代勞（Linux 不用這段）
-if [ "$(uname)" = Darwin ]; then
-  touch() {
-    local when="$2"; shift 2
-    node -e 'const [w, ...fs] = process.argv.slice(1); const [n, u] = w.split(" ");
-      const t = new Date(Date.now() - n * (u.startsWith("hour") ? 3600e3 : 86400e3));
-      for (const f of fs) require("fs").utimesSync(f, t, t)' "$when" "$@"
-  }
-fi
+# 把檔案時間往回撥。寫法跟 GNU touch 一樣：sandbox_touch -d '3 days ago' 檔名…
+# 但只撥沙盒 Downloads 裡的檔，有一個不在裡面就一個都不撥。
+# 用 node 做：macOS 內建的 touch 看不懂「3 days ago」
+sandbox_touch() {
+  sandbox_ok || return 1
+  node -e '
+    const fs = require("node:fs"), { resolve, sep } = require("node:path")
+    const [flag, when, ...files] = process.argv.slice(1)
+    const m = /^(\d+) (hour|day)s? ago$/.exec(when ?? "")
+    if (flag !== "-d" || !m || !files.length) { console.error(`⚠ 用法：sandbox_touch -d "3 days ago" 檔名…`); process.exit(2) }
+    const real = p => { try { return fs.realpathSync.native(p) } catch { return null } }
+    const dl = real(resolve(process.env.SANDBOX, "home", "Downloads")) + sep
+    const outside = files.filter(f => !(real(resolve(f)) ?? "").startsWith(dl))
+    if (outside.length) { console.error("⚠ 不在沙盒的 Downloads，一個都不撥：" + outside.join("、")); process.exit(1) }
+    const t = new Date(Date.now() - m[1] * (m[2] === "hour" ? 3600e3 : 864e5))
+    for (const f of files) fs.utimesSync(f, t, t)
+  ' -- "$@"
+}
 
 cb doctor
 ```
@@ -83,18 +110,47 @@ $cfg = @{ watch = @("$env:USERPROFILE\Downloads"); filed = "$env:SANDBOX\Filed"
 # 不用 Set-Content：Windows PowerShell 5 會加 BOM，設定檔就讀不懂了
 [IO.File]::WriteAllText($env:CONTEXTBOX_CONFIG, $cfg)
 
-function cb {
+# 沙盒守門：環境變數有任何一個不在沙盒裡，就回 $false
+function sandbox_ok {
   $ok = $env:SANDBOX -and $env:USERPROFILE -eq "$env:SANDBOX\home" `
     -and $env:CONTEXTBOX_CONFIG -eq "$env:SANDBOX\config.json" -and $env:CONTEXTBOX_DB -eq "$env:SANDBOX\data.db" `
     -and $env:CONTEXTBOX_QUARANTINE -eq "$env:SANDBOX\quarantine" -and $env:CONTEXTBOX_TOKEN_PATH -eq "$env:SANDBOX\token"
-  if (-not $ok) { Write-Warning '沙盒沒設定好，這一步不跑。回到第 0 步重新設定。'; return }
+  if (-not $ok) { Write-Warning '沙盒沒設定好，這一步不跑。回到第 0 步重新設定。' }
+  return [bool]$ok
+}
+
+function cb {
+  if (-not (sandbox_ok)) { return }
   node "$env:REPO\cli.mjs" @args
+}
+
+# 把檔案時間往回撥，寫法跟 bash 那邊一樣：sandbox_touch -d '3 days ago' 檔名…
+# 只撥沙盒 Downloads 裡的檔，有一個找不到或不在裡面就一個都不撥
+function sandbox_touch([string]$d) {
+  if (-not (sandbox_ok)) { return }
+  if (-not ($d -match '^(\d+) (hour|day)s? ago$')) { Write-Warning '用法：sandbox_touch -d ''3 days ago'' 檔名…'; return }
+  $span = if ($Matches[2] -eq 'hour') { [TimeSpan]::FromHours([double]$Matches[1]) } else { [TimeSpan]::FromDays([double]$Matches[1]) }
+  $dl = (Get-Item -LiteralPath "$env:USERPROFILE\Downloads").FullName + [IO.Path]::DirectorySeparatorChar
+  $files = @(foreach ($f in $args) { Get-Item -LiteralPath $f })
+  $outside = @($files | Where-Object { -not $_.FullName.StartsWith($dl, [StringComparison]::OrdinalIgnoreCase) })
+  if ($files.Count -ne $args.Count -or $outside.Count) { Write-Warning '有檔案找不到或不在沙盒的 Downloads，一個都不撥'; return }
+  foreach ($f in $files) { $f.LastWriteTime = (Get-Date) - $span }
 }
 
 cb doctor
 ```
 
-之後各步的 bash 指令在 PowerShell 裡一樣打 `cb …`；`ls ~/Downloads` 換成 `Get-ChildItem "$env:USERPROFILE\Downloads"`。
+**PowerShell 跑不了第 4–6 步**（含 6.5）：那幾步的指令用到 bash 的 `printf`、`cat`、`if … fi`、
+`變數=值 指令` 這種寫法，這份文件沒有 PowerShell 版，**不要把 bash 指令硬貼進 PowerShell**。
+Windows 上跑第 0–3 步，第 3 步之後用 `cb cleanup undo` 把那五個救回來（第 4 步的第一個指令），
+然後直接跳到第 7 步。紀錄上第 4 步寫「只跑了 `cb cleanup undo`」，第 5、6、6.5 步寫「PowerShell 版還沒有，沒跑」。
+
+第 2、3 步在 PowerShell 裡這樣換：
+
+- `cb …` 照打。`ls ~/Downloads | grep smoke` 換成 `(Get-ChildItem "$env:USERPROFILE\Downloads").Name | Select-String smoke`，
+  `grep -c` 再接 `| Measure-Object`（`cb cleanup list | grep -c …` 同理）
+- `CONTEXTBOX_READONLY=1 cb cleanup apply` 拆成三行：`$env:CONTEXTBOX_READONLY = '1'`、`cb cleanup apply`、`$env:CONTEXTBOX_READONLY = $null`
+- 離開碼看 `$LASTEXITCODE`，不是 `$?`（PowerShell 的 `$?` 只有 True／False）
 
 > **PowerShell 裡不要用 `~`。** PowerShell 的 `~` 是分頁**開啟時**的家目錄，不會跟著上面改過的
 > `$env:USERPROFILE` 走 —— `cd ~\Downloads` 會進到你真的 Downloads。一律寫 `$env:USERPROFILE`。
@@ -115,31 +171,31 @@ pwd                                      # 要印出 $SANDBOX/home/Downloads
 # 不撥的話這一步一定失敗，而且錯不在程式。
 printf 'SMOKE 這是一份報告的內容\n' > smoke-report.pdf
 cp smoke-report.pdf 'smoke-report (1).pdf'
-touch -d '2 hours ago' smoke-report.pdf 'smoke-report (1).pdf'
+sandbox_touch -d '2 hours ago' smoke-report.pdf 'smoke-report (1).pdf'
 
 # partial —— 下載到一半，而且 24 小時沒變
 printf 'SMOKE 半個檔\n' > smoke-big.iso.crdownload
-touch -d '3 days ago' smoke-big.iso.crdownload
+sandbox_touch -d '3 days ago' smoke-big.iso.crdownload
 
 # empty —— 0 byte，24 小時沒變
 : > smoke-empty.txt
-touch -d '3 days ago' smoke-empty.txt
+sandbox_touch -d '3 days ago' smoke-empty.txt
 
 # installer —— 14 天沒變
 printf 'SMOKE 假安裝檔\n' > smoke-setup.msi
-touch -d '30 days ago' smoke-setup.msi
+sandbox_touch -d '30 days ago' smoke-setup.msi
 
 # archive —— 30 天沒變（但不到 90 天，免得同時算成 old-download）
 printf 'SMOKE 假壓縮檔\n' > smoke-assets.zip
-touch -d '60 days ago' smoke-assets.zip
+sandbox_touch -d '60 days ago' smoke-assets.zip
 
 # old-download —— 90 天沒變，不在保護副檔名
 printf 'SMOKE 很舊的東西\n' > smoke-old.bin
-touch -d '200 days ago' smoke-old.bin
+sandbox_touch -d '200 days ago' smoke-old.bin
 
 # screenshot-noise —— Screenshot 開頭，30 天沒變（不到 90 天，免得 kind 變成 old-download）
 printf 'SMOKE 假截圖\n' > 'Screenshot 2026-01-02 141203.png'
-touch -d '45 days ago' 'Screenshot 2026-01-02 141203.png'
+sandbox_touch -d '45 days ago' 'Screenshot 2026-01-02 141203.png'
 ```
 
 > **為什麼每一個垃圾檔都要往回撥時間？**
@@ -155,20 +211,19 @@ touch -d '45 days ago' 'Screenshot 2026-01-02 141203.png'
 cd "$env:USERPROFILE\Downloads"     # 第 0 步換過 USERPROFILE，這裡是沙盒（不要寫 ~，見上）
 "SMOKE 這是一份報告的內容" | Out-File -Encoding utf8 smoke-report.pdf
 Copy-Item smoke-report.pdf "smoke-report (1).pdf"
-(Get-Item smoke-report.pdf).LastWriteTime = (Get-Date).AddHours(-2)
-(Get-Item "smoke-report (1).pdf").LastWriteTime = (Get-Date).AddHours(-2)
+sandbox_touch -d '2 hours ago' smoke-report.pdf "smoke-report (1).pdf"
 "SMOKE 半個檔" | Out-File -Encoding utf8 smoke-big.iso.crdownload
-(Get-Item smoke-big.iso.crdownload).LastWriteTime = (Get-Date).AddDays(-3)
+sandbox_touch -d '3 days ago' smoke-big.iso.crdownload
 New-Item smoke-empty.txt -ItemType File -Force | Out-Null
-(Get-Item smoke-empty.txt).LastWriteTime = (Get-Date).AddDays(-3)
+sandbox_touch -d '3 days ago' smoke-empty.txt
 "SMOKE 假安裝檔" | Out-File -Encoding utf8 smoke-setup.msi
-(Get-Item smoke-setup.msi).LastWriteTime = (Get-Date).AddDays(-30)
+sandbox_touch -d '30 days ago' smoke-setup.msi
 "SMOKE 假壓縮檔" | Out-File -Encoding utf8 smoke-assets.zip
-(Get-Item smoke-assets.zip).LastWriteTime = (Get-Date).AddDays(-60)
+sandbox_touch -d '60 days ago' smoke-assets.zip
 "SMOKE 很舊的東西" | Out-File -Encoding utf8 smoke-old.bin
-(Get-Item smoke-old.bin).LastWriteTime = (Get-Date).AddDays(-200)
+sandbox_touch -d '200 days ago' smoke-old.bin
 "SMOKE 假截圖" | Out-File -Encoding utf8 "Screenshot 2026-01-02 141203.png"
-(Get-Item "Screenshot 2026-01-02 141203.png").LastWriteTime = (Get-Date).AddDays(-45)
+sandbox_touch -d '45 days ago' "Screenshot 2026-01-02 141203.png"
 ```
 
 ### 順便放三個**不可以被碰**的
@@ -252,7 +307,7 @@ echo "離開碼 = $?"
 
 ```bash
 ls ~/Downloads | grep smoke                          # 那五個打勾的不見了
-ls -R "$CONTEXTBOX_QUARANTINE"                       # 它們在沙盒的隔離區裡
+find "$CONTEXTBOX_QUARANTINE" -type f                # 它們在沙盒的隔離區裡（一行一個）
 ls ~/Downloads | grep -E '今天的筆記|重要簡報|下載中'   # 三個都還在
 ```
 
@@ -266,9 +321,11 @@ ls ~/Downloads | grep -E '今天的筆記|重要簡報|下載中'   # 三個都�
 ```bash
 cb cleanup undo <plan-id>
 ls ~/Downloads | grep smoke
+find "$CONTEXTBOX_QUARANTINE" -type f                # 要沒有輸出
 ```
 
-五個都要回到原位、原檔名。隔離區要空掉。
+五個都要回到原位、原檔名。隔離區要空掉：`find` 要**沒有輸出**。
+復原之後隔離區會留下空資料夾，那不算東西 —— 所以不用 `ls -R`，它連空資料夾都會印，永遠「還有東西」。
 （`cb cleanup undo` 不給 id 的話，復原的是最近一份還能復原的計畫 —— 結果要一樣。）
 
 復原過的檔，**同樣的理由不會再被提議**（復原就代表想留著），所以重掃之後它們不在清單上。
@@ -280,7 +337,7 @@ ls ~/Downloads | grep smoke
 
 ```bash
 printf 'SMOKE 同名衝突用的舊檔\n' > ~/Downloads/smoke-同名.zip
-touch -d '60 days ago' ~/Downloads/smoke-同名.zip
+sandbox_touch -d '60 days ago' ~/Downloads/smoke-同名.zip
 cb cleanup scan
 cb cleanup apply                                    # 只會清掉 smoke-同名.zip，記下 plan id
 printf 'SMOKE 我後來又下載了一個同名的\n' > ~/Downloads/smoke-同名.zip
@@ -308,13 +365,13 @@ smoke-同名.zip.restored     ← 救回來的
 
 ```bash
 printf 'SMOKE 重送用的舊檔\n' > ~/Downloads/smoke-重送.zip
-touch -d '60 days ago' ~/Downloads/smoke-重送.zip
+sandbox_touch -d '60 days ago' ~/Downloads/smoke-重送.zip
 cb cleanup scan
 cb cleanup apply                                    # 建 plan 並套用，記下 plan id
-ls -R "$CONTEXTBOX_QUARANTINE" | wc -l              # 記下這個數字
+find "$CONTEXTBOX_QUARANTINE" -type f | wc -l       # 記下這個數字（應該是 1）
 cb cleanup apply <同一個 plan-id>
 echo "離開碼 = $?"
-ls -R "$CONTEXTBOX_QUARANTINE" | wc -l              # 跟上面一樣
+find "$CONTEXTBOX_QUARANTINE" -type f | wc -l       # 跟上面一樣
 ```
 
 第二次要**印出同樣的結果、離開碼 0**，而且「搬進隔離區 N 個」的 N、隔離區裡的檔數都**不可以變**
@@ -334,14 +391,19 @@ cb cleanup quarantine --empty
 七天不用真的等：**在沙盒裡**把隔離時間撥回八天前（只能對沙盒的資料庫這樣做）：
 
 ```bash
-case "$CONTEXTBOX_DB" in
-  "$SANDBOX"/*) node -e 'const { DatabaseSync } = require("node:sqlite");
+if sandbox_ok && [ "$CONTEXTBOX_DB" = "$SANDBOX/data.db" ]; then
+  node -e 'const { DatabaseSync } = require("node:sqlite");
     new DatabaseSync(process.env.CONTEXTBOX_DB).prepare("UPDATE cleanup_move_details SET completed_at = ?")
-      .run(new Date(Date.now() - 8 * 864e5).toISOString())' ;;
-  *) echo '⚠ 資料庫不在沙盒裡，不撥' ;;
-esac
+      .run(new Date(Date.now() - 8 * 864e5).toISOString())'
+else
+  echo '⚠ 資料庫不在沙盒裡，不撥'
+fi
 cb cleanup quarantine --empty
 ```
+
+> **守門是整條路徑一模一樣的比對。** 以前寫的是 `case "$CONTEXTBOX_DB" in "$SANDBOX"/*)`：
+> `SANDBOX` 是空字串的時候樣式變成 `"/"*`，任何絕對路徑都放行 —— 真的資料庫會被撥成八天前，
+> 真的隔離區可以馬上永久清空。`test/repo.test.mjs` 會真的用 bash 跑這一段，餵空的 `SANDBOX` 看它擋不擋。
 
 這次 `--empty` 會先印預覽與一個 token，**不會刪任何東西**。要真的刪得再打一次：
 
@@ -364,22 +426,22 @@ cb cleanup quarantine                            # 隔離區是空的
 CLI 那幾步走完之後，用畫面再走一次同樣的流程。**這一段一定要真的用滑鼠點**，
 自動化測試驗得到資料對不對，驗不到「使用者看了會不會誤會」。
 
-先關掉你平常在跑的 ContextBox（`node cli.mjs pet`）—— 兩個都要用 7391。
-然後在**同一個分頁**、同一組環境變數下，在背景起沙盒的 server：
+在**同一個分頁**、同一組環境變數下，在背景起沙盒的 server。`CONTEXTBOX_PORT=0` 讓系統挑一個空的 port ——
+你平常在跑的 ContextBox（7391）**不用關**，兩個不會撞：
 
 ```bash
 printf 'SMOKE 畫面用的舊檔\n' > ~/Downloads/smoke-畫面.zip
 printf 'SMOKE 畫面用的安裝檔\n' > ~/Downloads/smoke-畫面.msi
-touch -d '60 days ago' ~/Downloads/smoke-畫面.zip ~/Downloads/smoke-畫面.msi
+sandbox_touch -d '60 days ago' ~/Downloads/smoke-畫面.zip ~/Downloads/smoke-畫面.msi
 cb cleanup scan
-cb pet &                  # 背景跑；印出一個帶 ?k= 的網址
+CONTEXTBOX_PORT=0 cb pet &   # 背景跑；印出一個帶 ?k= 的網址，port 是系統挑的
 ```
 
-打開它印出來、**帶 `?k=…` 的網址**（或另外跑 `cb open`）。那把鑰匙是沙盒的：
-拿去開你平常那一個 server 會回 401，開錯了也不會動到真的檔。
+打開它印出來、**帶 `?k=…` 的網址**（或另外跑 `cb open`：pet 把實際的 port 記在沙盒的資料庫裡，
+`open` 讀得到）。那把鑰匙是沙盒的：拿去開你平常那一個 server 會回 401，開錯了也不會動到真的檔。
 
-> 如果印的是「已經有一個 ContextBox 在跑了」—— 那是你平常用的那一個。**不要開那個網址**，
-> 先把它關掉，`kill %1` 之後重跑這一段。
+> `CONTEXTBOX_PORT=0` 只寫在 pet 那一行，**不要 export**：export 的話之後的 `cb open` 也拿到 0，
+> 就找不到沙盒的 pet 了。
 
 1. 右下角的可頌貓旁邊要有垃圾桶，**數字跟 `cb cleanup list` 的檔案數一樣**。
 2. 點垃圾桶。面板上方要寫「**本機模式**」—— 寫「示範模式」的話你開到 demo 了，按 D 切回來。
@@ -393,7 +455,7 @@ cb pet &                  # 背景跑；印出一個帶 ?k= 的網址
 
    ```bash
    printf 'SMOKE 畫面同名\n' > ~/Downloads/smoke-畫面同名.zip
-   touch -d '60 days ago' ~/Downloads/smoke-畫面同名.zip
+   sandbox_touch -d '60 days ago' ~/Downloads/smoke-畫面同名.zip
    cb cleanup scan
    ```
 
@@ -417,11 +479,24 @@ kill %1
 ## 7 ・ 收尾
 
 ```bash
-ls ~/Downloads                     # 只剩這份 smoke 放的檔（含 .restored），沒有別的東西
-ls -R "$CONTEXTBOX_QUARANTINE"     # 還有東西的話，代表前面某一步沒走完 —— 那本身就是一個發現
+ls ~/Downloads                          # 只剩這份 smoke 放的檔（含 .restored），沒有別的東西
+find "$CONTEXTBOX_QUARANTINE" -type f   # 要沒有輸出。有的話，代表前面某一步沒走完 —— 那本身就是一個發現
 cd "$REPO"
-rm -rf "$SANDBOX"
-exit                               # 關掉這個分頁：這個分頁的 HOME 還指著剛刪掉的沙盒
+sandbox_ok && rm -rf "$SANDBOX"
+exit                                    # 關掉這個分頁：這個分頁的 HOME 還指著剛刪掉的沙盒
+```
+
+隔離區只剩空資料夾是正常的（復原、清空都不刪資料夾），`find -type f` 只列檔案。
+以前這裡用 `ls -R`，空資料夾也會印出來，每晚都記一條假的發現。
+
+**Windows（PowerShell）**：
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\Downloads"                  # 只剩這份 smoke 放的檔
+Get-ChildItem -Recurse -File "$env:CONTEXTBOX_QUARANTINE"   # 要沒有輸出
+cd $env:REPO
+if (sandbox_ok) { Remove-Item -Recurse -Force $env:SANDBOX }
+exit
 ```
 
 ---
@@ -433,7 +508,7 @@ exit                               # 關掉這個分頁：這個分頁的 HOME �
 ```markdown
 # Smoke 2026-09-14
 
-機器：Windows 11 / Node 24.6.0 / commit abc1234
+機器：macOS 15 / Node 24.6.0 / commit abc1234
 
 | 步驟 | 結果 |
 |---|---|
@@ -451,6 +526,8 @@ exit                               # 關掉這個分頁：這個分頁的 HOME �
 - （沒有的話寫「無」）
 ```
 
+Windows 的紀錄照第 0 步說的寫：第 4 步「只跑了 `cb cleanup undo`」，第 5、6、6.5 步「PowerShell 版還沒有，沒跑」。
+
 **紅的那一項要開 issue，不要只寫在 log 裡。**
 
 ---
@@ -465,4 +542,6 @@ exit                               # 關掉這個分頁：這個分頁的 HOME �
 訊息看不看得懂、檔案有沒有真的回到原位。
 
 `test/repo.test.mjs` 會檢查這份文件本身：沙盒要在第一個動資料的指令之前設好、
-每一個 CLI 指令都走 `cb`、重送 apply 要寫成冪等（舊版寫的是「重送會被拒絕」，那不是實際行為）。
+每一個 CLI 指令都走 `cb`、直接改資料庫或檔案時間的每一行都站在守門後面（而且真的用 bash 跑一次：
+`SANDBOX` 是空字串也要擋下）、隔離區空了沒用 `find -type f` 看、
+重送 apply 要寫成冪等（舊版寫的是「重送會被拒絕」，那不是實際行為）。

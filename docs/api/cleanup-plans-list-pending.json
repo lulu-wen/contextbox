@@ -4,9 +4,9 @@
   "limit": 20,
   "operations": [
     {
-      "id": "8fa3f93e-b75e-49fe-a36e-758a836dbe71",
+      "id": "9c8d2104-df90-4f14-8126-529a88d9abd0",
       "status": "proposed",
-      "createdAt": "2026-09-18T18:58:52.256Z",
+      "createdAt": "2026-09-18T20:14:32.547Z",
       "appliedAt": null,
       "restoredAt": null,
       "canUndo": false,
@@ -14,17 +14,17 @@
       "bytes": 38,
       "items": [
         {
-          "itemId": "630b06e9-5fbc-46a3-a0bd-a008cfee50dd",
+          "itemId": "63a29e9e-b6f9-4b72-be72-ba43a21473e4",
           "name": "素材包.zip",
           "bytes": 19
         },
         {
-          "itemId": "408452ff-aa19-46fb-b6ff-20270a68aaca",
+          "itemId": "e971d836-ca04-4379-9bed-41e645c0f44d",
           "name": "安裝檔.msi",
           "bytes": 19
         },
         {
-          "itemId": "e0b845bb-e2a2-4083-ac12-f8c8758d8ffe",
+          "itemId": "a48027ed-2d72-45d5-807f-aa416f91c7c3",
           "name": "空的.txt",
           "bytes": 0
         }

@@ -626,6 +626,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
  * - 不再是「多出來的」那些（保留者、內容變了、另一份不在了），候選改 **skipped**
  *   而不是 dismissed：之後又變回重複檔時 upsert 會把它改回 proposed。這一步看所有活著的檔，
  *   不限 onlyItemIds —— 保留者被刪掉時，剩下那份不是這一輪碰到的檔，但它已經是唯一的一份。
+ *   但**有給 roots 的話只看 roots 底下的候選**（見 skipStaleDuplicates）。
  * - 執行層不收的檔名（`.ini`、`.url`…）不提議；它們可以當保留者（執行層的 keeperPath 不擋檔名）。
  * - 有給 `roots` 的話，**只有這些根目錄底下的檔算數**（當保留者、被提議都是）。
  *   執行層只接受根目錄底下的保留者；舊設定留下的桌面列從來不會被對帳（檔案早就刪了也還是「活的」），
@@ -658,16 +659,24 @@ export function addDuplicateCandidates(
       setItemStatus(db, item.id, 'candidate')
     }
   }
-  skipStaleDuplicates(db, extra)
+  skipStaleDuplicates(db, extra, pre)
 }
 
-/** 活著的檔上、已經不是「多出來那份」的 proposed 重複檔候選 → skipped。 */
-function skipStaleDuplicates(db: DatabaseSync, extra: Set<string>) {
+/**
+ * 活著的檔上、已經不是「多出來那份」的 proposed 重複檔候選 → skipped。
+ *
+ * `pre`（根目錄前綴）有給的話，**只處理這些根目錄底下的候選**。`extra` 是只用 roots 底下的檔
+ * 算出來的，拿它去判斷 roots 外面的候選等於「沒看就說不成立」：兩個呼叫端的 roots 不一樣
+ * （CLI 與 server 的設定不同、設定改過）時，同一個候選會被一邊改成 skipped、另一邊改回 proposed，
+ * 清單上的檔忽隱忽現（稽核第三波 K5）。roots 外面的候選留給掃那裡的人判斷。
+ */
+function skipStaleDuplicates(db: DatabaseSync, extra: Set<string>, pre: string[] | null) {
   const stale = (db.prepare(
-    `SELECT c.id, c.item_id FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
+    `SELECT c.id, c.item_id, i.path FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
      WHERE c.kind='duplicate' AND c.rule_version=? AND c.status='proposed'
        AND i.status NOT IN ('quarantined','missing','error')`
-  ).all(CLEANUP_RULE_VERSION) as { id: string; item_id: string }[]).filter(r => !extra.has(r.item_id))
+  ).all(CLEANUP_RULE_VERSION) as { id: string; item_id: string; path: string }[])
+    .filter(r => !extra.has(r.item_id) && (!pre || pre.some(x => fold(r.path).startsWith(x))))
   for (const r of stale) {
     waitForDb(() => db.prepare(`UPDATE cleanup_candidates SET status='skipped' WHERE id=?`).run(r.id))
     // 沒有別的候選了就不再是 candidate

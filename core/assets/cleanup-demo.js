@@ -1,13 +1,14 @@
 import { createDemo } from './cleanup-demo-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
+  folderPhrase,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
 const panel = $('cleanup-panel')
 const alertButton = $('quaso-cleanup-alert')
 let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
-// 本機模式：接真的路由，會真的搬動 Downloads。介面跟 demo 一樣，渲染共用。
+// 本機模式：接真的路由，會真的搬動監看資料夾（cleanup.roots）裡的檔案。介面跟 demo 一樣，渲染共用。
 let real = null
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
 let healthChecked = false, healthBusy = false, stopped = false
@@ -52,7 +53,8 @@ function updateAlert() {
   const state = offline ? 'worried' : count > 0 ? 'found' : health?.watcher?.ok ? 'watching' : 'idle'
   $('quaso').dataset.petState = state
   $('quaso-worried').hidden = !offline
-  $('quaso-stage').title = health?.watcher?.ok ? '📁 Downloads · 監看中' : '與可頌貓對話'
+  // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
+  $('quaso-stage').title = health?.watcher?.ok ? `📁 ${folderPhrase(health.watcher, { quoted: false })} · 監看中` : '與可頌貓對話'
   if (count > previousCount && !offline) {
     $('quaso-stage').classList.remove('found-hop')
     void $('quaso-stage').offsetWidth
@@ -92,12 +94,16 @@ function paragraph(text, className = '') {
   p.className = className
   return p
 }
+/** 面板最上面那一句。本機模式講真的資料夾名（U4），拿不到就講「監看資料夾」。 */
+function modeNote() {
+  $('cleanup-mode-note').textContent = isDemo()
+    ? '示範模式 · 以下為範例檔案，清理與復原不會動到你電腦上真的檔案。'
+    : `本機模式 · 這些是你${folderPhrase(health?.watcher)}裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。`
+}
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
-  $('cleanup-mode-note').textContent = isDemo()
-    ? '示範模式 · 以下為範例檔案，清理與復原不會修改你的 Downloads。'
-    : '本機模式 · 這些是你 Downloads 裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。'
+  modeNote()
   $('cleanup-space-note').hidden = !isDemo()
   $('cleanup-apply').hidden = false
   $('cleanup-reset').hidden = !isDemo()   // 「重新示範」只有 demo 有意義
@@ -116,11 +122,14 @@ function render() {
     const name = document.createElement('strong')
     name.textContent = safeName(item.name)
     label.append(check, name)
-    card.append(label, paragraph(`${[item.folder, item.subdir].filter(Boolean).join('/')} · ${bytes(item.bytes)} · 信心 ${item.confidence}%`))
+    // 卡片上的每一段都走 safeName（U5）：evidence 會帶檔名（「檔名是 …」「會留著「…」」），
+    // folder／subdir 是資料夾名 —— 都是不可信的輸入，U+2028 在 white-space: normal 下也會斷行、偽造一行。
+    const where = [item.folder, item.subdir].filter(Boolean).map(safeName).join('/')
+    card.append(label, paragraph(`${where} · ${bytes(item.bytes)} · 信心 ${item.confidence}%`))
     for (const reason of item.reasons) {
-      card.append(paragraph(reason.reason), paragraph(reason.evidence, 'evidence'))
+      card.append(paragraph(safeName(reason.reason)), paragraph(safeName(reason.evidence), 'evidence'))
     }
-    if (item.vetoed) card.append(paragraph('⚠ ' + item.vetoed, 'evidence'))
+    if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
     $('cleanup-list').append(card)
   }
   if (!s.candidates.length) $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
@@ -180,6 +189,7 @@ alertButton.onclick = async () => {
   // 本機模式：真的清理。模擬的資料與真的資料**永遠不混用** ——
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
+  modeNote()
   for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
@@ -436,9 +446,8 @@ async function pollHealth() {
   retry.textContent = '正在連線……'
   try {
     if (mockOffline) throw new Error('Mock backend offline')
-    const response = await fetch('/health', { cache: 'no-store', signal: AbortSignal.timeout(4000) })
-    if (!response.ok) throw new Error('health')
-    const snapshot = await response.json()
+    // 帶 token 問（window.api 會帶）：資料夾名（watcher.watching）只給帶 token 的（U4）
+    const snapshot = await window.api('/health', { signal: AbortSignal.timeout(4000) })
     health = snapshot.ok ? snapshot : null
   } catch { health = null }
   healthChecked = true

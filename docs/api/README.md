@@ -66,7 +66,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
 | 404 | `NOT_FOUND` | 那份計畫不存在 | 重新拿清單 |
 | 405 | `BAD_METHOD` | 認得的路徑用錯方法 | 看 `Allow` header |
-| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`）；已經開始的計畫再 dismiss／release；已經開始復原的計畫再 apply | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
+| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`）；已經開始的計畫再 dismiss／release；開始復原之後停在 `partial`／`error` 的計畫再 apply（全部放回的 `restored` 再 apply 回 200、原樣回傳，不會再搬） | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
 | 409 | `STALE_CANDIDATE` | 送來的 id 不在目前的清單上（清單變了、太大、不在清理範圍） | 一個都不搬；重新載入清單給使用者再看一眼 |
 | 409 | `EMPTY_PLAN` | 沒有勾任何東西（`candidateIds: []`），或預設清理沒東西可清 | 不是錯：Downloads 很乾淨 |
 | 409 | `TOO_FRESH` | 檔案十分鐘內還在變動（多半只出現在逐項結果的 `why`） | 等一下再試 |
@@ -85,7 +85,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 500 | `OUTSIDE_ROOT` | 檔案不在清理範圍裡（多半只出現在逐項結果） | 重新掃描 |
 | 500 | `NO_DUPLICATE` | 重複檔找不到會留下的那一份（多半只出現在逐項結果） | 重新掃描 |
 | 500 | `VERIFY_FAILED` | 搬移後驗證沒過（多半只出現在逐項結果） | 保留隔離區，重試 |
-| 500 | `INTERNAL` | 其他意外。訊息是「後端出錯了，這一步可能沒有完成。請重新整理後看目前的狀態。」 | 重新整理看目前的狀態，不要自動重試 |
+| 500 | `INTERNAL` | 其他意外。訊息是「後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。」 | 重新整理看目前的狀態，不要自動重試 |
 | 501 | `NOT_IMPLEMENTED` | `/cleanup/…`、`/pet/…` 底下還沒做的路徑（例如 `/cleanup/reveal`） | 不要重試 |
 | 503 | `BUSY` | 另一個清理動作正在跑（別的行程拿著鎖） | 照 `Retry-After` header（秒，現在是 2）等一下重試 |
 
@@ -135,9 +135,11 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 
 ## `GET /health`
 
-**不帶 token 也回**（擴充套件與寵物用它判斷後端活著沒），所以不帶 token 的那一份**不給任何名字或路徑**：
+**不帶 token 也回**（擴充套件與寵物用它判斷後端活著沒），所以不帶 token 的那一份**不給任何名字、路徑或時間**：
 `watcher.watching` 是空陣列、`watcher.lastHeartbeatAt` 與 `watcher.pid` 是 `null`、`lastError` 只說
-「有，帶 token 才看得到」。兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
+「有，帶 token 才看得到」、`lastErrorAt` 與 `lastOkAt` 是 `null`（同機任何行程都讀得到，時間會洩漏
+「使用者什麼時候清理過」）。兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
+寵物要比那兩個時間，走要 token 的 `GET /pet/state`。
 
 | 欄位 | 意思 |
 |---|---|
@@ -157,7 +159,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `pendingCandidates` | 清單上有幾個檔（跟 `GET /cleanup/candidates` 同一套篩選） |
 | `needsHumanCount` | 「需要你查看」有幾個 |
 | `lastError` | 最近一次**真的意外**：帶 token 是「ISO 時間 空白 人話」，不帶原文、不帶路徑 |
-| `lastErrorAt`、`lastOkAt` | 最近一次意外、最近一次成功的掃描／套用／復原／清空。**寵物只在 `lastErrorAt` 比 `lastOkAt` 新的時候擔心** |
+| `lastErrorAt`、`lastOkAt` | 最近一次意外、最近一次成功的掃描／套用／復原／清空（帶 token 才有）。**寵物只在 `lastErrorAt` 比 `lastOkAt` 新的時候擔心** |
 | `facts` | 已確認的事實筆數（擴充套件不帶 token 讀它） |
 
 > **欄位改過名。** 舊文件的 `quarantine.lastQuarantinedAt`（最新一筆的隔離時間）拿掉了 —— 七天要從**最早**
@@ -238,12 +240,12 @@ UI 不能只畫成功的樣子。
 | 參數 | 列哪些計畫 | `items`／`itemCount`／`bytes` 算哪些檔 |
 |---|---|---|
 | **不帶篩選** | **全部**：proposed、applied、partial、error、restored、dismissed 都列 | 計畫裡的**每一個**檔（含已放回、已放棄的） |
-| `undoable=1` | 隔離區裡**現在**還有東西的。已復原、已被清空、復原到一半的都不算 | 只算還能放回去的（`outcome` 是 `moved`） |
-| `pending=1` | 還有沒做完項目的 proposed／partial／error 計畫。給「接續上次那份」用 | 只算沒做完的（`pending`、`failed`、`unknown`） |
+| `undoable=1` | **現在還有檔可以放回去**的：包含復原失敗過的（`partial`／`error`，沒放回的那幾個還在隔離區），與復原到一半中斷的（再按一次復原會接完）。已復原、已被清空的不算 | 只算還能放回去的（`outcome` 是 `moved`，或復原中斷的 `unknown`） |
+| `pending=1` | **還沒套用（`proposed`）**、而且還有沒做完項目的計畫。給「接續上次那份」用。套用過的 partial／error 不列：計畫是一次性的，失敗的檔要重試就建新計畫 | 只算沒做完的（`pending`、`failed`、`unknown`） |
 | `offset`、`limit` | `limit` 1～100（預設 20），`offset` 不可以是負的，錯了回 400。超過最後一頁會夾回最後一頁 | |
 
 `undoable=1` 與 `pending=1` 同時帶的話，以 `undoable` 為準。
-`canUndo` 在三種篩法裡的意思都一樣：這份計畫現在還有沒有檔在隔離區。
+`canUndo` 在三種篩法裡的意思都一樣：這份計畫現在還有沒有檔可以放回去（在隔離區，或復原到一半中斷）。
 
 ### 復原的檔不會回到**這次的**清理清單
 
@@ -253,8 +255,11 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 但**不要**跟使用者說「之後不會再被提議」，那不一定是真的：
 
 - 之後符合**新的**理由（例如又放了 60 天，變成 old-download）會再出現
-- **原位置被佔時**（清掉之後又下載了同名的檔），放回來的那份會改名成 `原檔名.restored`，
-  重掃後它是那個新檔的重複檔 —— 會以 duplicate 98 分、**預設勾**的身分再出現
+- **原位置被佔時**（清掉之後又下載了同名的檔），放回來的那份會改名成 `原檔名.restored`。
+  副檔名變成 `.restored`，看副檔名的規則（archive、installer…）不會再命中。重掃之後：
+  - 後來那個檔跟放回來的**內容一模一樣** → `.restored` 是它的重複檔，會以 duplicate 98 分、**預設勾**的身分再出現
+  - **內容不同** → 不會以 duplicate 出現。它自己符合別的規則才會列（例如 90 天沒動過 → old-download 35 分，
+    預設不勾），不然根本不列
 
 改名的那幾個，`items[]` 裡會有 `restoredAs`（只有檔名，不帶路徑）。UI 要講出來，
 不然使用者以為「放回原位」—— 其實原位是後來那個檔。

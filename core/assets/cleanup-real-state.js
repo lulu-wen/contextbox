@@ -30,6 +30,25 @@ export const formatBytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' 
 
 const why = w => safeName(w || '後端沒有給原因')
 
+/**
+ * 面板講「你的哪個資料夾」時用的字（稽核第三波 U4）。以前寫死 Downloads ——
+ * 清理範圍是 cleanup.roots，開了 cleanup.screenshots 就多一個截圖資料夾，改過設定的也不叫 Downloads。
+ *
+ * watcher 是帶 token 的 /health 的 watcher：watching 是每個清理根目錄的資料夾名
+ * （家目錄那個後端給空字串，不給名字），watchingCount 是一共幾個。沒帶 token 的版本 watching 是空的。
+ * 名字是不可信的輸入（資料夾可以叫任何名字）：一律 safeName，最多列三個，多的講「等 N 個」。
+ * 拿不到名字就講「監看資料夾」，不猜。
+ */
+export function folderPhrase(watcher, { quoted = true } = {}) {
+  const list = Array.isArray(watcher?.watching) ? watcher.watching : []
+  const count = Number.isInteger(watcher?.watchingCount) ? watcher.watchingCount : 0
+  const total = Math.max(count, list.length)
+  const names = list.filter(n => typeof n === 'string' && n).map(n => quoted ? `「${safeName(n)}」` : safeName(n))
+  if (!names.length) return total > 1 ? `${total} 個監看資料夾` : '監看資料夾'
+  const shown = names.slice(0, 3).join('、')
+  return names.length === total && total <= 3 ? shown : `${shown}${quoted ? '' : ' '}等 ${total} 個資料夾`
+}
+
 // ── 套用的結果 ──────────────────────────────────────────────
 
 /** 從後端的計畫 DTO 取出面板要的結果。**只照 outcome 分類**，不用勾選數推算。 */
@@ -85,22 +104,37 @@ export function pendingPlanMessage(plan) {
 // ── 復原的結果 ──────────────────────────────────────────────
 
 /**
- * 復原前在隔離區的那些（outcome 是 moved），復原之後各自的下場。
- * 放回＝outcome 變成 restored；其他都是「沒放回」—— 還是 moved（例如隔離區的檔被改過、
- * 原本的資料夾被刪了），或 unknown（復原到一半中斷）。原因照後端的逐項結果。
+ * 復原前「還在（或可能還在）隔離區」的項目：outcome 是 moved，**或 unknown**（稽核第三波 U1）。
+ * unknown 有兩種：復原到一半中斷（檔多半還在隔離區，再按一次復原會接完），或搬到一半中斷。
+ * 兩種 undo 都處理得了，所以都要送 undo、都要算。以前只看 moved：復原到一半中斷的那份
+ * 在歷史面板勾了也不送 undo，結果框說「先前已經復原過了」，檔案還在隔離區。
  */
-function restoreDelta(beforeItems, after) {
+const maybeInQuarantine = i => i.outcome === 'moved' || i.outcome === 'unknown'
+
+/**
+ * 復原前在隔離區的那些，復原之後各自的下場。原因照後端的逐項結果。
+ * - 放回：outcome 變成 restored
+ * - 還不確定：還是 unknown（後端也說不準檔案在哪）—— **不可以說「沒放回」**
+ * - 沒放回：其他（還是 moved：隔離區的檔被改過、原本的資料夾被刪了……）。
+ *   後端沒給原因的話用 fallbackWhy（undo 回錯時就是那個錯誤訊息）。
+ */
+function restoreDelta(beforeItems, after, fallbackWhy = null) {
   const now = new Map(after.items.map(i => [i.itemId, i]))
-  const back = [], notBack = []
+  const back = [], notBack = [], unsure = []
   for (const was of beforeItems) {
     const i = now.get(was.itemId)
+    // 搬到一半中斷的（復原前是 unknown），復原時後端確認檔案根本沒搬、還在原位 → 結果變成
+    // failed。那不是「沒放回」，是本來就沒離開過，兩邊都不列（CLI 印「當初就沒有搬走」）。
+    if (was.outcome === 'unknown' && ['failed', 'skipped', 'pending', 'cancelled'].includes(i?.outcome)) continue
     if (i?.outcome === 'restored') back.push(i)
-    else notBack.push({ itemId: was.itemId, name: was.name, why: i?.why ?? null })
+    else if (i?.outcome === 'unknown') unsure.push({ itemId: was.itemId, name: was.name, why: i.why ?? fallbackWhy })
+    else notBack.push({ itemId: was.itemId, name: was.name, why: i?.why ?? fallbackWhy })
   }
-  return { back, notBack }
+  return { back, notBack, unsure }
 }
 
 const renamedOf = items => items.filter(i => i.restoredAs).map(i => ({ name: i.name, restoredAs: i.restoredAs }))
+const nameAndWhy = list => list.map(({ name, why }) => ({ name, why }))
 
 /** 沒放回的那幾行 */
 function notRestoredLines(ok, notRestored) {
@@ -108,8 +142,21 @@ function notRestoredLines(ok, notRestored) {
     ...notRestored.map(x => `・${safeName(x.name)} —— ${why(x.why)}`)]
 }
 
-/** 三種結果三種台詞：全部放回、部分放回、一個都沒放回（RC9）。 */
-function restoreNotice(ok, notRestored) {
+/** 還不確定放回了沒有的那幾行（U1、U2）。**不說「沒放回」** —— 可能已經放回去了。 */
+function unconfirmedLines(unconfirmed) {
+  return [`有 ${unconfirmed.length} 個還不確定放回了沒有：`,
+    ...unconfirmed.map(x => `・${safeName(x.name)} —— ${why(x.why)}`)]
+}
+
+/**
+ * 寵物的話看結果（RC9）：全部放回、部分放回、一個都沒放回各一種；
+ * 有還不確定的（U2），照實列出放回、沒放回、不確定各幾個。
+ */
+function restoreNotice(ok, notRestored, unsure = 0) {
+  if (unsure) {
+    return [ok && `放回了 ${ok} 個`, notRestored && `有 ${notRestored} 個沒放回來`, `有 ${unsure} 個還不確定放回了沒有`]
+      .filter(Boolean).join('，') + '，狀態寫在面板上。'
+  }
   if (!notRestored) return ok ? '都幫你放回來了！' : '這次沒有要放回的檔案。'
   return ok ? `放回了 ${ok} 個，有 ${notRestored} 個沒放回來，原因寫在面板上。`
     : '這次一個都沒放回來，原因寫在面板上。'
@@ -117,28 +164,39 @@ function restoreNotice(ok, notRestored) {
 
 /** 面板上「復原這次清理」之後要講的話。r 是 createReal().undo() 的回傳。 */
 export function undoMessage(r) {
-  const notRestored = r.notRestored ?? []
+  const notRestored = r.notRestored ?? [], unconfirmed = r.unconfirmed ?? []
   const lines = notRestored.length ? notRestoredLines(r.restored, notRestored)
-    : [r.restored ? `放回原位 ${r.restored} 個檔案。` : '這次沒有需要放回的檔案。']
+    : r.restored ? [`放回原位 ${r.restored} 個檔案。`]
+    : unconfirmed.length ? []
+    : ['這次沒有需要放回的檔案。']
   for (const x of r.renamed ?? []) {
     lines.push(`・${safeName(x.name)} 的原位置已經有同名檔案，放回來的這份叫 ${safeName(x.restoredAs)}（沒有覆蓋任何檔案）。`)
   }
+  if (unconfirmed.length) lines.push(...unconfirmedLines(unconfirmed))
   if (notRestored.length) lines.push('沒放回的可以從「復原最近動作」再試一次。')
+  if (unconfirmed.length) lines.push('還不確定的，可以從「復原最近動作」看它還在不在；還列在那裡的可以再復原一次。')
   if (r.reloadFailed) lines.push('（清單沒有重新整理成功。關掉面板再打開就會更新。）')
-  return { text: lines.join('\n'), notice: restoreNotice(r.restored, notRestored.length) }
+  return { text: lines.join('\n'), notice: restoreNotice(r.restored, notRestored.length, unconfirmed.length) }
 }
 
 /** 歷史面板「復原勾選動作」之後要講的話。r 是 createRealHistory 的 undo 回傳。 */
 export function historyUndoMessage(r) {
-  const notRestored = r.notRestored ?? []
+  const notRestored = r.notRestored ?? [], unconfirmed = r.unconfirmed ?? []
   const lines = notRestored.length ? notRestoredLines(r.restoredFiles, notRestored)
     : r.restoredFiles ? [`已復原 ${r.restored} 次清理，共 ${r.restoredFiles} 個檔案放回原位。`]
+    : unconfirmed.length ? []
     : [r.alreadyRestored ? `勾選的 ${r.alreadyRestored} 筆先前已經復原過了，這次沒有動任何檔案。` : '這次沒有需要放回的檔案。']
-  if (r.alreadyRestored && (notRestored.length || r.restoredFiles)) lines.push(`另有 ${r.alreadyRestored} 筆先前已復原。`)
+  if (r.alreadyRestored && (notRestored.length || r.restoredFiles || unconfirmed.length)) {
+    // 前面沒有別的句子（只有「還不確定」）時，「另有」接不上
+    lines.push(lines.length ? `另有 ${r.alreadyRestored} 筆先前已復原。` : `勾選的 ${r.alreadyRestored} 筆先前已經復原過了。`)
+  }
   for (const x of r.renamed ?? []) {
     lines.push(`・${safeName(x.name)} → ${safeName(x.restoredAs)}（原位置已經有同名檔案，沒有覆蓋）。`)
   }
-  return { text: lines.join('\n'), notice: restoreNotice(r.restoredFiles, notRestored.length) }
+  if (unconfirmed.length) {
+    lines.push(...unconfirmedLines(unconfirmed), '還列在上面紀錄裡的，就是還可以復原的，可以再勾起來試一次。')
+  }
+  return { text: lines.join('\n'), notice: restoreNotice(r.restoredFiles, notRestored.length, unconfirmed.length) }
 }
 
 // ── 面板的狀態 ──────────────────────────────────────────────
@@ -151,7 +209,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
   // 擋住這次勾選的那份計畫（後端 409 帶回來的 blockingPlan）。要先給使用者看，
   // **不可以自動套用** —— 那份的內容可能跟現在的勾選不一樣。
   let pendingPlan = null       // { id, items, uncertain? }
-  let lastPlan = null          // { id, undoable, moved: 還在隔離區的項目 }
+  let lastPlan = null          // { id, undoable, inQuarantine: 還在（或可能還在）隔離區的項目 }
 
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
   const planPath = (id, action) => `/cleanup/plans/${encodeURIComponent(id)}/${action}`
@@ -190,7 +248,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
     const plan = await post(planPath(planId, 'apply'))
     // 先把結果算好、狀態收乾淨，再重載清單
     const outcome = applyOutcome(plan)
-    lastPlan = { id: plan.id, undoable: plan.undoable, moved: plan.items.filter(i => i.outcome === 'moved') }
+    lastPlan = { id: plan.id, undoable: plan.undoable, inQuarantine: plan.items.filter(maybeInQuarantine) }
     request = null
     pendingPlan = null
     return reloadInto(outcome)
@@ -314,12 +372,12 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
 
     async undo() {
       if (!lastPlan) throw new Error('目前沒有可以復原的清理。')
-      const before = lastPlan.moved
+      const before = lastPlan.inQuarantine
       const plan = await post(planPath(lastPlan.id, 'undo'))
       // 放回幾個、沒放回哪幾個，照復原前在隔離區的那些逐一對（RC9）。
       // 不可以用 restoredCount：它算的是這份計畫「曾經」放回的全部，重按一次會重複算。
-      const { back, notBack } = restoreDelta(before, plan)
-      lastPlan = { id: plan.id, undoable: plan.undoable, moved: plan.items.filter(i => i.outcome === 'moved') }
+      const { back, notBack, unsure } = restoreDelta(before, plan)
+      lastPlan = { id: plan.id, undoable: plan.undoable, inQuarantine: plan.items.filter(maybeInQuarantine) }
       // **從後端重載，不要自己把檔加回清單。** 復原過的檔 A 的規則不會再提議
       // （你復原過就代表想留著），前端加回去的話，勾它會撞 STALE。
       return reloadInto({
@@ -328,14 +386,15 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
         restored: back.length,
         // 原位置被佔時放回來的那份會改名。要講出來，不然使用者以為「放回原位」
         renamed: renamedOf(back),
-        notRestored: notBack.map(({ name, why }) => ({ name, why })),
+        notRestored: nameAndWhy(notBack),
+        unconfirmed: nameAndWhy(unsure),
       })
     },
   }
 }
 
 // 歷史面板的轉接器：把 C 的 demo 歷史介面（historyApi）接到真的路由。
-// 回應形狀跟 /demo/cleanup/history 與 /demo/cleanup/undo 一樣（多一個 notRestored），
+// 回應形狀跟 /demo/cleanup/history 與 /demo/cleanup/undo 一樣（多 notRestored 與 unconfirmed），
 // C 的 renderHistory 兩個模式共用。
 export function createRealHistory(api) {
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
@@ -348,36 +407,45 @@ export function createRealHistory(api) {
     if (path === 'undo') {
       const ids = [...new Set(body?.operationIds ?? [])]
       let restored = 0, restoredFiles = 0, alreadyRestored = 0
-      const restoredItems = [], renamed = [], notRestored = []
+      const restoredItems = [], renamed = [], notRestored = [], unconfirmed = []
       for (const id of ids) {
         const enc = encodeURIComponent(id)
         // **先看復原前還有哪些在隔離區。** undo 是冪等的：已經復原過的再送一次，
         // 後端回的計畫長得一模一樣（項目都是 restored）—— 只看回應的話，
         // 重送會被算成「又放回來一次」。
         const before = await api(`/cleanup/plans/${enc}`)
-        const inQuarantine = before.items.filter(i => i.outcome === 'moved')
+        // 復原到一半中斷的（unknown）也算：檔多半還在隔離區，送 undo 會把它接完（U1）
+        const inQuarantine = before.items.filter(maybeInQuarantine)
         // 「先前已復原」**只算復原之前就沒有東西在隔離區的**（RC9）。
         // 以前用「勾了幾筆 − 放回幾筆」，放不回來的（隔離區的檔被改過）也被算成「先前已復原」。
         if (!inQuarantine.length) { alreadyRestored++; continue }
-        let plan
+        let plan, fallbackWhy = null
         try { plan = await post(`/cleanup/plans/${enc}/undo`) }
         catch (e) {
           // 網路斷了：不知道放回去沒有，交給面板說「還沒確認」。
           if (!e.status) throw e
-          // 伺服器明確回錯：這一份一個都沒放回，原因照它說的。
-          for (const i of inQuarantine) notRestored.push({ name: i.name, why: e.message })
-          continue
+          // 伺服器明確回錯 —— 但可能是放回幾個之後才出錯（U2）。以前整份列為「沒放回」，
+          // 放回去的那幾個也被說成沒放回。**再讀一次這份計畫**，照逐項結果重算；
+          // 還在隔離區而後端沒給原因的，原因就是這個錯誤。
+          try { plan = await api(`/cleanup/plans/${enc}`) }
+          catch {
+            // 也讀不到：不知道放回了哪幾個。**不可以說「沒放回」**，照實說還不確定。
+            for (const i of inQuarantine) unconfirmed.push({ name: i.name, why: e.message })
+            continue
+          }
+          fallbackWhy = e.message
         }
-        const { back, notBack } = restoreDelta(inQuarantine, plan)
+        const { back, notBack, unsure } = restoreDelta(inQuarantine, plan, fallbackWhy)
         renamed.push(...renamedOf(back))
-        notRestored.push(...notBack.map(({ name, why }) => ({ name, why })))
+        notRestored.push(...nameAndWhy(notBack))
+        unconfirmed.push(...nameAndWhy(unsure))
         if (back.length) {
           restored++
           restoredFiles += back.length
           restoredItems.push(...back.map(i => ({ itemId: i.itemId, name: i.name, bytes: i.bytes })))
         }
       }
-      return { restored, restoredFiles, restoredItems, alreadyRestored, notRestored, operationIds: ids, renamed }
+      return { restored, restoredFiles, restoredItems, alreadyRestored, notRestored, unconfirmed, operationIds: ids, renamed }
     }
     throw new Error('本機模式不支援這個歷史操作：' + path)
   }

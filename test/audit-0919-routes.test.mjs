@@ -32,7 +32,7 @@ import { fixture } from './helpers/cleanup.mjs'
 
 const DAY = 86400_000
 const TOKEN = 'audit-0919-token'
-const INTERNAL_MSG = '後端出錯了，這一步可能沒有完成。請重新整理後看目前的狀態。'
+const INTERNAL_MSG = '後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。'
 
 // ── 小工具 ───────────────────────────────────────────────────
 

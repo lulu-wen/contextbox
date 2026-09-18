@@ -14,10 +14,10 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, realpathSync, existsSync,
-  readFileSync, chmodSync, renameSync,
+  readFileSync, chmodSync, renameSync, readdirSync,
 } from 'node:fs'
 import { spawnSync, spawn } from 'node:child_process'
-import { request } from 'node:http'
+import { request, createServer as httpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -27,6 +27,7 @@ import { open } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan } from '../core/cleanup-exec.ts'
+import { listCandidates, TOO_LARGE_WHY } from '../core/cleanup-routes.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = join(REPO, 'cli.mjs')
@@ -82,14 +83,20 @@ function sandbox(t, { files = {}, config = {} } = {}) {
   /** 測試自己的連線（用核心的 open，會建表） */
   const db = () => { const d = open(p.db); dbs.push(d); return d }
   const locked = []
-  t.after(() => {
+  /**
+   * 這個沙盒裡起的 pet，**刪沙盒之前先收掉**。t.after 照登記的順序跑，而沙盒比 pet 先登記 ——
+   * 不先收的話 pet 還活著，它的背景重掃子行程會在刪掉的沙盒裡重新建出設定檔與資料庫（第三波 C2 之後看得到）。
+   */
+  const stops = []
+  t.after(async () => {
+    for (const stop of stops.splice(0)) await stop()
     for (const d of dbs) { try { d.close() } catch { /* 已經關了 */ } }
     for (const f of locked) { try { chmodSync(f, 0o755) } catch { /* 已經沒了 */ } }
     rmSync(home, { recursive: true, force: true })
   })
   /** chmod 000，測試結束會改回來才刪 */
   const lock = f => { chmodSync(f, 0o000); locked.push(f) }
-  return { home, dl, p, put, run, env, db, writeCfg, lock }
+  return { home, dl, p, put, run, env, db, writeCfg, lock, stops }
 }
 
 /** 清單上印的編號：`[xxxx] ✔ name` → { name: code } */
@@ -688,6 +695,7 @@ function startPet(t, s, extra = {}) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
     await exited
   }
+  s.stops.push(stop)
   t.after(stop)
   const until = async (re, ms = 15_000) => {
     const t0 = Date.now()
@@ -730,7 +738,8 @@ describe('RC16／RC2 pet 與 open', () => {
     const before = meta(s, 'cleanup_last_ok')
     const pet = startPet(t, s)
     const m = await pet.until(/127\.0\.0\.1:(\d+)\/\?k=([^\s　）)]+)/)
-    await pet.until(/按 Ctrl\+C/)
+    // 開機掃描在背景的子行程跑（第三波 C2），等它講完再看清單
+    await pet.until(/開機掃描：掃了/)
     const token = readFileSync(s.p.token, 'utf8').trim()
     const list = await http(Number(m[1]), 'GET', '/cleanup/candidates', { 'x-contextbox-token': token })
     assert.equal(list.status, 200, list.text)
@@ -773,7 +782,7 @@ describe('RC16／RC2 pet 與 open', () => {
     s.put('b.zip', 60, 'b', sub)
     s.lock(sub)
     const pet = startPet(t, s)
-    await pet.until(/按 Ctrl\+C/)
+    await pet.until(/開機掃描：掃了/)
     assert.match(pet.out(), /⚠[^\n]*打不開/, pet.out())
   })
 
@@ -826,5 +835,545 @@ describe('RC16／RC2 pet 與 open', () => {
     assert.match(r.stdout, new RegExp(`127\\.0\\.0\\.1:${port}/\\?k=`))
     assert.match(r.out, /node cli\.mjs pet/)
     assert.ok(!existsSync(s.p.opened), '沒在跑就不要打開瀏覽器')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// 2026-09-19 稽核第三波（CLI）：C1–C7。
+// 期望值照 build-round 的預想表寫死，**先寫測試、再改 cli.mjs**。
+// ═══════════════════════════════════════════════════════════════
+
+/** 讀一列（唯讀連線，不跟 CLI 搶鎖） */
+const one = (s, sql, ...a) => {
+  const d = new DatabaseSync(s.p.db, { readOnly: true })
+  try { d.exec('PRAGMA busy_timeout = 5000'); return d.prepare(sql).get(...a) }
+  finally { d.close() }
+}
+
+/** 非同步跑一次 CLI。測試行程自己起了假的 server 的時候要用這個 —— spawnSync 會把事件迴圈卡住，假的 server 回不了話。 */
+function runAsync(s, args, extra = {}) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, [CLI, ...args], { env: s.env(extra) })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', d => { stdout += d })
+    child.stderr.on('data', d => { stderr += d })
+    child.once('close', code => resolve({ code, out: stdout + stderr, stdout }))
+  })
+}
+
+/**
+ * 套用做到一半中斷：處理到第 stopAt 項時丟例外。跟 Ctrl+C 一樣，applyPlan 沒機會寫最後的狀態 ——
+ * 計畫停在 proposed，前面幾項已經在隔離區，journal 也寫了。skipFirst：第一項是使用者略過的。
+ */
+function interruptedPlan(t, { files = 5, stopAt = 3, skipFirst = false } = {}) {
+  const names = Array.from({ length: files }, (_, i) => `f${i}.zip`)
+  const s = sandbox(t, { files: Object.fromEntries(names.map(n => [n, 60])) })
+  s.run(['cleanup', 'scan'])
+  const d = s.db()
+  const p = createPlan(d)
+  const opts = {
+    roots: [s.dl], quarantine: s.p.q, maxBytes: 20971520,
+    onProgress: i => { if (i === stopAt) throw new Error('模擬中斷') },
+  }
+  if (skipFirst) opts.skippedIds = p.items[0].candidateIds
+  assert.throws(() => applyPlan(d, p.id, opts), /模擬中斷/)
+  assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', p.id).status, 'proposed', '前提：計畫停在 proposed')
+  assert.ok(count(s, 'SELECT count(*) n FROM cleanup_journal WHERE plan_id=?', p.id) > 0, '前提：已經有 journal')
+  const moved = p.items.slice(0, stopAt).filter((_, i) => !(skipFirst && i === 0)).map(i => i.name)
+  return { s, d, p, names, moved }
+}
+
+describe('C1 做到一半中斷的計畫：undo 與 release 不可以互相推來推去', () => {
+  test('中斷的計畫：undo 把已經搬的放回來（0）；release 回 1 並指出 undo／apply', t => {
+    const { s, p, names, moved } = interruptedPlan(t)
+    assert.equal(moved.length, 3)
+    for (const n of moved) assert.ok(!existsSync(join(s.dl, n)), `前提：${n} 已經在隔離區`)
+    const rel = s.run(['cleanup', 'release', p.id])
+    assert.equal(rel.code, 1, rel.out)
+    assert.ok(rel.out.includes(`cleanup undo ${p.id}`), `release 被拒要講得出下一步：\n${rel.out}`)
+    assert.ok(rel.out.includes(`cleanup apply ${p.id}`), rel.out)
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /還沒套用/)
+    assert.match(r.out, /放回原位 3 個檔案/, r.out)
+    for (const n of names) assert.ok(existsSync(join(s.dl, n)), `${n} 沒有回到原位：\n${r.out}`)
+    // 放回之後就不再擋：清得動沒搬過的那 2 個。放回來的 3 個是「已復原」，要等下一次掃描才會再變成候選
+    // （核心的 markMoved；預想表原本寫「搬進隔離區 5 個」，那是把「不再擋」跟「馬上又是候選」混在一起了）
+    const again = s.run(['cleanup', 'apply'])
+    assert.equal(again.code, 0, again.out)
+    assert.match(again.out, /搬進隔離區 2 個/)
+  })
+
+  test('沒開始的計畫剛好相反：undo 回 1 並建議 release，release 回 0', t => {
+    const s = sandbox(t, { files: { 'a.zip': 60 } })
+    s.run(['cleanup', 'scan'])
+    const p = createPlan(s.db())
+    const u = s.run(['cleanup', 'undo', p.id])
+    assert.equal(u.code, 1, u.out)
+    assert.ok(u.out.includes(`cleanup release ${p.id}`), u.out)
+    assert.equal(s.run(['cleanup', 'release', p.id]).code, 0)
+  })
+
+  test('只寫了「略過」的 journal 也算開始了（跟 releasePlan 同一個判斷）：undo 0、release 1', t => {
+    const { s, p, names } = interruptedPlan(t, { files: 2, stopAt: 1, skipFirst: true })
+    assert.equal(count(s, `SELECT count(*) n FROM cleanup_journal WHERE plan_id=? AND op<>'skip'`, p.id), 0, '前提：只有 skip')
+    assert.equal(s.run(['cleanup', 'release', p.id]).code, 1)
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 0, r.out)
+    for (const n of names) assert.ok(existsSync(join(s.dl, n)))
+  })
+
+  test('中斷的計畫裡有一個隔離檔被改過：其他放回、那一個講原因，離開碼 3', t => {
+    const { s, p, moved } = interruptedPlan(t)
+    const victim = p.items[0]
+    writeFileSync(join(s.p.q, p.id, victim.itemId, 'content'), '隔離區裡的檔被改過')
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 3, r.out)
+    assert.ok(new RegExp(`✘ ${victim.name.replace('.', '\\.')}[^\\n]*沒放回`).test(r.out), r.out)
+    for (const n of moved.filter(n => n !== victim.name)) assert.ok(existsSync(join(s.dl, n)), n)
+  })
+
+  test('CONFLICT 被中斷的計畫擋住：建議 undo 與 apply 那一份，不建議 release', t => {
+    const { s, p } = interruptedPlan(t)
+    const r = s.run(['cleanup', 'apply'])
+    assert.equal(r.code, 1, r.out)
+    assert.ok(r.out.includes(`cleanup undo ${p.id}`), r.out)
+    assert.ok(r.out.includes(`cleanup apply ${p.id}`), r.out)
+    assert.doesNotMatch(r.out, /cleanup release/, '已經開始的計畫不能 release，叫人去跑只會再被拒絕一次')
+  })
+
+  test('照建議把它做完：apply <id> 接著搬剩下的，離開碼 0', t => {
+    const { s, p, names } = interruptedPlan(t)
+    const r = s.run(['cleanup', 'apply', p.id])
+    assert.equal(r.code, 0, r.out)
+    for (const n of names) assert.ok(!existsSync(join(s.dl, n)), n)
+  })
+
+  test('重現：300 個檔 apply 到一半按 Ctrl+C —— release 1、apply 撞 CONFLICT 建議 undo、undo 全部放回',
+    { skip: process.platform === 'win32' && 'Windows 沒有 SIGINT' }, async t => {
+      const s = sandbox(t)
+      const names = []
+      for (let i = 0; i < 300; i++) { const n = `f${String(i).padStart(3, '0')}.zip`; s.put(n, 60); names.push(n) }
+      // 掃描在測試行程裡用一個交易做完（這條測的不是掃描）
+      const d = s.db()
+      d.exec('BEGIN')
+      scanDownloads({ db: d, roots: [s.dl], maxBytes: 20971520 })
+      d.exec('COMMIT')
+      const child = spawn(process.execPath, [CLI, 'cleanup', 'apply'], { env: s.env() })
+      let out = ''
+      child.stdout.on('data', x => { out += x })
+      child.stderr.on('data', x => { out += x })
+      const exited = new Promise(r => child.once('exit', (code, sig) => r({ code, sig })))
+      const inQuarantine = () => {
+        let n = 0
+        try {
+          for (const p of readdirSync(s.p.q)) for (const i of readdirSync(join(s.p.q, p))) if (existsSync(join(s.p.q, p, i, 'content'))) n++
+        } catch { /* 隔離區還沒建 */ }
+        return n
+      }
+      const t0 = Date.now()
+      while (inQuarantine() < 20 && child.exitCode === null && Date.now() - t0 < 60_000) await sleep(5)
+      child.kill('SIGINT')
+      const ex = await exited
+      assert.equal(ex.sig, 'SIGINT', `前提：是被 Ctrl+C 中斷的，不是自己跑完：\n${out.slice(-400)}`)
+      const id = one(s, `SELECT id FROM cleanup_plans WHERE status='proposed'`)?.id
+      assert.ok(id, '前提：計畫停在 proposed')
+      const started = count(s, `SELECT count(*) n FROM cleanup_journal WHERE plan_id=? AND status='started'`, id)
+
+      const rel = s.run(['cleanup', 'release', id])
+      assert.equal(rel.code, 1, rel.out)
+      const conflict = s.run(['cleanup', 'apply'])
+      assert.equal(conflict.code, 1, conflict.out)
+      assert.ok(conflict.out.includes(`cleanup undo ${id}`), conflict.out)
+      assert.doesNotMatch(conflict.out, /cleanup release/)
+      const r = s.run(['cleanup', 'undo', id])
+      assert.doesNotMatch(r.out, /還沒套用/)
+      // 中斷在 rename 之前（journal 停在 started、檔案還在原位）的那一項，核心的逐項結果仍是「狀態不明」→ 3
+      if (!started) assert.equal(r.code, 0, r.out)
+      else assert.ok([0, 3].includes(r.code), r.out)
+      for (const n of names) assert.ok(existsSync(join(s.dl, n)), `${n} 沒有回到原位：\n${r.out.slice(-600)}`)
+    })
+})
+
+// ── C2 ────────────────────────────────────────────────────────
+
+/** 某個行程還活著的子行程（Linux：讀 /proc）。殭屍不算。 */
+function childrenOf(pid) {
+  const out = []
+  for (const d of readdirSync('/proc')) {
+    if (!/^\d+$/.test(d)) continue
+    let stat
+    try { stat = readFileSync(`/proc/${d}/stat`, 'utf8') } catch { continue }
+    const [state, ppid] = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    if (Number(ppid) === pid && state !== 'Z') out.push(Number(d))
+  }
+  return out
+}
+/** 這個 pid 還在跑嗎（不存在、殭屍都算不在） */
+const running = pid => {
+  let stat
+  try { stat = readFileSync(`/proc/${pid}/stat`, 'utf8') } catch { return false }
+  return stat.slice(stat.lastIndexOf(')') + 2)[0] !== 'Z'
+}
+
+/** GET /health 花了多久。timeout 內沒回就是 Infinity。 */
+function healthMs(port, timeout = 5000) {
+  const t0 = Date.now()
+  return new Promise(resolve => {
+    const req = request({ host: '127.0.0.1', port, path: '/health', timeout }, res => {
+      res.resume()
+      res.on('end', () => resolve({ status: res.statusCode, ms: Date.now() - t0 }))
+    })
+    req.on('timeout', () => { req.destroy(); resolve({ status: null, ms: Infinity }) })
+    req.on('error', () => resolve({ status: null, ms: Infinity }))
+    req.end()
+  })
+}
+
+const LINUX_ONLY = process.platform !== 'linux' && '讀 /proc 數子行程'
+
+describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
+  test('cleanup scan --json（pet 的背景重掃用的）：stdout 只有一行 JSON，problem 照樣講', t => {
+    const s = sandbox(t, { files: { 'a.zip': 60, 'b.zip': 60 } })
+    const sub = join(s.dl, '鎖住的')
+    s.put('c.zip', 60, 'c', sub)
+    s.lock(sub)
+    const r = s.run(['cleanup', 'scan', '--json'])
+    assert.equal(r.code, 0, r.out)
+    const lines = r.stdout.trim().split('\n')
+    assert.equal(lines.length, 1, `stdout 要只有一行：\n${r.stdout}`)
+    const j = JSON.parse(lines[0])
+    assert.equal(j.ok, true)
+    assert.equal(j.scanned, 2)
+    assert.equal(j.files, 2)
+    assert.match(r.out, /⚠[^\n]*打不開/, 'problem 要印到 stderr')
+    assert.ok(meta(s, 'cleanup_last_ok'), '掃描成功要記 lastOk')
+  })
+
+  test('Downloads 1000 個檔：開機掃描進行中 /health 1 秒內回；掃完候選數正確', async t => {
+    const s = sandbox(t)
+    for (let i = 0; i < 1000; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
+    const pet = startPet(t, s)
+    const port = Number((await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1])
+    const finished = () => /開機掃描：掃了/.test(pet.out())
+    const during = []
+    let midway = false
+    const t0 = Date.now()
+    while (!finished() && Date.now() - t0 < 120_000) {
+      const startedDuring = !finished()
+      const h = await healthMs(port)
+      if (startedDuring) during.push(h.ms)
+      const n = count(s, 'SELECT count(*) n FROM file_items')
+      if (n > 0 && n < 1000 && !finished()) midway = true
+      await sleep(150)
+    }
+    assert.ok(during.length > 0, pet.out())
+    assert.ok(Math.max(...during) < 1000, `掃描進行中 /health 要 1 秒內回：${during.join('、')} ms`)
+    assert.ok(during.length >= 3 && midway, `前提：真的在掃描進行中量到（${during.length} 次）`)
+    const m = await pet.until(/開機掃描：掃了 (\d+) 個檔案，(\d+) 個可以清/, 120_000)
+    assert.deepEqual([m[1], m[2]], ['1000', '1000'], pet.out())
+    const h = await http(port, 'GET', '/health')
+    assert.equal(h.json.pendingCandidates, 1000)
+  })
+
+  test('同時間最多一個掃描子行程；pet 結束時把它一起收掉', { skip: LINUX_ONLY }, async t => {
+    const s = sandbox(t)
+    // 一千個檔要掃十幾秒：pet 結束之後子行程如果沒被收掉，下面那 3 秒裡它一定還在跑
+    //（300 個檔的話它可能剛好自己掃完，沒收掉也看不出來 —— 突變測試抓到的洞）
+    for (let i = 0; i < 1000; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
+    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '100' })
+    await pet.until(/按 Ctrl\+C/)
+    let most = 0
+    const seen = new Set()
+    const t0 = Date.now()
+    while (Date.now() - t0 < 2500) {
+      const kids = childrenOf(pet.child.pid)
+      for (const k of kids) seen.add(k)
+      most = Math.max(most, kids.length)
+      await sleep(25)
+    }
+    assert.ok(seen.size >= 1, '前提：看得到掃描子行程')
+    assert.equal(most, 1, `同時有 ${most} 個掃描子行程`)
+    const kids = childrenOf(pet.child.pid)
+    assert.equal(kids.length, 1, '前提：一千個檔還在掃')
+    assert.doesNotMatch(pet.out(), /開機掃描：掃了/, '前提：開機掃描還沒掃完')
+    await pet.stop()
+    const t1 = Date.now()
+    while (kids.some(running) && Date.now() - t1 < 3000) await sleep(25)
+    assert.ok(!kids.some(running), 'pet 結束了，掃描子行程還在跑')
+  })
+
+  test('掃描子行程被砍掉：記 lastError、pet 還活著、下一輪照掃', { skip: LINUX_ONLY }, async t => {
+    const s = sandbox(t)
+    for (let i = 0; i < 300; i++) s.put(`f${String(i).padStart(3, '0')}.zip`, 60)
+    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '1000' })
+    const port = Number((await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1])
+    await pet.until(/按 Ctrl\+C/)
+    let first = []
+    const t0 = Date.now()
+    while (!(first = childrenOf(pet.child.pid)).length && Date.now() - t0 < 5000) await sleep(20)
+    assert.equal(first.length, 1, '前提：開機掃描的子行程')
+    assert.equal(meta(s, 'cleanup_last_error'), null, '前提')
+    process.kill(first[0], 'SIGKILL')
+    const t1 = Date.now()
+    while (!meta(s, 'cleanup_last_error') && Date.now() - t1 < 5000) await sleep(50)
+    assert.match(meta(s, 'cleanup_last_error') ?? '', /重掃/, `子行程被砍掉要記 lastError：\n${pet.out()}`)
+    assert.equal(pet.child.exitCode, null, 'pet 不可以跟著掛掉')
+    assert.equal((await http(port, 'GET', '/health')).status, 200)
+    let next = []
+    const t2 = Date.now()
+    while (!(next = childrenOf(pet.child.pid).filter(k => k !== first[0])).length && Date.now() - t2 < 5000) await sleep(20)
+    assert.equal(next.length, 1, '下一輪重掃沒有開始')
+  })
+})
+
+// ── C3 ────────────────────────────────────────────────────────
+
+describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
+  /** 在 port 0 起一個什麼都回 200 的假 /health。 */
+  async function fakeHealth(t, body) {
+    const srv = httpServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    })
+    await new Promise(r => srv.listen(0, '127.0.0.1', r))
+    t.after(() => { srv.closeAllConnections(); return new Promise(r => srv.close(r)) })
+    return srv.address().port
+  }
+  /** 免 token 的 /health 真的長這樣（產生器從真的 server 寫出來的範例） */
+  const SHAPE = JSON.parse(readFileSync(join(REPO, 'docs', 'api', 'health.json'), 'utf8'))
+  /** pet 記下來的 port 與 pid */
+  const record = (s, port, pid) => {
+    const d = s.db()
+    const set = (k, v) => d.prepare(`INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).run(k, v)
+    set('pet_port', String(port))
+    set('watch_pid', String(pid))
+    set('watch_heartbeat', new Date().toISOString())
+  }
+
+  test('那個 port 上是別的程式（/health 回 200 但不是 ContextBox）：不打開、不印鑰匙，離開碼 2', async t => {
+    const s = sandbox(t)
+    const port = await fakeHealth(t, { status: 'ok' })
+    record(s, port, process.pid)
+    const r = await runAsync(s, ['open'])
+    assert.equal(r.code, 2, r.out)
+    assert.ok(!existsSync(s.p.opened), '把帶鑰匙的網址交給了陌生程式')
+    assert.doesNotMatch(r.out, /\?k=/, '不要印出帶鑰匙的網址')
+    assert.match(r.out, /不是 ContextBox/)
+  })
+
+  test('形狀像 ContextBox，但記錄上的 pet 行程已經不在了：不打開，離開碼 2', async t => {
+    const s = sandbox(t)
+    const port = await fakeHealth(t, SHAPE)
+    record(s, port, 2147483646)
+    const r = await runAsync(s, ['open'])
+    assert.equal(r.code, 2, r.out)
+    assert.ok(!existsSync(s.p.opened), '記錄上的 pet 已經不在了，還是把網址交出去')
+    assert.doesNotMatch(r.out, /\?k=/)
+  })
+
+  test('對照：形狀對、記錄上的 pid 還活著 → 打開（0）', async t => {
+    const s = sandbox(t)
+    const port = await fakeHealth(t, SHAPE)
+    record(s, port, process.pid)
+    const r = await runAsync(s, ['open'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(readFileSync(s.p.opened, 'utf8'), new RegExp(`^http://127\\.0\\.0\\.1:${port}/\\?k=`))
+  })
+
+  test('pet 結束時清掉 pet_port', async t => {
+    const s = sandbox(t)
+    const pet = startPet(t, s)
+    const port = (await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1]
+    await pet.until(/按 Ctrl\+C/)
+    assert.equal(meta(s, 'pet_port'), port, '前提：跑著的時候有記')
+    await pet.stop()
+    assert.equal(meta(s, 'pet_port'), null, 'pet 結束了，pet_port 還留著')
+  })
+
+  test('關掉終端機（SIGHUP）也一樣清掉 pet_port', { skip: process.platform === 'win32' && '要送 SIGHUP' }, async t => {
+    const s = sandbox(t)
+    const pet = startPet(t, s)
+    const port = (await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1]
+    await pet.until(/按 Ctrl\+C/)
+    assert.equal(meta(s, 'pet_port'), port, '前提')
+    pet.child.kill('SIGHUP')
+    await pet.exited
+    assert.equal(meta(s, 'pet_port'), null)
+  })
+})
+
+// ── C4 ────────────────────────────────────────────────────────
+
+describe('C4 undo 放得回舊版搬進隔離區的桌面檔（放回不擴大清理範圍）', () => {
+  /** 舊版 CLI 拿 roots 清過一次（直接叫核心）。回那份計畫。 */
+  function oldApply(s, roots, name) {
+    const d = s.db()
+    scanDownloads({ db: d, roots, maxBytes: 20971520 })
+    const ids = d.prepare(`SELECT c.id FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
+      WHERE i.name=? AND c.status='proposed'`).all(name).map(r => r.id)
+    const p = createPlan(d, { candidateIds: ids })
+    const r = applyPlan(d, p.id, { roots, quarantine: s.p.q, maxBytes: 20971520 })
+    assert.equal(r.quarantinedCount, 1, '前提：舊版把它搬進隔離區了')
+    return p
+  }
+
+  test('舊版 roots=[Desktop, Downloads] 搬走的桌面檔：新版 undo 放得回來（0）', t => {
+    const s = sandbox(t)
+    const desktop = join(s.home, 'Desktop')
+    s.writeCfg({ watch: [desktop, s.dl] })
+    const f = s.put('客戶提案.zip', 45, '還在用', desktop)
+    const p = oldApply(s, [desktop, s.dl], '客戶提案.zip')
+    assert.ok(!existsSync(f), '前提')
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 0, r.out)
+    assert.ok(existsSync(f), `桌面的檔沒有放回來：\n${r.out}`)
+  })
+
+  test('watch 裡有不存在的資料夾：不影響放回', t => {
+    const s = sandbox(t)
+    const desktop = join(s.home, 'Desktop')
+    s.writeCfg({ watch: [join(s.home, '不存在'), desktop, s.dl] })
+    const f = s.put('客戶提案.zip', 45, '還在用', desktop)
+    const p = oldApply(s, [desktop, s.dl], '客戶提案.zip')
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 0, r.out)
+    assert.ok(existsSync(f), r.out)
+  })
+
+  test('不在 watch、也不在清理範圍的資料夾：放不回去（3），範圍沒有被擴大', t => {
+    const s = sandbox(t)
+    const other = join(s.home, 'Other')
+    const f = s.put('x.zip', 45, 'x', other)
+    const p = oldApply(s, [other, s.dl], 'x.zip')
+    const r = s.run(['cleanup', 'undo', p.id])
+    assert.equal(r.code, 3, r.out)
+    assert.ok(!existsSync(f))
+  })
+
+  test('只在 cleanup.roots（不在 watch）的資料夾照樣放得回來', t => {
+    const s = sandbox(t)
+    const other = join(s.home, 'Other')
+    mkdirSync(other)
+    s.writeCfg({ watch: [s.dl], cleanup: { roots: [other] } })
+    const f = s.put('x.zip', 45, 'x', other)
+    s.run(['cleanup', 'scan'])
+    const id = planIdOf(s.run(['cleanup', 'apply']).out)
+    assert.ok(id && !existsSync(f), '前提')
+    const r = s.run(['cleanup', 'undo', id])
+    assert.equal(r.code, 0, r.out)
+    assert.ok(existsSync(f), r.out)
+  })
+
+  test('apply 還是只用清理範圍：桌面上的舊檔不會被新版搬走', t => {
+    const s = sandbox(t)
+    const desktop = join(s.home, 'Desktop')
+    s.writeCfg({ watch: [desktop, s.dl] })
+    const f = s.put('客戶提案.zip', 45, '還在用', desktop)
+    scanDownloads({ db: s.db(), roots: [desktop, s.dl], maxBytes: 20971520 })
+    const r = s.run(['cleanup', 'apply'])
+    assert.equal(r.code, 0, r.out)
+    assert.ok(existsSync(f))
+  })
+})
+
+// ── C5 ────────────────────────────────────────────────────────
+
+describe('C5 檔名裡的換行類字元與 bidi 控制字元、編號至少 4 碼', () => {
+  test('U+2028、U+202E（RLO）、U+2066 一律換成「·」；一般的中文與 emoji 原樣', t => {
+    const s = sandbox(t)
+    for (const n of ['a\u2028✔ 偽造.zip', 'invoice\u202Efdp.exe', 'b\u2066c\u2069.zip', '報告 🎉.zip']) s.put(n, 60)
+    assert.equal(s.run(['cleanup', 'scan']).code, 0)
+    const list = s.run(['cleanup', 'list'])
+    const applied = s.run(['cleanup', 'apply'])
+    assert.equal(applied.code, 0, applied.out)
+    const undone = s.run(['cleanup', 'undo'])
+    for (const o of [list.out, applied.out, undone.out]) {
+      assert.ok(!/[\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/.test(o), `印出了換行類或 bidi 控制字元：${JSON.stringify(o)}`)
+    }
+    assert.match(list.out, /invoice·fdp\.exe/, list.out)
+    assert.match(list.out, /a·✔ 偽造\.zip/, list.out)
+    assert.match(list.out, /b·c·\.zip/, list.out)
+    assert.match(list.out, /報告 🎉\.zip/, '一般的中文與 emoji 不可以被換掉')
+  })
+
+  test('編號只打 3 碼：就算剛好只對到一個也回 1（至少 4 碼）；打 4 碼照常', t => {
+    const s = sandbox(t, { files: { 'a.zip': 60, 'b.zip': 60 } })
+    s.run(['cleanup', 'scan'])
+    // id 改成固定的：3 碼 abc 剛好只對到 a.zip
+    const d = new DatabaseSync(s.p.db, { enableForeignKeyConstraints: false })
+    for (const [name, id] of [['a.zip', 'abc0ffee-0000-4000-8000-000000000001'], ['b.zip', 'ffff0000-0000-4000-8000-000000000002']]) {
+      const old = d.prepare('SELECT id FROM file_items WHERE name=?').get(name).id
+      d.prepare('UPDATE file_items SET id=? WHERE id=?').run(id, old)
+      d.prepare('UPDATE cleanup_candidates SET item_id=? WHERE item_id=?').run(id, old)
+    }
+    d.close()
+    const three = s.run(['cleanup', 'apply', '--skip', 'abc'])
+    assert.equal(three.code, 1, three.out)
+    assert.match(three.out, /至少 4 碼/)
+    assert.ok(existsSync(join(s.dl, 'a.zip')) && existsSync(join(s.dl, 'b.zip')), '什麼都不可以動')
+    assert.equal(count(s, 'SELECT count(*) n FROM cleanup_plans'), 0)
+    const four = s.run(['cleanup', 'apply', '--skip', 'abc0'])
+    assert.equal(four.code, 0, four.out)
+    assert.ok(existsSync(join(s.dl, 'a.zip')) && !existsSync(join(s.dl, 'b.zip')), four.out)
+  })
+})
+
+// ── C6 ────────────────────────────────────────────────────────
+
+describe('C6 唯讀模式也要驗確認碼', () => {
+  const RO = { CONTEXTBOX_READONLY: '1' }
+  /** 隔離區有一個滿七天的檔，而且已經預覽過（拿到確認碼）。 */
+  function previewed(t) {
+    const s = sandbox(t, { files: { 'a.zip': 60 } })
+    s.run(['cleanup', 'scan'])
+    s.run(['cleanup', 'apply'])
+    s.db().prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - 8 * DAY).toISOString())
+    const token = /--yes (\S+)/.exec(s.run(['cleanup', 'quarantine', '--empty']).out)?.[1]
+    assert.ok(token, '前提：拿到確認碼')
+    const kept = () => count(s, `SELECT count(*) n FROM cleanup_purges WHERE status='done'`) === 0
+    return { s, token, kept }
+  }
+
+  test('確認碼錯 → 1；確認碼對 → 0；兩次都不刪', t => {
+    const { s, token, kept } = previewed(t)
+    const bad = s.run(['cleanup', 'quarantine', '--empty', '--yes', 'typo-token'], RO)
+    assert.equal(bad.code, 1, bad.out)
+    assert.match(bad.out, /cleanup quarantine --empty/, '要講怎麼重新預覽')
+    const good = s.run(['cleanup', 'quarantine', '--empty', '--yes', token], RO)
+    assert.equal(good.code, 0, good.out)
+    assert.match(good.out, /唯讀模式/)
+    assert.ok(kept(), '唯讀模式刪了檔')
+  })
+
+  test('過期的確認碼 → 1', t => {
+    const { s, token, kept } = previewed(t)
+    s.db().prepare('UPDATE cleanup_empty_requests SET expires_at=?').run(new Date(Date.now() - 1000).toISOString())
+    const r = s.run(['cleanup', 'quarantine', '--empty', '--yes', token], RO)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /過期/)
+    assert.ok(kept())
+  })
+})
+
+// ── C7 ────────────────────────────────────────────────────────
+
+describe('C7 需要人看的超過 50 個：「太大」與「讀不到」照全部分開算', () => {
+  test('30 個太大＋30 個讀不到：doctor 兩個數字都是 30；核心的計數加起來等於總數', t => {
+    const s = sandbox(t, { config: { maxBytes: 1024 } })
+    for (let i = 0; i < 30; i++) s.put(`big${i}.zip`, 60, 'x'.repeat(4096))
+    for (let i = 0; i < 30; i++) s.lock(s.put(`locked${i}.zip`, 60, 'y'))
+    assert.equal(s.run(['cleanup', 'scan']).code, 0)
+    const l = listCandidates(s.db(), { roots: [s.dl], limit: 0 })
+    assert.equal(l.needsHumanTotal, 60, '前提')
+    assert.equal(l.needsHuman.length, 50, '前提：陣列只回前 50 個')
+    assert.deepEqual(l.needsHumanCounts, { tooLarge: 30, unreadable: 30 })
+    assert.equal(l.needsHuman.filter(x => x.why === TOO_LARGE_WHY).length
+      + l.needsHuman.filter(x => x.why !== TOO_LARGE_WHY).length, 50)
+    const r = s.run(['doctor'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /30 個讀不到或搬不動/, r.out)
+    assert.match(r.out, /30 個太大/, r.out)
+    assert.doesNotMatch(r.out, /沒有列出來/, '全部都分開算了，不該再有「沒有列出來」的')
   })
 })

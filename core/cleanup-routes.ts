@@ -15,7 +15,7 @@
  * CLI 與 HTTP route 都呼叫 `listCandidates()`。
  * **只有一個地方決定 defaultChecked**，不准有第二份。
  */
-import { readdirSync, existsSync, realpathSync } from 'node:fs'
+import { readdirSync, existsSync, realpathSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -42,6 +42,8 @@ export const META = {
   lastError: 'cleanup_last_error',
   /** 最近一次成功的掃描／套用／復原／清空。寵物只在 lastError 比它新的時候擔心。 */
   lastOk: 'cleanup_last_ok',
+  /** pet 實際開在哪個 port（CONTEXTBOX_PORT=0 時是系統挑的）。`open` 靠它找 pet；pet 結束時清掉。 */
+  petPort: 'pet_port',
 } as const
 
 /**
@@ -51,7 +53,7 @@ export const META = {
  * 或已經刪掉之後（例如刪完檔、寫回結果時資料庫出錯）。稽查實測過：檔案已經永久刪了，
  * 訊息卻說沒有（C-C5）。我們不知道的時候，就說不知道。
  */
-export const INTERNAL_MESSAGE = '後端出錯了，這一步可能沒有完成。請重新整理後看目前的狀態。'
+export const INTERNAL_MESSAGE = '後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。'
 
 /** 太大、算不出指紋的檔：執行層一定拒收，所以不列成候選，改列在「需要你查看」。 */
 export const TOO_LARGE_WHY = '檔案太大，這個工具不處理，要不要留請自己決定。'
@@ -140,6 +142,12 @@ export type CandidateList = {
   candidates: CandidateRow[]
   /** 全部有幾筆（needsHuman 陣列會被砍到 50） */
   needsHumanTotal: number
+  /**
+   * **全部**（不受 50 個的上限影響）按原因分的數字，加起來等於 needsHumanTotal。
+   * tooLarge ＝ why 是 TOO_LARGE_WHY 的；unreadable ＝ 其餘的（讀不到、搬不動）。
+   * 自己數 needsHuman 陣列只數得到前 50 個（doctor 踩過，稽核第三波 C7）。
+   */
+  needsHumanCounts: { tooLarge: number; unreadable: number }
   needsHumanTruncated: boolean
   needsHuman: NeedsHumanRow[]
 }
@@ -514,6 +522,7 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
 
   const NEEDS_HUMAN_LIMIT = 50
   const nh = all.needsHuman
+  const tooLarge = nh.filter(x => x.why === TOO_LARGE_WHY).length
   return {
     total: rows.length,
     totalAvailable: all.rows.length,
@@ -524,6 +533,7 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
     generatedAt: new Date().toISOString(),
     candidates: rows,
     needsHumanTotal: nh.length,
+    needsHumanCounts: { tooLarge, unreadable: nh.length - tooLarge },
     needsHumanTruncated: nh.length > NEEDS_HUMAN_LIMIT,
     needsHuman: nh.slice(0, NEEDS_HUMAN_LIMIT).map(({ item, why }) => ({
       itemId: item.id,
@@ -670,8 +680,14 @@ export function quarantineFromJournal(db: DatabaseSync, dir: string): Quarantine
   }
 
   const onDisk = countFilesCached(dir)
+  // 搬到一半中斷的那幾列（started，或復原時確認沒搬、結成 reverted 的）在隔離區也留了一個檔：
+  // 預留的空檔，或 rename 完、還沒寫 done 的那份。**那不是孤兒**，是這個工具自己的。
+  // 以前算成孤兒，doctor 報「另有 1 個來路不明的檔」，而且永遠消不掉。只數存在的，不回路徑。
+  const interrupted = (db.prepare(
+    `SELECT to_path FROM cleanup_journal WHERE op='quarantine' AND status IN ('started','reverted') AND to_path IS NOT NULL`
+  ).all() as { to_path: string }[]).filter(r => safe(() => { lstatSync(r.to_path); return true }, false)).length
   // -1 代表磁碟讀不到／沒看完。journal 說有 N 筆但磁碟數不出來 → 說不出有沒有孤兒
-  const orphans = onDisk < 0 ? 0 : Math.max(0, onDisk - rows.length)
+  const orphans = onDisk < 0 ? 0 : Math.max(0, onDisk - rows.length - interrupted)
   if (onDisk < 0) truncated = true
 
   return {
@@ -1624,10 +1640,13 @@ function route(ctx: RouteCtx): boolean {
     // 放棄還沒開始的那份：計畫作廢、候選不動（RC4／RC8 的「放棄上次那份」）
     if (action === 'release') { send(200, withOutcomes(ctx.db, releasePlan(ctx.db, id))); return true }
     const opts = execOptions(ctx)
-    const r = action === 'apply'
-      ? applyPlan(ctx.db, id, { ...opts, skippedIds: body.skippedIds })
-      : undoPlan(ctx.db, id, opts)
-    invalidateQuarantineCache()   // 隔離區剛變了，孤兒對帳的快取不可以再用
+    let r
+    // 隔離區剛變了，孤兒對帳的快取不可以再用 —— **丟錯也一樣**：做到一半丟錯時已經搬了幾個
+    try {
+      r = action === 'apply'
+        ? applyPlan(ctx.db, id, { ...opts, skippedIds: body.skippedIds })
+        : undoPlan(ctx.db, id, opts)
+    } finally { invalidateQuarantineCache() }
     // 失敗原因 applyPlan 自己會存（cleanup_item_errors），這裡不必再補（RC11）
     recordOk(ctx.db)
     send(200, withOutcomes(ctx.db, r))
@@ -1665,7 +1684,10 @@ function route(ctx: RouteCtx): boolean {
     if (body.confirmed !== undefined && typeof body.confirmed !== 'boolean') {
       throw new CleanupError('BAD_BODY', 'confirmed 要是 true 或 false。')
     }
-    const result = emptyQuarantine(ctx.db, { ...execOptions(ctx), token, confirmed: body.confirmed })
+    let result
+    // 清空刪了檔，孤兒對帳的快取同樣要作廢（以前沒有：清空後十秒內 /health 會報假的孤兒）
+    try { result = emptyQuarantine(ctx.db, { ...execOptions(ctx), token, confirmed: body.confirmed }) }
+    finally { invalidateQuarantineCache() }
     recordOk(ctx.db)
     send(200, { phase: 'done', ...result })
     return true

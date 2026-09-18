@@ -101,15 +101,24 @@ export function quarantineRoot(opts: ExecOptions, create = false): string {
   return checkedPath(path, true)
 }
 
+/** 路徑切成小寫的段落（最後一段是檔名）。 */
+const lowerSegments = (target: string) => target.split(/[\\/]+/).filter(Boolean).map(s => s.toLowerCase())
+
+/**
+ * 路徑上（**不含檔名**）有 . 開頭的資料夾或金鑰資料夾。originalPath 與 keeperPath 共用這一條，
+ * 兩邊才不會一邊改了、一邊沒改。
+ */
+const inProtectedDir = (segments: string[]) => segments.slice(0, -1).some(s => s.startsWith('.') || DENY_DIRS.includes(s))
+
 function originalPath(path: string, opts: ExecOptions, allowMissing = false): string {
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
   if (!opts.roots.some(root => under(checkedPath(root, true), target))) {
     throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
   }
-  const segments = target.split(/[\\/]+/).filter(Boolean).map(s => s.toLowerCase())
+  const segments = lowerSegments(target)
   const name = segments.at(-1)!
-  if (segments.slice(0, -1).some(s => s.startsWith('.') || DENY_DIRS.includes(s)) || execRefusesName(name)) {
+  if (inProtectedDir(segments) || execRefusesName(name)) {
     throw new CleanupError('PROTECTED', '這是受保護的檔案，請人工處理。')
   }
   if (!allowMissing) checkedPath(target)
@@ -121,17 +130,24 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
 /**
  * 重複檔**保留者**（不會被搬的那一份）的路徑檢查。
  *
- * 跟 originalPath 一樣：要在清理根目錄底下、父資料夾不可以有捷徑、不可以在隔離區裡。
- * 但**不擋受保護的檔名**：受保護的意思是「不可以搬它」，拿它當「另外還有一份」的證據沒有問題。
+ * 跟 originalPath 一樣：要在清理根目錄底下、父資料夾不可以有捷徑、路徑上不可以有 . 開頭的
+ * 資料夾或金鑰資料夾、不可以在隔離區裡。**只放寬檔名**：受保護的檔名意思是「不可以搬它」，
+ * 拿它當「另外還有一份」的證據沒有問題。
  * 以前用 originalPath 驗保留者：notes.txt 與內容相同的 desktop.ini 並存時，desktop.ini 被當成
  * PROTECTED 丟例外、被 catch 當成「不存在」，notes.txt 永遠 NO_DUPLICATE —— 列得出、勾得起、
  * 永遠搬不動（稽核 RC4-1 的後半）。檔案本身（捷徑、硬鏈結）由 fingerprint 的 checkedPath 檢查。
+ *
+ * **資料夾那段不放寬。** 保留者會被打開算雜湊；舊版留下的 Downloads/.ssh/x、
+ * Downloads/credentials/x 這種列要是也能當保留者，執行層就會去讀金鑰資料夾裡的檔（稽核第三波 K2）。
  */
 function keeperPath(path: string, opts: ExecOptions): string {
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
   if (!opts.roots.some(root => under(checkedPath(root, true), target))) {
     throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
+  }
+  if (inProtectedDir(lowerSegments(target))) {
+    throw new CleanupError('PROTECTED', '這是受保護的檔案，請人工處理。')
   }
   const q = resolve(opts.quarantine ?? DEFAULT_QUARANTINE)
   if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', '不可把隔離區當成清理來源。')
@@ -391,6 +407,9 @@ function restoreTarget(path: string): string {
   throw new CleanupError('CONFLICT', '復原檔名都已被佔用，請先整理目的資料夾。')
 }
 
+/** 套用中斷在 rename 之前、復原時確認檔案還在原位 —— 那一項的原因（逐項結果是 failed）。 */
+export const NOT_MOVED = '搬到一半中斷，檔案還在原位，沒有搬。'
+
 export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
   checkOptions(opts)
   return withCleanupLock(db, renew => {
@@ -415,7 +434,15 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
         // Failed pre-move attempts have no quarantined data to restore.
         if (q.status !== 'done' && !row) {
           if (!exists(path) || !same(moveFingerprint(db, q.seq), fingerprint(path, opts.maxBytes))) {
-            if (exists(item.path) && same(moveFingerprint(db, q.seq), fingerprint(item.path, opts.maxBytes))) continue
+            if (exists(item.path) && same(moveFingerprint(db, q.seq), fingerprint(item.path, opts.maxBytes))) {
+              // 中斷在 rename 之前：檔案根本沒搬。**把那一列結掉**（reverted），不然它永遠是
+              // started —— 逐項結果一直是「狀態不明」，CLI 的 undo 回 3、叫人再套用一次，而再套用
+              // 什麼都不會做（計畫已經 restored）。隔離區裡預留的空檔不刪：只有清空才會刪檔，
+              // quarantineFromJournal 數孤兒時認得它。
+              db.prepare(`UPDATE cleanup_journal SET status='reverted',error=? WHERE seq=? AND status='started'`)
+                .run(NOT_MOVED, q.seq)
+              continue
+            }
             throw new CleanupError('VERIFY_FAILED', '找不到可驗證的檔案，請檢查來源及隔離區。')
           }
           markMoved(db, q)
@@ -448,14 +475,23 @@ export function activeQuarantine(db: DatabaseSync): JournalRow[] {
     AND NOT EXISTS (SELECT 1 FROM cleanup_purges p WHERE p.seq=q.seq AND p.status='done') ORDER BY q.seq`).all() as JournalRow[]
 }
 
+/**
+ * 隔離區清單（拿鎖）。形狀與判斷跟 cleanup-routes.ts 的 quarantineItems（不拿鎖）一樣。
+ *
+ * **復原到一半中斷（restore 停在 started）的照列，但 canEmptyNow 一律 false**：
+ * emptyQuarantine 會跳過它（留給「再按一次復原」），說「現在可以清空」就是在說謊。
+ * 以前這裡只看七天，同一份計畫在 quarantineItems 與 /health 是 false、在這裡是 true。
+ */
 export function listQuarantine(db: DatabaseSync) {
   // getPlan/init is unnecessary here; initialize through the shared lock for a consistent view.
   return withCleanupLock(db, () => activeQuarantine(db).map(row => {
     const item = planSnapshots(db, row.plan_id).find(i => i.id === row.item_id)!
     const quarantinedAt = quarantineCompletedAt(db, row.seq)
     const canEmptyAt = new Date(Date.parse(quarantinedAt) + RETENTION_MS).toISOString()
+    const restoring = Boolean(db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND item_id=? AND op='restore'
+      AND status='started' LIMIT 1`).get(row.plan_id, row.item_id))
     return { seq: row.seq, planId: row.plan_id, itemId: row.item_id, name: item.name, bytes: item.bytes,
-      quarantinedAt, canEmptyAt, canEmptyNow: Date.now() >= Date.parse(canEmptyAt) }
+      quarantinedAt, canEmptyAt, canEmptyNow: !restoring && Date.now() >= Date.parse(canEmptyAt) }
   }))
 }
 

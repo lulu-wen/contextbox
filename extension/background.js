@@ -31,6 +31,8 @@
  *
  *   送 { type: 'open-home' }                  content script 的「庫裡沒有 X · 去補」
  *   回 { ok: true }                          （這一側開一個新分頁到手填頁，網址帶 ?k=<token>）
+ *                                            先驗 token：存的 token 過期回 BAD_TOKEN、server 沒開回
+ *                                            OFFLINE／TIMEOUT，這兩種都不開分頁
  *
  *   失敗一律回 { ok: false, error: '代碼', message: '給人看的中文' }
  *   代碼有：NO_TOKEN、BAD_TOKEN、OFFLINE、TIMEOUT、FORBIDDEN、
@@ -58,6 +60,10 @@ const HANDLED = new Set(['plan', 'reveal', 'health', 'check', 'open-home'])
 const HEADER_SAFE = /^[\x21-\x7E]+$/
 const TOKEN_UNUSABLE =
   'token 裡有不能用的字元（中文、空白或換行）。請重新複製一次 ~/.contextbox/token 裡那一行。'
+/** 「去補」時存的 token 被 server 拒絕。這句話會顯示在網頁那一側，不可以帶 token 本身。 */
+const HOME_KEY_EXPIRED =
+  '鑰匙過期了。擴充套件存的鑰匙跟 ContextBox 現在的對不上（server 可能換過鑰匙）。'
+  + '手填頁請從寵物重新打開，或跑 node cli.mjs open；擴充套件也要到設定頁重新貼上 ~/.contextbox/token 的內容，才填得了表單。'
 
 const fail = (error, message) => ({ ok: false, error, message })
 
@@ -166,6 +172,12 @@ async function handle(msg, sender) {
   if (!HEADER_SAFE.test(token)) return fail('TOKEN_UNUSABLE', TOKEN_UNUSABLE)
 
   if (msg.type === 'open-home') {
+    // **先驗 token 再開分頁**（稽核第三波 U6）。存的 token 過期（server 換過鑰匙）的話，
+    // 新分頁是一張 401，content script 卻說「開好了」。拿空的 keys 問一次 /form/plan
+    // 是最便宜的驗法（跟設定頁的「測試連線」一樣）：對回 200，不對回 401。
+    // server 沒開、沒回應也照實回，不開一個一定打不開的分頁。
+    const probe = await planFor([], token, port, null)
+    if (!probe.ok) return probe.error === 'BAD_TOKEN' ? fail('BAD_TOKEN', HOME_KEY_EXPIRED) : probe
     // 手填頁要帶鑰匙（?k=）才打得開（稽核 RC16）。網址**只在這一側組**、直接開分頁：
     // 不回給 content script —— 它跑在別人的網頁裡，交給它的東西網頁都讀得到。
     await chrome.tabs.create({ url: `${HOST}:${port}/?k=${encodeURIComponent(token)}` })
