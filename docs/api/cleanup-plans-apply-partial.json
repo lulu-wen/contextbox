@@ -1,19 +1,19 @@
 {
-  "id": "e8621e2e-795d-4fc8-a3a3-6e8f14a15b6e",
+  "id": "751026e6-2bf7-4a7e-a4bd-e2d49df53c48",
   "status": "partial",
   "itemCount": 3,
-  "createdAt": "2026-09-18T20:14:32.687Z",
-  "appliedAt": "2026-09-18T20:14:32.741Z",
+  "createdAt": "2026-09-18T20:59:45.621Z",
+  "appliedAt": "2026-09-18T20:59:45.674Z",
   "error": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。",
   "bytes": 51,
   "items": [
     {
-      "itemId": "fc6fc5ab-01d2-4d69-ab55-d4a7859deef0",
+      "itemId": "a08f734b-3615-40d4-bb7e-6c2491bca7e4",
       "name": "發票.zip",
       "bytes": 13,
-      "mtime": "2026-08-04T20:14:32.168Z",
+      "mtime": "2026-08-04T20:59:45.093Z",
       "candidateIds": [
-        "04957b0b-f693-4a75-8f17-dc7d820561ee"
+        "034f969c-1589-4850-95f6-3e55779437fe"
       ],
       "skipped": false,
       "reasons": [
@@ -28,12 +28,12 @@
       "why": null
     },
     {
-      "itemId": "1e46d251-2237-4de2-9fe9-f110f4942d14",
+      "itemId": "5a4f1237-7e58-454d-bc86-2af18c58c400",
       "name": "照片.jpg",
       "bytes": 22,
-      "mtime": "2026-09-18T20:14:32.169Z",
+      "mtime": "2026-09-18T20:59:45.093Z",
       "candidateIds": [
-        "6a9c249f-3a96-44fc-ab44-22a6e6ab1f89"
+        "60c8c45a-c5f4-4e98-b129-08fa9575e638"
       ],
       "skipped": false,
       "reasons": [
@@ -48,12 +48,12 @@
       "why": "這個檔案十分鐘內還在變動，先不搬。等一下再試一次。"
     },
     {
-      "itemId": "b4c931b0-1c7d-4243-a427-5c8b673ae5f0",
+      "itemId": "7a052b3a-e07b-4a08-a8de-20fe2e94232f",
       "name": "下載中.iso.crdownload",
       "bytes": 16,
-      "mtime": "2026-09-15T20:14:32.168Z",
+      "mtime": "2026-09-15T20:59:45.093Z",
       "candidateIds": [
-        "ddd12071-d07f-4a43-afcb-4e1175dd44d8"
+        "8a088c69-fee4-46a8-a381-2ec1c54ff202"
       ],
       "skipped": false,
       "reasons": [

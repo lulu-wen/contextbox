@@ -383,7 +383,8 @@ describe('B1 隔離區的七天保護窗', () => {
     const f = fixture(t)   // fixture 裡的檔案 mtime 是 120 天前
     const plan = createPlanFor(f)
     applyPlan(f.db, plan.id, f.opts)
-    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine })
+    // canEmptyAt 只有帶 token 的那一份有值（免 token 的是 null，第三波之二）
+    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine, full: true })
     assert.equal(h.quarantine.items, 2)
     assert.equal(h.quarantine.canEmptyNow, false, '120 天沒動的檔，搬進來的當下不可以能清')
     assert.ok(Date.parse(h.quarantine.canEmptyAt) > Date.now() + 6 * DAY,

@@ -12,19 +12,20 @@
  * 用 find -type f（D2）、zsh／PowerShell／背景 pet 的說明（D3）、README 的說法跟實際行為
  * 對得上（D4）、/health 與計畫列表的欄位檢查只在那一節裡找（D5）。
  */
-import './helpers/isolate-home.mjs'   // 下面的 bash 自我測試會跑一支假的 cli.mjs，家目錄先換掉
+import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 下面的 bash 自我測試會跑一支假的 cli.mjs，家目錄先換掉
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   readdirSync, readFileSync, statSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync,
-  utimesSync, realpathSync,
+  utimesSync, realpathSync, symlinkSync,
 } from 'node:fs'
-import { join, dirname, extname, delimiter } from 'node:path'
+import { join, dirname, extname, delimiter, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
+import { createServer } from 'node:net'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
-import { HTTP_FOR_CODE, listCandidates, listPlans, healthSnapshot, recordOk } from '../core/cleanup-routes.ts'
+import { HTTP_FOR_CODE, listCandidates, listPlans, healthSnapshot, recordOk, META } from '../core/cleanup-routes.ts'
 import { open as openDb } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
@@ -414,13 +415,18 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     assert.match(row[1], /`proposed`/)
   })
 
-  test('409 CONFLICT 那一列：全部放回的計畫再 apply 是 200，不是 409（D4）', () => {
+  test('409 CONFLICT 那一列：全部放回的、復原還沒開始放回就出錯的，再 apply 都是 200，不是 409（D4、第三波之二）', () => {
     const t = tables().find(t => t.header.some(h => /^code$/i.test(h)))
     const row = t.rows.find(r => r.includes('`CONFLICT`')) ?? []
     const when = row[t.header.findIndex(h => /什麼時候/.test(h))] ?? ''
     assert.ok(when, '找不到 CONFLICT 那一列')
     assert.doesNotMatch(when, /已經開始復原的計畫再 apply/, '「已經開始復原的計畫再 apply」太寬：全部放回的回 200')
-    assert.match(when, /`partial`／`error`/, '要講清楚是停在 partial／error 的那種')
+    // 第三波之二：「停在 partial／error 的再 apply → 409」也太寬 —— 擋的是**有復原紀錄**的（applyPlan 看 journal 裡有沒有 restore）。
+    // 復原時第一個檔就 CHANGED 的 error 沒有復原紀錄，再 apply 回 200、變成 applied（下面 D4 那一條真的跑一次）
+    assert.doesNotMatch(when, /`partial`／`error` 的計畫再 apply/, '太寬：復原還沒開始放回就出錯的 error 再 apply 回 200')
+    assert.match(when, /復原紀錄/, '要講清楚擋的是有復原紀錄的')
+    assert.match(when, /`partial`/, '復原停在 partial 的再 apply 是 409')
+    assert.match(when, /`error`[^|]*200[^|]*`applied`/, '要講：還沒開始放回就出錯的 error 再 apply 回 200、變成 applied')
     assert.match(when, /`restored`[^；|]*200|200[^；|]*`restored`/, '要講全部放回的再 apply 回 200、status restored')
   })
 
@@ -438,6 +444,47 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     const intro = section.slice(0, section.indexOf('\n|'))
     const missing = masked.filter(k => !intro.includes('`' + k + '`'))
     assert.deepEqual(missing, [], '不帶 token 時被遮掉、但遮蔽清單沒寫的欄位')
+  })
+
+  test('（真的跑一次，不看範例檔）不帶 token 時被遮掉的每一個欄位，遮蔽清單都有寫（第三波之二）', t => {
+    // 上一條比的是 docs/api 的範例檔 —— 範例要重跑產生器才會跟上，實作先改了、範例還沒重產時它照樣綠。
+    // 這一條直接比 healthSnapshot 的兩版，而且每一個會被遮的欄位都先給值：
+    // 隔離區有檔（兩個時間）、成功與錯誤都記過、watcher 有心跳。
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-mask-')))
+    const dl = join(dir, 'Downloads'), q = join(dir, 'q')
+    mkdirSync(dl)
+    const db = openDb(join(dir, 'data.db'))
+    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    const opts = { roots: [dl], quarantine: q, maxBytes: 1 << 20 }
+    const file = join(dl, 'old.zip')
+    writeFileSync(file, 'old zip')
+    const old = new Date(Date.now() - 60 * 86400_000)
+    utimesSync(file, old, old)
+    scanDownloads({ db, ...opts })
+    const ids = listCandidates(db, { roots: [dl] }).candidates.flatMap(c => c.candidateIds)
+    assert.ok(ids.length, '前提：old.zip 在清單上')
+    assert.equal(applyPlan(db, createPlan(db, { candidateIds: ids, requestId: 'mask' }).id, opts).status, 'applied')
+    recordOk(db)
+    const set = (k, v) => db.prepare('INSERT OR REPLACE INTO meta (k,v) VALUES (?,?)').run(k, v)
+    set(META.lastError, `${new Date().toISOString()} 出過一次事`)
+    set(META.heartbeat, new Date().toISOString())
+    set(META.pid, String(process.pid))
+
+    const h = full => healthSnapshot(db, { ...opts, full })
+    const lean = h(false), full = h(true)
+    const leaf = (o, at = '') => Object.entries(o).flatMap(([k, v]) =>
+      v && typeof v === 'object' && !Array.isArray(v) ? leaf(v, at + k + '.') : [[at + k, v]])
+    const fullMap = new Map(leaf(full))
+    const masked = leaf(lean).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(fullMap.get(k))).map(([k]) => k)
+    for (const k of ['quarantine.canEmptyAt', 'quarantine.oldestMtimeAt', 'lastErrorAt', 'lastOkAt', 'lastError',
+                     'watcher.pid', 'watcher.lastHeartbeatAt', 'watcher.watching']) {
+      assert.ok(masked.includes(k), `前提：${k} 有值、而且免 token 那份被遮掉了（被遮的：${masked.join('、')}）`)
+    }
+    const section = sectionOf(md, '## `GET /health`')
+    const intro = section.slice(0, section.indexOf('\n|'))
+    assert.deepEqual(masked.filter(k => !intro.includes('`' + k + '`')), [], '不帶 token 時被遮掉、但遮蔽清單沒寫的欄位')
+    // 遮蔽清單說「不給任何時間」：免 token 那份整份找不到 ISO 時間
+    assert.doesNotMatch(JSON.stringify(lean), /\d{4}-\d\d-\d\dT\d\d:/)
   })
 })
 
@@ -525,6 +572,26 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
     assert.throws(() => applyPlan(db, partial.id, opts), e => e.code === 'CONFLICT')
   })
 
+  // 第三波之二：README 以前寫「開始復原之後停在 partial／error 的計畫再 apply → 409」，太寬。
+  // 復原時第一個檔就 CHANGED（隔離區的檔被改過）是在寫 restore journal **之前**丟的 ——
+  // 沒有任何復原紀錄，applyPlan 不擋，狀態從 error 變回 applied。釘住這個行為；README 的寫法由錯誤表（RC20）那一條看。
+  test('apply：復原時還沒開始放回就出錯（error，隔離區的檔被改過）→ 不丟錯，狀態變成 applied，不會再搬', () => {
+    put('e1.zip', 'E ONE', 60)
+    const id = planOf(['e1.zip'])
+    assert.equal(applyPlan(db, id, opts).quarantinedCount, 1)
+    const item = readdirSync(join(q, id))[0]
+    writeFileSync(join(q, id, item, 'content'), 'TAMPERED')
+    assert.equal(undoPlan(db, id, opts).status, 'error')
+    const restores = () => db.prepare(`SELECT count(*) n FROM cleanup_journal WHERE plan_id=? AND op='restore'`).get(id).n
+    assert.equal(restores(), 0, '前提：CHANGED 在寫復原紀錄之前')
+    const again = applyPlan(db, id, opts)
+    assert.equal(again.status, 'applied', '不是 409：沒有任何復原紀錄')
+    assert.equal(again.quarantinedCount, 1)
+    assert.deepEqual(readdirSync(join(q, id)), [item], '沒有再搬一次')
+    assert.ok(!existsSync(join(dl, 'e1.zip')), '檔還在隔離區')
+    assert.equal(restores(), 0)
+  })
+
   test('/health 不帶 token：lastErrorAt／lastOkAt 是 null，欄位還在', () => {
     recordOk(db)
     const h = o => healthSnapshot(db, { roots: [dl], quarantine: q, ...o })
@@ -533,6 +600,35 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
     assert.equal(lean.lastOkAt, null)
     assert.equal(lean.lastErrorAt, null)
     assert.equal(typeof full.lastOkAt, 'string', '帶 token 才看得到')
+  })
+})
+
+// ═══ 第三波之二 ・ 根目錄 README 照現況寫 ═══════════════════════
+
+describe('README.md 的頁面說明照現況寫（第三波之二）', () => {
+  const md = readFileSync(join(REPO, 'README.md'), 'utf8')
+  const demoJs = readFileSync(join(REPO, 'core', 'assets', 'cleanup-demo.js'), 'utf8')
+
+  test('按 D 的範例來源：寫 demo 真的讀的那一份（core/assets/demo-candidates.json），份數也對', () => {
+    // demo 讀的是 /assets/demo-candidates.json（server.ts 對到 core/assets/）—— 不是 docs/api 的產生器輸出
+    assert.match(demoJs, /fetch\('\/assets\/demo-candidates\.json'\)/, '前提：demo 讀的是這一份')
+    const line = md.split('\n').find(l => /按 \*\*D\*\*/.test(l)) ?? ''
+    assert.ok(line, 'README 沒有講按 D')
+    assert.ok(line.includes('`core/assets/demo-candidates.json`'), `範例來源寫錯了：${line}`)
+    assert.ok(!md.includes('docs/api/cleanup-candidates.json'), 'docs/api 的範例會隨產生器重產，demo 不讀它')
+    const n = JSON.parse(readFileSync(join(REPO, 'core', 'assets', 'demo-candidates.json'), 'utf8')).candidates.length
+    assert.ok(line.includes(`${'〇一二三四五六七八九十'[n]}份待清範例`), `範例有 ${n} 份：${line}`)
+  })
+
+  test('不再說「尚未串接真實清理 API」：沒開 D 的時候，面板接的是真的清理路由', () => {
+    // 前提：本機模式真的走 createReal（/cleanup/…），歷史面板走 createRealHistory
+    assert.match(demoJs, /createReal\(/)
+    assert.match(demoJs, /createRealHistory\(/)
+    assert.doesNotMatch(md, /尚未串接真實清理 API/)
+    assert.match(md, /本機模式[^\n]*真的清理 API/, '要講沒開 D 的時候接的是真的清理 API')
+    // 寵物的狀態：頁面看 /health 自己算，沒有讀 /pet/state —— README 不可以說頁面讀了它
+    assert.doesNotMatch(demoJs, /\/pet\/state/, '前提：頁面沒有讀 /pet/state')
+    assert.match(md, /`GET \/pet\/state`[^\n]*頁面沒有讀/, '要照實講頁面還沒讀後端的寵物狀態')
   })
 })
 
@@ -583,14 +679,76 @@ describe('docs/cli.md（RC13）', () => {
   })
 
   // ── 2026-09-19 第三波（C8）：上一輪驗證員把「不清了」的範例改回 undo，這一段照樣全綠 —— 沒牙齒。
+  // ── 第三波之二：範例寫「接著清：」「不清了：」，CLI 印的是「接著清那一份：」「放棄那一份（…）：」，
+  //    一條 regex 對「不清了」對不出這種走樣。改成放棄那一份那一行，另外真的跑一次 CLI 逐行比。
 
-  test('「不清了」的建議是 release，不可以是 undo', () => {
-    // 建議 ＝ 帶指令的那一行（解釋「不清了」是什麼的說明文字不算）
-    const lines = md.split('\n').filter(l => /不清了/.test(l) && /\bcleanup [a-z]+/.test(l))
-    assert.ok(lines.length, 'cli.md 找不到「不清了」那一條建議')
+  test('「放棄那一份」的建議是 release，不可以是 undo', () => {
+    // 建議 ＝ 帶指令的那一行（解釋是什麼意思的說明文字不算）
+    const lines = md.split('\n').filter(l => /放棄那一份/.test(l) && /\bcleanup [a-z]+/.test(l))
+    assert.ok(lines.length, 'cli.md 找不到「放棄那一份」那一條建議')
     for (const l of lines) {
-      assert.match(l, /cleanup release/, `「不清了」要叫人 release：${l}`)
-      assert.doesNotMatch(l, /cleanup undo/, `「不清了」不可以叫人 undo（會把已經清掉的檔放回來）：${l}`)
+      assert.match(l, /cleanup release/, `「放棄那一份」要叫人 release：${l}`)
+      assert.doesNotMatch(l, /cleanup undo/, `「放棄那一份」不可以叫人 undo（會把已經清掉的檔放回來）：${l}`)
+    }
+  })
+
+  /**
+   * 在沙盒裡讓 CLI 真的撞一次 CONFLICT，回它印的選項那幾行（從「兩個選擇：」到最後，計畫 id 換成範例用的 5c1e…）。
+   * started：擋住的那一份做到一半中斷（第一項已經在隔離區）。
+   */
+  function conflictChoices(started) {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-clidoc-')))
+    try {
+      const dl = join(home, 'Downloads')
+      mkdirSync(dl)
+      for (const n of ['a.zip', 'b.zip', 'c.zip']) {
+        const f = join(dl, n)
+        writeFileSync(f, 'x ' + n)
+        const at = new Date(Date.now() - 60 * 86400_000)
+        utimesSync(f, at, at)
+      }
+      const cfg = join(home, 'config.json'), dbPath = join(home, 'data.db'), q = join(home, 'q')
+      writeFileSync(cfg, JSON.stringify({
+        watch: [dl], filed: join(home, 'Filed'),
+        model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' }, readonly: false, maxBytes: 20971520,
+      }))
+      const db = openDb(dbPath)
+      let plan
+      try {
+        scanDownloads({ db, roots: [dl], maxBytes: 20971520 })
+        plan = createPlan(db)
+        if (started) {
+          assert.throws(() => applyPlan(db, plan.id, {
+            roots: [dl], quarantine: q, maxBytes: 20971520,
+            onProgress: i => { if (i === 1) throw new Error('模擬中斷') },
+          }), /模擬中斷/)
+        }
+      } finally { db.close() }
+      const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'cleanup', 'apply'], {
+        encoding: 'utf8', timeout: 60_000,
+        env: {
+          ...process.env, HOME: home, USERPROFILE: home,
+          CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: dbPath, CONTEXTBOX_QUARANTINE: q,
+          CONTEXTBOX_TOKEN_PATH: join(home, 'token'), CONTEXTBOX_PORT: '0',
+        },
+      })
+      assert.equal(r.status, 1, `前提：CLI 撞到 CONFLICT：\n${r.stdout}${r.stderr}`)
+      const lines = r.stdout.split('\n')
+      const from = lines.findIndex(l => /兩個選擇：$/.test(l))
+      assert.ok(from >= 0, `前提：CLI 印了選項：\n${r.stdout}`)
+      return lines.slice(from).filter(Boolean).map(l => l.replaceAll(plan.id, '5c1e…'))
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  }
+
+  test('卡住的計畫：範例裡的選項跟 CLI 真的印的一字不差（還沒開始的、做到一半中斷的各一份）', () => {
+    const sec = md.split(/^### /m).find(x => x.startsWith('卡住的計畫')) ?? ''
+    const docLines = new Set(sec.split('\n'))
+    for (const started of [false, true]) {
+      const said = conflictChoices(started)
+      assert.ok(said.some(l => /cleanup (release|undo) 5c1e…$/.test(l)), `前提：抓到的是帶指令的那幾行：\n${said.join('\n')}`)
+      for (const l of said) {
+        assert.ok(docLines.has(l), `cli.md「卡住的計畫」的範例跟 CLI 印的不一樣（${started ? '中斷的' : '還沒開始的'}），少了這一行：\n${l}`)
+      }
     }
   })
 
@@ -759,18 +917,74 @@ describe('spawn cli.mjs 的測試，子行程一定拿到假的 HOME（RC22）',
 // ═══ RC18 ・ smoke 文件全程在沙盒 ════════════════════════════
 
 /**
- * 會**直接**寫資料的指令：改資料庫、改檔案時間、刪檔。這些不經過 CLI、不走 cb，
+ * 會**直接**寫資料的指令：改資料庫、改檔案時間、搬檔、刪檔。這些不經過 CLI、不走 cb，
  * 所以每一行都要自己站在守門後面（第三波 D1）。
+ *
+ * 第三波之二補的盲點（上一版都放行）：PowerShell 的 `[IO.File]::SetLastWriteTime(…)`（只認 `.LastWriteTime =`）、
+ * 不帶旗標的 `rm ~/Downloads/x`（只認 `rm -r`／`rm -f`）、`find … -delete`。順手補上 mv、Node 的 rmSync／unlinkSync／renameSync。
  */
-const DIRECT_WRITE = /\btouch\b|utimes|\.Last(?:Write|Access)Time\s*=|DatabaseSync|\bsqlite3\b|\b(?:UPDATE|DELETE\s+FROM|INSERT\s+INTO|DROP\s+TABLE)\b|\brm\s+-\w*[rf]|\bRemove-Item\b/
+const DIRECT_WRITE = new RegExp([
+  /\btouch\b|utimes|\bSet(?:LastWrite|LastAccess|Creation)Time(?:Utc)?\s*\(|\.(?:LastWrite|LastAccess|Creation)Time(?:Utc)?\s*=/.source,
+  /DatabaseSync|\bsqlite3\b|\b(?:UPDATE|DELETE\s+FROM|INSERT\s+INTO|DROP\s+TABLE)\b/.source,
+  /\b(?:rm|rmdir|unlink|shred|mv|rmSync|rmdirSync|unlinkSync|renameSync)\b|\s-delete\b|\b(?:Remove|Move)-Item\b/.source,
+].join('|'))
 
 /** 拿掉註解（行首或空白後面的 #）。這份文件的字串裡沒有 #。 */
 const uncomment = line => line.replace(/(^|\s)#.*$/, '$1')
 
-/** 守門的三種寫法：函式本體的第一行、`if … then … fi`、單行的 `sandbox_ok && …`（bash 與 PowerShell 各一套） */
+/**
+ * 守門的兩種整段寫法：函式本體的第一行（bash 與 PowerShell 各一套）、`if sandbox_ok[ && 條件]; then … fi`。
+ * if 的條件裡**不可以有 `||`**：`if sandbox_ok || true; then` 沙盒不對也會進去。
+ * 上一版還收 `if [ -n "$SANDBOX" ]; then` —— 那只檢查 SANDBOX 不是空的，HOME、資料庫指到真的照樣放行。
+ */
 const GUARD_FIRST = /^(?:sandbox_ok \|\| return 1|if \(-not \(sandbox_ok\)\) \{ return \})$/
-const GUARD_IF = /^if (?:sandbox_ok\b|\[ -n "\$SANDBOX" \])[^\n]*;\s*then$/
-const GUARD_LINE = /^(?:sandbox_ok && |if \(sandbox_ok\) \{)/
+const GUARD_IF = /^if sandbox_ok(?: && [^|;]*)?;\s*then$/
+
+/**
+ * 一行 shell 拆成一串指令：`[{ op, text }]`，op 是**接在這一段前面**的連接符（第一段是 ''）。
+ * 只在引號外面拆：`&&`、`||`、`;`、`&`（`2>&1`、`&>` 這種轉向不算）。管線 `|` 不拆 —— 它比 `&&` 綁得緊。
+ */
+function commands(line) {
+  const out = []
+  let start = 0, op = ''
+  const cut = (i, next, width) => { out.push({ op, text: line.slice(start, i).trim() }); op = next; start = i + width }
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === "'") { const end = line.indexOf("'", i + 1); i = end < 0 ? line.length : end; continue }
+    if (c === '"') { for (i++; i < line.length && line[i] !== '"'; i++) if (line[i] === '\\') i++; continue }
+    if (c === '\\') { i++; continue }
+    const two = line.slice(i, i + 2)
+    if (two === '&&' || two === '||') { cut(i, two, 2); i++; continue }
+    if (c === ';') { cut(i, ';', 1); continue }
+    if (c === '&' && !/[>|]/.test(line[i - 1] ?? '') && line[i + 1] !== '>') cut(i, '&', 1)
+  }
+  out.push({ op, text: line.slice(start).trim() })
+  return out
+}
+
+/**
+ * 一行裡**沒有**站在守門後面的那幾段指令（第三波之二）。上一版只要行首是 `sandbox_ok && ` 就整行放行 ——
+ * `sandbox_ok && rm -rf "$SANDBOX"; rm -rf ~/Downloads` 的第二段在沙盒不對的時候照樣跑。
+ *
+ * bash 的 `&&` 與 `||` 同級、由左往右結合：`sandbox_ok && A || B` 是 `(sandbox_ok && A) || B`。
+ * 所以一路記著「前面這一串成功的話，沙盒一定檢查過了」：
+ *   - `&&` 後面那段：前面成功才跑 → 前面成功代表檢查過了，就守住了
+ *   - `||` 後面那段：前面失敗才跑 → 守不住
+ *   - `;`、`&` 後面：新的一串，重新算
+ * PowerShell 的 `if (sandbox_ok) { … }` 只守住大括號裡面；後面的（`; B`、`else { B }`）守不住。
+ */
+function unguardedCommands(line) {
+  const ps = /^if \(sandbox_ok\) \{/.exec(line)
+  if (ps) return unguardedCommands(line.slice(ps[0].length - 1 + braceSpan(line, ps[0].length - 1).length).replace(/^\s*;/, '').trim())
+  const out = []
+  let passed = false
+  for (const { op, text } of commands(line)) {
+    if (!(op === '&&' && passed) && text) out.push(text)
+    const guard = text === 'sandbox_ok'
+    passed = op === '&&' ? passed || guard : op === '||' ? passed && guard : guard
+  }
+  return out
+}
 
 /**
  * 一個區塊裡**沒有**站在守門後面、卻會直接寫資料的行。
@@ -779,6 +993,9 @@ const GUARD_LINE = /^(?:sandbox_ok && |if \(sandbox_ok\) \{)/
 function unguardedWrites(body) {
   const lines = body.split('\n')
   const bad = []
+  const check = (i, code = uncomment(lines[i]).trim()) => {
+    if (unguardedCommands(code).some(c => DIRECT_WRITE.test(c))) bad.push(lines[i].trim())
+  }
   for (let i = 0; i < lines.length; i++) {
     const code = uncomment(lines[i]).trim()
     // 函式定義：本體第一行是守門，整個本體都算守住
@@ -787,29 +1004,48 @@ function unguardedWrites(body) {
       const first = lines.slice(i + 1, end).map(l => uncomment(l).trim()).find(Boolean) ?? ''
       if (end > i && GUARD_FIRST.test(first)) { i = end; continue }
     }
+    // if 守門：then 那一段守住；else／elif 之後守不住（沙盒不對的時候跑的就是那裡），fi 後面接的也守不住
     if (GUARD_IF.test(code)) {
-      const end = lines.findIndex((l, j) => j > i && l.trim() === 'fi')
-      if (end > i) { i = end; continue }
+      let depth = 1, end = -1, otherwise = -1
+      for (let j = i + 1; j < lines.length && end < 0; j++) {
+        const c = uncomment(lines[j]).trim()
+        if (/^if\b/.test(c)) depth++
+        else if (/^fi\b/.test(c) && --depth === 0) end = j
+        else if (depth === 1 && otherwise < 0 && /^(?:else|elif)\b/.test(c)) otherwise = j
+      }
+      if (end > i) {
+        if (otherwise > i) for (let j = otherwise; j < end; j++) check(j)
+        check(end, uncomment(lines[end]).trim().replace(/^fi\b\s*;?/, ''))
+        i = end
+        continue
+      }
     }
-    if (GUARD_LINE.test(code)) continue
-    if (DIRECT_WRITE.test(code)) bad.push(lines[i].trim())
+    check(i, code)
   }
   return bad
 }
 
-/** 區塊裡 `name() {` 到行首 `}` 的整段定義；PowerShell 是 `function name … {` */
+/** 區塊裡 `name() {` 到行首 `}` 的整段定義 */
 const shellFn = (body, name) => new RegExp(`^${name}\\(\\)\\s*\\{\\n[\\s\\S]*?^\\}`, 'm').exec(body)?.[0] ?? ''
-const psFn = (body, name) => new RegExp(`^function ${name}\\b[^\\n]*\\{\\n[\\s\\S]*?^\\}`, 'm').exec(body)?.[0] ?? ''
 
-/** smoke 的 bash 區塊是給 macOS／Linux 的；Windows 上 $SANDBOX/home 這種接法本來就對不上 */
+/**
+ * 這幾條真的用 bash 跑文件裡的區塊。Windows 上不跑：Git Bash 會把交給 node 的路徑換成 C:\… 的寫法，
+ * 這裡的比對（$SANDBOX/home 這種接法）對不上 —— Windows 那一邊靠照著 smoke 實際跑一次。
+ */
 const NO_BASH = process.platform === 'win32' ? 'smoke 的 bash 區塊是給 macOS／Linux 的'
   : spawnSync('bash', ['-c', 'exit 0']).status === 0 ? false : '這台沒有 bash'
 
-/** 跑一段 bash。環境變數只給 PATH（前面接上這個 node）與指定的 —— 不繼承任何家目錄。 */
+/**
+ * 跑一段 bash。環境變數只給 PATH（前面接上這個 node）、HOME 與指定的 —— 不繼承使用者的任何環境。
+ *
+ * **HOME 一律先給假的**（isolate-home 的暫存資料夾），呼叫端要別的再自己蓋掉。
+ * 不給的話 bash 的 `~` 會照 passwd 展開成**真的家目錄**：文件裡抽出來的那一行只要有 `~`
+ * （`~/Downloads/…`），就落到使用者真的 Downloads（第三波之二）。
+ */
 function bash(script, env, cwd) {
   return spawnSync('bash', ['--noprofile', '--norc', '-c', script], {
     cwd, encoding: 'utf8', timeout: 30_000,
-    env: { PATH: dirname(process.execPath) + delimiter + process.env.PATH, ...env },
+    env: { PATH: dirname(process.execPath) + delimiter + process.env.PATH, HOME: FAKE_HOME, ...env },
   })
 }
 
@@ -838,31 +1074,17 @@ function smokeWorld() {
   }
 }
 
-/** 這台有沒有 PowerShell（Windows 一定有 powershell；別的平台要自己裝 pwsh） */
-const PS = ['pwsh', 'powershell'].find(bin =>
-  spawnSync(bin, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { timeout: 60_000 }).status === 0)
-
-function powershell(script, env, dir) {
-  const file = join(dir, `run-${Math.random().toString(36).slice(2)}.ps1`)
-  // BOM：Windows PowerShell 5 讀沒有 BOM 的腳本會用系統編碼，中文就壞了
-  writeFileSync(file, '\uFEFF' + script)
-  const base = { ...process.env }   // isolate-home 已經把家目錄換成假的
-  for (const k of ['SANDBOX', 'CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE', 'CONTEXTBOX_TOKEN_PATH']) delete base[k]
-  return spawnSync(PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
-    { encoding: 'utf8', timeout: 60_000, env: { ...base, ...env } })
-}
-
 describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
   const md = readFileSync(join(REPO, 'test', 'smoke-cleanup.md'), 'utf8')
   // 列表裡縮排的區塊（6.5 的第 6 點）也算
   const blocks = [...md.matchAll(/^[ \t]*```(\w*)\n([\s\S]*?)^[ \t]*```/gm)].map(m => ({ lang: m[1], body: m[2], at: m.index }))
   const shell = blocks.filter(b => b.lang === 'bash' || b.lang === 'sh')
-  const ps = blocks.filter(b => b.lang === 'powershell')
+  // 會直接寫資料的檢查看**每一個**程式碼區塊（沒標語言的、標成 zsh／powershell 的也算），只有範例文字不算
+  const code = blocks.filter(b => !['markdown', 'md', 'json', 'text'].includes(b.lang))
   /** 會讀寫資料的指令：CLI、server、隔離區 */
   const touches = /\bcli\.mjs\b|\bserver\.ts\b|\bcb\s+\w|CONTEXTBOX_QUARANTINE"|~\/|\$HOME\b/
   const setupOf = list => list.find(b => /CONTEXTBOX_CONFIG/.test(b.body))
   const setup = setupOf(shell) ?? { body: '', at: -1 }
-  const psSetup = setupOf(ps) ?? { body: '', at: -1 }
 
   test('第一個動資料的指令之前，沙盒已經設好：CONFIG／DB／QUARANTINE 與家目錄都指到沙盒', () => {
     assert.ok(setup.at >= 0, '找不到設定沙盒的 bash 區塊')
@@ -870,24 +1092,38 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
       assert.match(setup.body, new RegExp(`export ${v}="\\$SANDBOX/`), `沙盒區塊沒有把 ${v} 指到 $SANDBOX`)
     }
     assert.match(setup.body, /export SANDBOX="\$\(mktemp -d\)"/, '沙盒要是一個新的暫存資料夾')
-    // 設定檔的清理範圍要是沙盒（cleanup.roots），而且截圖資料夾不加進來
-    assert.match(setup.body, /"cleanup":\s*\{\s*"roots":\s*\["\$HOME\/Downloads"\]/, 'cleanup.roots 沒指到沙盒')
-    assert.match(setup.body, /"screenshots":\s*false/)
+    // 設定檔的清理範圍（cleanup.roots）與截圖：下面「第 0 步真的用 bash 跑一次」看寫出來的檔
     const firstUse = shell.find(b => b !== setup && touches.test(b.body))
     assert.ok(firstUse && firstUse.at > setup.at, '有指令在沙盒設好之前就動了資料')
-    // PowerShell 也一樣
-    assert.ok(psSetup.at >= 0, '找不到 PowerShell 的沙盒區塊')
-    assert.match(psSetup.body, /\$env:USERPROFILE = Join-Path \$env:SANDBOX/)
-    for (const v of ['CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE']) {
-      assert.match(psSetup.body, new RegExp(`\\$env:${v} = "\\$env:SANDBOX\\\\`), `PowerShell 沒有把 ${v} 指到沙盒`)
-    }
-    for (const b of ps) if (b !== psSetup) assert.ok(b.at > psSetup.at, 'PowerShell 有指令在沙盒設好之前')
-    // PowerShell 的 ~ 是分頁開啟時的家目錄，不跟著 $env:USERPROFILE 走 —— 寫 ~ 就會進到真的 Downloads
-    for (const b of ps) {
-      for (const line of b.body.split('\n')) {
-        assert.ok(!/(^|[\s"'(])~[\\/]/.test(line.replace(/#.*$/, '')), `PowerShell 用了 ~（會是真的家目錄）：${line.trim()}`)
-      }
-    }
+  })
+
+  test('第 0 步真的用 bash 跑一次：設定檔的清理範圍只有沙盒的 Downloads、不加截圖，cb doctor 拿到的全在沙盒（第三波之二）', { skip: NO_BASH }, t => {
+    // 設定檔從 cat <<EOF 改成讓 node 寫（Git Bash 的路徑寫法），字面比對不再有意義 —— 直接看寫出來的檔
+    const w = smokeWorld()
+    t.after(w.done)
+    const repo = join(w.root, 'repo'), tmp = join(w.root, 'tmp'), mark = join(w.root, 'ran.json')
+    for (const d of [repo, tmp]) mkdirSync(d)
+    writeFileSync(join(repo, 'cli.mjs'), `import { writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+const e = process.env
+writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice(2), home: homedir(), profile: e.USERPROFILE,
+  sandbox: e.SANDBOX, config: e.CONTEXTBOX_CONFIG, db: e.CONTEXTBOX_DB, q: e.CONTEXTBOX_QUARANTINE, token: e.CONTEXTBOX_TOKEN_PATH }))\n`)
+    // 一個沒設沙盒的分頁（家目錄是「真的」那一個），mktemp 建在 tmp 底下
+    const r = bash(setup.body, { ...w.realEnv, TMPDIR: tmp }, repo)
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    const ran = JSON.parse(readFileSync(mark, 'utf8'))
+    assert.deepEqual(ran.argv, ['doctor'], '最後一行是 cb doctor')
+    const sb = ran.sandbox
+    assert.ok(sb && realpathSync(sb).startsWith(realpathSync(tmp) + sep), `沙盒要是 mktemp -d 新建的：${sb}`)
+    assert.deepEqual([ran.config, ran.db, ran.q, ran.token], ['config.json', 'data.db', 'quarantine', 'token'].map(f => join(sb, f)))
+    assert.equal(ran.home, join(sb, 'home'), 'CLI 看到的家目錄是沙盒')
+    assert.equal(ran.profile, join(sb, 'home'), 'USERPROFILE 也指到沙盒（Windows 版的 node 看它）')
+    const cfg = JSON.parse(readFileSync(join(sb, 'config.json'), 'utf8'))
+    const dl = join(sb, 'home', 'Downloads')
+    assert.deepEqual(cfg.cleanup, { roots: [dl], screenshots: false }, '清理範圍只有沙盒的 Downloads，截圖資料夾不加')
+    assert.deepEqual(cfg.watch, [dl])
+    assert.ok(statSync(dl).isDirectory())
+    assert.deepEqual(readdirSync(join(w.real, '.contextbox')), [], '真的 ~/.contextbox 一個檔都不可以多')
   })
 
   test('每一個 CLI 指令都走 cb（沙盒守門），不直接 node cli.mjs', () => {
@@ -911,7 +1147,7 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
 
   test('會清檔、刪檔的每一步都在沙盒裡：apply／--empty 只透過 cb', () => {
     const risky = []
-    for (const b of [...shell, ...ps]) {
+    for (const b of code) {
       for (const line of b.body.split('\n')) {
         if (/cleanup\s+(?:apply|undo)|--empty/.test(line) && !/^\s*(?:CONTEXTBOX_READONLY=1\s+)?cb\s/.test(line)) risky.push(line.trim())
       }
@@ -922,7 +1158,7 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
   // ── 第三波 D1：不經過 cb、直接寫資料的那幾行 ──
 
   test('會直接改資料庫、改檔案時間、刪檔的每一行都站在守門後面（D1）', () => {
-    const bad = [...shell, ...ps].flatMap(b => unguardedWrites(b.body))
+    const bad = code.flatMap(b => unguardedWrites(b.body))
     assert.deepEqual(bad, [], '這些行不經過 cb，要自己守門（sandbox_ok）')
   })
 
@@ -940,6 +1176,50 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
     assert.deepEqual(unguardedWrites('function sandbox_touch([string]$d) {\n  if (-not (sandbox_ok)) { return }\n  $f.LastWriteTime = $t\n}'), [])
     assert.deepEqual(unguardedWrites('sandbox_ok && rm -rf "$SANDBOX"'), [])
     assert.deepEqual(unguardedWrites('if (sandbox_ok) { Remove-Item -Recurse -Force $env:SANDBOX }'), [])
+  })
+
+  test('守門寫法的檢查本身：第三波之二補的盲點都抓得到，正常的寫法照樣放得過', () => {
+    const caught = {
+      'PowerShell 用方法改時間': "[IO.File]::SetLastWriteTime('a.zip', (Get-Date).AddDays(-3))",
+      'PowerShell 用方法改時間（Utc）': "[System.IO.File]::SetLastWriteTimeUtc($p, $t)",
+      '不帶旗標的 rm': 'rm ~/Downloads/x',
+      'find … -delete': "find ~/Downloads -name 'smoke-*' -delete",
+      'find … -exec rm': "find ~/Downloads -name 'smoke-*' -exec rm {} +",
+      'mv 搬走真的檔': 'mv ~/Downloads/a.zip /tmp/',
+      'Node 刪檔': "node -e 'require(\"node:fs\").rmSync(process.argv[1])' ~/Downloads/a.zip",
+      '守門後面接 ;': 'sandbox_ok && rm -rf "$SANDBOX"; rm -rf ~/Downloads',
+      '守門後面接 ||（沙盒不對時跑）': 'sandbox_ok && rm -rf "$SANDBOX" || rm -rf ~/Downloads',
+      '守門本身接 ||': 'sandbox_ok || rm -rf ~/Downloads',
+      '|| 之後再接 &&（(a || sandbox_ok) && B，a 成功就跳過守門）': 'true || sandbox_ok && rm -rf ~/Downloads',
+      '守門後面接 &（背景跑完換下一串）': 'sandbox_ok && echo ok & rm -rf ~/Downloads',
+      'PowerShell 守門後面接 else': 'if (sandbox_ok) { Remove-Item -Recurse $env:SANDBOX } else { Remove-Item -Recurse ~\\Downloads }',
+      'PowerShell 守門後面接 ;': 'if (sandbox_ok) { Remove-Item -Recurse $env:SANDBOX }; Remove-Item x',
+      'if 守門的 else 那一段': "if sandbox_ok; then\n  echo ok\nelse\n  node -e 'new DatabaseSync(p)'\nfi",
+      'if 守門的 elif 那一段': "if sandbox_ok; then\n  echo ok\nelif true; then\n  rm -rf ~/Downloads\nfi",
+      'fi 後面接的': "if sandbox_ok; then\n  echo ok\nfi; rm -rf ~/Downloads",
+      'if 的條件有 ||': "if sandbox_ok || true; then\n  node -e 'new DatabaseSync(p)'\nfi",
+      '只檢查 SANDBOX 不是空的': "if [ -n \"$SANDBOX\" ]; then\n  rm -rf ~/Downloads\nfi",
+    }
+    for (const [why, code] of Object.entries(caught)) assert.equal(unguardedWrites(code).length, 1, `${why} 要抓到：${code}`)
+    const fine = {
+      '守門接 && 一路下去': 'sandbox_ok && rm -rf "$SANDBOX" && echo done',
+      '前面先做別的，再守門': 'cd "$REPO" && sandbox_ok && rm -rf "$SANDBOX"',
+      '單引號裡的 ; 不算斷開': "sandbox_ok && node -e 'const d = new DatabaseSync(p); d.exec(\"DELETE FROM t\")'",
+      '雙引號裡的 ; 不算斷開': 'sandbox_ok && node -e "const fs = require(\'node:fs\'); fs.rmSync(process.env.SANDBOX)"',
+      '轉向的 & 不算斷開': 'sandbox_ok && find "$SANDBOX" -type f -delete 2>&1 | head',
+      '只讀的 find': 'find "$CONTEXTBOX_QUARANTINE" -type f',
+      'sandbox_touch 不是 touch': "sandbox_touch -d '3 days ago' a.zip",
+      'if 守門的 then 那一段，else 只 echo': "if sandbox_ok && [ \"$CONTEXTBOX_DB\" = \"$SANDBOX/data.db\" ]; then\n  node -e 'new DatabaseSync(p)'\nelse\n  echo no\nfi",
+    }
+    for (const [why, code] of Object.entries(fine)) assert.deepEqual(unguardedWrites(code), [], `${why} 要放得過：${code}`)
+  })
+
+  test('bash() 這個 helper：子行程的 ~ 是假的家目錄，不是真的（第三波之二）', { skip: NO_BASH }, () => {
+    // 不給 HOME 的話 bash 照 passwd 展開 ~ —— 文件裡抽出來的 `~/Downloads/…` 會落到使用者真的 Downloads
+    const tilde = env => bash('printf %s ~', env).stdout
+    assert.equal(tilde({}), FAKE_HOME)
+    assert.notEqual(tilde({}), userInfo().homedir)
+    assert.equal(tilde({ HOME: '/nowhere/sb/home' }), '/nowhere/sb/home', '呼叫端給的 HOME 照用')
   })
 
   test('第 6 步撥隔離時間：沙盒不對就不撥，SANDBOX 是空字串也一樣（真的用 bash 跑，D1）', { skip: NO_BASH }, t => {
@@ -995,6 +1275,9 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
     const realFile = join(w.real, 'Downloads', 'mine.zip')
     const sibling = join(w.good.HOME, 'Downloads-old', 'keep.zip')   // 名字開頭一樣、但不在 Downloads 裡
     for (const p of [realFile, sibling, join(dl, 'a.zip'), join(dl, 'b.zip')]) writeFileSync(p, 'x')
+    // 沙盒 Downloads 裡的捷徑，指到外面（第三波之二）：utimes 會跟著捷徑走，撥到的是外面那個檔
+    symlinkSync(realFile, join(dl, 'link.zip'))
+    symlinkSync(join(w.real, 'Downloads'), join(dl, 'outdir'))
     const ageMs = p => Date.now() - statSync(p).mtimeMs
     const untouched = () => [realFile, sibling, join(dl, 'a.zip')].every(p => ageMs(p) < 60_000)
 
@@ -1003,6 +1286,8 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
       ['沙盒設好了，檔案在真的 Downloads', w.good, `sandbox_touch -d '3 days ago' '${realFile}'`, dl],
       ['用 .. 繞出沙盒的 Downloads', w.good, `sandbox_touch -d '3 days ago' ../../../real/Downloads/mine.zip`, dl],
       ['前綴陷阱：Downloads-old 不是 Downloads', w.good, `sandbox_touch -d '3 days ago' ~/Downloads-old/keep.zip`, dl],
+      ['Downloads 裡的檔案捷徑指到外面', w.good, `sandbox_touch -d '3 days ago' link.zip`, dl],
+      ['Downloads 裡的資料夾捷徑指到外面', w.good, `sandbox_touch -d '3 days ago' outdir/mine.zip`, dl],
       ['一次給兩個、其中一個在外面：一個都不撥', w.good, `sandbox_touch -d '3 days ago' a.zip '${realFile}'`, dl],
       ['看不懂的時間', w.good, `sandbox_touch -d 'yesterday' a.zip`, dl],
       ['沒有 -d', w.good, 'sandbox_touch a.zip', dl],
@@ -1052,44 +1337,6 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
     assert.deepEqual(ran(), { argv: ['pet'], port: '0' })
   })
 
-  test('PowerShell 的區塊語法都讀得懂；sandbox_touch 沙盒不對就不撥（D1）', { skip: !PS && '這台沒有 PowerShell' }, t => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-smoke-ps-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
-    const q = s => `'${s.replaceAll("'", "''")}'`
-    for (const [i, b] of ps.entries()) {
-      const f = join(dir, `block${i}.ps1`)
-      writeFileSync(f, '\uFEFF' + b.body)
-      const r = powershell(`$t = $null; $e = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile(${q(f)}, [ref]$t, [ref]$e)
-$e | ForEach-Object { $_.Message }
-exit $e.Count`, {}, dir)
-      assert.equal(r.status, 0, `PowerShell 第 ${i + 1} 個區塊讀不懂：${r.stdout}${r.stderr}`)
-    }
-    const fns = psFn(psSetup.body, 'sandbox_ok') + '\n' + psFn(psSetup.body, 'sandbox_touch')
-    assert.match(fns, /^function sandbox_touch\b/m, 'PowerShell 的第 0 步要定義 sandbox_touch')
-    // 跟文件一樣用 \ 接（Windows 是正常路徑；Linux／macOS 上 PowerShell 也把 \ 當分隔）
-    const sb = join(dir, 'sb'), home = sb + '\\home'
-    const dl = join(sb, 'home', 'Downloads'), outside = join(dir, 'mine.zip')
-    mkdirSync(dl, { recursive: true })
-    const good = {
-      SANDBOX: sb, USERPROFILE: home, CONTEXTBOX_CONFIG: sb + '\\config.json', CONTEXTBOX_DB: sb + '\\data.db',
-      CONTEXTBOX_QUARANTINE: sb + '\\quarantine', CONTEXTBOX_TOKEN_PATH: sb + '\\token',
-    }
-    const f = join(dl, 'a.zip')
-    for (const p of [f, outside]) writeFileSync(p, 'x')
-    const ageMs = p => Date.now() - statSync(p).mtimeMs
-    const run = (cmd, env) => powershell(`${fns}\nSet-Location -LiteralPath ${q(dl)}\n${cmd}`, env, dir)
-    for (const [why, cmd, env] of [
-      ['SANDBOX 是空字串', "sandbox_touch -d '3 days ago' a.zip", { ...good, SANDBOX: '' }],
-      ['一次給兩個、其中一個在外面：一個都不撥', `sandbox_touch -d '3 days ago' a.zip ${q(outside)}`, good],
-    ]) {
-      const r = run(cmd, env)
-      assert.ok(ageMs(f) < 60_000 && ageMs(outside) < 60_000, `${why}：不可以撥（${r.stdout}${r.stderr}）`)
-    }
-    const r = run("sandbox_touch -d '3 days ago' a.zip", good)
-    assert.ok(Math.abs(ageMs(f) - 3 * 86400_000) < 300_000, `對照組：沙盒對要真的撥（${r.stdout}${r.stderr}）`)
-  })
-
   // ── 第三波 D2、D3 ──
 
   test('隔離區空了沒，用 find -type f 看：復原之後留下的空資料夾不算（D2）', { skip: NO_BASH }, t => {
@@ -1122,15 +1369,17 @@ exit $e.Count`, {}, dir)
     assert.ok(shell.every(b => b.at >= zsh.at), '它之前不可以有別的 shell 區塊')
   })
 
-  test('PowerShell 跑不了第 4–6 步，要講清楚；那幾步也沒有 PowerShell 區塊（D3）', () => {
-    assert.match(sectionOf(md, '## 0 ・'), /PowerShell 跑不了第 4–6 步/)
-    for (const h of ['## 4 ・', '## 5 ・', '## 6 ・', '## 6.5 ・']) {
-      assert.doesNotMatch(sectionOf(md, h), /```powershell/, `${h} 有 PowerShell 區塊，跟「跑不了」矛盾`)
-    }
-    // 以前寫「之後各步的 bash 指令在 PowerShell 裡一樣打 cb …」：第 3 步的
-    // `CONTEXTBOX_READONLY=1 cb …` 與 `$?` 在 PowerShell 都不是那樣
-    assert.doesNotMatch(md, /之後各步的 bash 指令在 PowerShell 裡一樣打/)
-    assert.match(sectionOf(md, '## 0 ・'), /\$LASTEXITCODE/, '要講 PowerShell 看離開碼用 $LASTEXITCODE')
+  test('整份 smoke 要用 bash：沒有 PowerShell 區塊，第 0 步講清楚 Windows 用 Git Bash 或 WSL（第三波之二）', () => {
+    // 上一版說 Windows 可以用 PowerShell 跑第 0–3 步，但第 1 步那三個「不可以被碰的檔」只有 bash 的 printf 寫法 ——
+    // 一路講「這幾步有 PowerShell 版」只會讓人把 bash 指令硬貼進 PowerShell（那裡的 ~ 是真的家目錄）
+    const langs = blocks.map(b => b.lang)
+    assert.deepEqual(langs.filter(l => !['bash', 'sh', 'markdown', ''].includes(l)), [], '只能有 bash 區塊（與範例文字）')
+    const zero = sectionOf(md, '## 0 ・')
+    assert.match(zero, /Git Bash/, '第 0 步要講 Windows 用 Git Bash')
+    assert.match(zero, /WSL/, '第 0 步要講 Windows 可以用 WSL')
+    assert.match(zero, /沒有 PowerShell 版/, '要講清楚沒有 PowerShell 版')
+    assert.doesNotMatch(md, /第 0–3 步|PowerShell 跑不了第|PowerShell 版還沒有/, '不要再承諾 PowerShell 跑得了哪幾步')
+    assert.doesNotMatch(md, /\$env:|\$LASTEXITCODE|Get-ChildItem|Out-File|Remove-Item/, 'PowerShell 的寫法不要留在文件裡')
   })
 
   test('過時的描述拿掉了：沒有「回 409」', () => {
@@ -1159,7 +1408,45 @@ exit $e.Count`, {}, dir)
     assert.doesNotMatch(sec, /node core\/server\.ts/, '直接 node core/server.ts 會繞過沙盒守門')
     assert.doesNotMatch(sec, /關掉你平常/, '不要叫使用者關掉平常的 pet —— port 0 不會跟它撞')
     assert.doesNotMatch(sec, /已經有一個 ContextBox 在跑了/, 'port 0 不會撞 port，那段說明過時了')
-    // export 的話之後的 cb open 也拿到 0，就找不到沙盒的 pet 了
-    assert.doesNotMatch(md, /export CONTEXTBOX_PORT/, 'CONTEXTBOX_PORT 只給 pet 那一行')
+    // 第三波之二：上一版寫「export 的話之後的 cb open 也拿到 0，就找不到沙盒的 pet 了」—— 不是實際行為。
+    // cli.mjs 的 petPort() 把 0 當成沒設，改讀 pet 記在資料庫裡的 port；export 了也找得到（下一條真的跑一次）。
+    assert.doesNotMatch(md, /找不到沙盒的 pet/, 'CONTEXTBOX_PORT=0 不會讓 cb open 找不到沙盒的 pet')
+    assert.match(sec, /`cb open` 把 `0` 當成沒設/, '要照實講：open 把 0 當成沒設，改讀 pet 記下的 port')
+  })
+
+  test('6.5 講的是真的：CONTEXTBOX_PORT=0 時 open 改讀 pet 記下的 port；明講別的 port 才照用（真的跑 cli.mjs，第三波之二）', async t => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-smoke-port-')))
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    // 兩個剛剛還開著、現在關掉的 port：保證沒有人在聽（open 回 2，但印出來的網址就是它挑的那個 port）
+    const closedPort = async () => {
+      const srv = createServer()
+      await new Promise(r => srv.listen(0, '127.0.0.1', r))
+      const { port } = srv.address()
+      await new Promise(r => srv.close(r))
+      return port
+    }
+    const recorded = await closedPort(), other = await closedPort()
+    const home = join(dir, 'home')
+    mkdirSync(home)
+    const dbPath = join(dir, 'data.db')
+    const d = openDb(dbPath)
+    d.prepare(`INSERT INTO meta (k, v) VALUES ('pet_port', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).run(String(recorded))
+    d.close()
+    const open = port => {
+      const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'open'], {
+        encoding: 'utf8', timeout: 60_000,
+        env: {
+          ...process.env, HOME: home, USERPROFILE: home,
+          CONTEXTBOX_CONFIG: join(dir, 'config.json'), CONTEXTBOX_DB: dbPath,
+          CONTEXTBOX_QUARANTINE: join(dir, 'quarantine'), CONTEXTBOX_TOKEN_PATH: join(dir, 'token'),
+          CONTEXTBOX_OPENER: join(dir, '沒有這個程式'), CONTEXTBOX_PORT: port,
+        },
+      })
+      assert.equal(r.status, 2, `前提：那個 port 沒有人在聽，open 回 2：${r.stdout}${r.stderr}`)
+      return /127\.0\.0\.1:(\d+)\/\?k=/.exec(r.stdout)?.[1]
+    }
+    assert.equal(open('0'), String(recorded), 'CONTEXTBOX_PORT=0（export 了）：open 還是去 pet 記下的 port')
+    assert.equal(open(''), String(recorded), '對照：沒設也一樣')
+    assert.equal(open(String(other)), String(other), '對照：明講的 port 照用')
   })
 })

@@ -262,7 +262,8 @@ describe('C 七天窗改用 journal', () => {
     const f = fixture(t)
     const p = createPlan(f.db)
     applyPlan(f.db, p.id, f.opts)
-    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine })
+    // 互推只對帶 token 的那一份成立：免 token 的 canEmptyAt 是 null，canEmptyNow 照給（第三波之二）
+    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine, full: true })
     assert.equal(h.quarantine.items, 2)
     assert.equal(
       h.quarantine.canEmptyNow,
@@ -281,7 +282,7 @@ describe('C 七天窗改用 journal', () => {
     const sixDaysAgo = new Date(Date.now() - 6 * 86400_000).toISOString()
     f.db.prepare('UPDATE cleanup_move_details SET completed_at=? WHERE seq=?').run(sixDaysAgo, rows[0].seq)
 
-    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine })
+    const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine, full: true })
     const expected = new Date(Date.parse(sixDaysAgo) + 7 * 86400_000).toISOString()
     assert.equal(h.quarantine.canEmptyAt, expected,
       '取最新那筆的話，UI 會說「還要等七天」，但其實明天就有東西可以清了')

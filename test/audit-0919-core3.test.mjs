@@ -18,6 +18,17 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  * | K4 註解 | 說是 recordItemErrors 寫的 | route 在套用後補記 | db.ts 的註解 | 指名 applyPlan 的 markFailure |
  * | K5 重複檔 | skipStaleDuplicates 看全庫 | 過時的就該作廢 | roots 換成 Desktop 掃／Downloads 掃 | Downloads 的候選不動／照常判斷 |
  * | K5 重複檔 | 用 resolve(root) 比前綴 | 原樣就夠 | 根目錄是捷徑（/var → /private/var 同一回事） | 不再是重複檔的照樣改 skipped |
+ *
+ * ── 第三波之二（小項）────────────────────────────────────────────
+ *
+ * | 項目 | 可能的錯 | 另一種解讀 | 分辨用的成對例子 | 認定的答案 |
+ * |---|---|---|---|---|
+ * | K2 保留者 | 只擋 DENY_DIRS | 「. 開頭」只是 .ssh、.git 的簡寫 | Downloads/.cache/x（不在 DENY_DIRS）／Downloads/desktop.ini | 不可以當保留者／可以 |
+ * | K2 保留者 | 連檔名一起比 DENY_DIRS | 名字叫 token 的檔也危險 | Downloads/token（檔）／Downloads/token/x（資料夾） | 可以當保留者／不可以 |
+ * | K5 重複檔 | 「不再成立」只看這一輪碰到的檔 | watcher 單檔模式只管那一個檔 | 保留者 a 刪掉、watcher 只掃新檔 c：刪之前／刪之後 | b 照舊 proposed／b 改 skipped |
+ * | K5 重複檔 | 前綴不帶分隔符號 | Downloads-old 也「在 Downloads 底下」 | 掃 [Downloads]／掃 [Downloads-old] | Downloads-old 的候選不動／改 skipped |
+ * | K6 /health | 免 token 照給隔離區的時間 | 時間只是顯示用 | 同一個隔離區：帶 token／免 token | 有時間／null（欄位還在），canEmptyNow 兩版一樣 |
+ * | K7 寵物文字 | 寫死 Downloads | 預設就是 Downloads | roots=[下載, Screenshots]／[Downloads] | 講「下載」「Screenshots」、沒有 Downloads／講 Downloads |
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -164,7 +175,21 @@ describe('K2 保留者可以是受保護的檔名，但不可以在隱藏資料�
     assert.ok(existsSync(s.keeper))
   })
 
-  for (const rel of ['.ssh/x', 'credentials/x', 'Tokens/x', 'sub/.git/x']) {
+  // 資料夾那段只看**資料夾**：檔名剛好叫 token、credentials（沒有副檔名、在 Downloads 根）不算金鑰資料夾。
+  // 把檔名也算進去的話（segments.slice(0, -1) 寫成 segments），這兩個會被當成 PROTECTED、notes.txt 永遠搬不動。
+  for (const rel of ['token', 'credentials']) {
+    test(`Downloads/${rel}（檔名，不是資料夾）可以當保留者：notes.txt 搬得動，${rel} 留著`, t => {
+      const s = withKeeper(t, rel)
+      const r = exec.applyPlan(s.db, s.p.id, s.opts)
+      assert.equal(r.status, 'applied', JSON.stringify([...routes.planOutcomes(s.db, s.p.id).values()]))
+      assert.ok(!existsSync(s.notes))
+      assert.ok(existsSync(s.keeper))
+    })
+  }
+
+  // 第三波之二：`.ssh`、`.git` 剛好都在 DENY_DIRS，釘不住「任何 . 開頭的資料夾都擋」——
+  // `.cache` 不在 DENY_DIRS，只有「. 開頭」那一條擋得到它。
+  for (const rel of ['.ssh/x', 'credentials/x', 'Tokens/x', 'sub/.git/x', '.cache/x', 'token/x']) {
     test(`Downloads/${rel} 不可以當保留者：notes.txt 不搬，原因是找不到會保留的那份`, t => {
       const s = withKeeper(t, rel)
       const r = exec.applyPlan(s.db, s.p.id, s.opts)
@@ -299,6 +324,57 @@ describe('K5 skipStaleDuplicates 只處理這次 roots 底下的候選', () => {
     assert.equal(s.dupStatus(s.b), 'skipped', '資料庫存的是真路徑，比對要用真路徑')
   })
 
+  test('在 roots 底下、但這一輪沒碰到：保留者刪掉後，watcher 只掃一個新檔，b.pdf 照樣改 skipped', t => {
+    const s = twoRoots(t)
+    s.scan([s.dl])
+    assert.equal(s.dupStatus(s.b), 'proposed', '前提：a.pdf 是保留者，b.pdf 是多出來的')
+    // watcher 的方式：一次只給新下載的那一個檔（paths），不對帳整個根目錄
+    const only = path => scanner.scanDownloads({ db: s.db, roots: [s.dl], maxBytes: s.opts.maxBytes, paths: [path] })
+    // 邊界的這一側：保留者還在，掃一個不相干的新檔不動 b.pdf
+    only(s.put(s.dl, 'c.zip', 'c bytes'))
+    assert.equal(s.dupStatus(s.b), 'proposed')
+    // 邊界的另一側：保留者刪掉（watcher 收到刪除事件就是呼叫 markMissing），再掃一個新檔
+    rmSync(s.a)
+    assert.equal(scanner.markMissing(s.db, s.a, [s.dl]), 1)
+    only(s.put(s.dl, 'c2.zip', 'c2 bytes'))
+    assert.equal(s.dupStatus(s.b), 'skipped', 'b.pdf 不是這一輪碰到的檔，但它已經是唯一的一份')
+    assert.equal(s.itemStatus(s.b), 'kept')
+    assert.ok(!routes.listCandidates(s.db, { roots: [s.dl] }).candidates.some(x => x.name === 'b.pdf'),
+      '唯一的一份不可以還列成「重複檔」')
+  })
+
+  test('並列的資料夾（Downloads 與 Downloads-old）：掃 Downloads 不動 Downloads-old 的候選', t => {
+    const s = sandbox(t)
+    const old = join(s.dir, 'Downloads-old')
+    const x = s.put(old, 'x.pdf', 'old bytes')
+    const y = s.put(old, 'y.pdf', 'old bytes')
+    s.scan([s.dl, old])
+    assert.equal(s.dupStatus(y), 'proposed', '前提：x.pdf 是保留者，y.pdf 是多出來的')
+    // 保留者不見了（別的行程收到刪除事件）：y.pdf 已經不是重複檔，但那要掃 Downloads-old 的人來判斷
+    rmSync(x)
+    assert.equal(scanner.markMissing(s.db, x, [old]), 1)
+    s.scan([s.dl])
+    assert.equal(s.dupStatus(y), 'proposed', '「…/Downloads」是「…/Downloads-old」的字串前綴，但不是它的上層資料夾')
+    // 邊界的另一側：掃 Downloads-old 的時候才改 skipped
+    s.scan([old])
+    assert.equal(s.dupStatus(y), 'skipped')
+  })
+
+  test('並列的資料夾：Downloads-old 的檔不可以當 Downloads 的保留者', t => {
+    const s = sandbox(t)
+    const old = join(s.dir, 'Downloads-old')
+    s.put(old, 'k.pdf', 'same bytes')
+    s.scan([old])                                  // k.pdf 比較早被看到
+    const n = s.put(s.dl, 'n.pdf', 'same bytes')
+    s.scan([s.dl])
+    assert.equal(s.dupStatus(n), undefined, 'Downloads 裡只有 n.pdf 一份；k.pdf 在並列的資料夾，不算')
+    // 邊界的另一側：Downloads 裡真的有第二份，n.pdf 當保留者、n2.pdf 是多出來的
+    const n2 = s.put(s.dl, 'n2.pdf', 'same bytes')
+    s.scan([s.dl])
+    assert.equal(s.dupStatus(n), undefined)
+    assert.equal(s.dupStatus(n2), 'proposed')
+  })
+
   test('沒給 roots（舊的呼叫方式）→ 還是看全庫', t => {
     const s = twoRoots(t)
     s.scan([s.dl])
@@ -339,5 +415,91 @@ describe('K5 skipStaleDuplicates 只處理這次 roots 底下的候選', () => {
       }
     }
     assert.ok(checked >= 6, `真的有比到 roots 外面的候選（${checked}）`)
+  })
+})
+
+// ═══ K6 ・ 免 token 的 /health 不給隔離區的時間 ═══════════════════════
+
+describe('K6 免 token 的 /health：quarantine.canEmptyAt／oldestMtimeAt 是 null，canEmptyNow 照給', () => {
+  /**
+   * 兩個檔進隔離區，隔離完成時間改成 age 以前（跟 K1 一樣直接改 completed_at）。
+   * canEmptyAt 減七天就是「使用者什麼時候清理過」—— 跟遮掉 lastOkAt 是同一個理由。
+   */
+  function quarantined(t, age) {
+    const f = fixture(t)
+    const p = plans.createPlan(f.db)
+    assert.equal(exec.applyPlan(f.db, p.id, f.opts).status, 'applied')
+    f.db.prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - age).toISOString())
+    const h = full => routes.healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine, full })
+    return { lean: h(false), full: h(true) }
+  }
+
+  for (const [label, age, now] of [['滿七天', 7 * DAY + MIN, true], ['不滿七天', DAY, false]]) {
+    test(`隔離${label}：帶 token 有兩個時間、免 token 是 null（欄位還在）；canEmptyNow 兩版都是 ${now}`, t => {
+      const { lean, full } = quarantined(t, age)
+      assert.equal(full.quarantine.items, 2, '前提：隔離區裡有東西')
+      assert.equal(typeof full.quarantine.canEmptyAt, 'string', '帶 token 的照舊')
+      assert.equal(typeof full.quarantine.oldestMtimeAt, 'string', '帶 token 的照舊')
+      assert.ok('canEmptyAt' in lean.quarantine && 'oldestMtimeAt' in lean.quarantine, '欄位要在（形狀一致）')
+      assert.equal(lean.quarantine.canEmptyAt, null)
+      assert.equal(lean.quarantine.oldestMtimeAt, null)
+      assert.equal(full.quarantine.canEmptyNow, now)
+      assert.equal(lean.quarantine.canEmptyNow, now, 'canEmptyNow 是布林、不帶時間，要用遮蔽前的值算')
+      // 其他欄位兩版一樣
+      const rest = q => ({ ...q, canEmptyAt: 'x', oldestMtimeAt: 'x' })
+      assert.deepEqual(rest(lean.quarantine), rest(full.quarantine))
+    })
+  }
+})
+
+// ═══ K7 ・ 寵物「監看中」那句話不寫死 Downloads ═══════════════════════
+
+describe('K7 /pet/state 的 watching 文字：講清理資料夾的名字（只給名字、不給路徑）', () => {
+  /** roots 是 dir 底下這幾個資料夾（names 裡給 null 就用家目錄）。心跳新鮮、沒有候選 → watching。 */
+  function pet(t, names) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core3-pet-')))
+    const roots = names.map(n => n === null ? FAKE_HOME : join(dir, n))
+    for (const r of roots) mkdirSync(r, { recursive: true })
+    const db = open(join(dir, 'data.db'))
+    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(routes.META.heartbeat, new Date().toISOString())
+    db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(routes.META.pid, String(process.pid))
+    let got = null
+    routes.cleanupRoutes({
+      db, roots, quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false,
+      url: new URL('http://x/pet/state'), method: 'GET', body: {},
+      send: (code, body) => { got = { code, body } },
+    })
+    assert.equal(got.code, 200)
+    assert.equal(got.body.state, 'watching', '前提：心跳新鮮、沒有候選')
+    return { message: got.body.message, dir }
+  }
+
+  test('roots=[下載, Screenshots]：兩個名字都講，不可以出現 Downloads', t => {
+    const { message, dir } = pet(t, ['下載', 'Screenshots'])
+    assert.doesNotMatch(message, /Downloads/)
+    assert.match(message, /「下載」/)
+    assert.match(message, /「Screenshots」/)
+    assert.ok(!message.includes(dir), `帶了路徑：${message}`)
+  })
+
+  test('邊界的另一側：roots=[Downloads] → 講 Downloads', t => {
+    assert.match(pet(t, ['Downloads']).message, /「Downloads」/)
+  })
+
+  test('名字是不可信的輸入：換行、bidi 控制字元換成「·」', t => {
+    const { message } = pet(t, ['a\nb', 'invoice\u202efdp'])
+    assert.doesNotMatch(message, /[\n\u202e]/)
+    assert.match(message, /「a·b」/)
+    assert.match(message, /「invoice·fdp」/)
+  })
+
+  test('家目錄當根目錄：不講它的名字（那是使用者名稱）；四個以上講「等 N 個」', t => {
+    const home = pet(t, [null])
+    assert.ok(!home.message.includes(basename(FAKE_HOME)), `講出了家目錄的名字：${home.message}`)
+    assert.match(home.message, /監看資料夾/)
+    const many = pet(t, ['A1', 'B2', 'C3', 'D4'])
+    assert.match(many.message, /「A1」、「B2」、「C3」等 4 個資料夾/)
+    assert.doesNotMatch(many.message, /D4/)
   })
 })

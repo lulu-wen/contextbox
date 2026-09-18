@@ -14,12 +14,23 @@
 > 之後每一個 CLI 指令都透過第 0 步定義的 `cb`，撥檔案時間都透過 `sandbox_touch`；
 > 兩個都會先檢查沙盒還在不在，不在就拒絕執行。
 > **整份跑完之前不要換分頁**；換了分頁，`cb`、`sandbox_touch` 不存在，指令會直接失敗 —— 那是故意的。
+>
+> **整份都要在 bash（或 zsh）裡跑。** Windows 用 Git Bash 或 WSL（見第 0 步），**沒有 PowerShell 版。**
 
 ---
 
 ## 0 ・ 建沙盒
 
-在 **repo 根目錄**開一個新的終端機分頁（bash 或 zsh）。
+在 **repo 根目錄**開一個新的終端機分頁（bash 或 zsh）。整份 smoke 都在這個分頁裡跑。
+Windows 上開 **Git Bash** 或 **WSL**：
+
+- **Git Bash**（裝 Git for Windows 就有）：跑的是 Windows 版的 node，驗得到 Windows 上的行為（路徑、權限、檔案鎖）。
+  Windows 的紀錄用這個
+- **WSL**：裡面是 Linux，跑起來等於又驗一次 Linux，驗不到 Windows
+
+這份文件**沒有 PowerShell 版**，不要把指令貼進 PowerShell 或命令提示字元 —— `~`、`$?`、`變數=值 指令`
+在那裡的意思都不一樣，PowerShell 的 `~` 還是分頁開啟時的家目錄，會直接進到你真的 Downloads。
+Git Bash 這條路還沒有人照這份從頭跑過一次；第一次跑的人卡在哪一步，照第 8 步記下來、開 issue。
 
 **用 zsh 的話，先單獨貼這一行、按 Enter**（bash 貼了也沒事）：
 
@@ -37,18 +48,21 @@ zsh 會把整段讀完才開始執行，同一次貼上的行尾註解還是不�
 export REPO="$PWD"
 export SANDBOX="$(mktemp -d)"
 export HOME="$SANDBOX/home"                 # 從這一行開始，~ 指的是沙盒，不是你的家目錄
+export USERPROFILE="$HOME"                  # Windows 版的 node 看這一個找家目錄（Git Bash）；macOS／Linux 用不到
 mkdir -p "$HOME/Downloads"
 export CONTEXTBOX_CONFIG="$SANDBOX/config.json"
 export CONTEXTBOX_DB="$SANDBOX/data.db"
 export CONTEXTBOX_QUARANTINE="$SANDBOX/quarantine"
 export CONTEXTBOX_TOKEN_PATH="$SANDBOX/token"
-cat > "$CONTEXTBOX_CONFIG" <<EOF
-{
-  "watch": ["$HOME/Downloads"],
-  "filed": "$SANDBOX/Filed",
-  "cleanup": { "roots": ["$HOME/Downloads"], "screenshots": false }
-}
-EOF
+
+# 設定檔讓 node 寫：清理範圍（cleanup.roots）只有沙盒的 Downloads，截圖資料夾不加。
+# 不用 cat 直接把 "$HOME/Downloads" 寫進去：Git Bash 裡那是 /tmp/… 的寫法，Windows 版的 node 看不懂；
+# 交給 node 的環境變數，Git Bash 會換成 Windows 的寫法
+node -e '
+  const { join } = require("node:path"), e = process.env, dl = join(e.HOME, "Downloads")
+  require("node:fs").writeFileSync(e.CONTEXTBOX_CONFIG, JSON.stringify({
+    watch: [dl], filed: join(e.SANDBOX, "Filed"), cleanup: { roots: [dl], screenshots: false },
+  }, null, 2))'
 
 # 沙盒守門：環境變數有任何一個不在沙盒裡，就回 1。每一條都是整條路徑一模一樣的比對
 sandbox_ok() {
@@ -93,67 +107,7 @@ cb doctor
 `doctor` 印出來的**設定檔、資料庫、監看資料夾、隔離區四行，全部都要在 `$SANDBOX` 底下**
 （`echo "$SANDBOX"` 對照）。有任何一行指到你真的家目錄 —— 停下來，關掉這個分頁重來。
 
-**Windows（PowerShell）** 的第 0 步：
-
-```powershell
-$env:REPO = (Get-Location).Path
-$env:SANDBOX = Join-Path $env:TEMP ("cb-smoke-" + [guid]::NewGuid())
-$env:USERPROFILE = Join-Path $env:SANDBOX 'home'     # 從這一行開始，家目錄是沙盒
-$env:HOME = $env:USERPROFILE
-New-Item -ItemType Directory -Force "$env:USERPROFILE\Downloads" | Out-Null
-$env:CONTEXTBOX_CONFIG = "$env:SANDBOX\config.json"
-$env:CONTEXTBOX_DB = "$env:SANDBOX\data.db"
-$env:CONTEXTBOX_QUARANTINE = "$env:SANDBOX\quarantine"
-$env:CONTEXTBOX_TOKEN_PATH = "$env:SANDBOX\token"
-$cfg = @{ watch = @("$env:USERPROFILE\Downloads"); filed = "$env:SANDBOX\Filed"
-          cleanup = @{ roots = @("$env:USERPROFILE\Downloads"); screenshots = $false } } | ConvertTo-Json -Depth 5
-# 不用 Set-Content：Windows PowerShell 5 會加 BOM，設定檔就讀不懂了
-[IO.File]::WriteAllText($env:CONTEXTBOX_CONFIG, $cfg)
-
-# 沙盒守門：環境變數有任何一個不在沙盒裡，就回 $false
-function sandbox_ok {
-  $ok = $env:SANDBOX -and $env:USERPROFILE -eq "$env:SANDBOX\home" `
-    -and $env:CONTEXTBOX_CONFIG -eq "$env:SANDBOX\config.json" -and $env:CONTEXTBOX_DB -eq "$env:SANDBOX\data.db" `
-    -and $env:CONTEXTBOX_QUARANTINE -eq "$env:SANDBOX\quarantine" -and $env:CONTEXTBOX_TOKEN_PATH -eq "$env:SANDBOX\token"
-  if (-not $ok) { Write-Warning '沙盒沒設定好，這一步不跑。回到第 0 步重新設定。' }
-  return [bool]$ok
-}
-
-function cb {
-  if (-not (sandbox_ok)) { return }
-  node "$env:REPO\cli.mjs" @args
-}
-
-# 把檔案時間往回撥，寫法跟 bash 那邊一樣：sandbox_touch -d '3 days ago' 檔名…
-# 只撥沙盒 Downloads 裡的檔，有一個找不到或不在裡面就一個都不撥
-function sandbox_touch([string]$d) {
-  if (-not (sandbox_ok)) { return }
-  if (-not ($d -match '^(\d+) (hour|day)s? ago$')) { Write-Warning '用法：sandbox_touch -d ''3 days ago'' 檔名…'; return }
-  $span = if ($Matches[2] -eq 'hour') { [TimeSpan]::FromHours([double]$Matches[1]) } else { [TimeSpan]::FromDays([double]$Matches[1]) }
-  $dl = (Get-Item -LiteralPath "$env:USERPROFILE\Downloads").FullName + [IO.Path]::DirectorySeparatorChar
-  $files = @(foreach ($f in $args) { Get-Item -LiteralPath $f })
-  $outside = @($files | Where-Object { -not $_.FullName.StartsWith($dl, [StringComparison]::OrdinalIgnoreCase) })
-  if ($files.Count -ne $args.Count -or $outside.Count) { Write-Warning '有檔案找不到或不在沙盒的 Downloads，一個都不撥'; return }
-  foreach ($f in $files) { $f.LastWriteTime = (Get-Date) - $span }
-}
-
-cb doctor
-```
-
-**PowerShell 跑不了第 4–6 步**（含 6.5）：那幾步的指令用到 bash 的 `printf`、`cat`、`if … fi`、
-`變數=值 指令` 這種寫法，這份文件沒有 PowerShell 版，**不要把 bash 指令硬貼進 PowerShell**。
-Windows 上跑第 0–3 步，第 3 步之後用 `cb cleanup undo` 把那五個救回來（第 4 步的第一個指令），
-然後直接跳到第 7 步。紀錄上第 4 步寫「只跑了 `cb cleanup undo`」，第 5、6、6.5 步寫「PowerShell 版還沒有，沒跑」。
-
-第 2、3 步在 PowerShell 裡這樣換：
-
-- `cb …` 照打。`ls ~/Downloads | grep smoke` 換成 `(Get-ChildItem "$env:USERPROFILE\Downloads").Name | Select-String smoke`，
-  `grep -c` 再接 `| Measure-Object`（`cb cleanup list | grep -c …` 同理）
-- `CONTEXTBOX_READONLY=1 cb cleanup apply` 拆成三行：`$env:CONTEXTBOX_READONLY = '1'`、`cb cleanup apply`、`$env:CONTEXTBOX_READONLY = $null`
-- 離開碼看 `$LASTEXITCODE`，不是 `$?`（PowerShell 的 `$?` 只有 True／False）
-
-> **PowerShell 裡不要用 `~`。** PowerShell 的 `~` 是分頁**開啟時**的家目錄，不會跟著上面改過的
-> `$env:USERPROFILE` 走 —— `cd ~\Downloads` 會進到你真的 Downloads。一律寫 `$env:USERPROFILE`。
+Git Bash 裡 `doctor` 印的是 `C:\…` 的寫法，跟 `cygpath -w "$SANDBOX"` 對照。
 
 ---
 
@@ -204,27 +158,6 @@ sandbox_touch -d '45 days ago' 'Screenshot 2026-01-02 141203.png'
 > 會讓那個程式的 fd 指向舊 inode，資料靜靜消失。
 > 所以**剛建立的檔一定搬不動**，那是對的行為，不是 bug。
 > 訊息會說「這個檔案十分鐘內還在變動，先不搬」。
-
-**Windows（PowerShell）**：
-
-```powershell
-cd "$env:USERPROFILE\Downloads"     # 第 0 步換過 USERPROFILE，這裡是沙盒（不要寫 ~，見上）
-"SMOKE 這是一份報告的內容" | Out-File -Encoding utf8 smoke-report.pdf
-Copy-Item smoke-report.pdf "smoke-report (1).pdf"
-sandbox_touch -d '2 hours ago' smoke-report.pdf "smoke-report (1).pdf"
-"SMOKE 半個檔" | Out-File -Encoding utf8 smoke-big.iso.crdownload
-sandbox_touch -d '3 days ago' smoke-big.iso.crdownload
-New-Item smoke-empty.txt -ItemType File -Force | Out-Null
-sandbox_touch -d '3 days ago' smoke-empty.txt
-"SMOKE 假安裝檔" | Out-File -Encoding utf8 smoke-setup.msi
-sandbox_touch -d '30 days ago' smoke-setup.msi
-"SMOKE 假壓縮檔" | Out-File -Encoding utf8 smoke-assets.zip
-sandbox_touch -d '60 days ago' smoke-assets.zip
-"SMOKE 很舊的東西" | Out-File -Encoding utf8 smoke-old.bin
-sandbox_touch -d '200 days ago' smoke-old.bin
-"SMOKE 假截圖" | Out-File -Encoding utf8 "Screenshot 2026-01-02 141203.png"
-sandbox_touch -d '45 days ago' "Screenshot 2026-01-02 141203.png"
-```
 
 ### 順便放三個**不可以被碰**的
 
@@ -440,8 +373,8 @@ CONTEXTBOX_PORT=0 cb pet &   # 背景跑；印出一個帶 ?k= 的網址，port 
 打開它印出來、**帶 `?k=…` 的網址**（或另外跑 `cb open`：pet 把實際的 port 記在沙盒的資料庫裡，
 `open` 讀得到）。那把鑰匙是沙盒的：拿去開你平常那一個 server 會回 401，開錯了也不會動到真的檔。
 
-> `CONTEXTBOX_PORT=0` 只寫在 pet 那一行，**不要 export**：export 的話之後的 `cb open` 也拿到 0，
-> 就找不到沙盒的 pet 了。
+> `CONTEXTBOX_PORT=0` 寫在 pet 那一行就好，不必 export。export 了也不會壞：`cb open` 把 `0` 當成沒設，
+> 照樣去讀 pet 記在沙盒資料庫裡的實際 port，找得到沙盒的 pet。
 
 1. 右下角的可頌貓旁邊要有垃圾桶，**數字跟 `cb cleanup list` 的檔案數一樣**。
 2. 點垃圾桶。面板上方要寫「**本機模式**」—— 寫「示範模式」的話你開到 demo 了，按 D 切回來。
@@ -459,7 +392,7 @@ CONTEXTBOX_PORT=0 cb pet &   # 背景跑；印出一個帶 ?k= 的網址，port 
    cb cleanup scan
    ```
 
-   重新整理面板、只清這一個，然後在原位置放一個同名的新檔
+   關掉面板、再點垃圾桶打開（清單會重新讀一次），只清這一個，然後在原位置放一個同名的新檔
    （`printf 'SMOKE 新的\n' > ~/Downloads/smoke-畫面同名.zip`），再按復原。
    訊息要講出「放回來的這份叫 smoke-畫面同名.zip.restored」—— 不講的話使用者會以為放回原位了。
 7. 再清一次（第 3 步取消的 `smoke-畫面.zip` 還在清單上），關掉面板，點「復原最近動作」。
@@ -489,16 +422,6 @@ exit                                    # 關掉這個分頁：這個分頁的 H
 隔離區只剩空資料夾是正常的（復原、清空都不刪資料夾），`find -type f` 只列檔案。
 以前這裡用 `ls -R`，空資料夾也會印出來，每晚都記一條假的發現。
 
-**Windows（PowerShell）**：
-
-```powershell
-Get-ChildItem "$env:USERPROFILE\Downloads"                  # 只剩這份 smoke 放的檔
-Get-ChildItem -Recurse -File "$env:CONTEXTBOX_QUARANTINE"   # 要沒有輸出
-cd $env:REPO
-if (sandbox_ok) { Remove-Item -Recurse -Force $env:SANDBOX }
-exit
-```
-
 ---
 
 ## 8 ・ 每晚跑完要記什麼
@@ -526,7 +449,7 @@ exit
 - （沒有的話寫「無」）
 ```
 
-Windows 的紀錄照第 0 步說的寫：第 4 步「只跑了 `cb cleanup undo`」，第 5、6、6.5 步「PowerShell 版還沒有，沒跑」。
+Windows 的紀錄在「機器」那一行寫清楚是 Git Bash 還是 WSL（WSL 裡面是 Linux，驗不到 Windows 的行為）。
 
 **紅的那一項要開 issue，不要只寫在 log 裡。**
 
@@ -543,5 +466,6 @@ Windows 的紀錄照第 0 步說的寫：第 4 步「只跑了 `cb cleanup undo`
 
 `test/repo.test.mjs` 會檢查這份文件本身：沙盒要在第一個動資料的指令之前設好、
 每一個 CLI 指令都走 `cb`、直接改資料庫或檔案時間的每一行都站在守門後面（而且真的用 bash 跑一次：
-`SANDBOX` 是空字串也要擋下）、隔離區空了沒用 `find -type f` 看、
+`SANDBOX` 是空字串也要擋下；`sandbox_touch` 碰到指到外面的捷徑也要擋下）、第 0 步真的用 bash 跑一次看寫出來的設定檔、
+只能有 bash 區塊、隔離區空了沒用 `find -type f` 看、
 重送 apply 要寫成冪等（舊版寫的是「重送會被拒絕」，那不是實際行為）。

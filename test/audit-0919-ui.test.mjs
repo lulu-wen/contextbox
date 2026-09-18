@@ -41,6 +41,7 @@ import { DatabaseSync } from 'node:sqlite'
 import vm from 'node:vm'
 import { start } from '../core/server.ts'
 import { INTERNAL_MESSAGE } from '../core/cleanup-routes.ts'
+import { initDemoHistory, recordDemo } from '../core/cleanup-demo-history.ts'
 import {
   createReal, createRealHistory, safeName, applyOutcome, applyMessage, undoMessage, historyUndoMessage,
   pendingPlanMessage, folderPhrase,
@@ -117,6 +118,18 @@ async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads
   const q = (sql, ...a) => { const d = new DatabaseSync(dbPath, { readOnly: true }); try { return d.prepare(sql).all(...a) } finally { d.close() } }
   const exec = (sql, ...a) => { const d = new DatabaseSync(dbPath); try { return d.prepare(sql).run(...a) } finally { d.close() } }
   const originals = new Map()
+  const revertRestore = (planId, ...names) => {
+    const rows = q(`SELECT j.*, f.name FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
+                     WHERE j.plan_id=? AND j.op='restore' AND j.status='done'`, planId)
+    for (const j of rows.filter(r => !names.length || names.includes(r.name))) {
+      renameSync(j.to_path, j.from_path)
+      exec(`UPDATE cleanup_journal SET status='started' WHERE seq=?`, j.seq)
+      exec(`UPDATE cleanup_move_details SET completed_at=NULL, reservation=NULL WHERE seq=?`, j.seq)
+      exec(`UPDATE file_items SET status='quarantined' WHERE id=?`, j.item_id)
+      exec(`UPDATE cleanup_candidates SET status='quarantined' WHERE item_id=?`, j.item_id)
+    }
+    exec(`UPDATE cleanup_plans SET status='applied' WHERE id=?`, planId)
+  }
   return {
     dir, downloads, quarantine, dbPath, base, port, api, raw, calls, q, exec, netFetch,
     setHook: fn => { hook = fn },
@@ -145,16 +158,25 @@ async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads
      */
     interruptRestore: async (planId, ...names) => {
       await raw(`/cleanup/plans/${planId}/undo`, { method: 'POST', body: '{}' })
-      const rows = q(`SELECT j.*, f.name FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
-                       WHERE j.plan_id=? AND j.op='restore'`, planId)
-      for (const j of rows.filter(r => !names.length || names.includes(r.name))) {
-        renameSync(j.to_path, j.from_path)
-        exec(`UPDATE cleanup_journal SET status='started' WHERE seq=?`, j.seq)
-        exec(`UPDATE cleanup_move_details SET completed_at=NULL, reservation=NULL WHERE seq=?`, j.seq)
-        exec(`UPDATE file_items SET status='quarantined' WHERE id=?`, j.item_id)
-        exec(`UPDATE cleanup_candidates SET status='quarantined' WHERE item_id=?`, j.item_id)
+      revertRestore(planId, ...names)
+    },
+    /** interruptRestore 的後半：已經放回去的 names（沒給就全部）倒回 rename 之前，journal 停在 started */
+    revertRestore: (planId, ...names) => revertRestore(planId, ...names),
+    /**
+     * 真的清空 names 在隔離區的那一份（逐項結果變成 purged）：把它們的隔離時間撥回八天前，
+     * 再走一次清空的兩段確認（預覽 → 帶 token 確認）。只有撥過時間的會被清。
+     */
+    purge: async (...names) => {
+      for (const n of names) {
+        const row = q(`SELECT j.seq FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
+                        WHERE j.op='quarantine' AND j.status='done' AND f.name=?`, n)[0]
+        assert.ok(row, `前提：${n} 在隔離區`)
+        exec(`UPDATE cleanup_move_details SET completed_at=? WHERE seq=?`, new Date(Date.now() - 8 * DAY).toISOString(), row.seq)
       }
-      exec(`UPDATE cleanup_plans SET status='applied' WHERE id=?`, planId)
+      const preview = await raw('/cleanup/quarantine/empty', { method: 'POST', body: '{}' })
+      assert.equal(preview.itemCount, names.length, `前提：預覽只含撥過時間的那幾個：${JSON.stringify(preview)}`)
+      const done = await raw('/cleanup/quarantine/empty', { method: 'POST', body: JSON.stringify({ token: preview.token, confirmed: true }) })
+      assert.equal(done.deletedCount, names.length, JSON.stringify(done))
     },
     /** 搬到一半中斷、rename 之前當機：name 回到原位，隔離的 journal 停在 started */
     interruptMove: (planId, name) => {
@@ -640,78 +662,155 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
   })
 
   // 第三波 U1 擴充：「在隔離區」是 moved **或 unknown**（復原到一半中斷，檔還在隔離區）。
-  // 生成器多一種狀態：一份計畫裡的某幾個檔復原到一半中斷。沒放回再分成「沒放回」與「還不確定」。
-  test('**性質：放回＋沒放回＋不確定＝復原前 moved 或 unknown 的檔數；先前已復原＝復原前一個都沒有的份數**（結構化隨機 16 輪）', async t => {
+  // 沒放回再分成「沒放回」與「還不確定」。
+  //
+  // 第三波之二：生成器涵蓋逐項結果的**全部八種**（pending、moved、skipped、failed、restored、purged、
+  // unknown、cancelled）。上一版只產生 moved／restored／unknown —— 把 maybeInQuarantine 改成
+  // 「不是 restored 就算」照樣全綠：沒搬成（failed）、略過（skipped）的檔會被說成「沒放回」，
+  // 只有 pending 的計畫也會被送 undo（後端會把它標成 restored）。
+  // unknown 有兩種：復原到一半中斷（unknownR，檔在隔離區）與搬到一半中斷、其實沒搬（unknownM，檔在原位）。
+  test('**性質：放回＋沒放回＋不確定＋其實沒搬＝復原前 moved 或 unknown 的檔數；其他 outcome 不列、不送 undo；先前已復原＝復原前一個都沒有的份數**（結構化隨機 18 輪）', async t => {
     const rng = seed => () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
-    const hits = { allBack: 0, partial: 0, noneBack: 0, already: 0, interrupted: 0 }
-    for (let round = 0; round < 16; round++) {
+    const FATES = ['moved', 'skipped', 'failed', 'restored', 'purged', 'unknownR', 'unknownM']
+    const OUTCOME = {
+      moved: 'moved', skipped: 'skipped', failed: 'failed', restored: 'restored', purged: 'purged',
+      unknownR: 'unknown', unknownM: 'unknown', pending: 'pending', cancelled: 'cancelled',
+    }
+    /** 根本沒進過隔離區的：不可以被說成「沒放回」「還不確定」，也不可以讓面板送 undo */
+    const NEVER_MOVED = ['failed', 'skipped', 'pending', 'cancelled']
+    const wasIn = o => o === 'moved' || o === 'unknown'
+    // 種子（固定的例子，保證每一種都走到）：
+    //   0 全部被改過　1 有一份先復原過　2 都好好的　3 兩份裡改掉一個檔　4 有一份整份復原到一半中斷
+    //   5 一份兩個檔只有一個中斷　6 同一份裡有搬走、沒搬成、略過的，外加一份還沒套用、一份放棄了
+    //   7 清空過的（整份、半份）與只有沒搬成／略過的一份　8 搬到一半中斷、其實沒搬的（整份、半份）
+    const SEEDED = [
+      [{ kind: 'applied', fates: ['moved'] }],
+      [{ kind: 'applied', fates: ['restored'] }, { kind: 'applied', fates: ['moved', 'moved'] }],
+      [{ kind: 'applied', fates: ['moved', 'moved'] }],
+      [{ kind: 'applied', fates: ['moved'] }, { kind: 'applied', fates: ['moved'] }],
+      [{ kind: 'applied', fates: ['unknownR'] }, { kind: 'applied', fates: ['moved'] }],
+      [{ kind: 'applied', fates: ['unknownR', 'restored'] }],
+      [{ kind: 'applied', fates: ['moved', 'failed', 'skipped'] }, { kind: 'pending', fates: ['pending'] },
+        { kind: 'cancelled', fates: ['cancelled', 'cancelled'] }],
+      [{ kind: 'applied', fates: ['failed', 'skipped'] }, { kind: 'applied', fates: ['purged', 'moved'] },
+        { kind: 'applied', fates: ['purged'] }],
+      [{ kind: 'applied', fates: ['unknownM', 'moved'] }, { kind: 'applied', fates: ['unknownM'] },
+        { kind: 'applied', fates: ['restored', 'failed'] }],
+    ]
+    const hits = { allBack: 0, partial: 0, noneBack: 0, already: 0, interrupted: 0, noUndoSent: 0, mixed: 0 }
+    const seen = Object.fromEntries(Object.values(OUTCOME).map(o => [o, 0]))
+    for (let round = 0; round < 18; round++) {
       const seed = 104729 * (round + 1)
       const r = rng(seed)
-      // 種子：第 0 輪全部被改過、第 1 輪有一份先復原過、第 2 輪都好好的、第 3 輪兩份裡改掉一個檔、
-      // 第 4 輪有一份整份復原到一半中斷、第 5 輪一份兩個檔只有一個中斷，其他隨機
-      const nPlans = round === 1 || round === 3 || round === 4 ? 2 : round === 5 ? 1 : 1 + Math.floor(r() * 3)
-      const files = {}
-      const groups = []
-      for (let p = 0; p < nPlans; p++) {
-        const g = []
-        const size = round === 5 ? 2 : 1 + Math.floor(r() * 2)
-        for (let i = 0; i < size; i++) { const n = `p${p}f${i}.zip`; files[n] = { days: 60 }; g.push(n) }
-        groups.push(g)
-      }
-      const s = await serve(t, files)
-      const ids = []
-      for (const g of groups) {
-        const real = createReal(s.api)
-        await real.load()
-        only(real, ...g)
-        ids.push((await real.apply()).planId)
-      }
-      const preRestored = new Set(), interrupted = new Map(), tampered = new Set()
-      groups.forEach((g, p) => {
-        if ((round === 1 && p === 0) || (round > 5 && r() < 0.2)) { preRestored.add(p); return }
-        if ((round === 4 && p === 0) || round === 5 || (round > 5 && r() < 0.35)) {
-          const cut = round === 4 ? g : round === 5 ? [g[0]] : g.filter(() => r() < 0.6)
-          interrupted.set(p, cut.length ? cut : [g[0]])
-        }
-        g.forEach((n, i) => {
-          // 只改還在隔離區的（中斷的那幾個在；同一份裡已經放回的不在）
-          const inQuarantine = !interrupted.has(p) || interrupted.get(p).includes(n)
-          if (inQuarantine && (round === 0 || (round === 3 && p === 0 && i === 0) || (round > 5 && r() < 0.3))) tampered.add(n)
-        })
+      const spec = SEEDED[round] ?? Array.from({ length: 1 + Math.floor(r() * 4) }, () => {
+        const k = r()
+        if (k < 0.15) return { kind: 'pending', fates: Array(1 + Math.floor(r() * 2)).fill('pending') }
+        if (k < 0.3) return { kind: 'cancelled', fates: Array(1 + Math.floor(r() * 2)).fill('cancelled') }
+        return { kind: 'applied', fates: Array.from({ length: 1 + Math.floor(r() * 3) }, () => FATES[Math.floor(r() * FATES.length)]) }
       })
-      const h = createRealHistory(s.api)
-      for (const p of preRestored) await h('undo', { operationIds: [ids[p]] })
-      for (const [p, names] of interrupted) await s.interruptRestore(ids[p], ...names)
-      const before = new Map()
-      for (const id of ids) {
-        const items = (await s.raw(`/cleanup/plans/${id}`)).items
-        before.set(id, items.filter(i => i.outcome === 'moved' || i.outcome === 'unknown').length)
+      const plans = spec.map((p, i) => ({ kind: p.kind, id: null, files: p.fates.map((fate, j) => ({ name: `p${i}f${j}.zip`, fate })) }))
+      const files = Object.fromEntries(plans.flatMap(p => p.files.map(f => [f.name, { days: 60 }])))
+      const s = await serve(t, files)
+      const idsOf = new Map((await s.raw('/cleanup/candidates?limit=1000')).candidates.map(c => [c.name, c.candidateIds]))
+      const post = (path, body = {}) => s.raw(path, { method: 'POST', body: JSON.stringify(body) })
+
+      // ── 把每個檔做成想要的那一種 ──
+      for (const [i, p] of plans.entries()) {
+        const plan = await post('/cleanup/plans', { candidateIds: p.files.flatMap(f => idsOf.get(f.name)), requestId: `r${round}p${i}` })
+        p.id = plan.id
+        if (p.kind === 'pending') continue
+        if (p.kind === 'cancelled') { await post(`/cleanup/plans/${p.id}/${r() < 0.5 ? 'release' : 'dismiss'}`); continue }
+        // 建好計畫之後原檔被改了 → 套用時 CHANGED，留在原位（failed）
+        for (const f of p.files) if (f.fate === 'failed') writeFileSync(join(s.downloads, f.name), '建計畫之後被改過了')
+        const skippedIds = p.files.filter(f => f.fate === 'skipped').flatMap(f => idsOf.get(f.name))
+        await post(`/cleanup/plans/${p.id}/apply`, skippedIds.length ? { skippedIds } : {})
+        if (p.files.some(f => f.fate === 'restored' || f.fate === 'unknownR')) {
+          // 要留在隔離區的先改掉（復原時 CHANGED，放不回去），復原一次，再改回來
+          const stay = p.files.filter(f => ['moved', 'purged', 'unknownM'].includes(f.fate)).map(f => f.name)
+          for (const n of stay) s.tamper(n)
+          await post(`/cleanup/plans/${p.id}/undo`)
+          for (const n of stay) s.untamper(n)
+          const cut = p.files.filter(f => f.fate === 'unknownR').map(f => f.name)
+          if (cut.length) s.revertRestore(p.id, ...cut)
+        }
+        for (const f of p.files) if (f.fate === 'unknownM') s.interruptMove(p.id, f.name)
       }
+      const purge = plans.flatMap(p => p.files.filter(f => f.fate === 'purged').map(f => f.name))
+      if (purge.length) await s.purge(...purge)
+
+      const before = new Map()
+      for (const p of plans) before.set(p.id, (await s.raw(`/cleanup/plans/${p.id}`)).items)
+      const beforeOf = new Map([...before.values()].flat().map(i => [i.name, i.outcome]))
+      // 生成器自己先對一次帳：每個檔真的是想要的那一種（不然下面的 hits 是假的）
+      for (const p of plans) {
+        for (const f of p.files) {
+          assert.equal(beforeOf.get(f.name), OUTCOME[f.fate], `seed ${seed}：生成器想做 ${f.name}＝${f.fate}，後端說 ${beforeOf.get(f.name)}`)
+          seen[OUTCOME[f.fate]]++
+        }
+      }
+
+      // 在隔離區的（moved、復原到一半中斷的）隨機改掉幾個 → 復原時 CHANGED
+      const tampered = new Set()
+      plans.forEach((p, pi) => p.files.forEach((f, fi) => {
+        if (f.fate !== 'moved' && f.fate !== 'unknownR') return
+        if (round === 0 || (round === 3 && pi === 0 && fi === 0) || (round >= SEEDED.length && r() < 0.3)) tampered.add(f.name)
+      }))
       for (const n of tampered) s.tamper(n)
-      const u = await h('undo', { operationIds: ids })
-      const inQuarantineBefore = [...before.values()].reduce((a, b) => a + b, 0)
+
+      const h = createRealHistory(s.api)
+      const from = s.calls.length
+      const u = await h('undo', { operationIds: plans.map(p => p.id) })
+      const undoSent = s.calls.slice(from).filter(c => c.method === 'POST' && /\/undo$/.test(c.path))
+        .map(c => decodeURIComponent(c.path.split('/')[3]))
+      const after = new Map()
+      for (const p of plans) after.set(p.id, new Map((await s.raw(`/cleanup/plans/${p.id}`)).items.map(i => [i.name, i.outcome])))
       const unsure = u.unconfirmed ?? []
-      assert.equal(u.restoredFiles + u.notRestored.length + unsure.length, inQuarantineBefore,
-        `seed ${seed}：放回＋沒放回＋不確定 ≠ 復原前在隔離區的 ${inQuarantineBefore}：${JSON.stringify(u)}`)
-      assert.equal(u.alreadyRestored, [...before.values()].filter(n => n === 0).length, `seed ${seed}：先前已復原算錯`)
+      const outcomes = p => before.get(p.id).map(i => i.outcome).join('、')
+
+      // 復原前不在隔離區的（沒搬成、略過、還沒套用、放棄了，以及已放回、已清空）一個都不列
+      for (const x of [...u.notRestored, ...unsure]) {
+        const was = beforeOf.get(x.name)
+        assert.ok(!NEVER_MOVED.includes(was), `seed ${seed}：${x.name} 復原前是 ${was}（根本沒進隔離區），卻被列成沒放回／不確定：${JSON.stringify(u)}`)
+        assert.ok(wasIn(was), `seed ${seed}：${x.name} 復原前是 ${was}，不在隔離區：${JSON.stringify(u)}`)
+      }
+      // 只有復原前有東西在隔離區的那幾份送 undo，而且各送一次
+      for (const p of plans) {
+        const any = before.get(p.id).some(i => wasIn(i.outcome))
+        assert.equal(undoSent.filter(id => id === p.id).length, any ? 1 : 0,
+          `seed ${seed}：${p.kind} 那一份（${outcomes(p)}）${any ? '要送一次' : '不可以送'} undo`)
+        if (!any) hits.noUndoSent++
+        if (any && before.get(p.id).some(i => NEVER_MOVED.includes(i.outcome))) hits.mixed++
+      }
+      // 帳：搬到一半中斷、復原時確認其實沒搬（unknown → failed）的，兩邊都不列（CLI 印「當初就沒有搬走」）
+      const inQuarantineBefore = [...beforeOf.values()].filter(wasIn).length
+      const neverLeft = plans.flatMap(p => before.get(p.id)
+        .filter(i => i.outcome === 'unknown' && NEVER_MOVED.includes(after.get(p.id).get(i.name)))).length
+      assert.equal(u.restoredFiles + u.notRestored.length + unsure.length + neverLeft, inQuarantineBefore,
+        `seed ${seed}：放回＋沒放回＋不確定＋其實沒搬 ≠ 復原前在隔離區的 ${inQuarantineBefore}：${JSON.stringify(u)}`)
+      assert.equal(u.alreadyRestored, plans.filter(p => !before.get(p.id).some(i => wasIn(i.outcome))).length,
+        `seed ${seed}：先前已復原算錯`)
       // 復原到一半中斷的，再按一次復原一定接得完（沒被改過的話回到原位）；這個生成器不會留下「不確定」
       assert.deepEqual(unsure, [], `seed ${seed}：${JSON.stringify(unsure)}`)
-      for (const [, names] of interrupted) {
-        for (const n of names) if (!tampered.has(n)) assert.ok(s.has(n), `seed ${seed}：復原到一半中斷的 ${n} 沒有回到原位`)
-        if (names.some(n => !tampered.has(n))) hits.interrupted++
+      for (const p of plans) {
+        for (const f of p.files) {
+          if (f.fate === 'unknownR' && !tampered.has(f.name)) assert.ok(s.has(f.name), `seed ${seed}：復原到一半中斷的 ${f.name} 沒有回到原位`)
+          if (f.fate === 'unknownM' || NEVER_MOVED.includes(f.fate)) assert.ok(s.has(f.name), `seed ${seed}：${f.name}（${f.fate}）本來就在原位`)
+        }
       }
+      if (plans.some(p => p.files.some(f => f.fate === 'unknownR' && !tampered.has(f.name)))) hits.interrupted++
       const m = historyUndoMessage(u)
       if (u.notRestored.length) assert.ok(!/都幫你放回來了/.test(m.text + m.notice), `seed ${seed}：有沒放回的卻說都放回來了`)
-      // 有東西在隔離區（包括中斷的）就不可以說「勾選的 N 筆先前已經復原過了」
-      if (inQuarantineBefore) assert.ok(!/勾選的 \d+ 筆先前已經復原過了/.test(m.text), `seed ${seed}：${m.text}`)
+      // 真的有東西在隔離區就不可以說「勾選的 N 筆先前已經復原過了」
+      if (inQuarantineBefore - neverLeft) assert.ok(!/勾選的 \d+ 筆先前已經復原過了/.test(m.text), `seed ${seed}：${m.text}`)
       if (!u.notRestored.length && u.restoredFiles) { assert.equal(m.notice, '都幫你放回來了！'); hits.allBack++ }
       if (u.notRestored.length && u.restoredFiles) hits.partial++
       if (u.notRestored.length && !u.restoredFiles) hits.noneBack++
       if (u.alreadyRestored) hits.already++
     }
-    for (const [k, min] of Object.entries({ allBack: 1, partial: 1, noneBack: 1, already: 1, interrupted: 3 })) {
+    for (const [k, min] of Object.entries({ allBack: 1, partial: 1, noneBack: 1, already: 1, interrupted: 3, noUndoSent: 3, mixed: 2 })) {
       assert.ok(hits[k] >= min, `生成器沒走到「${k}」：${JSON.stringify(hits)}`)
     }
+    for (const [o, n] of Object.entries(seen)) assert.ok(n >= 2, `生成器產生的 ${o} 不到兩個：${JSON.stringify(seen)}`)
   })
 })
 
@@ -758,6 +857,47 @@ describe('RC9 寵物台詞看結果決定', () => {
     const m = undoMessage(r)
     assert.ok(m.text.includes('0 個放回；1 個沒放回：'), m.text)
     assert.ok(!/都幫你放回來了/.test(m.text + m.notice))
+  })
+
+  // 第三波之二：同一份計畫裡沒搬成的（failed）根本沒進隔離區。面板的復原照「復原前在隔離區的」逐一對，
+  // 它不在裡面 —— 把「在隔離區」改成「不是 restored 就算」的話，它會被說成「沒放回」。
+  /** a.zip、b.zip 一份計畫；送出套用之前 b.zip 被改了 → 套用時 CHANGED，b.zip 留在原位（failed） */
+  async function appliedWithFailed(t) {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const real = createReal(s.api)
+    await real.load()
+    s.setHook((p, m) => {
+      if (m === 'POST' && p.endsWith('/apply')) writeFileSync(join(s.downloads, 'b.zip'), '建計畫之後被改過了')
+    })
+    const r = await real.apply()
+    s.setHook(null)
+    assert.equal(r.moved, 1, JSON.stringify(r))
+    assert.deepEqual(r.failed.map(x => x.name), ['b.zip'], '前提：b.zip 沒搬成')
+    assert.ok(real.canUndo)
+    return { s, real }
+  }
+
+  test('**面板的復原：同一份計畫裡沒搬成的（failed）不算「沒放回」** —— a.zip 放回、b.zip 不列', async t => {
+    const { s, real } = await appliedWithFailed(t)
+    const r = await real.undo()
+    assert.equal(r.restored, 1)
+    assert.deepEqual(r.notRestored, [], `b.zip 根本沒進隔離區：${JSON.stringify(r)}`)
+    assert.deepEqual(r.unconfirmed, [])
+    const m = undoMessage(r)
+    assert.equal(m.notice, '都幫你放回來了！')
+    assert.ok(!/沒放回|b\.zip/.test(m.text), m.text)
+    assert.ok(s.has('a.zip') && s.has('b.zip'))
+  })
+
+  test('對照：同一份計畫、a.zip 在隔離區被改過 → 只有 a.zip 沒放回，b.zip（failed）還是不列', async t => {
+    const { s, real } = await appliedWithFailed(t)
+    s.tamper('a.zip')
+    const r = await real.undo()
+    assert.equal(r.restored, 0)
+    assert.deepEqual(r.notRestored.map(x => x.name), ['a.zip'], JSON.stringify(r))
+    const m = undoMessage(r)
+    assert.ok(m.text.includes('0 個放回；1 個沒放回：'), m.text)
+    assert.ok(!/b\.zip/.test(m.text), m.text)
   })
 
   test('面板的復原再按一次：只算這一次放回的，不把上一次放回的再算一遍', async t => {
@@ -1196,8 +1336,9 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     assert.deepEqual(u.unconfirmed, [])
     const plan = await s.raw(`/cleanup/plans/${planId}`)
     assert.equal(plan.items.find(i => i.name === 'b.zip').outcome, 'failed', '核心確認 b 沒搬過')
+    assert.deepEqual(u.neverMoved, [{ name: 'b.zip' }])
     const m = historyUndoMessage(u)
-    assert.equal(m.text, '已復原 1 次清理，共 1 個檔案放回原位。')
+    assert.equal(m.text, '已復原 1 次清理，共 1 個檔案放回原位。\n・b.zip 當初就沒有搬走，本來就在原位。')
     assert.equal(m.notice, '都幫你放回來了！')
     assert.ok(s.has('a.zip') && s.has('b.zip'))
   })
@@ -1334,6 +1475,39 @@ describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理�
     assert.ok(!md.includes('重新整理或重啟後仍保留'), '重新整理會拿到 401')
     assert.ok(!/重新整理頁面/.test(md), '重新整理會拿到 401')
     assert.match(md, /mockBackend=offline/, '離線模擬的說明還在')
+  })
+
+  // ── 第三波之二：同一個坑的另外兩個地方（示範紀錄的錯誤訊息、docs/api 的 INTERNAL 那一列）──
+
+  test('**示範紀錄的兩句錯誤（缺少操作識別碼、範例候選已變更）：不叫人重新整理，跟 INTERNAL 一樣叫人關掉面板再打開**', () => {
+    const db = new DatabaseSync(':memory:')
+    initDemoHistory(db)
+    const fixture = JSON.parse(readFileSync(join(REPO, 'core/assets/demo-candidates.json'), 'utf8'))
+    const known = fixture.candidates[0].candidateIds
+    const errorOf = body => { try { recordDemo(db, body) } catch (e) { return e.message } return null }
+    const said = [
+      [/^缺少操作識別碼/, errorOf({ candidateIds: known })],
+      [/^範例候選已變更/, errorOf({ candidateIds: ['不在範例裡的-id'], requestId: 'r1' })],
+    ]
+    for (const [which, m] of said) {
+      assert.match(m ?? '', which, `前提：是這一種錯：${m}`)
+      assert.ok(!/重新整理/.test(m), `網址上的 k 已經拿掉，重新整理會拿到 401：${m}`)
+      assert.match(m, /關掉面板/, m)
+      assert.ok(m.includes('`node cli.mjs open`'), `跟 INTERNAL 一樣講去哪裡重新打開：${m}`)
+    }
+    // 對照：正常的一筆照樣記得進去（上面真的是那兩種錯，不是別的錯）
+    assert.equal(recordDemo(db, { candidateIds: known, requestId: 'r2' }).itemCount, 1)
+    db.close()
+  })
+
+  test('docs/api/README.md 的 INTERNAL 那一列：「呼叫端怎麼做」不叫人重新整理', () => {
+    const md = readFileSync(join(REPO, 'docs/api/README.md'), 'utf8')
+    const row = md.split('\n').find(l => /^\|\s*500\s*\|\s*`INTERNAL`/.test(l))
+    assert.ok(row, '錯誤表沒有 INTERNAL 那一列')
+    const todo = row.split('|').slice(1, -1).map(c => c.trim()).at(-1)
+    assert.ok(!/重新整理/.test(todo), `重新整理會拿到 401：${todo}`)
+    assert.match(todo, /關掉面板/, todo)
+    assert.match(todo, /不要自動重試/, todo)
   })
 })
 

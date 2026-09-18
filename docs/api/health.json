@@ -16,8 +16,8 @@
   "quarantine": {
     "items": 1,
     "bytes": 13,
-    "oldestMtimeAt": "2026-08-04T20:14:32.168Z",
-    "canEmptyAt": "2026-09-17T20:14:32.908Z",
+    "oldestMtimeAt": null,
+    "canEmptyAt": null,
     "canEmptyNow": true,
     "orphans": 0,
     "truncated": false

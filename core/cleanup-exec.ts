@@ -110,10 +110,24 @@ const lowerSegments = (target: string) => target.split(/[\\/]+/).filter(Boolean)
  */
 const inProtectedDir = (segments: string[]) => segments.slice(0, -1).some(s => s.startsWith('.') || DENY_DIRS.includes(s))
 
+/**
+ * target 在不在任何一個清理根目錄底下。**過不了檢查的根目錄略過，不丟例外。**
+ * 以前 `roots.some(root => under(checkedPath(root), …))`：cleanup.roots 裡有一個資料夾不見了
+ * （外接碟拔掉）而且排在前面，checkedPath 丟 ENOENT，**每一個檔**都失敗、訊息說「檔案或資料夾
+ * 不見了」—— 檔案明明在。略過那個根目錄是 fail closed：它底下的檔只會被當成範圍外。
+ */
+function underSomeRoot(roots: string[], target: string): boolean {
+  return roots.some(root => {
+    let real: string
+    try { real = checkedPath(root, true) } catch { return false }
+    return under(real, target)
+  })
+}
+
 function originalPath(path: string, opts: ExecOptions, allowMissing = false): string {
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
-  if (!opts.roots.some(root => under(checkedPath(root, true), target))) {
+  if (!underSomeRoot(opts.roots, target)) {
     throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
   }
   const segments = lowerSegments(target)
@@ -143,7 +157,7 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
 function keeperPath(path: string, opts: ExecOptions): string {
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
-  if (!opts.roots.some(root => under(checkedPath(root, true), target))) {
+  if (!underSomeRoot(opts.roots, target)) {
     throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
   }
   if (inProtectedDir(lowerSegments(target))) {
@@ -415,6 +429,11 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
   return withCleanupLock(db, renew => {
     const plan = planRow(db, id)
     if (['restored', 'dismissed'].includes(plan.status)) return result(db, id)
+    // **還沒開始的計畫沒有東西可以復原。** 以前照樣跑完、把計畫標成 restored，逐項變成
+    // 「沒有搬動，原因不明」—— 一份從沒套用的計畫在歷史裡變成「復原過了」。判斷跟 releasePlan 一樣。
+    if (plan.status === 'proposed' && !db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id)) {
+      throw new CleanupError('CONFLICT', '這份計畫還沒套用，沒有東西可以復原；不要了請用放棄（release）。')
+    }
     let restored = 0
     const errors: string[] = []
     const items = planSnapshots(db, id).reverse()

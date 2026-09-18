@@ -128,12 +128,14 @@ const execOpts = () => ({
  * 執行層的 originalPath 說「不在清理資料夾內」—— 放不回去，滿七天 --empty 卻刪得掉。
  * 放回原位不會擴大清理範圍，所以**只有 undo 用這一份**；apply、empty 維持 CLEAN_ROOTS。
  *
- * 執行層是逐一 checkedPath 每一個 root：不存在的、路徑含捷徑的監看資料夾放進去的話，
+ * 執行層是逐一 checkedPath 每一個 root：不存在的、路徑含捷徑的資料夾放進去的話，
  * 它會先丟例外，**每一個檔**都放不回去。所以加進來之前先用同一支檢查過，過不了就略過。
+ * **清理範圍本身也一樣要過這一關**（第三波之二）：cleanup.roots 裡有一個外接碟拔掉了，
+ * 上一版原樣放進去，放回桌面的檔（C4）就整個失效。
  */
 function undoRoots() {
-  const out = [...CLEAN_ROOTS]
-  for (const r of config.watch) {
+  const out = []
+  for (const r of [...CLEAN_ROOTS, ...config.watch]) {
     if (out.includes(r)) continue
     try { checkedPath(r, true); out.push(r) } catch { /* 不存在、不是資料夾、含捷徑：放不回那裡，略過 */ }
   }
@@ -407,10 +409,18 @@ function printPlanItems(plan, line) {
  */
 const planStarted = id => Boolean(db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id))
 
-/** 一份開始了的計畫怎麼往下走（CONFLICT、release 被拒的時候講） */
+/**
+ * 一份開始了的計畫怎麼往下走（CONFLICT、release 被拒的時候講）。
+ *
+ * 選 undo 之前要知道放回來的檔之後的下場（第三波之二）：放回原位的檔，候選記成 restored，
+ * 重掃時 upsertCandidate 碰到同一個檔、同一種理由的 restored 候選不會改回 proposed ——
+ * 只有出現新的理由（新的 kind、新的規則版本）才會再被提議。原位置被佔、改名成 .restored
+ * 放回的那份是另一條路徑，資料庫裡是新的檔，照規則重新評估，所以要另外講。
+ */
 function startedChoices(id) {
   say('\n它已經開始搬了，不能放棄（release）。兩個選擇：')
   say(`  把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+  say('    放回原位的檔之後不會再被自動提議（除非出現新的理由）；原位置被佔、改名放回的那份會當成新的檔重新評估。')
   say(`  把它做完：node cli.mjs cleanup apply ${id}`)
 }
 
@@ -653,6 +663,7 @@ const looksLikeHealth = j => Boolean(j) && typeof j === 'object'
  * 那個埠上隨便一個程式回 200，鑰匙就跟著網址送過去了。問 /health 的時候**不帶 token**：
  * 還不知道對方是誰，帶了就等於交出去。形狀可以模仿，所以另外要 META 的 pid 還活著
  * （pet 每 30 秒寫一次心跳與 pid；pet 結束時 pet_port 會清掉）。
+ * pet 撞 port（EADDRINUSE）的時候也用它（第三波之二）：一樣只有 'up' 才印網址。
  */
 async function petUp(port) {
   let res, body
@@ -664,6 +675,13 @@ async function petUp(port) {
   let pid = NaN
   try { pid = Number(getMeta(META.pid)) } catch { /* 讀不到就當不在 */ }
   return Number.isInteger(pid) && pid > 0 && alive(pid) ? 'up' : 'stale'
+}
+
+/** petUp 不是 'up' 的時候，「為什麼不把鑰匙交出去」那一句（open 與 pet 撞 port 共用） */
+function notPetText(port, up) {
+  if (up === 'stranger') return `127.0.0.1:${port} 上回應的不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
+  if (up === 'stale') return `127.0.0.1:${port} 有東西在回應，但記錄上的 pet 行程已經不在了，不把帶鑰匙的網址交給它。`
+  return `127.0.0.1:${port} 被佔著，但問不到回應，看不出是不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
 }
 
 /**
@@ -843,8 +861,16 @@ switch (cmd) {
     try { port = await srv.ready }
     catch (e) {
       if (e?.code === 'EADDRINUSE') {
-        // 網址**帶鑰匙**（RC16）：不帶 k 的網址打開是 401
-        say(`已經有一個 ContextBox 在跑了。打開 ${uiUrl(want, srv.token)} 就好。`)
+        // **先問那個埠上是不是真的 pet，是才印網址**（第三波之二，跟 open 同一個判斷）。
+        // 上一版不問就印帶鑰匙的網址、回 0：佔著那個埠的是陌生程式的話，使用者一點下去，鑰匙就交給它了。
+        const up = await petUp(want)
+        if (up === 'up') {
+          // 網址**帶鑰匙**（RC16）：不帶 k 的網址打開是 401
+          say(`已經有一個 ContextBox 在跑了。打開 ${uiUrl(want, srv.token)} 就好。`)
+          break
+        }
+        warn(notPetText(want, up) + '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。')
+        process.exitCode = EXIT.backend
         break
       }
       warn('起不來：' + why(e?.message ?? e))
@@ -970,10 +996,9 @@ switch (cmd) {
     }
     if (up !== 'up') {
       // 有東西在回應、但不是（或不再是）我們的 pet：**連網址都不印**，免得被人複製去貼給它
-      warn(up === 'stranger'
-        ? `127.0.0.1:${port} 上回應的不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
-          + '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。'
-        : `127.0.0.1:${port} 有東西在回應，但記錄上的 pet 行程已經不在了，不把帶鑰匙的網址交給它。先跑 node cli.mjs pet。`)
+      warn(notPetText(port, up) + (up === 'stranger'
+        ? '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。'
+        : '先跑 node cli.mjs pet。'))
       process.exitCode = EXIT.backend
       break
     }

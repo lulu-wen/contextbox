@@ -1,34 +1,34 @@
 {
-  "id": "a9bb707f-93d0-480d-b3bc-56afd8a95465",
+  "id": "7181e660-03f2-4c52-949f-249be0bc75d9",
   "status": "dismissed",
   "itemCount": 1,
-  "createdAt": "2026-09-18T20:14:32.882Z",
+  "createdAt": "2026-09-18T20:59:45.817Z",
   "appliedAt": null,
   "error": null,
   "bytes": 16,
   "items": [
     {
-      "itemId": "3eece933-c1af-4547-9ef0-361180ee34f2",
+      "itemId": "21a543f3-efeb-443f-afee-518f5716c14a",
       "name": "Screenshot 2026-01-02 141203.png",
       "bytes": 16,
-      "mtime": "2026-05-21T20:14:32.168Z",
+      "mtime": "2026-05-21T20:59:45.092Z",
       "candidateIds": [
-        "23c51fc0-a6e0-499a-9a2f-b04261e49fb0",
-        "6824cb3c-9b77-4fb8-a646-1579f18696bd"
+        "00d0229a-34d9-4ea9-8b7f-c6a8e52fcb17",
+        "fc758958-ac16-4803-b0c4-30569c566e20"
       ],
       "skipped": false,
       "reasons": [
-        {
-          "kind": "screenshot-noise",
-          "confidence": 35,
-          "reason": "舊截圖常常是暫時資訊",
-          "evidence": "檔名是 Screenshot 2026-01-02 141203.png，而且 120 天沒有變動"
-        },
         {
           "kind": "old-download",
           "confidence": 35,
           "reason": "很久沒有動過的下載檔",
           "evidence": "120 天沒有變動，且副檔名 .png 不在保護清單"
+        },
+        {
+          "kind": "screenshot-noise",
+          "confidence": 35,
+          "reason": "舊截圖常常是暫時資訊",
+          "evidence": "檔名是 Screenshot 2026-01-02 141203.png，而且 120 天沒有變動"
         }
       ],
       "outcome": "cancelled",

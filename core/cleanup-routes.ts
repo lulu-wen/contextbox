@@ -594,6 +594,7 @@ function safe<T>(fn: () => T, fallback: T): T {
  * `canEmptyNow` 的意思是**「按下去會有東西被刪掉」**，不是「整區都能清」。
  * `emptyQuarantine` 本來就只刪合格的那幾筆，所以只要有一筆滿七天就成立。
  * 這個定義跟 canEmptyAt 互推：`canEmptyNow === (canEmptyAt !== null && canEmptyAt <= now)`。
+ * 互推只對帶 token 的 /health 成立：免 token 的那一份 canEmptyAt 遮成 null，canEmptyNow 照給（第三波之二）。
  */
 export function canEmptyNow(
   q: { items: number; truncated: boolean; canEmptyAt: string | null },
@@ -753,7 +754,8 @@ export function invalidateQuarantineCache() { countCache = null }
  */
 export function petState(
   h: {
-    db: { ok: boolean }; watcher: { ok: boolean }; pendingCandidates: number; lastError: unknown
+    db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown }
+    pendingCandidates: number; lastError: unknown
     lastErrorAt?: string | null; lastOkAt?: string | null
   },
   counts: { proposedPlans: number; activeQuarantine: number },
@@ -771,7 +773,7 @@ export function petState(
     state === 'worried' ? '後端出了點狀況，先看一下 doctor。'
     : state === 'waiting' ? `有 ${counts.proposedPlans} 份清單等你確認。`
     : state === 'found' ? `找到 ${h.pendingCandidates} 個可以清的檔案。`
-    : state === 'watching' ? '盯著 Downloads。'
+    : state === 'watching' ? `盯著${watchingPhrase(h.watcher)}。`
     : '沒事，在發呆。'
 
   return {
@@ -781,6 +783,32 @@ export function petState(
     quarantinedCount: counts.activeQuarantine,
     undoable: counts.activeQuarantine > 0,
   }
+}
+
+/**
+ * 顯示用的資料夾名：C0／C1 控制字元、換行、U+2028／U+2029、bidi 控制字元一律換成「·」
+ * （跟 cli.mjs 的 shown 同一組字元）。資料夾名是不可信的輸入 —— 名字裡的換行可以在
+ * 寵物的對話框裡偽造一行字，`\u202E` 可以把後半段倒過來顯示。
+ */
+const UNSAFE_DISPLAY = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g
+
+/**
+ * 寵物「監看中」那句話講的是哪些資料夾（第三波之二）。以前寫死「Downloads」——
+ * 清理範圍是 cleanup.roots，開了截圖資料夾就多一個，改過設定的也不叫 Downloads。
+ *
+ * 說法跟面板的 folderPhrase（core/assets/cleanup-real-state.js）一樣：只給名字，
+ * 最多列三個、多的講「等 N 個」；家目錄那個 displayPath 給空字串（名字就是使用者名稱），不列；
+ * 拿不到名字就講「監看資料夾」，不猜。`watching` 要是帶 token 的 /health 那一份（免 token 的是空陣列）。
+ */
+function watchingPhrase(w: { watching?: unknown; watchingCount?: unknown }): string {
+  const list = Array.isArray(w.watching) ? w.watching : []
+  const count = typeof w.watchingCount === 'number' && Number.isInteger(w.watchingCount) ? w.watchingCount : 0
+  const total = Math.max(count, list.length)
+  const names = list.filter(n => typeof n === 'string' && n !== '')
+    .map(n => `「${String(n).replace(UNSAFE_DISPLAY, '·')}」`)
+  if (!names.length) return total > 1 ? `這 ${total} 個監看資料夾` : '監看資料夾'
+  const shown = names.slice(0, 3).join('、')
+  return names.length === total && total <= 3 ? shown : `${shown}等 ${total} 個資料夾`
 }
 
 /**
@@ -922,9 +950,13 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
     },
     quarantine: {
       items: q.items, bytes: q.bytes,
+      // 兩個時間只給帶 token 的，跟下面的 lastOkAt 同一個理由：canEmptyAt 減七天
+      // 就是「使用者什麼時候清理過」，oldestMtimeAt 是「那個檔什麼時候下載的」。
+      // 欄位兩版都有（形狀一致），遮蔽時是 null。
       /** 檔案自己的 mtime，**不是**隔離時間。只拿來顯示，不要拿來算七天。 */
-      oldestMtimeAt: q.oldestMtimeAt,
-      canEmptyAt: q.canEmptyAt,
+      oldestMtimeAt: full ? q.oldestMtimeAt : null,
+      canEmptyAt: full ? q.canEmptyAt : null,
+      // 布林不帶時間，兩版都給 —— 而且要用**遮蔽前**的 q 算，遮掉之後 canEmptyAt 是 null，會永遠 false
       canEmptyNow: canEmptyNow(q),
       /** 隔離區裡有、journal 沒有的檔。清空**不會**動到它們，所以要說出來。 */
       orphans: q.orphans,

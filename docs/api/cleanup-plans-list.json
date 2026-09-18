@@ -4,9 +4,9 @@
   "limit": 20,
   "operations": [
     {
-      "id": "a9bb707f-93d0-480d-b3bc-56afd8a95465",
+      "id": "7181e660-03f2-4c52-949f-249be0bc75d9",
       "status": "dismissed",
-      "createdAt": "2026-09-18T20:14:32.882Z",
+      "createdAt": "2026-09-18T20:59:45.817Z",
       "appliedAt": null,
       "restoredAt": null,
       "canUndo": false,
@@ -14,16 +14,16 @@
       "bytes": 16,
       "items": [
         {
-          "itemId": "3eece933-c1af-4547-9ef0-361180ee34f2",
+          "itemId": "21a543f3-efeb-443f-afee-518f5716c14a",
           "name": "Screenshot 2026-01-02 141203.png",
           "bytes": 16
         }
       ]
     },
     {
-      "id": "b3ac5cf7-3626-46a4-861a-5e70d1afd85c",
+      "id": "d88ef619-3857-46f3-9b79-b36ca97be0b6",
       "status": "dismissed",
-      "createdAt": "2026-09-18T20:14:32.763Z",
+      "createdAt": "2026-09-18T20:59:45.694Z",
       "appliedAt": null,
       "restoredAt": null,
       "canUndo": false,
@@ -31,61 +31,61 @@
       "bytes": 22,
       "items": [
         {
-          "itemId": "7ec74f81-01a2-46a6-9b6d-fa0c33cfcfb6",
+          "itemId": "c321e676-82a0-4ead-a37f-8dd6ccef1a84",
           "name": "很舊的.bin",
           "bytes": 22
         }
       ]
     },
     {
-      "id": "e8621e2e-795d-4fc8-a3a3-6e8f14a15b6e",
+      "id": "751026e6-2bf7-4a7e-a4bd-e2d49df53c48",
       "status": "partial",
-      "createdAt": "2026-09-18T20:14:32.687Z",
-      "appliedAt": "2026-09-18T20:14:32.741Z",
+      "createdAt": "2026-09-18T20:59:45.621Z",
+      "appliedAt": "2026-09-18T20:59:45.674Z",
       "restoredAt": null,
       "canUndo": true,
       "itemCount": 3,
       "bytes": 51,
       "items": [
         {
-          "itemId": "fc6fc5ab-01d2-4d69-ab55-d4a7859deef0",
+          "itemId": "a08f734b-3615-40d4-bb7e-6c2491bca7e4",
           "name": "發票.zip",
           "bytes": 13
         },
         {
-          "itemId": "1e46d251-2237-4de2-9fe9-f110f4942d14",
+          "itemId": "5a4f1237-7e58-454d-bc86-2af18c58c400",
           "name": "照片.jpg",
           "bytes": 22
         },
         {
-          "itemId": "b4c931b0-1c7d-4243-a427-5c8b673ae5f0",
+          "itemId": "7a052b3a-e07b-4a08-a8de-20fe2e94232f",
           "name": "下載中.iso.crdownload",
           "bytes": 16
         }
       ]
     },
     {
-      "id": "9c8d2104-df90-4f14-8126-529a88d9abd0",
+      "id": "e883e3aa-8cea-439a-8bbc-8256ab273b3e",
       "status": "restored",
-      "createdAt": "2026-09-18T20:14:32.547Z",
-      "appliedAt": "2026-09-18T20:14:32.628Z",
-      "restoredAt": "2026-09-18T20:14:32.835Z",
+      "createdAt": "2026-09-18T20:59:45.486Z",
+      "appliedAt": "2026-09-18T20:59:45.568Z",
+      "restoredAt": "2026-09-18T20:59:45.767Z",
       "canUndo": false,
       "itemCount": 3,
       "bytes": 38,
       "items": [
         {
-          "itemId": "63a29e9e-b6f9-4b72-be72-ba43a21473e4",
+          "itemId": "2b9acf09-5cf9-405c-83af-475b59ce59aa",
           "name": "素材包.zip",
           "bytes": 19
         },
         {
-          "itemId": "e971d836-ca04-4379-9bed-41e645c0f44d",
+          "itemId": "c459b038-6ed7-44b1-afb2-99e73f8333cb",
           "name": "安裝檔.msi",
           "bytes": 19
         },
         {
-          "itemId": "a48027ed-2d72-45d5-807f-aa416f91c7c3",
+          "itemId": "10993ebe-521e-4fff-94cc-8845e809bad8",
           "name": "空的.txt",
           "bytes": 0
         }

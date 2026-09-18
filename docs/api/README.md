@@ -66,7 +66,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
 | 404 | `NOT_FOUND` | 那份計畫不存在 | 重新拿清單 |
 | 405 | `BAD_METHOD` | 認得的路徑用錯方法 | 看 `Allow` header |
-| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`）；已經開始的計畫再 dismiss／release；開始復原之後停在 `partial`／`error` 的計畫再 apply（全部放回的 `restored` 再 apply 回 200、原樣回傳，不會再搬） | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
+| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`）；已經開始的計畫再 dismiss／release；**已經有復原紀錄**（開始放回過任何一個檔，不管放回成功沒有）的計畫再 apply，例如復原停在 `partial` 的。復原時還沒開始放回就出錯的**不算**：例如隔離區的檔被改過、第一個檔就 `CHANGED` 而停在 `error` 的，再 apply 回 200、狀態變成 `applied`，檔還在隔離區、不會再搬。全部放回的 `restored` 再 apply 也回 200、原樣回傳，不會再搬 | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
 | 409 | `STALE_CANDIDATE` | 送來的 id 不在目前的清單上（清單變了、太大、不在清理範圍） | 一個都不搬；重新載入清單給使用者再看一眼 |
 | 409 | `EMPTY_PLAN` | 沒有勾任何東西（`candidateIds: []`），或預設清理沒東西可清 | 不是錯：Downloads 很乾淨 |
 | 409 | `TOO_FRESH` | 檔案十分鐘內還在變動（多半只出現在逐項結果的 `why`） | 等一下再試 |
@@ -85,7 +85,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 500 | `OUTSIDE_ROOT` | 檔案不在清理範圍裡（多半只出現在逐項結果） | 重新掃描 |
 | 500 | `NO_DUPLICATE` | 重複檔找不到會留下的那一份（多半只出現在逐項結果） | 重新掃描 |
 | 500 | `VERIFY_FAILED` | 搬移後驗證沒過（多半只出現在逐項結果） | 保留隔離區，重試 |
-| 500 | `INTERNAL` | 其他意外。訊息是「後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。」 | 重新整理看目前的狀態，不要自動重試 |
+| 500 | `INTERNAL` | 其他意外。訊息是「後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。」 | 請使用者關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態；不要自動重試 |
 | 501 | `NOT_IMPLEMENTED` | `/cleanup/…`、`/pet/…` 底下還沒做的路徑（例如 `/cleanup/reveal`） | 不要重試 |
 | 503 | `BUSY` | 另一個清理動作正在跑（別的行程拿著鎖） | 照 `Retry-After` header（秒，現在是 2）等一下重試 |
 
@@ -138,7 +138,9 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 **不帶 token 也回**（擴充套件與寵物用它判斷後端活著沒），所以不帶 token 的那一份**不給任何名字、路徑或時間**：
 `watcher.watching` 是空陣列、`watcher.lastHeartbeatAt` 與 `watcher.pid` 是 `null`、`lastError` 只說
 「有，帶 token 才看得到」、`lastErrorAt` 與 `lastOkAt` 是 `null`（同機任何行程都讀得到，時間會洩漏
-「使用者什麼時候清理過」）。兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
+「使用者什麼時候清理過」）、`quarantine.canEmptyAt` 與 `quarantine.oldestMtimeAt` 也是 `null`（同一個理由：
+`canEmptyAt` 減七天就是清理的時間）。`quarantine.canEmptyNow` 是布林、不帶時間，兩份都照給。
+兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
 寵物要比那兩個時間，走要 token 的 `GET /pet/state`。
 
 | 欄位 | 意思 |
@@ -151,9 +153,9 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `watcher.watching` | 清理資料夾的顯示名（帶 token 才有） |
 | `watcher.why` | `watcher.ok` 為什麼是 false，是 true 時為 `null` |
 | `quarantine.items`、`quarantine.bytes` | 隔離區裡還能復原的檔 |
-| `quarantine.oldestMtimeAt` | 那些檔**自己的** mtime，只拿來顯示，不要拿來算七天 |
-| `quarantine.canEmptyAt` | **最早**一筆滿七天的時間 |
-| `quarantine.canEmptyNow` | 現在按清空會不會真的刪到東西。跟 `canEmptyAt` 互推 |
+| `quarantine.oldestMtimeAt` | 那些檔**自己的** mtime，只拿來顯示，不要拿來算七天（帶 token 才有） |
+| `quarantine.canEmptyAt` | **最早**一筆滿七天的時間（帶 token 才有） |
+| `quarantine.canEmptyNow` | 現在按清空會不會真的刪到東西。帶 token 那份跟 `canEmptyAt` 互推；不帶 token 也照給 |
 | `quarantine.orphans` | 隔離區裡有、搬移紀錄沒有的檔。清空**不會**動它們 |
 | `quarantine.truncated` | 隔離區沒看完（讀不到、太深）。這時 `canEmptyNow` 一律 false |
 | `pendingCandidates` | 清單上有幾個檔（跟 `GET /cleanup/candidates` 同一套篩選） |

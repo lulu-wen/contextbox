@@ -21,13 +21,13 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { applyPlan, undoPlan, NOT_MOVED } from '../core/cleanup-exec.ts'
 import { planOutcomes, healthSnapshot as health0, invalidateQuarantineCache } from '../core/cleanup-routes.ts'
-import { createRealHistory, historyUndoMessage } from '../core/assets/cleanup-real-state.js'
+import { createRealHistory, historyUndoMessage, safeName } from '../core/assets/cleanup-real-state.js'
 import { fixture } from './helpers/cleanup.mjs'
 
 // 孤兒對帳的磁碟計數有十秒快取（route 搬完檔會清掉它）；這裡直接呼叫 exec，要自己清
@@ -195,5 +195,63 @@ describe('面板的歷史復原：搬到一半中斷、其實沒搬過的，不�
     })
     assert.doesNotMatch(text.split('\n')[0], /^另有/)
     assert.match(text, /勾選的 1 筆先前已經復原過了/)
+  })
+})
+
+// ═══ 第三波之二的驗證員在範圍外發現的（已實測） ═══════════════════════
+
+describe('cleanup.roots 裡有一個資料夾不見了（外接碟拔掉）', () => {
+  // 以前 originalPath 用 roots.some(root => under(checkedPath(root), …))：排在前面的根目錄
+  // 不存在時 checkedPath 丟 ENOENT，每一個檔都失敗，訊息說「檔案或資料夾不見了」—— 檔案明明在。
+  test('不見的那個排在前面：Downloads 的檔照搬', t => {
+    const f = fixture(t)
+    const external = join(f.dir, 'External')
+    const p = f.plan()
+    const r = applyPlan(f.db, p.id, { ...f.opts, roots: [external, ...f.opts.roots] })
+    assert.equal(r.status, 'applied')
+    assert.equal(r.quarantinedCount, 2)
+  })
+
+  test('對照：清理範圍只剩不見的那個 → 一個都不搬（範圍外），不可以因為略過就放寬', t => {
+    const f = fixture(t)
+    const p = f.plan()
+    const r = applyPlan(f.db, p.id, { ...f.opts, roots: [join(f.dir, 'External')] })
+    assert.equal(r.quarantinedCount, 0)
+    assert.ok(existsSync(join(f.downloads, 'a.zip')) && existsSync(join(f.downloads, 'b.zip')))
+  })
+
+  test('對照：根目錄是捷徑的照樣不算（fail closed）', t => {
+    const f = fixture(t)
+    const link = join(f.dir, 'DL-link')
+    try { symlinkSync(f.downloads, link) } catch { t.skip('這台不能建捷徑'); return }
+    const p = f.plan()
+    const r = applyPlan(f.db, p.id, { ...f.opts, roots: [link] })
+    assert.equal(r.quarantinedCount, 0)
+  })
+})
+
+describe('還沒開始的計畫送 undo', () => {
+  // 以前 undoPlan 照樣跑完、把計畫標成 restored，逐項變成「沒有搬動，原因不明」
+  test('沒有任何 journal 的 proposed 計畫 → CONFLICT，計畫還是 proposed、檔案不動', t => {
+    const f = fixture(t)
+    const p = f.plan()
+    assert.throws(() => undoPlan(f.db, p.id, f.opts), e => e.code === 'CONFLICT')
+    assert.equal(f.db.prepare('SELECT status FROM cleanup_plans WHERE id=?').get(p.id).status, 'proposed')
+    assert.ok(existsSync(join(f.downloads, 'a.zip')))
+  })
+
+  test('對照：做到一半中斷的 proposed 計畫（有 journal）→ 照常放回', t => {
+    const s = interrupted(t)
+    assert.equal(undoPlan(s.db, s.planId, s.opts).status, 'restored')
+  })
+})
+
+describe('面板的 safeName 也換掉方向控制字元', () => {
+  test('每一段範圍的頭尾都換成「·」，一般中文與 emoji 原樣', () => {
+    for (const c of ['\u061c', '\u200e', '\u200f', '\u202a', '\u202e', '\u2066', '\u2069', '\u2028', '\u2029', '\u0007', '\u009f']) {
+      assert.equal(safeName(`a${c}b`), 'a·b', JSON.stringify(c))
+    }
+    assert.equal(safeName('期中報告📄.pdf'), '期中報告📄.pdf')
+    assert.equal(safeName('invoice\u202efdp.exe'), 'invoice·fdp.exe')
   })
 })

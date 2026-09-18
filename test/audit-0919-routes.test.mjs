@@ -896,3 +896,24 @@ describe('RC28 清空預覽表不可以無限成長', () => {
     assert.ok(left.includes(r.body.token), '這次的預覽要在')
   })
 })
+
+// ═══ 第三波之二 ・ 免 token 的 /health 不給隔離區的時間 ══════════════════
+
+describe('第三波之二：免 token 的 GET /health 不給 quarantine.canEmptyAt／oldestMtimeAt', () => {
+  test('同一個 server、同一個隔離區：帶 token 有兩個時間，免 token 是 null（欄位還在），canEmptyNow 一樣', async t => {
+    const s = await serve(t, { files: { 'a.zip': { days: 60 } } })
+    await s.api('POST', '/cleanup/scan', {})
+    const plan = (await s.api('POST', '/cleanup/plans', {})).json
+    assert.equal((await s.api('POST', `/cleanup/plans/${plan.id}/apply`, {})).status, 200)
+    const full = (await s.raw('GET', '/health')).json
+    const lean = (await s.raw('GET', '/health', { token: null })).json
+    assert.equal(full.quarantine.items, 1, '前提：隔離區裡有一個檔')
+    assert.equal(typeof full.quarantine.canEmptyAt, 'string')
+    assert.equal(typeof full.quarantine.oldestMtimeAt, 'string')
+    assert.deepEqual(Object.keys(lean.quarantine).sort(), Object.keys(full.quarantine).sort(), '形狀一致')
+    assert.equal(lean.quarantine.canEmptyAt, null, 'canEmptyAt 減七天就是「使用者什麼時候清理過」')
+    assert.equal(lean.quarantine.oldestMtimeAt, null)
+    assert.equal(lean.quarantine.canEmptyNow, full.quarantine.canEmptyNow)
+    assert.doesNotMatch(JSON.stringify(lean), /\d{4}-\d\d-\d\dT\d\d:/, '免 token 那份整份不可以有時間')
+  })
+})

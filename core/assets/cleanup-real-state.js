@@ -19,8 +19,11 @@
  * 檔名是不可信的輸入（網頁決定下載檔的名字）。結果框是 `white-space: pre-line`，
  * 檔名裡的換行會變成畫面上的新的一行 —— `a\n搬進隔離區 99 個檔案.zip` 就能偽造一行結果。
  * U+2028／U+2029 在瀏覽器裡也會斷行，一起換掉。一個字元換一個「·」，長度不變。
+ * **方向控制字元也換**（U+061C、U+200E／200F、U+202A–202E、U+2066–2069）：
+ * `invoice\u202Efdp.exe` 在畫面上會顯示成像 .pdf 的檔。跟 cli.mjs 的 shown、
+ * cleanup-routes.ts 的 UNSAFE_DISPLAY 是同一組字元。
  */
-const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g
 export function safeName(s) {
   return String(s ?? '').replace(CONTROL, '·')
 }
@@ -120,17 +123,20 @@ const maybeInQuarantine = i => i.outcome === 'moved' || i.outcome === 'unknown'
  */
 function restoreDelta(beforeItems, after, fallbackWhy = null) {
   const now = new Map(after.items.map(i => [i.itemId, i]))
-  const back = [], notBack = [], unsure = []
+  const back = [], notBack = [], unsure = [], stayed = []
   for (const was of beforeItems) {
     const i = now.get(was.itemId)
     // 搬到一半中斷的（復原前是 unknown），復原時後端確認檔案根本沒搬、還在原位 → 結果變成
     // failed。那不是「沒放回」，是本來就沒離開過，兩邊都不列（CLI 印「當初就沒有搬走」）。
-    if (was.outcome === 'unknown' && ['failed', 'skipped', 'pending', 'cancelled'].includes(i?.outcome)) continue
+    if (was.outcome === 'unknown' && ['failed', 'skipped', 'pending', 'cancelled'].includes(i?.outcome)) {
+      stayed.push({ itemId: was.itemId, name: was.name })
+      continue
+    }
     if (i?.outcome === 'restored') back.push(i)
     else if (i?.outcome === 'unknown') unsure.push({ itemId: was.itemId, name: was.name, why: i.why ?? fallbackWhy })
     else notBack.push({ itemId: was.itemId, name: was.name, why: i?.why ?? fallbackWhy })
   }
-  return { back, notBack, unsure }
+  return { back, notBack, unsure, stayed }
 }
 
 const renamedOf = items => items.filter(i => i.restoredAs).map(i => ({ name: i.name, restoredAs: i.restoredAs }))
@@ -196,6 +202,8 @@ export function historyUndoMessage(r) {
   if (unconfirmed.length) {
     lines.push(...unconfirmedLines(unconfirmed), '還列在上面紀錄裡的，就是還可以復原的，可以再勾起來試一次。')
   }
+  // 搬到一半中斷、其實沒搬過的（後端確認還在原位）：講一句，不然使用者會以為它不見了。CLI 印同一個意思
+  for (const x of r.neverMoved ?? []) lines.push(`・${safeName(x.name)} 當初就沒有搬走，本來就在原位。`)
   return { text: lines.join('\n'), notice: restoreNotice(r.restoredFiles, notRestored.length, unconfirmed.length) }
 }
 
@@ -407,7 +415,7 @@ export function createRealHistory(api) {
     if (path === 'undo') {
       const ids = [...new Set(body?.operationIds ?? [])]
       let restored = 0, restoredFiles = 0, alreadyRestored = 0
-      const restoredItems = [], renamed = [], notRestored = [], unconfirmed = []
+      const restoredItems = [], renamed = [], notRestored = [], unconfirmed = [], neverMoved = []
       for (const id of ids) {
         const enc = encodeURIComponent(id)
         // **先看復原前還有哪些在隔離區。** undo 是冪等的：已經復原過的再送一次，
@@ -435,7 +443,8 @@ export function createRealHistory(api) {
           }
           fallbackWhy = e.message
         }
-        const { back, notBack, unsure } = restoreDelta(inQuarantine, plan, fallbackWhy)
+        const { back, notBack, unsure, stayed } = restoreDelta(inQuarantine, plan, fallbackWhy)
+        neverMoved.push(...stayed.map(({ name }) => ({ name })))
         renamed.push(...renamedOf(back))
         notRestored.push(...nameAndWhy(notBack))
         unconfirmed.push(...nameAndWhy(unsure))
@@ -445,7 +454,7 @@ export function createRealHistory(api) {
           restoredItems.push(...back.map(i => ({ itemId: i.itemId, name: i.name, bytes: i.bytes })))
         }
       }
-      return { restored, restoredFiles, restoredItems, alreadyRestored, notRestored, unconfirmed, operationIds: ids, renamed }
+      return { restored, restoredFiles, restoredItems, alreadyRestored, notRestored, unconfirmed, neverMoved, operationIds: ids, renamed }
     }
     throw new Error('本機模式不支援這個歷史操作：' + path)
   }

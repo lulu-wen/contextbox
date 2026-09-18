@@ -5,21 +5,21 @@
   "bytes": 161,
   "defaultCheckedCount": 7,
   "defaultCheckedBytes": 123,
-  "generatedAt": "2026-09-18T20:14:32.516Z",
+  "generatedAt": "2026-09-18T20:59:45.453Z",
   "candidates": [
     {
-      "itemId": "1e46d251-2237-4de2-9fe9-f110f4942d14",
+      "itemId": "5a4f1237-7e58-454d-bc86-2af18c58c400",
       "name": "照片.jpg",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 22,
-      "mtime": "2026-09-18T20:14:32.169Z",
+      "mtime": "2026-09-18T20:59:45.093Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "6a9c249f-3a96-44fc-ab44-22a6e6ab1f89"
+        "60c8c45a-c5f4-4e98-b129-08fa9575e638"
       ],
       "reasons": [
         {
@@ -31,18 +31,18 @@
       ]
     },
     {
-      "itemId": "e3524ea6-aa9f-48f8-abb9-54704e3fc506",
+      "itemId": "e594b8d8-c0fb-4871-88f8-76dfabd8cae2",
       "name": "報告.pdf",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 34,
-      "mtime": "2026-09-18T18:14:32.168Z",
+      "mtime": "2026-09-18T18:59:45.092Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "0a3e52e8-608c-477b-8369-bb7ed43762e0"
+        "a56a1e04-15ee-48ad-87ef-bff656027893"
       ],
       "reasons": [
         {
@@ -54,18 +54,18 @@
       ]
     },
     {
-      "itemId": "a48027ed-2d72-45d5-807f-aa416f91c7c3",
+      "itemId": "10993ebe-521e-4fff-94cc-8845e809bad8",
       "name": "空的.txt",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 0,
-      "mtime": "2026-09-15T20:14:32.168Z",
+      "mtime": "2026-09-15T20:59:45.092Z",
       "kind": "empty",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "647e2f6f-3f98-4e40-b084-4210ab2326c9"
+        "eb272a45-5f46-4f8c-9aa0-2816c55709e9"
       ],
       "reasons": [
         {
@@ -77,18 +77,18 @@
       ]
     },
     {
-      "itemId": "b4c931b0-1c7d-4243-a427-5c8b673ae5f0",
+      "itemId": "7a052b3a-e07b-4a08-a8de-20fe2e94232f",
       "name": "下載中.iso.crdownload",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-09-15T20:14:32.168Z",
+      "mtime": "2026-09-15T20:59:45.093Z",
       "kind": "partial",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "ddd12071-d07f-4a43-afcb-4e1175dd44d8"
+        "8a088c69-fee4-46a8-a381-2ec1c54ff202"
       ],
       "reasons": [
         {
@@ -100,18 +100,18 @@
       ]
     },
     {
-      "itemId": "e971d836-ca04-4379-9bed-41e645c0f44d",
+      "itemId": "c459b038-6ed7-44b1-afb2-99e73f8333cb",
       "name": "安裝檔.msi",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 19,
-      "mtime": "2026-08-19T20:14:32.168Z",
+      "mtime": "2026-08-19T20:59:45.092Z",
       "kind": "installer",
       "confidence": 70,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "f635bd26-68cb-433f-b521-15b759b680b1"
+        "dd43d9e1-f88e-4935-86b3-cf518e0e132b"
       ],
       "reasons": [
         {
@@ -123,18 +123,18 @@
       ]
     },
     {
-      "itemId": "63a29e9e-b6f9-4b72-be72-ba43a21473e4",
+      "itemId": "2b9acf09-5cf9-405c-83af-475b59ce59aa",
       "name": "素材包.zip",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 19,
-      "mtime": "2026-07-20T20:14:32.168Z",
+      "mtime": "2026-07-20T20:59:45.092Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "73baf9f1-2168-4119-aa24-14bff25f978d"
+        "598cd4e7-3dcd-4c8e-97da-7c85b48e1c83"
       ],
       "reasons": [
         {
@@ -146,18 +146,18 @@
       ]
     },
     {
-      "itemId": "fc6fc5ab-01d2-4d69-ab55-d4a7859deef0",
+      "itemId": "a08f734b-3615-40d4-bb7e-6c2491bca7e4",
       "name": "發票.zip",
       "folder": "Downloads",
       "subdir": "2026/09",
       "bytes": 13,
-      "mtime": "2026-08-04T20:14:32.168Z",
+      "mtime": "2026-08-04T20:59:45.093Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "04957b0b-f693-4a75-8f17-dc7d820561ee"
+        "034f969c-1589-4850-95f6-3e55779437fe"
       ],
       "reasons": [
         {
@@ -169,19 +169,19 @@
       ]
     },
     {
-      "itemId": "3eece933-c1af-4547-9ef0-361180ee34f2",
+      "itemId": "21a543f3-efeb-443f-afee-518f5716c14a",
       "name": "Screenshot 2026-01-02 141203.png",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-05-21T20:14:32.168Z",
+      "mtime": "2026-05-21T20:59:45.092Z",
       "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
       "vetoed": null,
       "candidateIds": [
-        "6824cb3c-9b77-4fb8-a646-1579f18696bd",
-        "23c51fc0-a6e0-499a-9a2f-b04261e49fb0"
+        "00d0229a-34d9-4ea9-8b7f-c6a8e52fcb17",
+        "fc758958-ac16-4803-b0c4-30569c566e20"
       ],
       "reasons": [
         {
@@ -199,18 +199,18 @@
       ]
     },
     {
-      "itemId": "7ec74f81-01a2-46a6-9b6d-fa0c33cfcfb6",
+      "itemId": "c321e676-82a0-4ead-a37f-8dd6ccef1a84",
       "name": "很舊的.bin",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 22,
-      "mtime": "2026-03-02T20:14:32.168Z",
+      "mtime": "2026-03-02T20:59:45.092Z",
       "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
       "vetoed": null,
       "candidateIds": [
-        "5aa9f5fb-0925-4423-8dbb-03b2fd75fd84"
+        "360bd3cf-c921-438d-a68f-d04056c2cdac"
       ],
       "reasons": [
         {
@@ -230,7 +230,7 @@
   "needsHumanTruncated": false,
   "needsHuman": [
     {
-      "itemId": "804d57f9-b16e-4cf8-a93e-8dd29a6d4bff",
+      "itemId": "0918671a-62cd-4232-a916-72e7236ec385",
       "name": "備份.tar",
       "folder": "Downloads",
       "bytes": 66560,
