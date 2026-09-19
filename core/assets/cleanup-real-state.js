@@ -96,12 +96,37 @@ export function applyMessage(r) {
   return { text: lines.join('\n'), notice }
 }
 
-/** 撞到卡住的計畫時的提示（RC8：兩個出口）。 */
+/**
+ * 撞到卡住的計畫（或面板一打開就查到）時的提示。
+ *
+ * - **還沒開始的**（RC8）：兩個出口，「繼續上次那份」或「放棄上次那份」（不動任何檔）。
+ * - **做到一半中斷的**（plan.started，第二輪 R2-5b）：已經有搬移紀錄（多半有檔搬進隔離區，也可能只有
+ *   搬失敗的紀錄），**不能放棄**（後端的 release 一定回 409）。
+ *   以前照樣說「放棄上次那份：不動任何檔案」，按下去 409（稽核 B-r7）。
+ *   出口是「繼續上次那份」與「放回已經搬走的」（undo）。幾個已經在隔離區照後端的逐項結果講：
+ *   moved 才算「已經在隔離區」；unknown（搬到一半中斷）說不準在哪，另外講；數不出來（plan.moved 是 null）
+ *   就只說「有些可能已經在隔離區」，不猜數字。
+ * - plan.others：另外還有幾份沒做完的（面板打開時查 ?pending=1 才知道），一次只提示一份。
+ */
 export function pendingPlanMessage(plan) {
   const names = plan.items.map(i => safeName(i.name)).join('、')
-  return `上次有一份清理沒做完：${names}（${plan.items.length} 個）。\n`
-    + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
-    + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。'
+  const others = plan.others > 0
+    ? `\n（另外還有 ${plan.others} 份沒做完的：處理完這一份，關掉面板再打開就會看到下一份。）` : ''
+  if (!plan.started) {
+    return `上次有一份清理沒做完：${names}（${plan.items.length} 個）。\n`
+      + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
+      + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。' + others
+  }
+  const moved = plan.moved, unsure = plan.unsure ?? 0
+  const halfway = `${unsure} 個搬到一半、說不準在原位還是在隔離區`
+  const where = moved == null ? '其中有些可能已經在隔離區'
+    : moved > 0 ? `其中 ${moved} 個已經在隔離區` + (unsure ? `，${halfway}` : '')
+    : unsure ? `其中 ${halfway}`
+    : '目前沒有檔在隔離區'
+  return `上次有一份清理做到一半中斷了：${names}（${plan.items.length} 個），${where}。\n`
+    + '按「繼續上次那份」會接著搬這份裡還沒搬的 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
+    + '按「放回已經搬走的」會把在隔離區的放回原位，還沒搬的不會動。\n'
+    + '這份已經開始搬了，不能直接放棄。' + others
 }
 
 // ── 復原的結果 ──────────────────────────────────────────────
@@ -168,7 +193,7 @@ function restoreNotice(ok, notRestored, unsure = 0) {
     : '這次一個都沒放回來，原因寫在面板上。'
 }
 
-/** 面板上「復原這次清理」之後要講的話。r 是 createReal().undo() 的回傳。 */
+/** 面板上「復原這次清理」與「放回已經搬走的」之後要講的話。r 是 createReal().undo() 或 putBack() 的回傳。 */
 export function undoMessage(r) {
   const notRestored = r.notRestored ?? [], unconfirmed = r.unconfirmed ?? []
   const lines = notRestored.length ? notRestoredLines(r.restored, notRestored)
@@ -181,6 +206,11 @@ export function undoMessage(r) {
   if (unconfirmed.length) lines.push(...unconfirmedLines(unconfirmed))
   if (notRestored.length) lines.push('沒放回的可以從「復原最近動作」再試一次。')
   if (unconfirmed.length) lines.push('還不確定的，可以從「復原最近動作」看它還在不在；還列在那裡的可以再復原一次。')
+  // 搬到一半中斷、復原時後端確認其實沒搬過（還在原位）的：講一句（跟歷史面板、CLI 同一個意思）。
+  // 不講的話，逐項才說「按復原會把在隔離區的放回原位」，按下去只剩「這次沒有需要放回的檔案」，那個檔的下落沒交代
+  for (const x of r.neverMoved ?? []) lines.push(`・${safeName(x.name)} 當初就沒有搬走，本來就在原位。`)
+  // 「放回已經搬走的」（做到一半中斷的那份）：還沒搬的那幾個從來沒動過，講一句，不然使用者會以為它們也被放回了
+  if (r.untouched) lines.push(`這份裡還沒搬的 ${r.untouched} 個沒有動過。`)
   if (r.reloadFailed) lines.push('（清單沒有重新整理成功。關掉面板再打開就會更新。）')
   return { text: lines.join('\n'), notice: restoreNotice(r.restored, notRestored.length, unconfirmed.length) }
 }
@@ -214,13 +244,16 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
   // 目前這一次清理的請求。**同一份勾選重送時沿用同一個 requestId**，
   // 後端靠它認出「這是同一次」而回傳同一份計畫，不會多建一份、也不會多搬一次。
   let request = null           // { requestId, candidateIds, planId?, uncertain }
-  // 擋住這次勾選的那份計畫（後端 409 帶回來的 blockingPlan）。要先給使用者看，
-  // **不可以自動套用** —— 那份的內容可能跟現在的勾選不一樣。
-  let pendingPlan = null       // { id, items, uncertain? }
+  // 擋住這次勾選的那份計畫（後端 409 帶回來的 blockingPlan），或面板打開時查到的待處理計畫
+  // （checkPending）。要先給使用者看，**不可以自動套用** —— 那份的內容可能跟現在的勾選不一樣。
+  // started：開始過（已經有搬移紀錄）→ 不能放棄，出口是繼續或放回；moved／unsure：幾個已經在隔離區、
+  // 幾個搬到一半說不準（數不出來是 null）；inQuarantine：提示那時在（或可能在）隔離區的項目，放回時拿來對。
+  let pendingPlan = null       // { id, items, started, moved?, unsure?, inQuarantine?, others?, uncertain? }
   let lastPlan = null          // { id, undoable, inQuarantine: 還在（或可能還在）隔離區的項目 }
 
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
-  const planPath = (id, action) => `/cleanup/plans/${encodeURIComponent(id)}/${action}`
+  const planUrl = id => `/cleanup/plans/${encodeURIComponent(id)}`
+  const planPath = (id, action) => `${planUrl(id)}/${action}`
   const sameIds = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
 
   async function load() {
@@ -244,6 +277,36 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
   async function reloadInto(result) {
     try { await load() } catch { result.reloadFailed = true }
     return result
+  }
+
+  /**
+   * 從計畫的逐項結果（GET /cleanup/plans/:id）算出提示要的東西。
+   * started 沒給（面板打開時查到的那份，列表沒有這個欄位）就看逐項結果：還沒套用（proposed）的計畫裡，
+   * 只要有一項不是 pending（在隔離區、搬到一半、失敗過、略過），就是套用開始過、有搬移紀錄 ——
+   * 跟後端 blockingPlan.started 的判斷一致。只差一種：帶 skippedIds 套用、還沒碰到任何一個檔就中斷的，
+   * 略過已經寫下、搬移紀錄還沒有，後端說沒開始。這裡算成開始過（偏保守）：頂多少給一個「放棄」，
+   * 反過來會給出一定 409 的「放棄」。**已經在隔離區只算 moved**；unknown 說不準在哪，另外數。
+   */
+  function pendingFrom(plan, started) {
+    return {
+      id: plan.id,
+      items: plan.items.map(i => ({ itemId: i.itemId, name: i.name, bytes: i.bytes })),
+      started: started ?? plan.items.some(i => i.outcome !== 'pending'),
+      moved: plan.items.filter(i => i.outcome === 'moved').length,
+      unsure: plan.items.filter(i => i.outcome === 'unknown').length,
+      inQuarantine: plan.items.filter(maybeInQuarantine),
+    }
+  }
+
+  /**
+   * 409 帶回來的 blockingPlan → 提示用的 pendingPlan。**started 照後端說的**（R2-5b）。
+   * 開始過的再讀一次逐項結果，才講得出幾個已經在隔離區；讀不到就不講數字（moved: null），不猜。
+   */
+  async function fromBlocking(b) {
+    const started = b.started === true
+    if (!started) return { id: b.id, items: b.items ?? [], started }
+    try { return pendingFrom(await api(planUrl(b.id)), true) }
+    catch { return { id: b.id, items: b.items ?? [], started, moved: null, unsure: null } }
   }
 
   // 勾選要鎖住的只有兩種情況：
@@ -271,7 +334,9 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
     /** 結果不明（網路斷了）：這時候按鈕是「再試一次」，會沿用同一份 */
     get uncertain() { return Boolean(request?.uncertain || pendingPlan?.uncertain) },
     get pendingPlan() { return pendingPlan },
-    get canUndo() { return Boolean(lastPlan?.undoable) },
+    // 後端的 undoable 只算確定在隔離區的（moved）。搬到一半中斷的（unknown）檔可能也在隔離區，
+    // 逐項的話叫人按「復原」把它放回原位 —— 面板就要有「復原」可按（第二輪，MOVE_INTERRUPTED 改寫時一起）
+    get canUndo() { return Boolean(lastPlan?.undoable || lastPlan?.inQuarantine?.length) },
     get bytes() { return candidates.filter(c => selected.has(c.itemId)).reduce((n, c) => n + c.bytes, 0) },
 
     select(id, checked) {
@@ -338,7 +403,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
             // 後端沒給（找不到）就照實丟錯，不猜。
             const b = e.data?.blockingPlan
             if (b?.id) {
-              pendingPlan = { id: b.id, items: b.items ?? [] }
+              pendingPlan = await fromBlocking(b)
               return { status: 'pending-plan', plan: pendingPlan }
             }
           }
@@ -359,11 +424,40 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
     },
 
     /**
+     * 面板打開時查有沒有待處理的計畫（第二輪 R2-5）：有就先提示最新的那一份，不用等撞到 CONFLICT。
+     * 以前只從 409 的 blockingPlan 得知 —— 計畫裡的檔不在清單上（被使用者刪了、被別處清過）時，
+     * 永遠撞不到，面板完全沒有入口，寵物卻一直說「有 1 份清單等你確認」（稽核 A-exp9）。
+     *
+     * - **鎖住的時候不查**：結果不明的那份（自己剛建的）要讓使用者「再試一次」，不可以被換掉。
+     * - 查不到（網路斷、讀不到那份的細節）就當沒有：清單照常，撞到 CONFLICT 仍是入口。
+     *   不猜「沒開始」—— 猜錯的話會給出一定是 409 的「放棄」。
+     * - 一次只提示一份；others 是另外還有幾份。
+     */
+    async checkPending() {
+      if (isLocked()) return pendingPlan
+      let list, plan
+      try {
+        list = await api('/cleanup/plans?pending=1&limit=1')
+        const first = list?.operations?.[0]
+        if (!first?.id) return null
+        plan = await api(planUrl(first.id))
+      } catch { return null }
+      if (isLocked()) return pendingPlan
+      if (plan?.status !== 'proposed' || !Array.isArray(plan.items)) return null
+      pendingPlan = { ...pendingFrom(plan), others: Math.max(0, (Number(list.total) || 1) - 1) }
+      return pendingPlan
+    },
+
+    /**
      * 放棄擋住的那份（RC8「放棄上次那份」）。呼叫後端的 release：
      * 計畫作廢，**不動任何檔、不作廢候選** —— 那些檔還會留在清單上，使用者可以重新勾。
+     * **開始過的那份不送**（R2-5b）：後端一定回 409，面板也不給這顆按鈕；提示維持原樣。
      */
     async release() {
       if (!pendingPlan) throw new Error('目前沒有要放棄的計畫。')
+      if (pendingPlan.started) {
+        throw new Error('這份已經開始搬了，不能放棄。請選「繼續上次那份」或「放回已經搬走的」。')
+      }
       const plan = pendingPlan
       try { await post(planPath(plan.id, 'release')) }
       catch (e) {
@@ -378,13 +472,54 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
       return reloadInto({ status: 'released', planId: plan.id, items: plan.items })
     },
 
+    /**
+     * 「放回已經搬走的」：對做到一半中斷的那份（pendingPlan.started）送 undo（第二輪 R2-5b）。
+     * 還沒搬的那幾個不會動（沒碰過的逐項結果是 cancelled），回傳的 untouched 是它們的個數。
+     *
+     * 放回幾個照**提示那時在隔離區的那些**逐一對（跟 undo 一樣，RC9）：回應在網路上丟了、再按一次，
+     * 第一次其實已經放回的照樣算放回，不會變成「這次沒有需要放回的檔案」。
+     * 提示時沒讀到逐項結果的（撞到 CONFLICT 之後讀不到），送出之前先讀一次；讀不到就不送。
+     * 錯誤的處置跟「繼續」「放棄」一樣：伺服器明確回錯 → 解鎖；網路斷了 → 還是那一份。
+     */
+    async putBack() {
+      if (!pendingPlan?.started) throw new Error('目前沒有做到一半的計畫要放回。')
+      const plan = pendingPlan
+      if (!plan.inQuarantine) plan.inQuarantine = (await api(planUrl(plan.id))).items.filter(maybeInQuarantine)
+      let after
+      try { after = await post(planPath(plan.id, 'undo')) }
+      catch (e) {
+        if (e.status) pendingPlan = null
+        else plan.uncertain = true
+        throw e
+      }
+      const { back, notBack, unsure, stayed } = restoreDelta(plan.inQuarantine, after)
+      lastPlan = { id: after.id, undoable: after.undoable, inQuarantine: after.items.filter(maybeInQuarantine) }
+      pendingPlan = null
+      request = null
+      // 「還沒搬的」：提示那時就不在隔離區的那些（沒碰過的 cancelled、搬過但失敗的 failed、略過的）。
+      // 提示時在（或可能在）隔離區的，照上面逐一對過了 —— 搬到一半、確認沒搬過的另外講（neverMoved），不重複算
+      const wasIn = new Set(plan.inQuarantine.map(i => i.itemId))
+      const untouched = after.items.filter(i => !wasIn.has(i.itemId)
+        && ['cancelled', 'failed', 'skipped', 'pending'].includes(i.outcome)).length
+      return reloadInto({
+        status: after.status,
+        planId: after.id,
+        restored: back.length,
+        renamed: renamedOf(back),
+        notRestored: nameAndWhy(notBack),
+        unconfirmed: nameAndWhy(unsure),
+        neverMoved: stayed.map(({ name }) => ({ name })),
+        untouched,
+      })
+    },
+
     async undo() {
       if (!lastPlan) throw new Error('目前沒有可以復原的清理。')
       const before = lastPlan.inQuarantine
       const plan = await post(planPath(lastPlan.id, 'undo'))
       // 放回幾個、沒放回哪幾個，照復原前在隔離區的那些逐一對（RC9）。
       // 不可以用 restoredCount：它算的是這份計畫「曾經」放回的全部，重按一次會重複算。
-      const { back, notBack, unsure } = restoreDelta(before, plan)
+      const { back, notBack, unsure, stayed } = restoreDelta(before, plan)
       lastPlan = { id: plan.id, undoable: plan.undoable, inQuarantine: plan.items.filter(maybeInQuarantine) }
       // **從後端重載，不要自己把檔加回清單。** 復原過的檔 A 的規則不會再提議
       // （你復原過就代表想留著），前端加回去的話，勾它會撞 STALE。
@@ -396,6 +531,8 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
         renamed: renamedOf(back),
         notRestored: nameAndWhy(notBack),
         unconfirmed: nameAndWhy(unsure),
+        // 搬到一半中斷、復原時確認其實沒搬過的（只有 unknown 的套用結果按「復原」會碰到）
+        neverMoved: stayed.map(({ name }) => ({ name })),
       })
     },
   }

@@ -42,7 +42,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 來源 | Origin 只放行：沒有 Origin、`chrome-extension://…`、server 自己；其他 403 |
 | body | 一定是 JSON 物件。空的 body 等於 `{}`；看不懂（壞掉的 JSON、`null`、陣列、字串、form 格式）→ 400 `BAD_BODY`，**不會被當成「什麼都沒帶」**；**帶了這條路徑不認得的欄位**（拼錯的 `candidateID`、`skippedIDs`、snake_case 的 `candidate_ids`）也是 400 `BAD_BODY`，什麼都不做（各路徑收哪些欄位見下面「各路徑收的 body」）；超過 1 MB → 413 `BODY_TOO_LARGE` |
 | 方法 | 認得的路徑用錯方法 → 405 `BAD_METHOD`，帶 `Allow` header |
-| 重送 | `apply`、`undo`、`dismiss`、`release`、清空確認（同一個 token）重送都拿到同樣的結果，不會做第二次。建計畫靠 `requestId`（見下） |
+| 重送 | 重送拿到同樣的結果，不會做第二次。`apply` 跑完一次之後（`applied`／`partial`／`error`）重送原樣回傳，不重試任何一項、不會再搬（第二輪 R2-3；以前 `partial`／`error` 會重試失敗的那幾個）；還沒跑完的 `proposed`（包括做到一半中斷的）重送是接著做完，做過的不會再做一次。`undo` 重送不會把放回的再搬一次，沒放回的會再試。`dismiss`、`release`、清空確認（同一個 token）重送拿到同樣的結果。建計畫靠 `requestId`（見下） |
 | 時間 | 一律 ISO 8601，UTC |
 | 大小 | 一律 bytes，整數 |
 
@@ -66,7 +66,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
 | 404 | `NOT_FOUND` | 那份計畫不存在 | 重新拿清單 |
 | 405 | `BAD_METHOD` | 認得的路徑用錯方法 | 看 `Allow` header |
-| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`；它的 `started` 是 true 時只能繼續或放回，不能放棄）；已經開始的計畫再 dismiss／release；**已經有復原紀錄**（開始放回過任何一個檔，不管放回成功沒有）的計畫再 apply，例如復原停在 `partial` 的。復原時還沒開始放回就出錯的**不算**：例如隔離區的檔被改過、第一個檔就 `CHANGED` 而停在 `error` 的，再 apply 回 200、狀態變成 `applied`，檔還在隔離區、不會再搬。全部放回的 `restored` 再 apply 也回 200、原樣回傳，不會再搬 | 把 `blockingPlan` 給使用者看，讓他選「繼續那份」或「放棄那份」，**不可以自動套用** |
+| 409 | `CONFLICT` | 勾的檔已經在一份**還沒套用**的計畫裡（回應帶 `blockingPlan`；它的 `started` 是 true 時只能繼續或放回，不能放棄）；已經開始的計畫再 dismiss／release；**已經有復原紀錄**（開始放回過任何一個檔，不管放回成功沒有）的 `proposed`／`partial`／`error` 計畫再 apply，例如復原停在 `partial` 的。沒有復原紀錄的**不算**：跑完過的 `partial`／`error` 再 apply 回 200、原樣回傳（`status` 不變、不重試任何一項、不會再搬），包括復原時還沒開始放回就出錯的 `error`（例如隔離區的檔被改過、第一個檔就 `CHANGED`），檔還在隔離區。`applied`（包括復原到一半中斷、還沒寫下結果的）與全部放回的 `restored` 再 apply 也回 200、原樣回傳，不會再搬 | 把 `blockingPlan` 給使用者看：`started` 是 false，讓他選「繼續那份」或「放棄那份」；`started` 是 true，讓他選「繼續那份」或「放回已經搬走的」（`undo`）。**不可以自動套用** |
 | 409 | `STALE_CANDIDATE` | 送來的 id 不在目前的清單上（清單變了、太大、不在清理範圍） | 一個都不搬；重新載入清單給使用者再看一眼 |
 | 409 | `EMPTY_PLAN` | 沒有勾任何東西（`candidateIds: []`），或預設清理沒東西可清 | 不是錯：Downloads 很乾淨 |
 | 409 | `TOO_FRESH` | 檔案十分鐘內還在變動（多半只出現在逐項結果的 `why`） | 等一下再試 |
@@ -160,10 +160,13 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 **後端壞掉時也一樣**：資料庫或事實庫讀不到，照樣回完整的欄位，`ok` 與 `db.ok` 是 false、數字退回 0。
 寵物要比那些時間，走要 token 的 `GET /pet/state`。
 
-**`?nonce=<32 個 hex>`**：帶了就多回一個 `proof` ＝ HMAC-SHA256（key 是 token、訊息是 nonce）的 hex，
-免 token 也回（proof 反推不出 token）。`open` 與第二個 `pet` 用它確認那個埠上的是真的 pet，才把帶鑰匙的網址交出去：
-自己產生 nonce、自己算一次來比。算法是 `core/server.ts` 的 `healthProof(token, nonce)`。
-nonce 格式不對（不是剛好 32 個 hex）就**沒有** `proof` 欄位，不報錯；沒帶 nonce 也沒有這個欄位。
+**`?nonce=<32 個 hex>`**：帶了就多回一個 `proof` ＝ HMAC-SHA256 的 hex，key 是 token、訊息是 `<埠號>:<nonce>`，
+免 token 也回（proof 反推不出 token）。埠號是 server **實際監聽**的那一個（`CONTEXTBOX_PORT=0` 的話是系統挑的那個，不是 0）。
+`open` 與第二個 `pet` 用它確認那個埠上的是真的 pet，才把帶鑰匙的網址交出去：自己產生 nonce，拿**自己要連的那個埠**
+用同一支函式算一次來比。**埠號綁在訊息裡**是為了擋轉送：佔住 A 埠的冒牌把 nonce 轉給 B 埠上的真 pet、
+再把 proof 原封不動交回來，真 pet 算的是 B，對不上（第二輪 R2-9，CLI 那一組改的）。
+**算法以 `core/server.ts` 的 `healthProof(token, port, nonce)` 為準**，不要自己重寫。
+nonce 格式不對（不是剛好 32 個 hex，大小寫都收）就**沒有** `proof` 欄位，不報錯；沒帶 nonce 也沒有這個欄位。
 
 | 欄位 | 意思 |
 |---|---|
@@ -231,9 +234,14 @@ nonce 格式不對（不是剛好 32 個 hex）就**沒有** `proof` 欄位，�
 - 撞到 409 `CONFLICT`：回應多一個 `blockingPlan: { id, status, createdAt, started, items: [{ itemId, name, bytes }] }`，
   是**擋住這次勾選的那一份**（它的檔跟這次勾的有交集）。UI 用它，不要自己去猜是哪一份。
   - `started` 是 **false**（還沒搬過任何一個）：給使用者兩個選擇，「繼續那份」（`POST …/apply`）或「放棄那份」（`POST …/release`）
-  - `started` 是 **true**（套用到一半中斷：被砍、斷電、鎖被接走，計畫還是 `proposed`，但已經有檔搬進隔離區）：
+  - `started` 是 **true**（套用到一半中斷：被砍、斷電、鎖被接走，計畫還是 `proposed`，但已經有搬移紀錄 —— 多半已經有檔搬進隔離區）：
     **只能「繼續那份」（`POST …/apply`）或「放回」（`POST …/undo`），不能放棄** —— `release` 會回 409 `CONFLICT`。
-    不要跟使用者說「放棄：不動任何檔案」，那時已經有檔搬走了
+    不要跟使用者說「放棄：不動任何檔案」，那時已經有檔搬走了。幾個已經在隔離區，打 `GET /cleanup/plans/:id`
+    數 `outcome` 是 `moved` 的（`unknown` 的說不準在哪，分開講）。`undo` 只放回在隔離區的，還沒搬的那幾個
+    不會動（之後的逐項結果是 `cancelled`）
+  - 面板不只靠這個 409：**一打開就查 `GET /cleanup/plans?pending=1`**，有待處理的計畫就先提示最新的那一份，
+    同樣分成沒開始（繼續／放棄）與開始過（繼續／放回）。計畫裡的檔不在清單上（被使用者刪了）時永遠撞不到
+    409，只有這條找得到它
 - **只有還沒套用（`proposed`）的計畫會佔住檔案。** 套用過的計畫（applied／partial／error）不再擋新計畫：
   失敗的那幾個可以直接收進下一份。重試 ＝ 新計畫
 
@@ -243,7 +251,8 @@ nonce 格式不對（不是剛好 32 個 hex）就**沒有** `proof` 欄位，�
 
 - `POST /cleanup/plans/:id/dismiss`：使用者**拒絕這些檔**。候選一起作廢，之後不再提議
 - `POST /cleanup/plans/:id/release`：**放棄這份計畫，檔不動**。候選還在，下一份計畫收得進去 ——
-  面板撞到卡住的計畫時的「放棄上次那份」就是這一條
+  面板撞到卡住的計畫時的「放棄上次那份」就是這一條（**還沒開始的那種**；開始過的那份面板給的是
+  「放回已經搬走的」＝ `undo`）
 
 已經開始的計畫兩個都回 409 `CONFLICT`（要還原請用 `undo`）。已經是 `dismissed` 的再送一次回 200（冪等）。
 
@@ -254,7 +263,7 @@ nonce 格式不對（不是剛好 32 個 hex）就**沒有** `proof` 欄位，�
 
 | 欄位 | 值 |
 |---|---|
-| `outcome` | `pending`（還沒做）／`moved`（在隔離區）／`skipped`（你略過的）／`failed`（沒搬成）／`restored`（已放回）／`purged`（滿七天已刪除）／`unknown`（搬到一半中斷，檔案可能已經在隔離區）／`cancelled`（沒動過：計畫被放棄了；或計畫跑過，但這一項從來沒處理到 —— 例如套用中斷在前幾項、之後按了復原，後面那些就是 `cancelled`，不是「原因不明」的 `failed`） |
+| `outcome` | `pending`（還沒做）／`moved`（在隔離區）／`skipped`（你略過的）／`failed`（沒搬成）／`restored`（已放回）／`purged`（滿七天已刪除）／`unknown`（搬到一半或復原到一半中斷，說不準檔案在原位還是在隔離區；`undo` 會把在隔離區的放回原位。**不要**叫使用者再 apply 一次來接完：跑完過的計畫再 apply 原樣回傳）／`cancelled`（沒動過：計畫被放棄了；或計畫跑過，但這一項從來沒處理到 —— 例如套用中斷在前幾項、之後按了復原，後面那些就是 `cancelled`，不是「原因不明」的 `failed`） |
 | `why` | `failed` 與 `unknown` 一定有；`moved` 在**復原失敗過**時是沒放回來的原因；其他是 `null`。人話、**不帶路徑** |
 | `restoredAs` | 只有 `restored` 而且**被改名**的才有：放回來時原位置已被佔，實際的檔名（例如 `素材包.zip.restored`） |
 
@@ -281,8 +290,8 @@ UI 不能只畫成功的樣子。
 | 參數 | 列哪些計畫 | `items`／`itemCount`／`bytes` 算哪些檔 |
 |---|---|---|
 | **不帶篩選** | **全部**：proposed、applied、partial、error、restored、dismissed 都列 | 計畫裡的**每一個**檔（含已放回、已放棄的） |
-| `undoable=1` | **現在還有檔可以放回去**的：包含復原失敗過的（`partial`／`error`，沒放回的那幾個還在隔離區），與復原到一半中斷的（再按一次復原會接完）。已復原、已被清空的不算 | 只算還能放回去的（`outcome` 是 `moved`，或復原中斷的 `unknown`） |
-| `pending=1` | **還沒套用（`proposed`）**、而且還有沒做完項目的計畫。給「接續上次那份」用。套用過的 partial／error 不列：計畫是一次性的，失敗的檔要重試就建新計畫 | 只算沒做完的（`pending`、`failed`、`unknown`） |
+| `undoable=1` | **現在還有檔可以放回去**的：包含復原失敗過的（`partial`／`error`，沒放回的那幾個還在隔離區），與復原到一半中斷的（再按一次復原會接著放回）。已復原、已被清空的不算 | 只算還能放回去的（`outcome` 是 `moved`，或復原中斷的 `unknown`） |
+| `pending=1` | **還沒套用（`proposed`）**、而且還有沒做完項目的計畫，包括做到一半中斷的。給「接續上次那份」用，面板一打開就查它。套用過的 partial／error 不列：計畫是一次性的，失敗的檔要重試就建新計畫 | 只算沒做完的（`pending`、`failed`、`unknown`）—— 已經搬進隔離區的**不在** `items` 裡。開始過沒有、幾個在隔離區，要打 `GET /cleanup/plans/:id` 看逐項結果：還沒套用的計畫裡有任何一項不是 `pending`，就當成套用開始過（面板就是這樣判斷的）。這個判斷偏保守：帶 `skippedIds` 套用、還沒碰到任何一個檔就中斷的，`skipped` 已經寫下了，後端的 `started` 卻還是 false —— 當成開始過頂多少給一個「放棄」，反過來會給出一定 409 的「放棄」 |
 | `offset`、`limit` | `limit` 1～100（預設 20），`offset` 不可以是負的，錯了回 400。超過最後一頁會夾回最後一頁 | |
 
 `undoable=1` 與 `pending=1` 同時帶的話，以 `undoable` 為準。

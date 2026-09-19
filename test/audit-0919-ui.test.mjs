@@ -31,7 +31,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, rmSync, readFileSync, realpathSync, symlinkSync, statSync,
-  renameSync,
+  renameSync, readdirSync,
 } from 'node:fs'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -251,8 +251,9 @@ let uiCase = 0
 /**
  * 把真的 cleanup-demo.js 掛到假 DOM 上。window.api 是 ui.html 的 api()，打 s 那台 server。
  * 回傳 { $, click, key, idle, apiHook }。
+ * opts.wrap(url, init, next)：頁面的每一個 fetch 先經過它（假的慢 api、假的逾時用），next 是真的送出去。
  */
-async function mountUi(t, s) {
+async function mountUi(t, s, { wrap = null } = {}) {
   const els = new Map()
   for (const [id, spec] of HTML_IDS) {
     const el = new FakeEl(spec.tag, id)
@@ -271,7 +272,7 @@ async function mountUi(t, s) {
   }
   const winListeners = {}
   let apiHook = null
-  const pageFetch = (url, init) => s.netFetch(url, init)
+  const pageFetch = wrap ? (url, init) => wrap(url, init, s.netFetch) : (url, init) => s.netFetch(url, init)
   const pageApi = uiApi(pageFetch, doc)
   const win = {
     api: (path, init) => { apiHook?.(path, init?.method ?? 'GET'); return pageApi(path, init) },
@@ -552,11 +553,14 @@ describe('RC8 面板（假 DOM 上跑真的 cleanup-demo.js）', () => {
 
   test('**撞到卡住的計畫：兩個按鈕「繼續上次那份」與「放棄上次那份」；放棄不動任何檔**', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 }, 'z.zip': { days: 60 }, 'm.zip': { days: 60 } })
+    // 第二輪 R2-5 起面板一打開就查 ?pending=1，打開之前就有的計畫會直接提示（那一段在後面的 P2）。
+    // 這一條要測的是**撞到 CONFLICT** 那條路，所以兩份計畫改成在面板開著的時候才建（例如 CLI 建的）；
+    // 期望值一個都沒改。
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
     const p1 = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip') }) })
     await new Promise(r => setTimeout(r, 5))
     await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('z.zip') }) })
-    const ui = await mountUi(t, s)
-    await ui.click('quaso-cleanup-alert')
     await uiOnly(ui, 'a.zip')
     await ui.click('cleanup-apply')
     const text = ui.$('cleanup-result').textContent
@@ -1216,7 +1220,7 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
 
   test('只有 unknown、一個都沒確定搬好 → 寵物不說「一個都沒搬成」', () => {
     const m = applyMessage({ status: 'error', moved: 0, bytesFreed: 0, failed: [],
-      unknown: [{ name: 'a.zip', why: '搬到一半中斷，檔案可能已經在隔離區。再套用一次這份計畫會把它接完。' }] })
+      unknown: [{ name: 'a.zip', why: '搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。' }] })
     assert.ok(!m.text.includes('原檔都還在原位'), m.text)
     assert.ok(!/一個都沒搬成/.test(m.notice), m.notice)
   })
@@ -1689,6 +1693,758 @@ describe('U6 擴充套件的「去補」：開分頁之前先驗 token', () => {
     said.length = 0
     await run({ ok: true })({ key: 'person.name.full', defLabel: '姓名' })
     assert.match(said[0].m, /開在新分頁/)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2026-09-19 稽核第二輪・清理面板（R2-5 面板端、C 的慢套用、MOVE_INTERRUPTED 的話）
+//
+// 期望值在實作之前寫死（build-round Step 1）。分級：P1、P2、P3 是高風險（部分失敗、重試、
+// 跟輪詢的時間交錯；錯了畫面會安靜地說謊），P4 的文字與文件是低風險。
+//
+// | 段落 | 可能的錯誤 | 另一種合理解讀 | 能分辨兩者的例子（成對） | 認定的答案 |
+// |---|---|---|---|---|
+// | P1 撞到 CONFLICT、started | 照舊給「放棄上次那份：不動任何檔案」與放棄按鈕（按下去 409） | started 為 true 時改成「繼續」與「放回已經搬走的」 | 稽查員 B 的 r7：a、b、c 一份，套用到第一個之後 BUSY（1 個在隔離區）／對照：同樣的計畫還沒套用 | started：訊息不含「放棄上次那份」「不動任何檔案」，含「其中 1 個已經在隔離區」與兩個按鈕名；release() 不送請求；放棄按鈕藏起來、放回按鈕出現。沒開始：訊息一字不改、放棄按鈕照舊 |
+// | P1 已經在隔離區的個數 | 用 items.length，或把 unknown 也算成「已經在隔離區」 | moved 才算；unknown 另外講「說不準」 | r7 的那一個 moved／把它的紀錄改回 started（unknown） | moved：「其中 1 個已經在隔離區」；unknown：「1 個搬到一半、說不準在原位還是在隔離區」，不說「已經在隔離區」 |
+// | P1 放回已經搬走的 | 放回 lastPlan、或把還沒搬的算成「沒放回」 | 對那一份送 undo，只算原本在隔離區的 | r7 按放回 | 搬走的那個回到原位、計畫 restored；結果「放回原位 1 個檔案。」，還沒搬的兩個不列成沒放回 |
+// | P1 繼續上次那份 | 只搬現在勾的 | 接著搬那一份 | r7 按繼續 | 三個都進隔離區、計畫 applied |
+// | P1 開始過、但沒有檔在隔離區 | 只看 moved／unknown 判斷開始過沒有（只有 failed 紀錄的那份給出一定 409 的「放棄」） | 有任何一項不是 pending 就算開始過（跟後端「有搬移紀錄」一致） | 第一個搬失敗（紀錄是 failed）之後中斷／對照：還沒套用（上面） | 後端 release 回 409；面板不給放棄、說「目前沒有檔在隔離區」；放回之後「這份裡還沒搬的 3 個沒有動過」 |
+// | P2 打開面板 | 只在撞到 CONFLICT 時才提示 | 一打開就查 ?pending=1 | A 的 exp9：計畫裡的 a.zip 被使用者刪了、清單上只剩 new.zip／對照：沒有 proposed 計畫 | exp9：一打開就提示 a.zip、放棄按鈕在、勾選鎖住，放棄之後計畫 dismissed、勾選解開；對照：沒有提示、放棄按鈕藏著、勾選可以改 |
+// | P2 好幾份 | 拿最舊的、或一次全塞 | 一次一份（最新的那份），講另外還有幾份 | p1={a}（舊）、p2={z}（新） | 先提示 z、講「另外還有 1 份」；放棄 z、關掉再打開 → 提示 a、不講「另外」 |
+// | P2 查不到 | 面板整個讀取失敗，或亂猜一份 | 照常顯示清單，撞到 CONFLICT 仍是入口 | ?pending=1 網路斷／計畫本身讀不到（started 的那份） | 前者：清單照常、不鎖，勾 a 清理 → 撞到 → 提示；後者：打開時不提示（不猜「沒開始」），撞到時用 blockingPlan 的 started，說「其中有些可能已經在隔離區」、沒有放棄按鈕 |
+// | P2 結果不明時重新打開 | 用 ?pending=1 的那份蓋掉自己那份的「再試一次」 | 鎖住時不查 | 套用的回應丟了、關掉面板再打開 | 還是「再試一次」，按下去接完自己那份 |
+// | P2 鎖住時別份出現 | 鎖住時照樣去查，查到別份就換成「繼續上次那份」（搬的是別人的） | 鎖住時根本不查 | 建計畫的請求沒送出去（自己那份沒建成）、關掉面板前 CLI 建了一份別的／對照：沒鎖 | 鎖住：不送 ?pending=1，還是「再試一次」，按下去搬的是自己勾的 a，CLI 那份還是 proposed、z 還在 |
+// | P1／P4 放回、復原時「其實沒搬過」 | 一句都不講（只剩「這次沒有需要放回的檔案」），或算進「還沒搬的 N 個」 | 照後端的結論講「當初就沒有搬走」 | r7 搬走的那個倒回 rename 之前（檔在原位、紀錄停在 started）／對照：真的在隔離區的 unknown | 放回：多一行「・x 當初就沒有搬走，本來就在原位。」，「還沒搬的 2 個」不含它；復原同一行 |
+// | P3 輪詢 | 動作進行中 /health 逾時 → 擔心、斷線泡泡 | 動作進行中的逾時不算數 | 套用卡在 server 時 /health 逾時／沒有動作時 /health 逾時 | 前者：petState 不是 worried、斷線按鈕藏著；後者：worried |
+// | P3 時間交錯 | 只看「失敗的那一刻有沒有動作在跑」 | 這次輪詢的期間內有動作跑過就不算 | 輪詢先送出、套用接著開始、輪詢才逾時／套用做完之後的輪詢逾時 | 前者不擔心；後者擔心（照常輪詢） |
+// | P3 後端回了話 | 動作進行中連 ok:false 也忽略 | 有回應就是結論 | 套用卡住時 /health 回 { ok: false } | worried |
+// | P3 歷史面板的復原 | 只算清理面板的動作 | 歷史的復原也算 | 歷史復原卡在 server 時 /health 逾時 | 不擔心 |
+// | P4 MOVE_INTERRUPTED | 還說「再套用一次這份計畫會把它接完」（partial／error 原樣回傳之後不成立） | 照實講 | GET 一份有 started 搬移紀錄的計畫 | why 不含「再套用一次」；含「說不準」「復原」「node cli.mjs doctor」 |
+// | P5 性質（結構化隨機） | —— | —— | 30 種中斷樣子（沒碰過／在隔離區／說不準／搬失敗／略過的組合） | 面板給「放棄」⇒ 後端 release 回 200；不給而後端給得了，只會是「只有略過、沒有任何搬移紀錄」 |
+// | P4 面板的復原鈕 | canUndo 只看 undoable（只有 unknown 時是 false，面板沒有「復原」可按） | moved 或 unknown 都算可以復原 | 套用結果只有一個 unknown（檔其實在隔離區）／對照：只有 failed | 前者 canUndo、按復原放回 1 個；後者 canUndo 是 false |
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 一個可以從外面放行的關卡：reached 表示有請求停在這裡了 */
+function gateOf() {
+  let open
+  const g = { reached: false, promise: new Promise(r => { open = r }) }
+  g.open = () => open()
+  return g
+}
+
+const TIMEOUT = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+const petState = ui => ui.$('quaso').dataset.petState
+const worried = ui => petState(ui) === 'worried' || ui.$('quaso-worried').hidden === false
+
+/**
+ * 稽查員 B 的 r7：names 建一份計畫，套用到第一個檔搬完之後，鎖被接走（trigger 模擬）→ 503 BUSY。
+ * 計畫還是 proposed，已經有一個檔在隔離區。回 { planId, moved（搬走的那一個）, rest（還在的） }。
+ */
+async function interruptAfterFirst(s, names) {
+  const candidateIds = []
+  for (const n of names) candidateIds.push(...await s.idsOf(n))
+  const plan = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds, requestId: 'r7' }) })
+  s.exec(`CREATE TRIGGER steal AFTER UPDATE OF status ON cleanup_journal WHEN NEW.status='done'
+          BEGIN UPDATE cleanup_operation_lock SET owner='2099-01-01T00:00:00.000Z thief'; END`)
+  const e = await s.raw(`/cleanup/plans/${plan.id}/apply`, { method: 'POST', body: '{}' }).catch(e => e)
+  s.exec('DROP TRIGGER steal')
+  s.exec('DELETE FROM cleanup_operation_lock')
+  assert.equal(e.code, 'BUSY', `前提：套用中途 BUSY（${e}）`)
+  const moved = names.filter(n => !s.has(n))
+  assert.equal(moved.length, 1, `前提：剛好一個搬走了（${moved}）`)
+  assert.equal(s.planStatus(plan.id), 'proposed', '前提：計畫還是 proposed')
+  return { planId: plan.id, moved: moved[0], rest: names.filter(n => n !== moved[0]) }
+}
+
+/** 把 name 的搬移紀錄改回 started（檔其實在隔離區）：逐項變成 unknown */
+function toUnknown(s, planId, name) {
+  s.exec(`UPDATE cleanup_journal SET status='started' WHERE plan_id=? AND op='quarantine'
+            AND item_id=(SELECT id FROM file_items WHERE name=?)`, planId, name)
+}
+
+const OLD_PENDING_TEXT = names => `上次有一份清理沒做完：${names.join('、')}（${names.length} 個）。\n`
+  + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
+  + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。'
+
+describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不給放棄，給「繼續」與「放回已經搬走的」', () => {
+  test('**稽查員 B 的 r7：套用中途 BUSY，面板照預設清理 → 提示講有 1 個已經在隔離區，沒有「放棄上次那份」；release() 不送請求**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    const real = createReal(s.api)
+    await real.load()
+    const r = await real.apply()
+    assert.equal(r.status, 'pending-plan', JSON.stringify(r))
+    assert.equal(r.plan.id, planId)
+    assert.equal(r.plan.started, true)
+    const text = pendingPlanMessage(r.plan)
+    assert.ok(!text.includes('放棄上次那份'), `開始過的計畫不能放棄：${text}`)
+    assert.ok(!text.includes('不動任何檔案'), `已經有檔搬走了：${text}`)
+    assert.ok(text.includes('其中 1 個已經在隔離區'), text)
+    assert.ok(text.includes('繼續上次那份') && text.includes('放回已經搬走的'), text)
+    assert.ok(text.includes(moved), text)
+    s.calls.length = 0
+    await assert.rejects(real.release(), e => !e.status, '不送請求，前端自己擋')
+    assert.ok(!s.calls.some(c => c.path.endsWith('/release')), '一定是 409 的請求不要送')
+    assert.equal(real.pendingPlan?.id, planId, '什麼都沒發生：還是提示同一份')
+    assert.equal(s.planStatus(planId), 'proposed')
+  })
+
+  test('對照：同樣的計畫還沒套用 → started 是 false，提示一字不改（還是可以放棄）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip') }) })
+    const real = createReal(s.api)
+    await real.load()
+    const r = await real.apply()
+    assert.equal(r.status, 'pending-plan')
+    assert.equal(r.plan.started, false)
+    assert.equal(pendingPlanMessage(r.plan), OLD_PENDING_TEXT(['a.zip']))
+  })
+
+  test('**已經在隔離區的只算 moved：搬到一半中斷的（unknown）另外講「說不準」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    toUnknown(s, planId, moved)
+    const real = createReal(s.api)
+    await real.load()
+    const r = await real.apply()
+    assert.equal(r.status, 'pending-plan', JSON.stringify(r))
+    const text = pendingPlanMessage(r.plan)
+    assert.ok(!text.includes('已經在隔離區'), `unknown 不可以說成已經在隔離區：${text}`)
+    assert.ok(text.includes('1 個搬到一半、說不準在原位還是在隔離區'), text)
+    assert.ok(!text.includes('放棄上次那份'), text)
+  })
+
+  test('例子：訊息的幾種說法（有 moved 也有 unknown、都沒有、數不出來）', () => {
+    const items = ['a.zip', 'b.zip', 'c.zip'].map(name => ({ itemId: name, name }))
+    const both = pendingPlanMessage({ id: 'p', items, started: true, moved: 2, unsure: 1 })
+    assert.ok(both.includes('（3 個），其中 2 個已經在隔離區，1 個搬到一半、說不準在原位還是在隔離區。'), both)
+    const none = pendingPlanMessage({ id: 'p', items, started: true, moved: 0, unsure: 0 })
+    assert.ok(none.includes('（3 個），目前沒有檔在隔離區。'), none)
+    const unknownCount = pendingPlanMessage({ id: 'p', items, started: true, moved: null, unsure: null })
+    assert.ok(unknownCount.includes('（3 個），其中有些可能已經在隔離區。'), unknownCount)
+    for (const x of [both, none, unknownCount]) assert.ok(!x.includes('放棄上次那份'), x)
+    // 檔名一樣走 safeName
+    const evil = pendingPlanMessage({ id: 'p', items: [{ itemId: 'x', name: 'a\n搬進隔離區 9 個.zip' }], started: true, moved: 1, unsure: 0 })
+    assert.ok(!evil.includes('a\n搬'), evil)
+  })
+
+  test('**面板（假 DOM）：打開就提示中斷的那份；放棄按鈕藏著、放回按鈕在；按放回 → 搬走的回到原位、還沒搬的不列成沒放回**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    const text = ui.$('cleanup-result').textContent
+    assert.ok(text.includes('其中 1 個已經在隔離區'), text)
+    assert.equal(ui.$('cleanup-release').hidden, true, '不可以再出現會 409 的放棄按鈕')
+    assert.equal(ui.$('cleanup-putback').hidden, false, '要有「放回已經搬走的」')
+    assert.equal(ui.$('cleanup-putback').textContent, '放回已經搬走的')
+    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（3 個）')
+    for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, true, `${name}：先選一條路，勾選鎖住`)
+    s.calls.length = 0
+    await ui.click('cleanup-putback')
+    assert.ok(s.calls.some(c => c.method === 'POST' && c.path === `/cleanup/plans/${planId}/undo`), '對那一份送 undo')
+    assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'), `搬走的 ${moved} 要回到原位`)
+    assert.equal(s.planStatus(planId), 'restored')
+    const after = ui.$('cleanup-result').textContent
+    assert.ok(after.includes('放回原位 1 個檔案。'), after)
+    assert.ok(!after.includes('沒放回'), `還沒搬的不是「沒放回」：${after}`)
+    assert.ok(after.includes('這份裡還沒搬的 2 個沒有動過。'), after)
+    assert.equal(ui.$('cleanup-putback').hidden, true)
+    assert.equal(ui.$('cleanup-release').hidden, true)
+    for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, false, `${name} 的勾選框被鎖住了`)
+  })
+
+  test('面板（假 DOM）：按「繼續上次那份」→ 那一份做完', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    await ui.click('cleanup-apply')
+    assert.equal(s.planStatus(planId), 'applied')
+    assert.ok(!s.has('a.zip') && !s.has('b.zip') && !s.has('c.zip'))
+    assert.match(ui.$('cleanup-result').textContent, /搬進隔離區 3 個檔案/)
+    assert.equal(ui.$('cleanup-putback').hidden, true)
+  })
+
+  test('面板（假 DOM）：unknown 的那個也放得回來（檔其實在隔離區）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    toUnknown(s, planId, moved)
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.ok(ui.$('cleanup-result').textContent.includes('說不準'), ui.$('cleanup-result').textContent)
+    assert.equal(ui.$('cleanup-release').hidden, true)
+    await ui.click('cleanup-putback')
+    assert.ok(s.has(moved), `${moved} 要回到原位`)
+    assert.ok(ui.$('cleanup-result').textContent.includes('放回原位 1 個檔案。'), ui.$('cleanup-result').textContent)
+    // 對照（下一條）：真的在隔離區、放回來的，不可以說成「當初就沒有搬走」
+    assert.ok(!ui.$('cleanup-result').textContent.includes('當初就沒有搬走'), ui.$('cleanup-result').textContent)
+  })
+
+  test('**放回：搬到一半中斷、其實還在原位的那個（rename 之前當機）→ 說「當初就沒有搬走」，不算進「還沒搬的」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    s.interruptMove(planId, moved)              // 倒回 rename 之前：檔在原位，紀錄停在 started
+    assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'), '前提：三個都在原位')
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    const hint = ui.$('cleanup-result').textContent
+    assert.ok(hint.includes('其中 1 個搬到一半、說不準在原位還是在隔離區'), hint)
+    await ui.click('cleanup-putback')
+    assert.equal(ui.$('cleanup-result').textContent,
+      `這次沒有需要放回的檔案。\n・${moved} 當初就沒有搬走，本來就在原位。\n這份裡還沒搬的 2 個沒有動過。`)
+    assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'))
+    assert.equal(ui.$('cleanup-putback').hidden, true)
+  })
+
+  test('**開始過、但只有搬失敗的紀錄（沒有檔在隔離區）→ 還是不給放棄（後端一定 409）；放回之後說還沒搬的 3 個沒有動過**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId, moved } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    // 第一個其實是搬失敗（例如 EXDEV：rename 沒成功，檔在原位），之後才中斷
+    s.interruptMove(planId, moved)
+    s.exec(`UPDATE cleanup_journal SET status='failed', error='隔離區跟這個檔不在同一顆碟。' WHERE plan_id=? AND op='quarantine'`, planId)
+    assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'), '前提：三個都在原位')
+    await assert.rejects(s.raw(`/cleanup/plans/${planId}/release`, { method: 'POST', body: '{}' }), e => e.status === 409,
+      '前提：後端認定它開始過，不給放棄')
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    const hint = ui.$('cleanup-result').textContent
+    assert.ok(hint.includes('（3 個），目前沒有檔在隔離區。'), hint)
+    assert.ok(!hint.includes('放棄上次那份'), hint)
+    assert.equal(ui.$('cleanup-release').hidden, true, '不可以出現會 409 的放棄按鈕')
+    assert.equal(ui.$('cleanup-putback').hidden, false)
+    await ui.click('cleanup-putback')
+    assert.equal(ui.$('cleanup-result').textContent, '這次沒有需要放回的檔案。\n這份裡還沒搬的 3 個沒有動過。')
+    assert.equal(s.planStatus(planId), 'restored', '這份結掉了，不再佔住檔案')
+    assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'))
+  })
+
+  test('面板的放回回有 status 的錯 → 解鎖、照實講原因；回應丟了 → 還是那一份、還鎖著', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const { planId } = await interruptAfterFirst(s, ['a.zip', 'b.zip'])
+    const real = createReal(s.api)
+    await real.load()
+    assert.equal((await real.apply()).status, 'pending-plan')
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/undo') ? 'lose' : undefined))
+    await assert.rejects(real.putBack())
+    s.setHook(null)
+    assert.equal(real.pendingPlan?.id, planId, '不知道放回了沒有：還是那一份')
+    assert.equal(real.locked, true)
+    const r = await real.putBack()        // undo 是冪等的，再按一次就好
+    // 第一次其實已經放回去了（只是回應丟了）：照「提示時在隔離區的那些」對，還是說放回 1 個，
+    // 不是「這次沒有需要放回的檔案」
+    assert.equal(r.restored, 1, JSON.stringify(r))
+    assert.equal(undoMessage(r).text.split('\n')[0], '放回原位 1 個檔案。')
+    assert.equal(s.planStatus(planId), 'restored')
+    assert.ok(s.has('a.zip') && s.has('b.zip'))
+    assert.equal(real.locked, false)
+    // 有 status 的錯：另一份
+    const s2 = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    await interruptAfterFirst(s2, ['a.zip', 'b.zip'])
+    const real2 = createReal(s2.api)
+    await real2.load()
+    assert.equal((await real2.apply()).status, 'pending-plan')
+    s2.setHook((p, m) => (m === 'POST' && p.endsWith('/undo') ? { status: 503, body: { error: '另一個清理動作正在進行，請稍後重試。', code: 'BUSY' } } : undefined))
+    const e = await real2.putBack().catch(e => e)
+    assert.equal(e.status, 503)
+    assert.equal(real2.pendingPlan, null, '伺服器明確回錯：解鎖')
+    assert.equal(real2.locked, false)
+  })
+})
+
+describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提示，不用等撞到 CONFLICT', () => {
+  test('**A 的 exp9：計畫裡的 a.zip 被使用者刪了、清單上只剩 new.zip → 一打開就提示 a.zip；放棄之後計畫作廢、勾選解開**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const p = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip') }) })
+    rmSync(join(s.downloads, 'a.zip'))
+    const old = new Date(Date.now() - 120 * DAY)
+    writeFileSync(join(s.downloads, 'new.zip'), 'nnnn')
+    utimesSync(join(s.downloads, 'new.zip'), old, old)
+    await s.raw('/cleanup/scan', { method: 'POST', body: '{}' })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.deepEqual(panelChecks(ui).map(c => c.name), ['new.zip'], '前提：a.zip 不在清單上')
+    assert.equal(ui.$('cleanup-result').hidden, false)
+    assert.equal(ui.$('cleanup-result').textContent, OLD_PENDING_TEXT(['a.zip']))
+    assert.equal(ui.$('cleanup-release').hidden, false)
+    assert.equal(ui.$('cleanup-putback').hidden, true, '還沒開始的那份沒有東西可以放回')
+    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（1 個）')
+    assert.equal(panelChecks(ui)[0].input.disabled, true, '先選一條路')
+    await ui.click('cleanup-release')
+    assert.equal(s.planStatus(p.id), 'dismissed')
+    assert.match(ui.$('cleanup-result').textContent, /已放棄上次那份/)
+    assert.equal(panelChecks(ui)[0].input.disabled, false)
+    assert.equal(ui.$('cleanup-apply').textContent, '清理勾選的 1 個檔案')
+  })
+
+  test('對照：沒有待處理的計畫 → 不提示、放棄按鈕藏著、勾選可以改', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.ok(s.calls.some(c => c.method === 'GET' && c.path.startsWith('/cleanup/plans?') && c.path.includes('pending=1')), '要真的去查')
+    assert.equal(ui.$('cleanup-result').hidden, true)
+    assert.equal(ui.$('cleanup-release').hidden, true)
+    assert.equal(ui.$('cleanup-putback').hidden, true)
+    assert.equal(panelChecks(ui)[0].input.disabled, false)
+    assert.equal(ui.$('cleanup-apply').textContent, '清理勾選的 1 個檔案')
+  })
+
+  test('好幾份：先提示最新的那份、講另外還有幾份；放棄之後關掉再打開 → 提示下一份', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'z.zip': { days: 60 }, 'm.zip': { days: 60 } })
+    const p1 = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip') }) })
+    await new Promise(r => setTimeout(r, 5))
+    const p2 = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('z.zip') }) })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    const first = ui.$('cleanup-result').textContent
+    assert.ok(first.startsWith(OLD_PENDING_TEXT(['z.zip'])), first)
+    assert.ok(first.includes('另外還有 1 份'), first)
+    await ui.click('cleanup-release')
+    assert.equal(s.planStatus(p2.id), 'dismissed')
+    assert.equal(s.planStatus(p1.id), 'proposed', '另一份不動')
+    ui.$('cleanup-panel').close()
+    await ui.click('quaso-cleanup-alert')
+    const second = ui.$('cleanup-result').textContent
+    assert.equal(second, OLD_PENDING_TEXT(['a.zip']))
+    assert.ok(s.has('a.zip') && s.has('z.zip') && s.has('m.zip'))
+  })
+
+  test('?pending=1 查不到（網路斷）→ 清單照常、不鎖；勾 a 清理撞到那份 → 照樣提示（CONFLICT 仍是入口）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const p = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip') }) })
+    s.setHook((path, m) => (m === 'GET' && path.includes('pending=1') ? 'before' : undefined))
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(panelChecks(ui).length, 2, ui.$('cleanup-list').textContent)
+    assert.equal(ui.$('cleanup-result').hidden, true)
+    for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, false, `${name} 被鎖住了`)
+    await uiOnly(ui, 'a.zip')
+    await ui.click('cleanup-apply')
+    assert.equal(ui.$('cleanup-result').textContent, OLD_PENDING_TEXT(['a.zip']))
+    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（1 個）')
+    assert.equal(s.planStatus(p.id), 'proposed')
+    assert.ok(s.has('a.zip') && s.has('b.zip'))
+  })
+
+  test('**開始過的那份讀不到細節 → 打開時不猜（不給放棄）；照預設清理撞到它 → 用 blockingPlan 的 started，說「其中有些可能已經在隔離區」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 }, 'c.zip': { days: 60 } })
+    const { planId } = await interruptAfterFirst(s, ['a.zip', 'b.zip', 'c.zip'])
+    s.setHook((path, m) => (m === 'GET' && path === `/cleanup/plans/${planId}` ? 'before' : undefined))
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(ui.$('cleanup-release').hidden, true, '說不準開始了沒，不可以給放棄')
+    assert.ok(!/放棄上次那份/.test(ui.$('cleanup-result').hidden ? '' : ui.$('cleanup-result').textContent))
+    await ui.click('cleanup-apply')                // 預設勾選：還在清單上的那兩個 → 撞到中斷的那份
+    const text = ui.$('cleanup-result').textContent
+    assert.ok(text.includes('其中有些可能已經在隔離區'), text)
+    assert.ok(!text.includes('放棄上次那份'), text)
+    assert.equal(ui.$('cleanup-release').hidden, true, '不可以再出現會 409 的放棄按鈕')
+    assert.equal(ui.$('cleanup-putback').hidden, false)
+    assert.equal(s.planStatus(planId), 'proposed')
+  })
+
+  test('結果不明（套用的回應丟了）→ 關掉再打開：還是「再試一次」，不被 ?pending=1 的那份蓋掉；按下去接完自己那份', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/apply') ? 'before' : undefined))
+    await ui.click('cleanup-apply')
+    s.setHook(null)
+    assert.match(ui.$('cleanup-result').textContent, /還沒確認/)
+    ui.$('cleanup-panel').close()
+    await ui.click('quaso-cleanup-alert')
+    assert.match(ui.$('cleanup-result').textContent, /上一次清理的結果還沒確認/)
+    assert.equal(ui.$('cleanup-apply').textContent, '再試一次')
+    assert.equal(ui.$('cleanup-release').hidden, true)
+    await ui.click('cleanup-apply')
+    assert.ok(!s.has('a.zip'))
+    assert.equal(s.q('SELECT count(*) n FROM cleanup_plans')[0].n, 1, '沒有多建一份')
+  })
+
+  test('**鎖住（結果不明）時根本不查 ?pending=1：之間 CLI 建了別的一份，也還是「再試一次」，搬的是自己勾的**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'z.zip': { days: 60 } })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    await uiOnly(ui, 'a.zip')
+    // 建計畫的請求沒送到：自己那份沒建成。後端待會只有 CLI 建的那一份，?pending=1 查得到的就是它
+    s.setHook((p, m) => (m === 'POST' && p === '/cleanup/plans' ? 'before' : undefined))
+    await ui.click('cleanup-apply')
+    s.setHook(null)
+    assert.match(ui.$('cleanup-result').textContent, /還沒確認/)
+    const other = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('z.zip') }) })
+    ui.$('cleanup-panel').close()
+    s.calls.length = 0
+    await ui.click('quaso-cleanup-alert')
+    assert.ok(!s.calls.some(c => c.path.includes('pending=1')), `鎖住的時候不查：${JSON.stringify(s.calls)}`)
+    assert.match(ui.$('cleanup-result').textContent, /上一次清理的結果還沒確認/)
+    assert.equal(ui.$('cleanup-apply').textContent, '再試一次')
+    assert.equal(ui.$('cleanup-release').hidden, true)
+    assert.equal(ui.$('cleanup-putback').hidden, true)
+    await ui.click('cleanup-apply')
+    assert.ok(!s.has('a.zip'), '搬的是自己勾的 a')
+    assert.ok(s.has('z.zip'), 'CLI 那份的 z 不動')
+    assert.equal(s.planStatus(other.id), 'proposed')
+  })
+})
+
+describe('P3 面板自己有動作在跑時，/health 逾時不算斷線（稽核 C：800 個檔的套用要 27 秒）', () => {
+  /**
+   * 假的慢 api：POST 符合 slow 的請求停在關卡，直到測試放行；/health 照 health() 的回答：
+   * 'ok' 真的送、'timeout' 丟逾時、'bad' 回 { ok: false }、gate 物件就停在那個關卡，放行時丟逾時。
+   */
+  async function slowUi(t, s, slow) {
+    const ctl = { gate: null, health: 'ok' }
+    const wrap = async (url, init, next) => {
+      const path = String(url)
+      if (path.startsWith('/health')) {
+        const h = ctl.health
+        if (h === 'timeout') throw TIMEOUT()
+        if (h === 'bad') return new Response(JSON.stringify({ ok: false }), { status: 200 })
+        if (h && typeof h === 'object') { h.reached = true; await h.promise; throw TIMEOUT() }
+        return next(url, init)
+      }
+      if (ctl.gate && (init?.method ?? 'GET') === 'POST' && slow.test(path)) {
+        const g = ctl.gate
+        g.reached = true
+        await g.promise
+      }
+      return next(url, init)
+    }
+    const ui = await mountUi(t, s, { wrap })
+    await until(() => petState(ui) && petState(ui) !== 'worried', '第一次輪詢拿到 /health')
+    return { ui, ctl, poll: () => ui.$('quaso-connection-retry').onclick() }
+  }
+
+  test('**套用還沒回來時 /health 逾時 → 寵物不擔心、不跳斷線；套用回來之後照常輪詢（逾時就擔心）**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
+    await ui.click('quaso-cleanup-alert')
+    ctl.gate = gateOf()
+    const applying = ui.$('cleanup-apply').onclick()
+    await until(() => ctl.gate.reached, '套用的請求停在 server')
+    ctl.health = 'timeout'
+    await poll()
+    assert.equal(worried(ui), false, `套用還在跑，/health 逾時不代表斷線（petState=${petState(ui)}）`)
+    assert.equal(ui.$('quaso-worried').hidden, true)
+    ctl.health = 'ok'
+    ctl.gate.open()
+    await applying
+    await ui.idle()
+    assert.ok(!s.has('a.zip'))
+    await until(() => petState(ui) !== 'worried' && ui.$('quaso-connection-retry').disabled === false, '套用之後輪詢一次')
+    ctl.health = 'timeout'
+    await poll()
+    assert.equal(petState(ui), 'worried', '動作結束了，逾時就要照常說斷線')
+    assert.equal(ui.$('quaso-worried').hidden, false)
+  })
+
+  test('對照：沒有動作在跑時 /health 逾時 → 擔心、斷線按鈕出現', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
+    ctl.health = 'timeout'
+    await poll()
+    assert.equal(petState(ui), 'worried')
+    assert.equal(ui.$('quaso-worried').hidden, false)
+  })
+
+  test('**輪詢先送出、套用接著開始、輪詢才逾時 → 也不算數**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
+    await ui.click('quaso-cleanup-alert')
+    const h = gateOf()
+    ctl.health = h
+    const polling = poll()
+    await until(() => h.reached, '/health 送出去了')
+    ctl.gate = gateOf()
+    const applying = ui.$('cleanup-apply').onclick()
+    await until(() => ctl.gate.reached, '套用的請求停在 server')
+    h.open()                                    // 這次 /health 逾時
+    await polling
+    assert.equal(worried(ui), false, `這次輪詢期間套用開始了，逾時不算數（petState=${petState(ui)}）`)
+    ctl.health = 'ok'
+    ctl.gate.open()
+    await applying
+    await ui.idle()
+  })
+
+  test('**套用中送出的輪詢、套用做完之後才逾時 → 還是不算數；下一次輪詢照常算**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
+    await ui.click('quaso-cleanup-alert')
+    ctl.gate = gateOf()
+    const applying = ui.$('cleanup-apply').onclick()
+    await until(() => ctl.gate.reached, '套用的請求停在 server')
+    const h = gateOf()
+    ctl.health = h
+    const polling = poll()
+    await until(() => h.reached, '/health 送出去了')
+    ctl.gate.open()
+    await applying                              // 套用做完了，那一次輪詢還掛著
+    await ui.idle()
+    h.open()                                    // 現在才逾時（server 剛才在忙）
+    await polling
+    assert.equal(worried(ui), false, `這次輪詢跟套用重疊過，逾時不算數（petState=${petState(ui)}）`)
+    ctl.health = 'timeout'
+    await poll()
+    assert.equal(petState(ui), 'worried', '下一次輪詢照常算')
+  })
+
+  test('第一次輪詢就跟動作重疊、逾時 → 不擔心（還沒有結論，不是斷線）', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const ctl = { health: gateOf(), gate: null }
+    const wrap = async (url, init, next) => {
+      const path = String(url)
+      if (path.startsWith('/health')) {
+        const h = ctl.health
+        if (h && typeof h === 'object') { h.reached = true; await h.promise; throw TIMEOUT() }
+        return next(url, init)
+      }
+      if (ctl.gate && init?.method === 'POST' && path.endsWith('/apply')) { ctl.gate.reached = true; await ctl.gate.promise }
+      return next(url, init)
+    }
+    const first = ctl.health
+    const ui = await mountUi(t, s, { wrap })
+    await until(() => first.reached, '第一次輪詢送出去了')
+    await ui.click('quaso-cleanup-alert')
+    ctl.gate = gateOf()
+    const applying = ui.$('cleanup-apply').onclick()
+    await until(() => ctl.gate.reached, '套用的請求停在 server')
+    first.open()
+    await new Promise(r => setTimeout(r, 30))
+    assert.equal(worried(ui), false, `petState=${petState(ui)}`)
+    ctl.health = 'ok'
+    ctl.gate.open()
+    await applying
+    await ui.idle()
+  })
+
+  test('對照：套用進行中 /health 回了話、說後端壞了（ok: false）→ 那是結論，照樣擔心', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
+    await ui.click('quaso-cleanup-alert')
+    ctl.gate = gateOf()
+    const applying = ui.$('cleanup-apply').onclick()
+    await until(() => ctl.gate.reached, '套用的請求停在 server')
+    ctl.health = 'bad'
+    await poll()
+    assert.equal(petState(ui), 'worried', '後端明確說壞了')
+    ctl.health = 'ok'
+    ctl.gate.open()
+    await applying
+    await ui.idle()
+  })
+
+  test('歷史面板的復原還沒回來時 /health 逾時 → 也不擔心', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    await applyNames(s, 'a.zip')
+    const { ui, ctl, poll } = await slowUi(t, s, /\/undo$/)
+    await ui.click('quaso-history-open')
+    const check = ui.$('cleanup-history-list').all('input')[0]
+    check.checked = true
+    check.onchange()
+    ctl.gate = gateOf()
+    const undoing = ui.$('cleanup-history-undo').onclick()
+    await until(() => ctl.gate.reached, '復原的請求停在 server')
+    ctl.health = 'timeout'
+    await poll()
+    assert.equal(worried(ui), false, `復原還在跑（petState=${petState(ui)}）`)
+    ctl.health = 'ok'
+    ctl.gate.open()
+    await undoing
+    await ui.idle()
+    assert.ok(s.has('a.zip'))
+  })
+})
+
+describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', () => {
+  test('**MOVE_INTERRUPTED：不說「再套用一次會接完」，說不準在哪、按復原放回在隔離區的、可以跑 doctor**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    toUnknown(s, planId, 'a.zip')
+    const plan = await s.raw(`/cleanup/plans/${planId}`)
+    const why = plan.items[0].why
+    assert.equal(plan.items[0].outcome, 'unknown')
+    assert.ok(!why.includes('再套用一次'), `partial／error 原樣回傳之後這句不成立：${why}`)
+    assert.ok(why.startsWith('搬到一半中斷'), why)
+    assert.ok(why.includes('說不準'), why)
+    assert.ok(why.includes('按「復原」會把在隔離區的放回原位'), why)
+    assert.ok(why.includes('node cli.mjs doctor'), why)
+  })
+
+  test('RESTORE_INTERRUPTED：說不準放回了沒有、再按一次復原會接著放回', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const planId = await applyNames(s, 'a.zip')
+    await s.interruptRestore(planId)
+    const plan = await s.raw(`/cleanup/plans/${planId}`)
+    const why = plan.items[0].why
+    assert.equal(plan.items[0].outcome, 'unknown')
+    assert.ok(why.startsWith('復原到一半中斷'), why)
+    assert.ok(why.includes('說不準'), why)
+    assert.ok(why.includes('再按一次復原'), why)
+    assert.ok(why.includes('node cli.mjs doctor'), why)
+  })
+
+  test('core 與 docs/api 裡不再有「再套用一次這份計畫會把它接完」', () => {
+    const hits = []
+    const walk = d => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name)
+        if (e.isDirectory()) { if (e.name !== 'vendor') walk(p) }
+        else if (/\.(ts|js|mjs|md|json|html)$/.test(e.name) && readFileSync(p, 'utf8').includes('再套用一次這份計畫會把它接完')) hits.push(p.replace(REPO + '/', ''))
+      }
+    }
+    walk(join(REPO, 'core'))
+    walk(join(REPO, 'docs', 'api'))
+    assert.deepEqual(hits, [])
+  })
+
+  test('**套用結果只有 unknown（檔其實在隔離區）→ 面板有「復原」可按，按下去放回 1 個**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const real = createReal(s.api)
+    await real.load()
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/apply') ? 'lose' : undefined))
+    await assert.rejects(real.apply())
+    s.setHook(null)
+    const planId = s.q('SELECT id FROM cleanup_plans')[0].id
+    toUnknown(s, planId, 'a.zip')
+    const r = await real.apply()                   // 再試一次：拿到現在的樣子（applied、a 是 unknown）
+    assert.deepEqual(r.unknown.map(i => i.name), ['a.zip'], JSON.stringify(r))
+    assert.equal(r.undoable, false, '前提：後端的 undoable 只算 done 的')
+    assert.equal(real.canUndo, true, '訊息叫人按「復原」，面板就要有得按')
+    const u = await real.undo()
+    assert.ok(s.has('a.zip'))
+    assert.equal(u.restored, 1, JSON.stringify(u))
+    assert.equal(undoMessage(u).text, '放回原位 1 個檔案。')
+  })
+
+  test('**套用結果只有 unknown、其實還在原位（rename 之前當機）→ 按復原：講「當初就沒有搬走」，不是只說「這次沒有需要放回的檔案」**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const real = createReal(s.api)
+    await real.load()
+    s.setHook((p, m) => (m === 'POST' && p.endsWith('/apply') ? 'lose' : undefined))
+    await assert.rejects(real.apply())
+    s.setHook(null)
+    const planId = s.q('SELECT id FROM cleanup_plans')[0].id
+    s.interruptMove(planId, 'a.zip')
+    assert.ok(s.has('a.zip'), '前提：檔在原位')
+    const r = await real.apply()
+    assert.deepEqual(r.unknown.map(i => i.name), ['a.zip'], JSON.stringify(r))
+    assert.equal(real.canUndo, true)
+    const u = await real.undo()
+    assert.ok(s.has('a.zip'))
+    assert.equal(u.restored, 0, JSON.stringify(u))
+    assert.deepEqual(u.neverMoved, [{ name: 'a.zip' }])
+    const m = undoMessage(u)
+    assert.equal(m.text, '這次沒有需要放回的檔案。\n・a.zip 當初就沒有搬走，本來就在原位。')
+    assert.equal(m.notice, '這次沒有要放回的檔案。')
+  })
+
+  test('對照：套用結果只有 failed（原檔都在原位）→ canUndo 是 false', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const real = createReal(s.api)
+    await real.load()
+    rmSync(join(s.downloads, 'a.zip'))
+    const r = await real.apply()
+    assert.equal(r.failed.length, 1, JSON.stringify(r))
+    assert.equal(real.canUndo, false)
+  })
+})
+
+describe('P5 性質：面板給「放棄」的那一份，後端一定放棄得了（結構化隨機）', () => {
+  /**
+   * 每一輪：k 個檔建一份計畫、真的套用完，再把每一項倒回成指定的下場，計畫改回 proposed ——
+   * 等於「套用做到一半中斷」的各種樣子。下場：
+   *   pending（從沒碰過：倒回原位、刪掉搬移紀錄）、moved（在隔離區）、unknown（在隔離區、紀錄停在 started）、
+   *   inPlace（rename 之前當機：在原位、紀錄停在 started）、failed（搬失敗：在原位、紀錄 failed）、
+   *   skipNoJournal（帶 skippedIds 套用、還沒碰到它就中斷：只有略過、沒有紀錄）、skipped（略過，有 skip 紀錄）
+   * 性質：
+   *   1. 面板給「放棄」（checkPending 的 started 是 false）⇒ 後端的 release 回 200（面板不給一定 409 的按鈕）
+   *   2. 面板不給、後端卻放棄得了 ⇒ 只有 pending 與 skipNoJournal（已知的偏保守，見 pendingFrom）
+   *   3. 「幾個已經在隔離區」＝ moved 的個數；「說不準」＝ unknown＋inPlace
+   *   4. ?pending=1 列得出來 ⇔ 面板提示得出來；提示了，訊息有沒有「放棄上次那份」跟 started 一致
+   */
+  const FATES = ['pending', 'moved', 'unknown', 'inPlace', 'failed', 'skipNoJournal', 'skipped']
+  function rng(seed) {
+    let x = seed >>> 0 || 1
+    return () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x / 2 ** 32 }
+  }
+  // 種子：全部沒碰過、全部在隔離區（不在 ?pending=1）、只有失敗、只有略過沒紀錄、只有原位的 unknown、混的
+  const FIXED = [
+    ['pending'], ['pending', 'pending', 'pending'], ['moved'], ['moved', 'moved'], ['failed'], ['failed', 'pending'],
+    ['skipNoJournal', 'pending'], ['skipNoJournal'], ['skipped', 'pending'], ['inPlace'], ['unknown', 'pending'],
+    ['moved', 'pending', 'pending'], ['moved', 'unknown', 'inPlace', 'failed'], ['skipped', 'moved'],
+  ]
+
+  async function build(t, fates) {
+    const names = fates.map((_, i) => `f${i}.zip`)
+    const s = await serve(t, Object.fromEntries(names.map(n => [n, { days: 60 }])))
+    const candidateIds = []
+    for (const n of names) candidateIds.push(...await s.idsOf(n))
+    const plan = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds, requestId: 'p5' }) })
+    await s.raw(`/cleanup/plans/${plan.id}/apply`, { method: 'POST', body: '{}' })
+    for (const [i, fate] of fates.entries()) {
+      const j = s.q(`SELECT j.* FROM cleanup_journal j JOIN file_items f ON f.id = j.item_id
+                      WHERE j.plan_id=? AND j.op='quarantine' AND f.name=?`, plan.id, names[i])[0]
+      assert.ok(j, `前提：${names[i]} 搬過`)
+      const itemCands = `candidate_id IN (SELECT id FROM cleanup_candidates WHERE item_id='${j.item_id}')`
+      if (fate === 'moved') continue
+      if (fate === 'unknown') { s.exec(`UPDATE cleanup_journal SET status='started' WHERE seq=?`, j.seq); continue }
+      s.interruptMove(plan.id, names[i])                  // 檔回原位、紀錄停在 started
+      if (fate === 'inPlace') continue
+      if (fate === 'failed') { s.exec(`UPDATE cleanup_journal SET status='failed', error='搬不動。' WHERE seq=?`, j.seq); continue }
+      s.exec('DELETE FROM cleanup_move_details WHERE seq=?', j.seq)
+      s.exec('DELETE FROM cleanup_journal WHERE seq=?', j.seq)
+      if (fate === 'pending') continue
+      s.exec(`UPDATE cleanup_plan_items SET skipped=1 WHERE plan_id=? AND ${itemCands}`, plan.id)
+      if (fate === 'skipped') {
+        s.exec(`INSERT INTO cleanup_journal(ts,plan_id,item_id,op,status) VALUES (?,?,?,'skip','done')`,
+          new Date().toISOString(), plan.id, j.item_id)
+      }
+    }
+    s.exec(`UPDATE cleanup_plans SET status='proposed', applied_at=NULL WHERE id=?`, plan.id)
+    return { s, planId: plan.id }
+  }
+
+  test('**面板給「放棄」⇒ 後端放棄得了；幾個在隔離區照逐項結果**（14 個種子＋隨機 16 輪）', async t => {
+    const random = rng(20260919)
+    const cases = [...FIXED]
+    while (cases.length < 30) {
+      const k = 1 + Math.floor(random() * 4)
+      cases.push(Array.from({ length: k }, () => FATES[Math.floor(random() * FATES.length)]))
+    }
+    const hits = { offered: 0, withheld: 0, conservative: 0, notListed: 0, moved: 0, unsure: 0 }
+    for (const fates of cases) {
+      const { s, planId } = await build(t, fates)
+      const listed = (await s.raw('/cleanup/plans?pending=1')).operations.some(o => o.id === planId)
+      const real = createReal(s.api)
+      await real.load()
+      const p = await real.checkPending()
+      const label = JSON.stringify(fates)
+      assert.equal(Boolean(p), listed, `${label}：?pending=1 列得出來 ⇔ 面板提示得出來`)
+      const release = await s.raw(`/cleanup/plans/${planId}/release`, { method: 'POST', body: '{}' }).then(() => 200, e => e.status)
+      if (!p) { hits.notListed++; continue }
+      assert.equal(p.id, planId, label)
+      const count = (...f) => fates.filter(x => f.includes(x)).length
+      assert.equal(p.moved, count('moved'), `${label}：已經在隔離區的只算 moved`)
+      assert.equal(p.unsure, count('unknown', 'inPlace'), `${label}：說不準的`)
+      const text = pendingPlanMessage(p)
+      assert.equal(text.includes('放棄上次那份'), !p.started, `${label}：${text}`)
+      if (!p.started) {
+        hits.offered++
+        assert.equal(release, 200, `${label}：面板給了「放棄」，後端卻回 ${release}`)
+      } else {
+        hits.withheld++
+        if (release === 200) {
+          hits.conservative++
+          assert.ok(fates.every(f => f === 'pending' || f === 'skipNoJournal') && fates.includes('skipNoJournal'),
+            `${label}：面板不給放棄、後端卻放棄得了，只該發生在「只有略過、還沒有任何搬移紀錄」`)
+        }
+      }
+      if (p.moved) hits.moved++
+      if (p.unsure) hits.unsure++
+    }
+    // 生成器驗收：每一條路都要真的走到
+    for (const [k, n] of Object.entries(hits)) assert.ok(n > 0, `生成器沒有走到 ${k}：${JSON.stringify(hits)}`)
   })
 })
 

@@ -18,7 +18,8 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  * | R2-7 不認得的 key | 物件就收、拼錯當沒帶 | 不認得就 400 | {candidateID}、{skippedIDs}、undo／dismiss／release 帶任何 key、empty 帶 tokne／第一方送的 key | 400 BAD_BODY 而且什麼都沒做／照樣通過 |
  * | R2-8 截圖資料夾 | 截圖資料夾套全部規則 | 只收截圖類 | 桌面 120 天的 proposal.zip／桌面舊截圖 | 不列／列 |
  * | R2-8 更深的根目錄 | 桌面底下一律只收截圖 | 最深的根目錄說了算 | 桌面/清理區/old.zip（清理區自己在清理範圍）／桌面/old.zip | 列／不列 |
- * | R2-9a proof | key 與訊息對調、格式錯也回 | HMAC(key=token, msg=nonce)、格式錯不回 | 32 hex／31、33、非 hex、沒帶 | proof＝healthProof(token,nonce)／沒有 proof 欄位 |
+ * | R2-9a proof | key 與訊息對調、格式錯也回 | HMAC(key=token, msg=`${埠}:${nonce}`)、格式錯不回 | 32 hex／31、33、非 hex、沒帶 | proof＝healthProof(token,實際監聽的埠,nonce)／沒有 proof 欄位 |
+ * | R2-9 綁埠（第二階段） | proof 只算 nonce，可以被轉送 | 訊息裡帶 server 實際監聽的埠 | 同一個 nonce、這個 server 的埠／別的埠 | 相等／不相等 |
  * | R2-10 種類 | 任何成功蓋掉任何錯 | 同一種動作成功才算 | 套用的錯 → 掃描成功／→ 套用成功 | 還在擔心／不擔心 |
  * | R2-10 沒種類 | 沒帶 kind 的錯永遠不清 | 舊資料（沒種類）照舊：任何成功都清 | 沒種類的錯 → 掃描成功 | 不擔心 |
  * | R2-10 全失敗 | 全部失敗也記成功 | 記成錯 | 套用每一項都失敗／只有一項失敗 | 記錯（kind apply）／記成功 |
@@ -26,6 +27,23 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  * | R2-11 safeWhy | 寫入端的錯一律「讀不到」 | 各自一句 | EROFS、ENOSPC、EXDEV、ELOOP、EIO／ENOENT、EACCES | 各自不同的一句／照舊 |
  * | R2-11 /health 形狀 | facts 表壞掉回第三種形狀 | 欄位齊全、ok false | DROP TABLE facts／正常 | 欄位集合一樣、ok false／ok true |
  * | R2-12c canEmptyNow | 拿掉 truncated 防線 | 沒看完就 false | 走訪沒看完、七天已過／看完了 | false／true |
+ *
+ *
+ * ── 第二階段（第一階段驗證員的存活突變與 R2-4 的邊界）────────────────
+ *
+ * | 段落 | 可能的錯（突變） | 另一種解讀 | 成對例子 | 認定的答案 |
+ * |---|---|---|---|---|
+ * | V06 需要你查看 | 截圖資料夾底下讀不到的一般檔也列 | 只列截圖 | 桌面讀不到的 proposal.zip／讀不到的舊截圖 | 不列、不算／列、算 |
+ * | V07 /pet/state 徽章 | 不帶截圖資料夾 | 跟清單同一套篩選 | 給了 screenshotsDir／沒給 | pendingCount 2／3 |
+ * | V08 server 自己讀設定 | 截圖資料夾一律 null | 用設定算出來的 | cleanup.screenshots true、截圖資料夾有舊 zip 與舊截圖 | 清單只有截圖與 Downloads 的、徽章 2 |
+ * | V09 清空部分成功 | 有錯就記成錯 | 一個都沒刪才算錯 | 刪了 1 個、錯 1 個／刪了 0 個（已有） | 記成功、不擔心／記錯（kind empty） |
+ * | V10 建計畫的意外 | 沒有種類 | 算「套用」 | POST /cleanup/plans 的意外／GET /cleanup/candidates 的同一個意外 | kind apply，掃描成功清不掉／沒種類 |
+ * | V12 免 token 的 /health | 露出 lastErrorKind | 遮蔽成 null | 免 token／帶 token | null／'apply' |
+ * | V22 blockingPlan.started | 只看 done 列 | 任何一列 journal | 第一項 rename 之前被砍（只有 started 列）／還沒套用（已有） | true、release 409／false |
+ * | R2-4 放回範圍全被略過 | 空範圍 → 500 BAD_CONFIG「請設定清理資料夾…」 | 退回清理範圍，交給執行層逐項回報 | Downloads 暫時不在（外接碟拔掉）／插回來 | 200、error、逐項「不見了」、kind undo／restored |
+ * | R2-4 對照 | 退回的範圍也是空的時候硬跑 | 真的沒設定就是 BAD_CONFIG | 清理範圍本身是空的 | 500 BAD_CONFIG |
+ * | R2-4 只略過一部分 | Downloads 被略過、範圍只剩桌面 → 「不在設定的清理資料夾內」 | 照樣「不見了」（執行層先檢查上層資料夾在不在） | Downloads 拔掉、桌面還在（pet 的實際設定）／插回來 | moved、不見了／restored |
+ * | R2-12a（HTTP）dismiss 撞到活著的計畫 | 500、或記成錯讓寵物擔心 | 409 CONFLICT、不記 | release A、B 用 a.zip、dismiss A／B 套用 | 409、lastError null、a b 還在清單／applied |
  *
  * 預設的決定（寫清楚，不猜）：
  * - 沒帶 kind 的 recordOk 是「通用成功」：只清沒有種類的錯（舊資料、GET 路由的意外），不清任何有種類的錯。
@@ -39,7 +57,9 @@ import {
   symlinkSync, linkSync, readdirSync, readFileSync, truncateSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { createHmac, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { open } from '../core/db.ts'
@@ -287,6 +307,61 @@ describe('R2-4 面板（HTTP）的復原用 清理範圍 ∪ 監看資料夾；�
     assert.ok(existsSync(s.dz))
   })
 
+  test('放回範圍每一個都過不了檢查（外接碟拔掉）→ 退回清理範圍交給執行層：200、逐項「不見了」，不是 500 BAD_CONFIG「請設定清理資料夾」', t => {
+    const f = fixture(t, { 'a.zip': 'aaaa' })
+    const p = f.plan()
+    assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+    const unplugged = f.downloads + '-拔掉了'
+    renameSync(f.downloads, unplugged)
+    const r = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads] })
+    assert.equal(r.code, 200, JSON.stringify(r.body))
+    assert.equal(r.body.status, 'error')
+    assert.doesNotMatch(JSON.stringify(r.body), /請設定清理資料夾/, '叫使用者去改設定，其實只是資料夾暫時不在')
+    const a = r.body.items.find(i => i.name === 'a.zip')
+    assert.equal(a.outcome, 'moved', '檔還在隔離區')
+    assert.match(a.why ?? '', /不見了/)
+    const h = health(f)
+    assert.equal(h.lastErrorKind, 'undo')
+    assert.doesNotMatch(h.lastError, /請設定清理資料夾/)
+
+    // 插回來之後照樣放得回
+    renameSync(unplugged, f.downloads)
+    const again = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads] })
+    assert.equal(again.body.status, 'restored', JSON.stringify(again.body))
+    assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'aaaa')
+  })
+
+  /**
+   * pet 的放回範圍＝清理範圍 ∪ 監看資料夾，桌面幾乎一定在：「全部被略過」在實際設定裡很少發生，
+   * 常見的是**只有 Downloads 不在**。那時 Downloads 被略過、範圍只剩桌面，Downloads 的檔
+   * 也要是「不見了」，不可以變成「檔案不在設定的清理資料夾內」（一樣會叫人去改設定）。
+   */
+  test('對照：只有一部分被略過（Downloads 拔掉、桌面還在）→ Downloads 的檔照樣逐項「不見了」，不是「不在設定的清理資料夾內」', t => {
+    const f = fixture(t, { 'a.zip': 'aaaa' })
+    const desktop = join(f.dir, 'Desktop')
+    mkdirSync(desktop)
+    const p = f.plan()
+    assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+    const unplugged = f.downloads + '-拔掉了'
+    renameSync(f.downloads, unplugged)
+    const r = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads, desktop] })
+    assert.equal(r.code, 200, JSON.stringify(r.body))
+    const a = r.body.items.find(i => i.name === 'a.zip')
+    assert.deepEqual({ outcome: a.outcome, gone: /不見了/.test(a.why ?? '') }, { outcome: 'moved', gone: true }, a.why)
+    assert.doesNotMatch(JSON.stringify(r.body), /不在設定的清理資料夾內|請設定清理資料夾/)
+    renameSync(unplugged, f.downloads)
+    assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads, desktop] }).body.status, 'restored')
+  })
+
+  test('對照：清理範圍本身就是空的（真的沒設定）→ 照舊 500 BAD_CONFIG', t => {
+    const f = fixture(t, { 'a.zip': 'aaaa' })
+    const p = f.plan()
+    applyPlan(f.db, p.id, f.opts)
+    const r = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { roots: [], restoreRoots: [join(f.dir, '不存在')] })
+    assert.equal(r.code, 500, JSON.stringify(r.body))
+    assert.equal(r.body.code, 'BAD_CONFIG')
+  })
+
   test('對照：面板套用一份含桌面檔的計畫 → 桌面的檔不動（套用只用清理範圍）', async t => {
     const s = sandbox(t)
     const dz = put(s.desktop, '客戶提案-最終版.zip', { days: 120 })
@@ -372,6 +447,45 @@ describe('R2-5b blockingPlan 帶 started：這份計畫有沒有任何搬移紀�
     assert.equal(r.body.blockingPlan.started, true)
     assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/release`, {}).code, 409, 'started 的計畫不能放棄')
     assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {}).body.status, 'applied', '繼續那份接得完')
+  })
+
+  test('第一項在 rename 之前被砍（journal 只有一列 started、沒有任何 done）→ started 還是 true（突變 V22）', t => {
+    const f = fixture(t)
+    const p = f.plan()
+    const child = join(dirname(fileURLToPath(import.meta.url)), 'helpers', 'r2-crash-child.mjs')
+    const r0 = spawnSync(process.execPath, [child, f.dbPath, JSON.stringify(f.opts), 'apply', p.id, 'before-rename'], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir },
+    })
+    assert.equal(r0.signal, 'SIGKILL', `前提：子行程要在 rename 之前被砍掉：${r0.stdout}${r0.stderr}`)
+    assert.deepEqual(f.db.prepare('SELECT status FROM cleanup_journal WHERE plan_id=?').all(p.id).map(r => r.status), ['started'])
+    const ids = routes.listCandidates(f.db, { roots: f.opts.roots }).candidates.flatMap(c => c.candidateIds)
+    assert.ok(ids.length, '前提：兩個檔都還在清單上')
+    const r = call(f, 'POST', '/cleanup/plans', { candidateIds: ids })
+    assert.equal(r.code, 409)
+    assert.equal(r.body.blockingPlan.id, p.id)
+    assert.equal(r.body.blockingPlan.started, true, '只有 started 列也是開始了：面板不可以給「放棄上次那份」')
+    assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/release`, {}).code, 409)
+  })
+})
+
+// ═══ R2-12a（HTTP）・ 拒絕一份放棄過的計畫，撞到還活著的計畫 ═══════════
+
+describe('R2-12a（HTTP）dismiss 一份 release 過的計畫、它的檔在另一份還沒套用的計畫裡', () => {
+  test('409 CONFLICT、不記成錯、寵物不擔心；那份照常套用（驗證員 T9 的 HTTP 版）', t => {
+    const f = fixture(t)
+    const A = call(f, 'POST', '/cleanup/plans', {}).body
+    assert.equal(A.items.length, 2, '前提：A 有 a、b')
+    assert.equal(call(f, 'POST', `/cleanup/plans/${A.id}/release`, {}).code, 200)
+    const ids = routes.listCandidates(f.db, { roots: f.opts.roots }).candidates.find(c => c.name === 'a.zip').candidateIds
+    const B = call(f, 'POST', '/cleanup/plans', { candidateIds: ids }).body
+    const r = call(f, 'POST', `/cleanup/plans/${A.id}/dismiss`, {})
+    assert.deepEqual({ code: r.code, err: r.body.code }, { code: 409, err: 'CONFLICT' }, JSON.stringify(r.body))
+    assert.match(r.body.error, /另一份還沒套用的清理計畫/)
+    assert.equal(health(f).lastError, null, '狀態衝突不是意外，不記')
+    assert.notEqual(petOf(f), 'worried')
+    assert.deepEqual(routes.listCandidates(f.db, { roots: f.opts.roots }).candidates.map(c => c.name).sort(), ['a.zip', 'b.zip'],
+      '什麼都沒拒絕成：a、b 都還在清單上')
+    assert.equal(call(f, 'POST', `/cleanup/plans/${B.id}/apply`, {}).body.status, 'applied')
   })
 })
 
@@ -566,6 +680,57 @@ describe('R2-8 截圖資料夾（cleanup.screenshotsDir）底下只收截圖類�
     assert.ok(existsSync(join(s.desktop, 'proposal.zip')), '桌面的 proposal.zip 被搬走了')
   })
 
+  test('需要你查看：截圖資料夾底下讀不到的一般檔不列、不算；讀不到的舊截圖照列（突變 V06）', t => {
+    const s = desk(t)
+    s.db.prepare(`UPDATE file_items SET error=? WHERE name IN ('proposal.zip', 'Screenshot 2026-01-02 141203.png')`)
+      .run(`EACCES: permission denied, open '${join(s.desktop, 'x')}'`)
+    const withShots = routes.listCandidates(s.db, { roots: s.roots, screenshotsDir: s.desktop })
+    assert.deepEqual(withShots.needsHuman.map(n => n.name), ['Screenshot 2026-01-02 141203.png'])
+    assert.equal(withShots.needsHumanTotal, 1)
+    assert.equal(health(s, false, { roots: s.roots, screenshotsDir: s.desktop }).needsHumanCount, 1, '徽章跟清單同一套')
+    // 對照：沒有截圖資料夾（桌面是使用者自己寫的清理範圍）→ 兩個都列
+    assert.deepEqual(routes.listCandidates(s.db, { roots: s.roots }).needsHuman.map(n => n.name).sort(),
+      ['Screenshot 2026-01-02 141203.png', 'proposal.zip'])
+    assert.equal(health(s, false, { roots: s.roots }).needsHumanCount, 2)
+  })
+
+  test('/pet/state 的徽章也只收截圖類：給了 screenshotsDir 是 2、沒給是 3（突變 V07）', t => {
+    const s = desk(t)
+    const pet = extra => call({ ...s, opts: { ...s.opts, roots: s.roots } }, 'GET', '/pet/state', {}, extra).body
+    assert.equal(pet({ screenshotsDir: s.desktop }).pendingCount, 2)
+    assert.equal(pet({}).pendingCount, 3)
+  })
+
+  test('server 自己讀設定（cleanup.screenshots 開著）→ 截圖資料夾用設定算出來的：清單與徽章都不碰那裡的舊 zip（突變 V08）', async t => {
+    const downloads = join(FAKE_HOME, 'Downloads')
+    const shots = config.osDefaults().screenshots
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-r2r-shots-')))
+    t.after(() => {
+      for (const d of [dir, downloads, shots, join(FAKE_HOME, '.contextbox')]) rmSync(d, { recursive: true, force: true })
+    })
+    put(downloads, 'a.zip', { days: 120 })
+    put(shots, 'proposal.zip', { days: 120 })
+    put(shots, 'Screenshot 2026-01-02 141203.png', { days: 120 })
+    mkdirSync(join(FAKE_HOME, '.contextbox'), { recursive: true })
+    writeFileSync(join(FAKE_HOME, '.contextbox', 'config.json'), JSON.stringify({
+      watch: [shots, downloads], cleanup: { roots: [downloads], screenshots: true }, maxBytes: 1 << 20, readonly: false,
+    }))
+    // 刻意不給 roots／maxBytes／readonly（跟 `node core/server.ts` 一樣）；用變數傳，繞過 repo.test 的 start({ 檢查
+    const opts = { port: 0, db: join(dir, 'data.db'), token: TOKEN, quarantine: join(dir, 'q') }
+    const S = server.start(opts)
+    const port = await S.ready
+    t.after(() => S.server.close())
+    const get = async (path, method = 'GET') => {
+      const r = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method, headers: { 'x-contextbox-token': TOKEN, 'content-type': 'application/json' }, body: method === 'POST' ? '{}' : undefined })
+      return r.json()
+    }
+    await get('/cleanup/scan', 'POST')
+    const names = (await get('/cleanup/candidates')).candidates.map(c => c.name).sort()
+    assert.deepEqual(names, ['Screenshot 2026-01-02 141203.png', 'a.zip'], '截圖資料夾裡的 proposal.zip 被列出來了')
+    assert.equal((await get('/health')).pendingCandidates, 2)
+  })
+
   test('性質（結構化隨機）：徽章＝清單總數；截圖資料夾底下列出來的只有截圖類；列出來的都建得了計畫', t => {
     const s = sandbox(t)
     const zone = join(s.desktop, 'zone')
@@ -621,23 +786,28 @@ describe('R2-8 截圖資料夾（cleanup.screenshotsDir）底下只收截圖類�
 
 // ═══ R2-9a ・ /health 的 proof ═════════════════════════════════
 
-describe('R2-9a /health?nonce=<32 hex> 回 proof＝HMAC-SHA256(token, nonce)', () => {
-  test('healthProof 是 HMAC-SHA256，key 是 token、訊息是 nonce（公開的測試向量）', () => {
-    // RFC 4231 之外最常見的一組：key="key"、訊息="The quick brown fox jumps over the lazy dog"
-    assert.equal(server.healthProof('key', 'The quick brown fox jumps over the lazy dog'),
-      'f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8')
+// 第二階段（CLI 那一組）：proof 綁埠號 —— 訊息是 `${埠}:${nonce}`，擋冒牌把 nonce 轉給另一個埠上的真 pet。
+describe('R2-9a /health?nonce=<32 hex> 回 proof＝HMAC-SHA256(token, `${實際監聽的埠}:${nonce}`)', () => {
+  test('healthProof 是 HMAC-SHA256，key 是 token、訊息是「埠:nonce」', () => {
+    // 對照組用 node:crypto 自己算（獨立的 oracle）；key 與訊息對調、少了埠號都要對不上
     const n = 'a'.repeat(32)
-    assert.equal(server.healthProof(TOKEN, n), createHmac('sha256', TOKEN).update(n).digest('hex'))
+    const want = createHmac('sha256', TOKEN).update(`7391:${n}`).digest('hex')
+    assert.equal(server.healthProof(TOKEN, 7391, n), want)
+    assert.notEqual(want, createHmac('sha256', `7391:${n}`).update(TOKEN).digest('hex'), '前提：key 與訊息對調會不一樣')
+    assert.notEqual(server.healthProof(TOKEN, 7391, n), createHmac('sha256', TOKEN).update(n).digest('hex'), '埠號沒算進去')
+    assert.notEqual(server.healthProof(TOKEN, 7391, n), server.healthProof(TOKEN, 7392, n), '不同的埠要算出不同的 proof')
   })
 
-  test('帶對的 nonce：免 token 與帶 token 都回 proof，而且等於 healthProof(token, nonce)', async t => {
+  test('帶對的 nonce：免 token 與帶 token 都回 proof，而且用的是 server 實際監聽的埠', async t => {
     const s = sandbox(t)
-    const srv = await serve(t, s)
+    const srv = await serve(t, s)          // port 0：實際的埠是系統挑的
     for (const nonce of ['0123456789abcdef0123456789abcdef', 'ABCDEF0123456789ABCDEF0123456789']) {
       for (const token of [null, TOKEN]) {
         const r = await srv.raw('GET', `/health?nonce=${nonce}`, { token })
         assert.equal(r.status, 200)
-        assert.equal(r.json.proof, server.healthProof(TOKEN, nonce), `${nonce} token=${Boolean(token)}`)
+        assert.equal(r.json.proof, server.healthProof(TOKEN, srv.port, nonce), `${nonce} token=${Boolean(token)}`)
+        assert.notEqual(r.json.proof, server.healthProof(TOKEN, 0, nonce), '要用實際監聽的埠，不是呼叫端給的 0')
+        assert.notEqual(r.json.proof, server.healthProof(TOKEN, srv.port + 1, nonce))
       }
     }
   })
@@ -763,6 +933,52 @@ describe('R2-10 寵物只在「同一種動作」之後成功過才不擔心', (
     const done = call(f, 'POST', '/cleanup/quarantine/empty', { token: preview.token, confirmed: true }).body
     assert.equal(done.deletedCount, 0, '前提：一個都沒刪')
     assert.equal(health(f).lastErrorKind, 'empty')
+  })
+
+  test('清空刪掉一些、也有錯（部分成功）→ 記成功、不記錯，寵物不擔心（突變 V09）', t => {
+    const f = fixture(t)
+    const p = call(f, 'POST', '/cleanup/plans', {}).body
+    call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
+    f.db.prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - 8 * DAY).toISOString())
+    const [first] = f.db.prepare(`SELECT to_path FROM cleanup_journal WHERE plan_id=? AND op='quarantine' ORDER BY seq`).all(p.id)
+    writeFileSync(first.to_path, '隔離區的檔被改過')
+    const preview = call(f, 'POST', '/cleanup/quarantine/empty', {}).body
+    assert.equal(preview.itemCount, 2)
+    const done = call(f, 'POST', '/cleanup/quarantine/empty', { token: preview.token, confirmed: true }).body
+    assert.deepEqual({ deleted: done.deletedCount, errors: done.errors.length }, { deleted: 1, errors: 1 }, '前提：刪了一個、錯了一個')
+    const h = health(f)
+    assert.equal(h.lastError, null, '有刪掉的清空不算失敗')
+    assert.equal(h.lastErrorKind, null)
+    assert.equal(typeof h.lastOkByKind.empty, 'string')
+    assert.notEqual(petOf(f), 'worried')
+  })
+
+  test('建計畫時的意外記成「套用」那一種，掃描成功清不掉；GET 路由的同一個意外沒有種類（突變 V10）', t => {
+    const boom = () => { throw new Error('設定讀不到') }
+    const f = fixture(t)
+    assert.equal(call(f, 'POST', '/cleanup/plans', {}, { roots: boom }).code, 500)
+    assert.equal(health(f).lastErrorKind, 'apply')
+    routes.recordOk(f.db, 'scan')
+    assert.equal(petOf(f), 'worried', '建計畫壞了，掃描成功不代表清得了')
+
+    const g = fixture(t)
+    assert.equal(call(g, 'GET', '/cleanup/candidates', undefined, { roots: boom }).code, 500)
+    assert.ok(health(g).lastError, '前提：意外有記下來')
+    assert.equal(health(g).lastErrorKind, null)
+    routes.recordOk(g.db, 'scan')
+    assert.notEqual(petOf(g), 'worried')
+  })
+
+  test('免 token 的 /health：lastErrorKind 是 null；帶 token 的才看得到種類（突變 V12）', async t => {
+    const s = sandbox(t)
+    routes.recordCleanupError(s.db, new Error('boom'), 'apply')
+    assert.equal(health(s, false).lastErrorKind, null)
+    assert.equal(health(s, true).lastErrorKind, 'apply')
+    const srv = await serve(t, s)
+    const anon = (await srv.raw('GET', '/health', { token: null })).json
+    assert.ok('lastErrorKind' in anon, '欄位要在（形狀一致），只是值遮掉')
+    assert.equal(anon.lastErrorKind, null)
+    assert.equal((await srv.raw('GET', '/health')).json.lastErrorKind, 'apply')
   })
 
   test('掃描回報的問題存起來：帶 token 的 /health 有 scanProblems（去路徑、換掉控制字元、最多 50 條），免 token 的是空陣列', t => {

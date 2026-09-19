@@ -126,6 +126,14 @@ const released = (db: DatabaseSync, id: string) =>
  * - 之前是 **release** 的（有 release 標記）→ 候選照樣作廢、拿掉標記。以前兩種都原樣回 200，
  *   「先放棄、之後才拒絕」拿到成功，候選卻沒作廢，下次掃描照樣提議。
  *   已經在隔離區的候選（release 之後別份計畫搬走的）不動：那是另一份計畫的結果。
+ *
+ * **這份計畫裡的檔，有任何一個在另一份還沒套用（proposed）的計畫裡 → CONFLICT，什麼都不改**（第二階段）。
+ * 只有 release 過的計畫會碰到：release 之後那些檔還是候選，可以建進新的計畫 B。以前照樣作廢候選，
+ * 清單說「拒絕了」，B 照樣把檔搬走（第一階段驗證員 T9）。為什麼不是「跳過 B 佔著的、其他照樣作廢」：
+ * dismiss 的意思是「使用者拒絕這些檔」，跳過等於回 200 卻有一部分沒拒絕成、B 之後照搬 —— 使用者
+ * 以為拒絕了。CONFLICT 讓呼叫端先處理 B（拒絕或放棄它），這邊整個不動，重送一樣的結果。
+ * 比的是**檔**（cleanup_snapshots 的 item_id），跟 createPlan 判斷「這個檔已有待處理的計畫」同一個條件：
+ * 重掃之後 B 可能用了同一個檔的另一條候選，只比候選 id 會漏。
  */
 export function dismissPlan(db: DatabaseSync, id: string) {
   return withCleanupLock(db, () => transaction(db, () => {
@@ -133,6 +141,10 @@ export function dismissPlan(db: DatabaseSync, id: string) {
     if (p.status === 'dismissed' && !released(db, id)) return getPlan(db, id)
     if (p.status !== 'dismissed' && (p.status !== 'proposed' || db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id))) {
       throw new CleanupError('CONFLICT', '計畫已開始執行，請使用復原。')
+    }
+    if (db.prepare(`SELECT 1 FROM cleanup_snapshots s JOIN cleanup_snapshots o ON o.item_id=s.item_id AND o.plan_id<>s.plan_id
+        JOIN cleanup_plans op ON op.id=o.plan_id WHERE s.plan_id=? AND op.status='proposed' LIMIT 1`).get(id)) {
+      throw new CleanupError('CONFLICT', '這份計畫裡的檔已經在另一份還沒套用的清理計畫裡；要拒絕它們，請先拒絕或放棄那一份。')
     }
     db.prepare(`UPDATE cleanup_candidates SET status='dismissed' WHERE status<>'quarantined' AND id IN
       (SELECT candidate_id FROM cleanup_plan_items WHERE plan_id=?)`).run(id)

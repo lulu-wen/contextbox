@@ -29,6 +29,7 @@ import {
 import { createPlan, getPlan, dismissPlan, releasePlan, validateIds } from './cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './cleanup-quarantine.ts'
 import { CleanupError, execRefusesName, transaction } from './cleanup-journal.ts'
+import { keepersFirst } from './cleanup-scanner.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -245,16 +246,17 @@ export function displayPath(path: string, roots: string[]): { folder: string; su
  * A 產出的是「同一個 sha256 還有 N 份檔案存在」，數字對但使用者無法確認安全 ——
  * 他沒辦法知道「我還留著一份」。這裡把留下來的那個檔名補進去。
  * 保留者的挑法跟 scanner 的 addDuplicateCandidates 一樣：**只看清理根目錄底下的**，
- * 最早被看到的那份（同時間比路徑）。不然會指名一份舊設定留下、執行層不承認的桌面檔。
+ * 最早被看到的那份（同時間名字不像複本的優先，再比路徑 —— 同一支 keepersFirst）。
+ * 不然會指名一份舊設定留下、執行層不承認的桌面檔。
  */
 function enrichDuplicate(db: DatabaseSync, item: ItemRow, evidence: string, roots: string[], pre: string[]): string {
   const sha = item.sha256
   if (!sha) return evidence
-  const keep = (db.prepare(
-    `SELECT id, name, path FROM file_items
+  const keep = keepersFirst(db.prepare(
+    `SELECT id, name, path, first_seen_at FROM file_items
      WHERE sha256=? AND status NOT IN ('quarantined','missing','error')
      ORDER BY first_seen_at, path`
-  ).all(sha) as { id: string; name: string; path: string }[]).find(r => underAny(r.path, pre))
+  ).all(sha) as { id: string; name: string; path: string; first_seen_at: string }[]).find(r => underAny(r.path, pre))
   // **比 id 不比 name。** 比 name 的話，同名不同目錄
   //（`Downloads/report.pdf` 與 `Downloads/2026/09/report.pdf`，瀏覽器重下載很常見）
   // 會被當成同一個檔，「會留著」那句話整個消失 —— 而那句話正是使用者敢勾的理由。
@@ -1283,10 +1285,18 @@ type Outcome = { outcome: ItemOutcome; why: string | null; restoredAs?: string }
 /**
  * 搬到一半中斷的話。**不可以說「沒有搬動」** —— rename 可能已經完成、只是還沒寫 done
  * （kill -9、斷電）。稽查實測：檔案在隔離區，畫面說「沒有搬動，原因不明」（A-M3）。
- * 再套用一次同一份計畫會把它接完（performMove 認得「已經到了」）。
+ *
+ * **也不可以叫人再套用一次、說那樣會接完**（第二輪）：R2-3 起跑完過的 partial／error 再 apply
+ * 原樣回傳，不重試；rename 之後驗證沒過、又搬不回去的那種，journal 刻意停在 started，再套用也不會動它。
+ * 只有還沒跑完的 proposed 再套用會接著做。所以照實講：說不準檔在哪；復原（undoPlan）會把在隔離區、
+ * 指紋對得上的放回原位，確認沒搬過的結掉；doctor 看得到整體的狀態。
  */
-const MOVE_INTERRUPTED = '搬到一半中斷，檔案可能已經在隔離區。再套用一次這份計畫會把它接完。'
-const RESTORE_INTERRUPTED = '復原到一半中斷，檔案可能已經放回原位。再按一次復原會把它接完。'
+const MOVE_INTERRUPTED = '搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。'
+/**
+ * 復原到一半中斷的話。再按一次復原多半接得完（performMove 認得「已經放回去了」），但放回之後
+ * 原位的檔又被改過就接不上 —— 所以不說「會把它接完」，只說會接著放回。
+ */
+const RESTORE_INTERRUPTED = '復原到一半中斷，說不準檔案現在在隔離區還是已經放回原位。再按一次復原會接著放回；也可以執行 node cli.mjs doctor 檢查。'
 
 const tableExists = (db: DatabaseSync, name: string) =>
   Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name))
@@ -1730,6 +1740,11 @@ function execOptions(ctx: RouteCtx): ExecOptions {
  * 以前面板的復原只用清理範圍，CLI 的用清理範圍 ∪ watch（第三波 C4 只修了 CLI）：RC15 之前被舊版
  * 從桌面搬走的檔，面板永遠放不回去、還叫使用者「再試一次」，滿七天一清空就沒了（稽核 C-e1、A-exp12）。
  * **每一個先過 checkedPath，過不了就略過**（不存在、不是資料夾、路徑含捷徑）—— 跟 cli.mjs 的 undoRoots 一樣。
+ *
+ * **全部都被略過的話，退回清理範圍**，交給執行層逐項回報（第二階段）。以前給空的範圍，執行層的
+ * checkOptions 丟 500 BAD_CONFIG「請設定清理資料夾與檔案大小上限」—— 外接碟暫時拔掉、Downloads 改了名，
+ * 使用者被叫去改設定，lastError 也記成這句。退回之後逐項是「檔案或資料夾不見了」，插回來再按一次就放得回。
+ * 清理範圍本身是空的（真的沒設定）照樣是 BAD_CONFIG。
  */
 function restoreOptions(ctx: RouteCtx): ExecOptions {
   const base = execOptions(ctx)
@@ -1740,7 +1755,7 @@ function restoreOptions(ctx: RouteCtx): ExecOptions {
     if (roots.includes(r)) continue
     try { checkedPath(r, true); roots.push(r) } catch { /* 放不回那裡，略過 */ }
   }
-  return { ...base, roots }
+  return { ...base, roots: roots.length ? roots : base.roots }
 }
 
 /**

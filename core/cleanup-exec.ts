@@ -495,12 +495,29 @@ function restoreTarget(path: string): string {
 export const NOT_MOVED = '搬到一半中斷，檔案還在原位，沒有搬。'
 /** 套用中斷在 rename 之前、隔離區只有預留的空檔，原位也找不到（使用者後來刪掉、搬走了）。 */
 export const NOT_MOVED_GONE = '搬到一半中斷，沒有搬進隔離區；原位置現在也找不到這個檔。'
+/**
+ * 套用中斷在 rename 之前、隔離區只有預留的空檔，原位**有東西、但不是當初那一份**
+ *（被改過、被換掉、換成資料夾或捷徑）。以前併在 NOT_MOVED_GONE 裡，檔明明在原位，卻說「找不到」。
+ */
+export const NOT_MOVED_CHANGED = '搬到一半中斷，沒有搬進隔離區；原位置的檔已經不是當初那一份。'
 /** 復原中斷在 rename 之前（recoverInterrupted 確認的）：檔還在隔離區，可以再復原。 */
 const RESTORE_NOT_DONE = '復原中斷，沒有放回'
 
 /** 讀指紋；讀不到（不見了、被換成捷徑、還在變）回 null。只拿來當證據，不丟例外。 */
 function fingerprintOrNull(path: string, maxBytes: number): Fingerprint | null {
   try { return fingerprint(path, maxBytes) } catch { return null }
+}
+
+/**
+ * 從沒搬進隔離區的那一項，原位現在是什麼情況（undo 結掉 started 列時的原因）：
+ * 還是當初那一份 → NOT_MOVED；有東西但對不上 → NOT_MOVED_CHANGED；連 lstat 都看不到 → NOT_MOVED_GONE。
+ * 看不到包括 ENOENT 以外的錯（上層資料夾沒有權限）：那種情況我們確實「找不到這個檔」。
+ */
+function originalVerdict(path: string, expected: Fingerprint, maxBytes: number): string {
+  const atOriginal = fingerprintOrNull(path, maxBytes)
+  if (atOriginal && same(expected, atOriginal)) return NOT_MOVED
+  try { lstatSync(path) } catch { return NOT_MOVED_GONE }
+  return NOT_MOVED_CHANGED
 }
 
 export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
@@ -544,9 +561,8 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
             // started 的（中斷在 rename 之前）**結掉**（reverted），不然它永遠是「狀態不明」。
             // 隔離區裡預留的空檔不刪：只有清空才會刪檔。
             if (q.status === 'started') {
-              const atOriginal = fingerprintOrNull(item.path, opts.maxBytes)
               db.prepare(`UPDATE cleanup_journal SET status='reverted',error=? WHERE seq=? AND status='started'`)
-                .run(atOriginal && same(expected, atOriginal) ? NOT_MOVED : NOT_MOVED_GONE, q.seq)
+                .run(originalVerdict(item.path, expected, opts.maxBytes), q.seq)
             }
             continue
           }

@@ -623,9 +623,40 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
 }
 
 /**
+ * 複本常見的字尾：瀏覽器重下載的 `report (1).pdf`／`report(2).pdf`、Windows 檔案總管的
+ * `report - Copy.pdf`／`報告 - 複製.docx`／`報告 - 副本 (2).docx`、macOS Finder 的 `report copy 2.pdf`／
+ * `報告 拷貝.docx`／`报告 的副本.docx`；後面可以接一到兩段副檔名（`.tar.gz`）。
+ * 字尾前面一定要有空白或破折號：`合約副本.pdf`、`photocopy.pdf` 是原檔自己的名字。
+ * 括號裡最多三位數：`Budget (2026).xlsx` 的括號是年份。
+ */
+const COPY_NAME = /^(?:copy of\s+\S.*|.*\S(?:\s*\(\d{1,3}\)|\s+-\s+(?:copy|副本|複製|复制|複本)(?:\s*\(\d{1,3}\))?|\s+(?:copy|拷貝|拷贝|副本|的副本|複本)(?:\s+\d{1,3})?)(?:\.[^.\s]{1,8}){0,2})$/i
+
+/** 檔名看起來像「另一份的複本」嗎（見 COPY_NAME）。只拿來在重複檔裡挑保留者，不影響任何規則。 */
+export function looksLikeCopy(name: string): boolean {
+  return COPY_NAME.test(name)
+}
+
+/**
+ * 重複檔的**保留者排在最前面**。scanner 與路由（evidence 的「會留著 X」）共用這一支，兩邊才會指名同一份。
+ *
+ * 最早被看到的那份優先；**同時間的（同一輪掃描看到的 —— 第一次掃描時整個資料夾都是同一個時間）
+ * 名字不像複本的優先**，再照原本的順序（呼叫端的 SQL 已經照 `first_seen_at, path` 排好，這裡是穩定排序）。
+ * 以前平手只比路徑：' ' 排在 '.' 前面，`report (1).pdf` 當保留者，原檔 `report.pdf` 被列成重複
+ *（第二輪第二階段；test/cleanup-routes.test.mjs 的 A3 早就記下這個瑕疵）。
+ * 名字不在時間之前：先看到 `report (1).pdf`、後來才出現的 `report.pdf` 是比較新的那份。
+ */
+export function keepersFirst<T extends { first_seen_at: string; name: string }>(rows: T[]): T[] {
+  return rows.map((r, i) => ({ r, i, copy: looksLikeCopy(r.name) ? 1 : 0 }))
+    .sort((a, b) => (a.r.first_seen_at < b.r.first_seen_at ? -1 : a.r.first_seen_at > b.r.first_seen_at ? 1 : 0)
+      || a.copy - b.copy || a.i - b.i)
+    .map(x => x.r)
+}
+
+/**
  * 重複檔候選**全部由這裡管**：新增、以及不再成立時改成 skipped。
  *
- * - 保留者：同一個 sha256、還活著的檔裡，最早被看到的那份（同時間比路徑）。其他的是「多出來的」。
+ * - 保留者：同一個 sha256、還活著的檔裡，最早被看到的那份；同時間的名字不像複本的優先，再比路徑
+ *   （見 keepersFirst）。其他的是「多出來的」。
  * - 只替這一輪有碰到的檔（onlyItemIds）新增候選 —— 新增要有剛量過的指紋。
  * - 不再是「多出來的」那些（保留者、內容變了、另一份不在了），候選改 **skipped**
  *   而不是 dismissed：之後又變回重複檔時 upsert 會把它改回 proposed。這一步看所有活著的檔，
@@ -655,10 +686,10 @@ export function addDuplicateCandidates(
   const only = onlyItemIds ? new Set(onlyItemIds) : null
   const extra = new Set<string>()
   for (const g of groups) {
-    const rows = (db.prepare(
+    const rows = keepersFirst((db.prepare(
       `SELECT * FROM file_items WHERE sha256=? AND status NOT IN ('quarantined','missing','error')
        ORDER BY first_seen_at, path`
-    ).all(g.sha256) as CleanupFileItem[]).filter(r => !pre || pre.some(x => fold(r.path).startsWith(x)))
+    ).all(g.sha256) as CleanupFileItem[]).filter(r => !pre || pre.some(x => fold(r.path).startsWith(x))))
     if (rows.length < 2) continue
     for (const item of rows.slice(1)) {
       if (execRefusesName(item.name) || item.status === 'new') continue

@@ -17,6 +17,7 @@
  * 幾個環境變數主要是給測試用的（測試不可以佔 7391、不可以真的打開瀏覽器）：
  *   CONTEXTBOX_PORT        pet／open 的 port（測試一律 0，讓系統挑一個空的）
  *   CONTEXTBOX_RESCAN_MS   pet 全部重掃一次的間隔（預設 30 分鐘）
+ *   CONTEXTBOX_SCAN_TIMEOUT_MS  pet 的背景掃描最多跑多久（預設 10 分鐘，超過就殺掉）
  *   CONTEXTBOX_OPENER      open 用來打開網址的程式（預設看作業系統）
  */
 import { load, modelReady, modelKey, CONFIG_PATH } from './core/config.ts'
@@ -27,15 +28,18 @@ import { Items } from './core/items.ts'
 import {
   listCandidates, healthSnapshot, META, planOutcomes, defaultCandidateIds, createPlanForRoots,
   blockingPlanFor, recordItemErrors, listPlans, quarantineItems, safeWhy,
+  recordOk, recordCleanupError, recordActionResult, recordScanProblems, scanProblems, errorStillActive,
+  invalidateQuarantineCache,
 } from './core/cleanup-routes.ts'
 import * as routes from './core/cleanup-routes.ts'
-import { applyPlan, undoPlan, checkedPath } from './core/cleanup-exec.ts'
-import { getPlan, releasePlan } from './core/cleanup-plans.ts'
+import { applyPlan, undoPlan, checkedPath, recoverInterrupted } from './core/cleanup-exec.ts'
+import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
 import { CleanupError } from './core/cleanup-journal.ts'
 import { scanDownloads } from './core/cleanup-scanner.ts'
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { basename, resolve, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -59,6 +63,17 @@ const LIST_LIMIT = 500
 const DRY_LIST = 50
 /** pet 多久全部重掃一次（RC2）。watcher 只看得到「有事件的檔」，pet 沒開的時候刪掉的要靠這個。 */
 const RESCAN_MS = 30 * 60_000
+/**
+ * pet 的背景掃描最多跑多久（第二輪 R2-10）。清理範圍在斷線的網路碟上時，readdir 會卡住、子行程永遠不結束 ——
+ * 以前 pet 就安靜地再也不重掃，lastError 也不記。超過就殺掉、記一筆，下一輪照常。
+ */
+const SCAN_TIMEOUT_MS = 10 * 60_000
+/** 背景掃描逾時記進 lastError 的那句話（掃描種類） */
+const SCAN_TIMEOUT_WHY = '背景掃描逾時（資料夾可能卡住了）'
+/** 從沒開始的計畫放多久就自動放棄（第二輪 R2-5，核心的 releaseStalePlans）。 */
+const STALE_PLAN_MS = 60 * 60_000
+/** 放棄了的計畫是誰放棄的：人，或收尾（STALE_PLAN_MS）。CLI 分不出來，兩種都講 */
+const DISMISSED_WHO = '有人放棄了它，或建立之後超過一小時沒有套用、自動放棄'
 const DEFAULT_PORT = 7391
 /** 這支檔案自己。pet 的全量掃描開子行程跑的就是它（C2）。 */
 const CLI_FILE = fileURLToPath(import.meta.url)
@@ -115,6 +130,13 @@ const admitOpts = {
  * cleanup.roots 預設只有 Downloads。scan、list、apply、undo、quarantine、doctor、pet 全部用這一份。
  */
 const CLEAN_ROOTS = config.cleanup.roots
+/**
+ * 截圖資料夾（cleanup.screenshots 開著才有）：**那底下只清截圖**（第二輪 R2-8）。macOS 的截圖資料夾就是桌面 ——
+ * 清單、預設清理、建計畫、doctor 與 pet 的徽章都要帶著它，不然桌面上的舊壓縮檔又被當成垃圾（RC15 換個開關回來）。
+ */
+const SHOTS = config.cleanup.screenshotsDir ?? null
+/** 清單、預設清理、建計畫、健康檢查用的範圍：清理範圍＋截圖資料夾（核心的 CleanupScope） */
+const SCOPE = { roots: CLEAN_ROOTS, screenshotsDir: SHOTS }
 const rootsLabel = () => CLEAN_ROOTS.map(r => shown(basename(r) || r)).join('、') || 'Downloads'
 const execOpts = () => ({
   roots: CLEAN_ROOTS, quarantine: QUARANTINE,
@@ -135,13 +157,21 @@ const execOpts = () => ({
  */
 function undoRoots() {
   const out = []
-  for (const r of [...CLEAN_ROOTS, ...config.watch]) {
-    if (out.includes(r)) continue
+  for (const r of restoreRootList()) {
     try { checkedPath(r, true); out.push(r) } catch { /* 不存在、不是資料夾、含捷徑：放不回那裡，略過 */ }
   }
   return out
 }
 const undoOpts = () => ({ ...execOpts(), roots: undoRoots() })
+
+/**
+ * 放回範圍的**全部**資料夾，還沒過濾（清理範圍 ∪ watch，去掉重複）。pet 交給 server 的是這一份（第二輪 R2-4）：
+ * server 每次復原都會逐一 checkedPath、過不了的略過（跟 undoRoots 同一個規則），
+ * 所以 pet 開著的時候才插上的外接碟也放得回去；pet 啟動時先過濾的話，那一個就一直不在裡面。
+ */
+function restoreRootList() {
+  return [...new Set([...CLEAN_ROOTS, ...config.watch])]
+}
 
 const say = (...a) => console.log(...a)
 const warn = (...a) => console.warn(...a)
@@ -175,21 +205,54 @@ const setMeta = (k, v) =>
 const getMeta = k => (db.prepare(`SELECT v FROM meta WHERE k=?`).get(k) ?? {}).v ?? null
 
 // ── 成功與意外都要記下來，寵物與 doctor 才看得到（RC5） ─────────
-// 核心的名字這一波可能從 recordCleanupOk 改成 recordOk，兩個都認；都沒有才自己寫 meta。
-const recordOkFn = routes.recordOk ?? routes.recordCleanupOk
-const recordErrorFn = routes.recordError ?? routes.recordCleanupError
+//
+// **分種類記**（第二輪 R2-10）：scan、apply、undo、empty。寵物只拿**同一種**動作的成功來蓋掉那一種的錯 ——
+// 以前 CLI 記的都是沒種類的成功，pet 每 30 分鐘的背景重掃（就是 cleanup scan）一成功，
+// 一直壞著的套用就被蓋掉了；反過來，面板掃描壞過一次，CLI 的掃描成功也蓋不掉它（有種類的錯只認同一種）。
+// 核心的 recordOk／recordCleanupError／recordActionResult 自己會吞掉寫入錯誤，這裡再包一層保險。
 
-/** 一次成功的掃描、套用、復原、清空。寫不進去不可以讓指令本身失敗（頂多寵物多擔心一下）。 */
-function noteOk() {
-  try {
-    if (recordOkFn) recordOkFn(db)
-    else setMeta(META.lastOk ?? 'cleanup_last_ok', new Date().toISOString())
-  } catch { /* 忙就算了 */ }
+/** 一次成功的掃描（套用、復原、清空用 noteResult）。寫不進去不可以讓指令本身失敗（頂多寵物多擔心一下）。 */
+function noteOk(kind) {
+  try { recordOk(db, kind) } catch { /* 忙就算了 */ }
 }
 
-/** 意外才記（哪些算意外由核心的 isSurprise 決定：BUSY、使用者輸入錯都不算），存的是人話。 */
-function noteError(e) {
-  try { if (recordErrorFn) recordErrorFn(db, e) } catch { /* 連 meta 都寫不進去就算了 */ }
+/**
+ * 套用、復原、清空做完之後記一筆：**每一項都失敗記成那一種的錯，其他記成功**（核心的 recordActionResult）。
+ * 以前一律記成功 —— 整份計畫每一項都 EXDEV，寵物照樣說沒事。
+ */
+function noteResult(kind, r) {
+  try { recordActionResult(db, kind, r) } catch { /* 忙就算了 */ }
+}
+
+/** 意外才記（哪些算意外由核心的 isSurprise 決定：BUSY、使用者輸入錯都不算），存的是人話。kind 是哪一種動作出的錯。 */
+function noteError(e, kind) {
+  try { recordCleanupError(db, e, kind) } catch { /* 連 meta 都寫不進去就算了 */ }
+}
+
+/**
+ * **收尾**（第二輪 R2-1a／R2-5）：每一個會讀或動清理狀態的指令之前（cleanup scan／list／apply／undo／release／quarantine、
+ * doctor）、pet 開機與每一輪背景重掃之前都跑一次。
+ *
+ * - recoverInterrupted：搬到一半被砍（kill -9、斷電、Ctrl+C 落在 rename 與寫 done 之間）的 journal 列停在 started。
+ *   檔其實已經在隔離區，但隔離區清單、可以復原的計畫都只認 done —— 單檔計畫被砍的話，每個入口都說「沒有」，
+ *   檔對使用者來說就是不見了（稽核 A-exp8）。它只看檔案證據改 journal，不搬任何檔。
+ * - releaseStalePlans：放了超過一小時、從沒開始的計畫自動放棄（候選不動）。不然它一直佔住那些檔，
+ *   寵物一直說「有 1 份清單等你確認」，面板不一定找得到它。開始過的不動：只能做完或放回。
+ *
+ * **鎖被別的行程拿著（BUSY）就安靜略過這一次**：那個行程正在搬，收尾等下一次；指令本身照跑，不可以因為它失敗。
+ * 其他錯講一行，指令照跑 —— 收尾是幫忙，不是前提。
+ */
+function settleCleanupState() {
+  const steps = [() => recoverInterrupted(db, execOpts()), () => releaseStalePlans(db, STALE_PLAN_MS)]
+  for (const step of steps) {
+    try { step() }
+    catch (e) {
+      if (e instanceof CleanupError && e.code === 'BUSY') continue
+      warn(`⚠ 收尾上次中斷的清理時出錯（${e instanceof CleanupError ? shown(e.message) : why(e?.message ?? e)}），這次先略過。`)
+    }
+  }
+  // pet 的 server 跟這裡是同一個行程：隔離區的計數有快取，journal 剛改過就不可以再用
+  try { invalidateQuarantineCache() } catch { /* 沒有快取就算了 */ }
 }
 
 /**
@@ -215,9 +278,9 @@ const cliProblem = (e) => e instanceof CleanupError
   ? shown(e.message)
   : `出錯了（${why(e?.message ?? e)}），這一步可能沒有完成。用 node cli.mjs doctor 看目前的狀態。`
 
-function fail(e) {
+function fail(e, kind) {
   warn(cliProblem(e))
-  noteError(e)
+  noteError(e, kind)
   process.exitCode = exitFor(e)
 }
 
@@ -369,7 +432,8 @@ function applyLine(i, o) {
     case 'restored': return `  ↩ ${head}　（已經放回${o.restoredAs ? `，放回來的這份叫 ${shown(o.restoredAs)}` : ''}）`
     case 'purged': return `  ⌫ ${head}　（已清空）`
     case 'pending': return `  ○ ${head}　（還沒做）`
-    case 'cancelled': return `  ⊘ ${head}　（已放棄，沒有動過）`
+    // cancelled：計畫放棄了，或計畫跑過、這一項從來沒碰過（第二輪 R2-1e）。兩種都沒有搬移紀錄 —— 檔本來就在原位
+    case 'cancelled': return `  ⊘ ${head}　（沒有處理：計畫中途停了或放棄了，本來就在原位）`
     // unknown：journal 停在 started。**不可以說「沒有搬動」** —— rename 可能已經完成了（RC17）
     case 'unknown': return `  ？ ${head}　—— 狀態不明：${shown(o.why ?? '搬到一半中斷，檔案可能已經在隔離區')}`
     default: return `  ？ ${head}　—— 狀態不明`
@@ -466,12 +530,12 @@ function explainConflict(e, candidateIds) {
 function runApply(id, { remaining = 0, skippedRows = [] } = {}) {
   let r
   try { r = applyPlan(db, id, execOpts()) }
-  catch (e) { fail(e); return }
+  catch (e) { fail(e, 'apply'); return }
   // 失敗原因**馬上**存起來：下一次掃描會改寫 file_items.error，重掃之後原因就變成「原因不明」（RC11）。
   // 存不進去不可以讓結果消失 —— 檔案已經搬了。
   try { recordItemErrors(db, id) }
   catch (e) { warn(`⚠ 失敗原因存不進去（${why(e?.message)}），重新掃描之後可能看不到原因。`) }
-  noteOk()
+  noteResult('apply', r)
 
   say(`計畫 ${r.id}`)
   const outcomes = planOutcomes(db, r.id)
@@ -481,10 +545,15 @@ function runApply(id, { remaining = 0, skippedRows = [] } = {}) {
   if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
   if (remaining > 0) say(`一次最多清 ${PLAN_MAX} 個，剩下 ${remaining} 個下次再清（再跑一次 node cli.mjs cleanup apply）。`)
 
+  // **離開碼照逐項結果，不看計畫的 status**（第二輪 R2-1）。逐項才是實話：status 是整份計畫的摘要，
+  // 對不上逐項的時候（例如 partial 但每一項都搬了），照 status 回 3 就是叫腳本去看一個不存在的問題。
+  // 找不到逐項結果的當成狀態不明（倒向要人看一眼）。
   const kinds = r.items.map(i => outcomes.get(i.itemId)?.outcome)
   const failed = kinds.filter(k => k === 'failed').length
-  const unknown = kinds.filter(k => k === 'unknown').length
-  if (!failed && !unknown && r.status !== 'partial' && r.status !== 'error') return
+  const unknown = kinds.filter(k => k === 'unknown' || k === undefined).length
+  // cancelled／pending：計畫中途停了，這一項從來沒碰過（沒有任何搬移紀錄）
+  const untouched = kinds.filter(k => k === 'cancelled' || k === 'pending').length
+  if (!failed && !unknown && !untouched) return
   // **「原檔都還在原位」只在失敗的全部是 failed 時才說**（RC17）。
   // unknown 是搬到一半中斷：rename 可能已經做完了，檔案可能在隔離區 —— 說「都還在原位」是在說謊。
   if (failed && !unknown) warn('\n⚠ 上面 ✘ 的沒搬成。原檔都還在原位，沒有任何東西被刪除。')
@@ -492,7 +561,7 @@ function runApply(id, { remaining = 0, skippedRows = [] } = {}) {
   if (unknown) {
     warn(`${failed ? '' : '\n'}⚠ 有 ${unknown} 個搬到一半中斷，檔案可能已經在隔離區，執行 node cli.mjs doctor 檢查。`)
   }
-  if (!failed && !unknown) warn('\n⚠ 這份計畫沒有全部完成。')
+  if (untouched) warn(`${failed || unknown ? '' : '\n'}⚠ 有 ${untouched} 個這次沒有處理到（計畫中途停了），還在原位。`)
   // 動作執行了，只是檔案沒全部搬成：3。全失敗也不是 2 —— 2 要留給「連跑都跑不起來」。
   process.exitCode = EXIT.partial
 }
@@ -501,7 +570,7 @@ function runApply(id, { remaining = 0, skippedRows = [] } = {}) {
 function applyExisting(id) {
   let plan
   try { plan = getPlan(db, id) }
-  catch (e) { fail(e); return }       // 沒有這份 → NOT_FOUND → 1，唯讀模式也一樣（上一版唯讀時回 0）
+  catch (e) { fail(e, 'apply'); return }   // 沒有這份 → NOT_FOUND → 1，唯讀模式也一樣（上一版唯讀時回 0）
 
   // 已經復原過的再套用一次：B 會原樣回傳結果，逐項全是 restored —— 上一版把它們印成一排 ✘、回 0。
   if (plan.status === 'restored') {
@@ -510,15 +579,24 @@ function applyExisting(id) {
     return
   }
   if (plan.status === 'dismissed') {
-    say(`計畫 ${plan.id} 已經放棄了，沒有動過任何檔案，這次什麼都沒做。`)
+    // 放棄的可能是人（release），也可能是收尾自動放棄的（建立之後超過一小時沒套用，R2-5）：兩種都講，
+    // 不然使用者會以為自己按錯了什麼
+    say(`計畫 ${plan.id} 已經放棄了（${DISMISSED_WHO}），沒有動過任何檔案，這次什麼都沒做。`)
+    say('要清的話：node cli.mjs cleanup apply（照現在的清單重新建一份）。')
     printPlanItems(plan, applyLine)
     return
   }
   if (config.readonly) {
     // smoke 第 0 步就靠這個確認「只說不做」。回非 0 會讓那一步永遠紅。
     const o = planOutcomes(db, plan.id)
-    const todo = plan.items.filter(i => ['pending', 'failed', 'unknown'].includes(o.get(i.itemId)?.outcome ?? 'pending'))
+    // 已經跑過的計畫（applied／partial／error）再套用是原樣回傳、不重試（第二輪 R2-3）：真的套用一個都不會動，
+    // 這裡也不可以說「會清掉 N 個」。只有還是 proposed 的（還沒套用、或做到一半中斷）會接著做
+    const todo = plan.status !== 'proposed' ? []
+      : plan.items.filter(i => ['pending', 'failed', 'unknown'].includes(o.get(i.itemId)?.outcome ?? 'pending'))
     say(`唯讀模式：會清掉 ${todo.length} 個檔案，但這次一個都沒動。`)
+    if (plan.status === 'partial' || plan.status === 'error') {
+      say('這份計畫已經套用過，再套用不會重試沒搬成的。要重試：node cli.mjs cleanup scan，再 node cli.mjs cleanup apply。')
+    }
     for (const i of plan.items) say(applyLine(i, o.get(i.itemId)))
     return
   }
@@ -535,11 +613,11 @@ function applyExisting(id) {
 function applyDefault({ skip, also }) {
   let all, ids
   try {
-    all = listCandidates(db, { roots: CLEAN_ROOTS, limit: Number.MAX_SAFE_INTEGER }).candidates
-    ids = defaultCandidateIds(db, CLEAN_ROOTS)
+    all = listCandidates(db, { ...SCOPE, limit: Number.MAX_SAFE_INTEGER }).candidates
+    ids = defaultCandidateIds(db, SCOPE)
   } catch (e) {
     warn('讀不到清理候選：' + cliProblem(e))
-    noteError(e)
+    noteError(e, 'apply')
     process.exitCode = EXIT.backend
     return
   }
@@ -589,15 +667,15 @@ function applyDefault({ skip, also }) {
   const candidateIds = final.flatMap(r => r.candidateIds)
   let plan
   try {
-    // 用核心的 createPlanForRoots：只收清單列得出來的（在清理範圍裡、搬得動的），跟清單同一套篩選
-    plan = createPlanForRoots(db, CLEAN_ROOTS, { candidateIds })
+    // 用核心的 createPlanForRoots：只收清單列得出來的（在清理範圍裡、搬得動的、截圖資料夾裡只收截圖），跟清單同一套篩選
+    plan = createPlanForRoots(db, SCOPE, { candidateIds })
   } catch (e) {
     if (e instanceof CleanupError && e.code === 'CONFLICT') { explainConflict(e, candidateIds); return }
     if (e instanceof CleanupError && e.code === 'EMPTY_PLAN') {
       say(`沒有東西需要清，${rootsLabel()} 很乾淨。`)
       return
     }
-    fail(e)
+    fail(e, 'apply')
     return
   }
   runApply(plan.id, { remaining, skippedRows })
@@ -636,6 +714,11 @@ function rescanFromEnv() {
   return Number.isInteger(n) && n >= 100 ? n : null
 }
 
+function scanTimeoutFromEnv() {
+  const n = Number(process.env.CONTEXTBOX_SCAN_TIMEOUT_MS)
+  return Number.isInteger(n) && n >= 100 ? n : null
+}
+
 /** open 要連哪個 port：明講的（環境變數）→ pet 記下來的 → 7391 */
 function petPort() {
   const env = portFromEnv()
@@ -657,32 +740,62 @@ const looksLikeHealth = j => Boolean(j) && typeof j === 'object'
 
 /**
  * 那個 port 上的是不是我們的 pet。回 'up'｜'down'（沒人回應）｜'stranger'（回應的不是 ContextBox）｜
- * 'stale'（形狀對，但記錄上的 pet 行程已經不在了）。
+ * 'unproven'（形狀像 ContextBox，但證明不了手上有我們的鑰匙）。
  *
- * **只有 'up' 才把帶鑰匙的網址交給瀏覽器**（第三波 C3）。上一版只看「/health 回 200」——
- * 那個埠上隨便一個程式回 200，鑰匙就跟著網址送過去了。問 /health 的時候**不帶 token**：
- * 還不知道對方是誰，帶了就等於交出去。形狀可以模仿，所以另外要 META 的 pid 還活著
- * （pet 每 30 秒寫一次心跳與 pid；pet 結束時 pet_port 會清掉）。
- * pet 撞 port（EADDRINUSE）的時候也用它（第三波之二）：一樣只有 'up' 才印網址。
+ * **只有 'up' 才把帶鑰匙的網址交出去**（第三波 C3）。問 /health 的時候**不帶 token**：還不知道對方是誰，
+ * 帶了就等於交出去。形狀可以模仿，所以要對方**證明**（第二輪 R2-9）：帶一個每次都不同的 nonce 問
+ * `/health?nonce=`，真的 pet 回 proof ＝ HMAC-SHA256(token, `${它實際監聽的埠}:${nonce}`)，這裡用**要連的那個埠**
+ * 自己算一次來比。算得出來的只有手上有鑰匙的那一個。
+ *
+ * 上一版的證明是「META 裡記的 pid 還活著」：冒牌只要形狀對、剛好有一個活著的 pid（`watch` 也寫同一個 pid，
+ * pid 也會被重用）就拿到鑰匙（稽核 C-e5）；反過來，直接跑 `node core/server.ts` 沒有寫 pid，真的 server 永遠被拒絕（C-e9）。
+ * **埠號一起算**：不然冒牌可以把 nonce 轉給另一個埠上的真 pet，再把 proof 原封不動交回來（轉送攻擊）。
+ * pet 撞 port（EADDRINUSE）的時候也用它：一樣只有 'up' 才印網址。
  */
-async function petUp(port) {
+async function petUp(port, token, healthProof) {
+  const nonce = randomBytes(16).toString('hex')
   let res, body
   try {
-    res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500), redirect: 'manual' })
+    res = await fetch(`http://127.0.0.1:${port}/health?nonce=${nonce}`, { signal: AbortSignal.timeout(1500), redirect: 'manual' })
   } catch { return 'down' }
   try { body = await res.json() } catch { return 'stranger' }
   if (res.status !== 200 || !looksLikeHealth(body)) return 'stranger'
-  let pid = NaN
-  try { pid = Number(getMeta(META.pid)) } catch { /* 讀不到就當不在 */ }
-  return Number.isInteger(pid) && pid > 0 && alive(pid) ? 'up' : 'stale'
+  const want = Buffer.from(healthProof(token, port, nonce))
+  const got = Buffer.from(typeof body.proof === 'string' ? body.proof : '')
+  return got.length === want.length && timingSafeEqual(got, want) ? 'up' : 'unproven'
 }
 
 /** petUp 不是 'up' 的時候，「為什麼不把鑰匙交出去」那一句（open 與 pet 撞 port 共用） */
 function notPetText(port, up) {
   if (up === 'stranger') return `127.0.0.1:${port} 上回應的不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
-  if (up === 'stale') return `127.0.0.1:${port} 有東西在回應，但記錄上的 pet 行程已經不在了，不把帶鑰匙的網址交給它。`
+  if (up === 'unproven') {
+    return `127.0.0.1:${port} 上回應的像 ContextBox，但證明不了它手上有你的鑰匙（可能是冒牌的、別的帳號的，或是舊版的 pet），`
+      + '不把帶鑰匙的網址交給它。'
+  }
   return `127.0.0.1:${port} 被佔著，但問不到回應，看不出是不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
 }
+
+/**
+ * 這個資料夾在不在 OneDrive 的同步資料夾裡（第二輪 R2-11）。在的話，搬進隔離區等於在雲端與所有裝置上刪掉；
+ * 只存在雲端的檔，掃描算指紋時還會被整個下載回來。doctor 看到就要講。
+ *
+ * 不分作業系統：路徑裡有一層叫 OneDrive（`OneDrive`、`OneDrive - 公司名`、macOS 的 `OneDrive-Personal`），
+ * 或在 Windows 設的 OneDrive／OneDriveConsumer／OneDriveCommercial 環境變數那個資料夾底下。只是提醒，寧可多講。
+ */
+function inOneDrive(p) {
+  const path = String(p ?? '')
+  if (path.split(/[\\/]+/).some(seg => /^onedrive(?:$|[\s\-–—])/i.test(seg))) return true
+  const norm = x => x.replace(/[\\/]+$/, '').toLowerCase()
+  for (const k of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']) {
+    const base = process.env[k] ? norm(process.env[k]) : ''
+    const here = norm(path)
+    if (base && (here === base || here.startsWith(base + '\\') || here.startsWith(base + '/'))) return true
+  }
+  return false
+}
+
+/** 錯誤種類的說法（doctor 用） */
+const KIND_LABEL = { scan: '掃描', apply: '清理（套用）', undo: '復原', empty: '清空隔離區' }
 
 /**
  * 用系統的方式打開網址：Linux xdg-open、macOS open、Windows start。打不開回 false，呼叫端只印網址。
@@ -716,6 +829,8 @@ const ftsQuery = q =>
 
 switch (cmd) {
   case 'doctor': {
+    // 先收尾（R2-1a）：中斷的搬移不結掉的話，下面的隔離區會少算、中斷的計畫也列不出來
+    settleCleanupState()
     say('ContextBox 檢查')
     say('')
     say(`設定檔    ${shown(cfgPath)}${created ? '（還沒有，剛剛幫你建了一份）' : ''}`)
@@ -725,7 +840,16 @@ switch (cmd) {
     say('監看資料夾（截圖與收件）')
     for (const r of config.watch) say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
     say('清理範圍（只有這裡面的檔會被清）')
-    for (const r of CLEAN_ROOTS) say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
+    for (const r of CLEAN_ROOTS) {
+      say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
+      // R2-11：OneDrive 同步資料夾裡的檔，搬進隔離區就是雲端刪除。工具不替你挑，但一定要講
+      if (inOneDrive(r)) {
+        say('     ⚠ 這個資料夾在 OneDrive 裡：搬進隔離區等於在雲端與所有裝置上刪掉這個檔，'
+          + '只存在雲端的檔掃描時還會被整個下載回來。要清的話把 cleanup.roots 改成不同步的資料夾。')
+      }
+    }
+    // R2-8：截圖資料夾在清理範圍裡，但那底下只清截圖（macOS 的截圖資料夾就是桌面）
+    if (SHOTS) say(`  （「${shown(basename(SHOTS) || SHOTS)}」是截圖資料夾：那底下只清截圖，其他檔不動）`)
     say(`歸檔到    ${shown(config.filed)}${existsSync(config.filed) ? '' : '（同意第一份提案時才會建）'}`)
     say('')
 
@@ -744,7 +868,7 @@ switch (cmd) {
     } else say(`監看      ✓ ${beatAgo}還活著（pid ${beatPid}）`)
 
     // doctor 是本機的人自己在看，給完整版（lastError 的內容只有帶 token 的才看得到）
-    const h = healthSnapshot(db, { roots: CLEAN_ROOTS, quarantine: QUARANTINE, full: true })
+    const h = healthSnapshot(db, { ...SCOPE, quarantine: QUARANTINE, full: true })
     say(`隔離區    ${shown(QUARANTINE)}`)
     say(`          ${h.quarantine.items} 個檔案，${mb(h.quarantine.bytes)}`
       + (h.quarantine.items
@@ -755,10 +879,48 @@ switch (cmd) {
       + (h.quarantine.orphans ? `\n          另有 ${h.quarantine.orphans} 個來路不明的檔，清空不會動到它們` : '')
       + (h.quarantine.truncated ? '\n          ⚠ 隔離區沒讀完，數字可能不準' : ''))
     let nh = null
-    try { nh = listCandidates(db, { roots: CLEAN_ROOTS, limit: 0 }) } catch { /* 用 health 的總數 */ }
+    try { nh = listCandidates(db, { ...SCOPE, limit: 0 }) } catch { /* 用 health 的總數 */ }
     say(`待清候選  ${h.pendingCandidates} 個` + needsHumanText(nh, h.needsHumanCount))
 
-    // 最近一次意外（RC5）：人話＋時間。之後成功過的話寵物已經不擔心了，也要講。
+    // 做到一半中斷的計畫（第二輪 R2-5）：proposed 而且已經有 journal。它佔著它的檔（預設清理會撞 CONFLICT），
+    // 已經搬的在隔離區 —— 只有兩條路，不能放棄。以前沒有任何指令會把它的 id 印出來。
+    let cut = []
+    try {
+      cut = db.prepare(`SELECT id, created_at FROM cleanup_plans p WHERE status='proposed'
+        AND EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id=p.id) ORDER BY created_at DESC, rowid DESC`).all()
+    } catch { /* 還沒有清理的表：沒有中斷的計畫 */ }
+    if (cut.length) {
+      say(`中斷計畫  ${cut.length} 份做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：`)
+      for (const p of cut.slice(0, 5)) {
+        let total = 0, moved = 0, unknown = 0
+        try {
+          const o = [...planOutcomes(db, p.id).values()].map(x => x.outcome)
+          total = o.length
+          moved = o.filter(k => k === 'moved').length
+          unknown = o.filter(k => k === 'unknown').length
+        } catch { /* 數不出來就講 0 */ }
+        say(`          ${p.id}（${ago(p.created_at) ?? '不知道什麼時候'}建立）：${total} 個檔，${moved} 個已經在隔離區`
+          + (unknown ? `，${unknown} 個狀態不明` : ''))
+        say(`            把已經搬走的放回原位：node cli.mjs cleanup undo ${p.id}`)
+        say(`            把它做完：node cli.mjs cleanup apply ${p.id}`)
+      }
+      if (cut.length > 5) say(`          …另外 ${cut.length - 5} 份`)
+    }
+
+    // 最近一次完整掃描回報的問題（第二輪 R2-10）：保險絲、打不開的資料夾。以前只印在背景行程的 stderr，沒有人看得到
+    // 超過 50 條的話，核心存的最後一條是「還有 N 條沒有列出來。」：總數要把它算回去，不可以說成 50 個
+    const probs = Array.isArray(h.scanProblems) ? h.scanProblems : []
+    const over = /^還有 (\d+) 條沒有列出來。$/.exec(probs.at(-1) ?? '')
+    const listed = over ? probs.slice(0, -1) : probs
+    const totalProbs = listed.length + (over ? Number(over[1]) : 0)
+    if (totalProbs) {
+      say(`掃描問題  上次掃描回報了 ${totalProbs} 個問題：`)
+      for (const x of listed.slice(0, 10)) say(`          ⚠ ${shown(x)}`)
+      if (totalProbs > 10) say(`          …另外 ${totalProbs - Math.min(10, listed.length)} 個`)
+    }
+
+    // 最近一次意外（RC5）：人話＋時間。寵物還擔不擔心它，**跟寵物用同一個判斷**（errorStillActive，R2-10）：
+    // 有種類的錯只有同一種動作之後成功過才算好了 —— 掃描成功不會蓋掉一直壞著的套用。
     const errAt = h.lastErrorAt ?? null
     const errWhy = h.lastError
       ? (errAt && h.lastError.startsWith(errAt + ' ') ? h.lastError.slice(errAt.length + 1) : h.lastError)
@@ -766,7 +928,14 @@ switch (cmd) {
     if (!errWhy) say('最近出錯  沒有')
     else {
       say(`最近出錯  ${errAt ? `${ago(errAt)}（${localTime(errAt)}）` : '時間不明'}：${shown(errWhy)}`)
-      if (h.lastOkAt && errAt && h.lastOkAt > errAt) say(`          之後已經成功過（${ago(h.lastOkAt)}），寵物不會再為它擔心。`)
+      const label = KIND_LABEL[h.lastErrorKind] ?? null
+      if (!errorStillActive(h)) {
+        const okAt = label ? h.lastOkByKind?.[h.lastErrorKind] : h.lastOkAt
+        say(`          之後${label ?? ''}已經成功過（${ago(okAt) ?? '時間不明'}），寵物不會再為它擔心。`)
+      } else {
+        say('          寵物還在為它擔心：'
+          + (label ? `這是${label}出的錯，之後還沒有成功的${label}。` : '之後還沒有成功過任何一次清理動作。'))
+      }
     }
     say('')
 
@@ -847,26 +1016,33 @@ switch (cmd) {
 
   case 'pet': {
     showProblems()
-    const { start, uiUrl } = await import('./core/server.ts')
+    const { start, uiUrl, healthProof } = await import('./core/server.ts')
     const { createCleanupWatcher } = await import('./core/cleanup-watcher.ts')
     const want = portFromEnv() ?? DEFAULT_PORT
     // **roots、quarantine、maxBytes、readonly 全部傳進去。** 少給一個 server 就會自己再讀一次設定檔，
     // 而 pet 印出來的隔離區跟它剛啟動的那個 server 服務的就可能不是同一個。
     // 清理範圍是 cleanup.roots（RC15），不是截圖的 watch —— macOS 上 watch 含桌面。
+    // **放回範圍與截圖資料夾也要傳**（第二輪 R2-4／R2-8）：參數全給了 server 就不讀設定檔，沒傳的話
+    // 面板的復原只看清理範圍（舊版從桌面搬走的檔放不回去），截圖資料夾也照全部規則列候選。
     const srv = start({
       port: want, roots: CLEAN_ROOTS, quarantine: QUARANTINE,
       maxBytes: config.maxBytes, readonly: config.readonly,
+      restoreRoots: restoreRootList(), screenshotsDir: SHOTS,
     })
     let port
     try { port = await srv.ready }
     catch (e) {
       if (e?.code === 'EADDRINUSE') {
-        // **先問那個埠上是不是真的 pet，是才印網址**（第三波之二，跟 open 同一個判斷）。
+        // **先問那個埠上是不是真的 pet，是才印網址**（第三波之二，跟 open 同一個判斷：要它證明手上有鑰匙，R2-9）。
         // 上一版不問就印帶鑰匙的網址、回 0：佔著那個埠的是陌生程式的話，使用者一點下去，鑰匙就交給它了。
-        const up = await petUp(want)
+        const up = await petUp(want, srv.token, healthProof)
         if (up === 'up') {
           // 網址**帶鑰匙**（RC16）：不帶 k 的網址打開是 401
-          say(`已經有一個 ContextBox 在跑了。打開 ${uiUrl(want, srv.token)} 就好。`)
+          const url = uiUrl(want, srv.token)
+          say(`已經有一個 ContextBox 在跑了。打開 ${url} 就好。`)
+          // **順便打開**（R2-9，稽核 C-e7）：Windows 的捷徑開的是最小化視窗，這裡印完就結束，
+          // pet 開著時再點一次捷徑等於沒反應 —— 那正是使用者想打開面板的時候
+          if (!(await openInBrowser(url))) warn('打不開瀏覽器，請自己複製上面的網址貼到瀏覽器。')
           break
         }
         warn(notPetText(want, up) + '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。')
@@ -891,6 +1067,7 @@ switch (cmd) {
     say('　（鑰匙已經帶在網址裡，直接打開就能用；之後要再打開：node cli.mjs open）')
     say('')
     say(`清理範圍：${rootsLabel()}`)
+    if (SHOTS) say(`　（「${shown(basename(SHOTS) || SHOTS)}」是截圖資料夾：那底下只清截圖，其他檔不動）`)
     say(`隔離區：${shown(QUARANTINE)}`)
 
     // **一啟動就全部掃一次，之後定期重掃**（RC2）。watcher 只看得到有事件的檔：
@@ -899,15 +1076,20 @@ switch (cmd) {
     // **全量掃描開子行程跑**（第三波 C2）。掃描是同步的，一千個檔要將近二十秒（逐列提交）：
     // 在 server 這條執行緒上跑的話，那段時間 /health 一個都不回，`open` 誤報 pet 沒在跑。
     // 子行程就是 `cleanup scan --json`：同一支 cli.mjs、同一份環境變數（HOME、CONTEXTBOX_*），
-    // 它自己記 lastOk／lastError（寵物只在 lastError 比 lastOk 新的時候擔心，RC5）、
-    // 自己把 problem 印到 stderr —— 它的 stderr 直接接在 pet 的 stderr 上。
+    // 它自己記掃描種類的 lastOk／lastError（寵物只拿同一種動作的成功蓋掉那一種的錯，RC5／R2-10）、
+    // 自己把 problem 印到 stderr（它的 stderr 直接接在 pet 的 stderr 上），也存進資料庫給 doctor 與帶 token 的 /health（R2-10）。
     // 同時間最多一個；pet 結束時殺掉；子行程沒交代結果就死掉（被砍、當掉）由 pet 記 lastError。
+    // **有逾時**（第二輪 R2-10）：超過 CONTEXTBOX_SCAN_TIMEOUT_MS（預設 10 分鐘）就殺掉、記一筆掃描的錯，下一輪照常。
+    // 以前子行程卡在斷線的網路碟上就永遠不結束，scanning 一直有值 —— 再也不重掃，也沒有人知道。
+    // **每一輪之前先收尾**（R2-1a／R2-5，開機那一輪也是）：pet 自己做，不靠子行程 —— 子行程卡住的時候也收得到尾。
     // watcher 觸發的單檔增量處理還是在這裡做（一次一個檔，很快）。
     const rescanMs = rescanFromEnv() ?? RESCAN_MS
+    const scanTimeoutMs = scanTimeoutFromEnv() ?? SCAN_TIMEOUT_MS
     let scanning = null
     let stopping = false
     const fullScan = (first = false) => {
       if (scanning || stopping) return
+      settleCleanupState()
       let child
       try {
         // detached（POSIX）：自己一個行程群組。不然終端機的 Ctrl+C 會同時送到子行程，
@@ -922,19 +1104,32 @@ switch (cmd) {
       child.stdout?.setEncoding('utf8')
       child.stdout?.on('data', d => { if (out.length < 65536) out += d })
       let settled = false
-      const settle = (code, signal, err) => {
+      const settle = (code, signal, err, timedOut = false) => {
         if (settled) return
         settled = true
+        clearTimeout(timer)
         if (scanning === child) scanning = null
-        scanEnded(first, out, code, signal, err)
+        scanEnded(first, out, code, signal, err, timedOut)
       }
+      // 卡住了：SIGKILL（卡在系統呼叫裡的行程 SIGTERM 不一定收得到），**不等它的 close** ——
+      // 卡在 D state 的行程要等系統呼叫回來才會真的死，等 close 的話 scanning 還是一直有值
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL') } catch { /* 已經結束了 */ }
+        settle(null, null, null, true)
+      }, scanTimeoutMs)
       // 開不起來會先 error（可能再 close），跑完是 close（stdout 讀完了才算）
       child.once('error', e => settle(null, null, e))
       child.once('close', (code, signal) => settle(code, signal, null))
     }
-    /** 一次全量掃描結束了。子行程最後一行是 JSON 結果；沒有的話就是沒交代就死掉了。 */
-    function scanEnded(first, out, code, signal, err) {
+    /** 一次全量掃描結束了。子行程最後一行是 JSON 結果；沒有的話就是沒交代就死掉了（或逾時被殺）。 */
+    function scanEnded(first, out, code, signal, err, timedOut) {
       if (stopping) return
+      if (timedOut) {
+        noteError(new Error(SCAN_TIMEOUT_WHY), 'scan')
+        warn(`⚠ 背景掃描超過 ${every(scanTimeoutMs)}沒有結束（資料夾可能卡住了），先停掉它，${every(rescanMs)}後會再試。`
+          + '掃描不會搬動或刪除任何檔案。')
+        return
+      }
       let r = null
       try { r = JSON.parse(out.trim().split('\n').pop() || 'null') } catch { /* 沒交代結果 */ }
       if (r?.ok === true) {
@@ -947,7 +1142,7 @@ switch (cmd) {
         return
       }
       const how = err ? why(err?.message ?? err) : signal ? `被 ${signal} 結束` : `離開碼 ${code}`
-      noteError(new Error(`全部重掃的背景行程意外結束（${how}）`))
+      noteError(new Error(`全部重掃的背景行程意外結束（${how}）`), 'scan')
       warn(`⚠ 全部重掃的背景行程意外結束（${how}）。掃描不會搬動或刪除任何檔案，${every(rescanMs)}後會再試。`)
     }
     fullScan(true)
@@ -966,7 +1161,7 @@ switch (cmd) {
       // 掃描子行程一起收掉，不然 pet 結束了它還在寫資料庫
       if (scanning) { try { scanning.kill() } catch { /* 已經結束了 */ } }
       // pet_port 清掉（C3）：留著的話 open 會去問一個已經不是 pet 的東西。只清自己寫的那個值
-      try { db.prepare('DELETE FROM meta WHERE k=? AND v=?').run(META.petPort, String(port)) } catch { /* 忙就算了：open 還會看 pid */ }
+      try { db.prepare('DELETE FROM meta WHERE k=? AND v=?').run(META.petPort, String(port)) } catch { /* 忙就算了：open 還會要對方證明 */ }
       say('\n停了。')
       process.exit(0)
     }
@@ -980,25 +1175,26 @@ switch (cmd) {
   case 'open': {
     // 印出帶鑰匙的網址，並試著用系統的方式打開瀏覽器（RC16）。
     // GET / 沒帶 k 是 401，那一頁就是叫人來跑這個指令。
-    const { loadToken, uiUrl } = await import('./core/server.ts')
+    const { loadToken, uiUrl, healthProof } = await import('./core/server.ts')
     let token
     try { token = loadToken() }
     catch (e) { warn('讀不到鑰匙：' + why(e?.message ?? e)); process.exitCode = EXIT.backend; break }
     const port = petPort()
     const url = uiUrl(port, token)
-    const up = await petUp(port)
+    // 要它證明手上有鑰匙（R2-9），不看形狀、不看 pid：直接跑 `node core/server.ts` 的也認得（稽核 C-e9）
+    const up = await petUp(port, token, healthProof)
     if (up === 'down') {
-      // 沒有人在聽就不要打開一個一定連不上的分頁；網址還是印出來，pet 起來之後就能用
-      say(url)
-      warn(`pet 好像沒在跑（127.0.0.1:${port} 沒有回應）。先跑 node cli.mjs pet，它會印出同一個網址。`)
+      // **沒在跑就不印帶鑰匙的網址**（R2-9）。上一版照印：之後佔住那個埠的不管是誰，
+      // 使用者把這一行貼進瀏覽器，鑰匙就交給它了 —— 跟「不是 pet 就連網址都不印」同一個原則。pet 起來會自己印
+      warn(`pet 好像沒在跑（127.0.0.1:${port} 沒有回應）。先跑 node cli.mjs pet，它會印出帶鑰匙的網址。`)
       process.exitCode = EXIT.backend
       break
     }
     if (up !== 'up') {
-      // 有東西在回應、但不是（或不再是）我們的 pet：**連網址都不印**，免得被人複製去貼給它
+      // 有東西在回應、但不是（或證明不了是）我們的 pet：**連網址都不印**，免得被人複製去貼給它
       warn(notPetText(port, up) + (up === 'stranger'
         ? '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。'
-        : '先跑 node cli.mjs pet。'))
+        : '如果那是你自己開的舊版 pet，關掉它再跑 node cli.mjs pet；不是的話先看看那個埠被誰佔著。'))
       process.exitCode = EXIT.backend
       break
     }
@@ -1012,27 +1208,34 @@ switch (cmd) {
     // --json 是 pet 的背景重掃（C2），每 30 分鐘一次；設定的警告 pet 開機時講過了，不要每次重講
     const json = sub === 'scan' && args.includes('--json')
     if (!json) showProblems()
+    // 會讀或動清理狀態的子指令，先收尾（R2-1a／R2-5）：中斷的搬移結掉、放太久沒開始的計畫放棄。
+    // 不給 id 的 undo 要找得到單檔被砍的那份，quarantine 要列得出它，list 不能被一份早就沒人要的計畫佔著
+    if (['scan', 'list', undefined, 'apply', 'undo', 'release', 'quarantine'].includes(sub)) settleCleanupState()
 
     if (sub === 'scan') {
       let r
+      const found = []
       try {
         // 讀不到的資料夾、保險絲（整個資料夾看起來不見了）都經由 onProblem 講出來 ——
         // 不接的話，那些話只存在於 API 層，使用者永遠看不到。
         r = scanDownloads({
           db, roots: CLEAN_ROOTS, maxBytes: config.maxBytes,
-          onProblem: m => warn('⚠ ' + shown(m)),
+          onProblem: m => { found.push(m); warn('⚠ ' + shown(m)) },
         })
       } catch (e) {
-        noteError(e)
+        noteError(e, 'scan')
         warn(`掃描出錯（${why(e?.message ?? e)}），這次掃描可能沒有完成。掃描不會搬動或刪除任何檔案。`)
         if (json) say(JSON.stringify({ ok: false }))
         process.exitCode = EXIT.backend
         break
       }
-      noteOk()
+      noteOk('scan')
+      // 回報的問題也存起來（R2-10）：pet 的背景重掃（--json）只印到 stderr 的話，最小化的視窗沒有人在看。
+      // 存的是去掉完整路徑的那份（跟 POST /cleanup/scan 同一支整理），空陣列＝這次沒問題、清掉上一次的
+      try { recordScanProblems(db, scanProblems(found, CLEAN_ROOTS)) } catch { /* 存不進去就算了：stderr 照樣印了 */ }
       // scanner 回的 candidates 是**規則列數**，但 list 講的是**檔案數** ——
       // 這整支檔案存在的理由就是消掉這個差別，不可以在自己的 CLI 又端出來。
-      const files = listCandidates(db, { roots: CLEAN_ROOTS, limit: 0 }).totalAvailable
+      const files = listCandidates(db, { ...SCOPE, limit: 0 }).totalAvailable
       if (json) {
         // 給 pet 讀的：stdout 只有這一行。problem 與「太多了」照樣印到 stderr
         say(JSON.stringify({ ok: true, scanned: r.scanned, files, skipped: r.skipped, errors: r.errors, truncated: r.truncated }))
@@ -1050,7 +1253,7 @@ switch (cmd) {
 
     if (sub === 'list' || sub === undefined) {
       let r
-      try { r = listCandidates(db, { roots: CLEAN_ROOTS, limit: Number.MAX_SAFE_INTEGER }) }
+      try { r = listCandidates(db, { ...SCOPE, limit: Number.MAX_SAFE_INTEGER }) }
       catch (e) {
         // 後端錯是 2 不是 1，而且不要噴一坨 Node 堆疊
         warn('讀不到清理候選：' + cliProblem(e))
@@ -1109,7 +1312,7 @@ switch (cmd) {
         // 不給 id ＝ 最近一份還能復原的（docs/cli.md）。上一版直接回 1。
         let last
         try { last = listPlans(db, { filter: 'undoable', limit: 1 }).operations[0] }
-        catch (e) { fail(e); break }
+        catch (e) { fail(e, 'undo'); break }
         if (!last) {
           warn('沒有可以復原的計畫：隔離區裡沒有這個工具搬過去、還沒放回的檔。')
           process.exitCode = EXIT.badInput
@@ -1120,14 +1323,14 @@ switch (cmd) {
       }
       let plan
       try { plan = getPlan(db, id) }
-      catch (e) { fail(e); break }
+      catch (e) { fail(e, 'undo'); break }
       // **還沒開始**的計畫沒有東西可以復原。交給 B 的話它會把計畫標成「已復原」，那是在說謊。
       // 「沒開始」跟 releasePlan 同一個判斷（planStarted，C1）：做到一半中斷的計畫也停在 proposed，
       // 但已經有檔在隔離區 —— 那種要交給 undoPlan 放回去，不可以叫人去 release（核心一定拒絕）。
       if (plan.status === 'proposed') {
         let started
         try { started = planStarted(plan.id) }
-        catch (e) { fail(e); break }
+        catch (e) { fail(e, 'undo'); break }
         if (!started) {
           warn(`計畫 ${plan.id} 還沒套用，沒有東西可以復原。要放棄它：node cli.mjs cleanup release ${plan.id}`)
           process.exitCode = EXIT.badInput
@@ -1135,7 +1338,7 @@ switch (cmd) {
         }
         say(`計畫 ${plan.id} 做到一半中斷了，把已經搬走的放回原位。`)
       }
-      if (plan.status === 'dismissed') { say(`計畫 ${plan.id} 已經放棄了，沒有動過任何檔案，不用復原。`); break }
+      if (plan.status === 'dismissed') { say(`計畫 ${plan.id} 已經放棄了（${DISMISSED_WHO}），沒有動過任何檔案，不用復原。`); break }
       if (plan.status === 'restored') {
         say(`計畫 ${plan.id} 已經復原過了。`)
         printPlanItems(plan, undoLine)
@@ -1151,19 +1354,25 @@ switch (cmd) {
       let r
       // 放回原位的範圍比清理範圍寬一點：舊版從監看資料夾（桌面）搬走的也放得回去（C4）
       try { r = undoPlan(db, id, undoOpts()) }
-      catch (e) { fail(e); break }
-      noteOk()
+      catch (e) { fail(e, 'undo'); break }
+      noteResult('undo', r)
       // **逐項照 outcome 印**：↩ 只給真的放回去的，沒放回的講原因（還在隔離區、已清空、狀態不明）。
       // 列全部都打 ↩ 的話會出現「放回 2 個」後面接三行 ↩ —— 跟 apply 一律印 ✔ 是同一類的畫面說謊。
       // 不講資料夾名：放回的可能是舊版搬走的桌面檔，不一定在清理範圍裡（面板也是講「放回原位」）。
       const outcomes = planOutcomes(db, id)
       say(`放回原位 ${r.restoredCount} 個檔案。`)
       for (const i of r.items) say(undoLine(i, outcomes.get(i.itemId)))
+      // **離開碼照逐項結果，不看計畫的 status**（第二輪 R2-1，稽核 A-exp2）：3 只給真的有檔沒放回
+      // （還在隔離區、已經清空、狀態不明）。上一版 status 是 partial 就回 3，畫面卻印「有 0 個沒放回」。
       const left = r.items.map(i => outcomes.get(i.itemId)?.outcome).filter(k => ['moved', 'purged', 'unknown'].includes(k))
-      if (left.length || r.status === 'partial' || r.status === 'error') {
+      if (left.length) {
         warn(`\n⚠ 有 ${left.length} 個沒放回（原因寫在上面）。`
           + (left.includes('unknown') ? '狀態不明的，執行 node cli.mjs doctor 檢查。' : ''))
         process.exitCode = EXIT.partial
+      } else if (r.status === 'partial' || r.status === 'error') {
+        // 核心說有一步沒做好，但逐項看沒有任何搬走的檔留在隔離區（例如隔離區裡那個位置的內容對不上、沒有動它）：
+        // 照印核心的原因，不吞掉；離開碼照逐項（0）
+        warn(`\n⚠ ${shown(safeWhy(r.error) ?? '復原時有一步沒做好，原因不明。')}`)
       }
       break
     }
@@ -1212,7 +1421,7 @@ switch (cmd) {
           // **唯讀也要驗確認碼**（C6）：確認碼錯是輸入錯（1），跟真的清空一樣。只讀，不消耗、不刪
           let bad
           try { bad = emptyTokenProblem(token) }
-          catch (e) { fail(e); break }
+          catch (e) { fail(e, 'empty'); break }
           if (bad) {
             warn(`${bad}先跑：node cli.mjs cleanup quarantine --empty`)
             process.exitCode = EXIT.badInput
@@ -1229,10 +1438,10 @@ switch (cmd) {
             process.exitCode = EXIT.badInput
             break
           }
-          fail(e)
+          fail(e, 'empty')
           break
         }
-        noteOk()
+        noteResult('empty', r)
         say(`刪掉 ${r.deletedCount} 個，${mb(r.deletedBytes)}。`)
         if (r.errors.length) {
           warn(`${r.errors.length} 個沒刪成：`)
@@ -1264,7 +1473,7 @@ switch (cmd) {
         }
         let prep
         try { prep = prepareEmptyQuarantine(db, execOpts()) }
-        catch (e) { fail(e); break }
+        catch (e) { fail(e, 'empty'); break }
         if (!prep.itemCount) { say('還沒有滿七天的檔案。'); break }
         say(shown(prep.message))
         say(`會永久刪除 ${prep.itemCount} 個檔案，${mb(prep.bytes)}。`)

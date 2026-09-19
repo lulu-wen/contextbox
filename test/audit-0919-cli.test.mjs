@@ -14,20 +14,21 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, realpathSync, existsSync,
-  readFileSync, chmodSync, renameSync, readdirSync,
+  readFileSync, chmodSync, renameSync, readdirSync, appendFileSync,
 } from 'node:fs'
 import { spawnSync, spawn } from 'node:child_process'
 import { request, createServer as httpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { open } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan } from '../core/cleanup-exec.ts'
 import { listCandidates, TOO_LARGE_WHY } from '../core/cleanup-routes.ts'
+import { healthProof } from '../core/server.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = join(REPO, 'cli.mjs')
@@ -362,12 +363,13 @@ describe('RC13 CLI 自己解讀結果、離開碼違約', () => {
     const pending = s.run(['cleanup', 'apply', p.id], { CONTEXTBOX_READONLY: '1' })
     assert.equal(pending.code, 0, pending.out)
     assert.match(pending.out, /b\.zip[^\n]*還沒做/, pending.out)
-    // 已放棄（cancelled）
+    // 已放棄（cancelled）。第二輪 R2-1e 之後 cancelled 也包含「計畫跑過、這一項沒處理到」，
+    // 逐項改講實話：沒有處理，本來就在原位（test/audit-0919-r2cli.test.mjs）
     assert.equal(s.run(['cleanup', 'release', p.id]).code, 0)
     const cancelled = s.run(['cleanup', 'apply', p.id])
     assert.equal(cancelled.code, 0, cancelled.out)
     assert.match(cancelled.out, /已經放棄/)
-    assert.match(cancelled.out, /b\.zip[^\n]*已放棄/, cancelled.out)
+    assert.match(cancelled.out, /b\.zip[^\n]*沒有處理[^\n]*本來就在原位/, cancelled.out)
   })
 })
 
@@ -510,10 +512,15 @@ describe('RC17 已經搬了／搬到一半，訊息不可以說沒有', () => {
     for (const n of remove) rmSync(join(s.dl, n))
     applyPlan(d, p.id, { roots: [s.dl], quarantine: s.p.q, maxBytes: 20971520 })
     const itemOf = name => d.prepare('SELECT id FROM file_items WHERE name=?').get(name).id
-    /** 模擬搬到一半中斷：journal 停在 started */
+    /**
+     * 模擬搬到一半中斷：journal 停在 started，**而且說不準**。
+     * 第二輪 R2-1a 之後每個清理指令之前都會收尾：檔在隔離區、指紋對得上的 started 列會被結成 done
+     * （那是對的）。要留下「狀態不明」，隔離區那份的指紋就要對不上（搬進去之後還在變），原位也沒有。
+     */
     const interrupt = name => {
       d.prepare(`UPDATE cleanup_journal SET status='started' WHERE plan_id=? AND item_id=? AND op='quarantine'`).run(p.id, itemOf(name))
       d.prepare(`UPDATE cleanup_plans SET status='applied' WHERE id=?`).run(p.id)
+      appendFileSync(join(s.p.q, p.id, itemOf(name), 'content'), '搬進去之後還在變')
     }
     return { s, d, p, interrupt }
   }
@@ -840,7 +847,8 @@ describe('RC16／RC2 pet 與 open', () => {
     assert.match(r.out, /打不開瀏覽器/)
   })
 
-  test('open：pet 沒在跑 → 還是印網址，講要先跑 pet，不打開瀏覽器，離開碼 2', async t => {
+  // 第二輪 R2-9：沒在跑的時候**不印**帶鑰匙的網址了（之後佔住那個埠的不管是誰，貼過去就拿到鑰匙）
+  test('open：pet 沒在跑 → 不印帶鑰匙的網址，講要先跑 pet，不打開瀏覽器，離開碼 2', async t => {
     const s = sandbox(t)
     // 一個剛剛還開著、現在關掉的 port：保證沒有人在聽，也不是 7391
     const tmp = createServer()
@@ -849,7 +857,7 @@ describe('RC16／RC2 pet 與 open', () => {
     await new Promise(r => tmp.close(r))
     const r = s.run(['open'], { CONTEXTBOX_PORT: String(port) })
     assert.equal(r.code, 2, r.out)
-    assert.match(r.stdout, new RegExp(`127\\.0\\.0\\.1:${port}/\\?k=`))
+    assert.doesNotMatch(r.out, /\?k=/, r.out)
     assert.match(r.out, /node cli\.mjs pet/)
     assert.ok(!existsSync(s.p.opened), '沒在跑就不要打開瀏覽器')
   })
@@ -1071,6 +1079,16 @@ function healthMs(port, timeout = 5000) {
 
 const LINUX_ONLY = process.platform !== 'linux' && '讀 /proc 數子行程'
 
+/**
+ * 把 pet 的掃描子行程放慢的 preload（第二輪 R2-12，稽查 B 的發現）。下面兩條要「量的時候掃描還沒做完」：
+ * 以前靠 1000 個檔在 ext4 上要掃十幾秒（每一列提交都 fsync），TMPDIR 在 tmpfs 的機器上 0.3 秒就掃完、兩條必紅。
+ * 現在每一次 lstat 先睡 CB_SLOW_SCAN_MS 毫秒（一個檔大約三次），掃多久由測試決定，不看碟快不快。
+ */
+const slowScan = ms => ({
+  NODE_OPTIONS: `--import=${pathToFileURL(join(REPO, 'test', 'helpers', 'slow-scan.mjs')).href}`,
+  CB_SLOW_SCAN_MS: String(ms),
+})
+
 describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
   test('cleanup scan --json（pet 的背景重掃用的）：stdout 只有一行 JSON，problem 照樣講', t => {
     const s = sandbox(t, { files: { 'a.zip': 60, 'b.zip': 60 } })
@@ -1089,10 +1107,12 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
     assert.ok(meta(s, 'cleanup_last_ok'), '掃描成功要記 lastOk')
   })
 
-  test('Downloads 1000 個檔：開機掃描進行中 /health 1 秒內回；掃完候選數正確', async t => {
+  test('Downloads 150 個檔、掃描放慢到好幾秒：開機掃描進行中 /health 1 秒內回；掃完候選數正確', async t => {
     const s = sandbox(t)
-    for (let i = 0; i < 1000; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
-    const pet = startPet(t, s)
+    const N = 150
+    for (let i = 0; i < N; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
+    // 每個檔大約 3 次 lstat × 8 ms：碟再快也要掃三秒以上
+    const pet = startPet(t, s, slowScan(8))
     const port = Number((await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1])
     const finished = () => /開機掃描：掃了/.test(pet.out())
     const during = []
@@ -1103,24 +1123,25 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
       const h = await healthMs(port)
       if (startedDuring) during.push(h.ms)
       const n = count(s, 'SELECT count(*) n FROM file_items')
-      if (n > 0 && n < 1000 && !finished()) midway = true
+      if (n > 0 && n < N && !finished()) midway = true
       await sleep(150)
     }
     assert.ok(during.length > 0, pet.out())
     assert.ok(Math.max(...during) < 1000, `掃描進行中 /health 要 1 秒內回：${during.join('、')} ms`)
     assert.ok(during.length >= 3 && midway, `前提：真的在掃描進行中量到（${during.length} 次）`)
     const m = await pet.until(/開機掃描：掃了 (\d+) 個檔案，(\d+) 個可以清/, 120_000)
-    assert.deepEqual([m[1], m[2]], ['1000', '1000'], pet.out())
+    assert.deepEqual([m[1], m[2]], [String(N), String(N)], pet.out())
     const h = await http(port, 'GET', '/health')
-    assert.equal(h.json.pendingCandidates, 1000)
+    assert.equal(h.json.pendingCandidates, N)
   })
 
   test('同時間最多一個掃描子行程；pet 結束時把它一起收掉', { skip: LINUX_ONLY }, async t => {
     const s = sandbox(t)
-    // 一千個檔要掃十幾秒：pet 結束之後子行程如果沒被收掉，下面那 3 秒裡它一定還在跑
-    //（300 個檔的話它可能剛好自己掃完，沒收掉也看不出來 —— 突變測試抓到的洞）
-    for (let i = 0; i < 1000; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
-    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '100' })
+    // 掃描放慢到七秒以上（300 個檔 × 大約 3 次 lstat × 8 ms）：pet 結束之後子行程如果沒被收掉，
+    // 下面那 3 秒裡它一定還在跑（自己掃完的話，沒收掉也看不出來 —— 突變測試抓到的洞）。
+    // 以前靠 1000 個檔在慢碟上要十幾秒，tmpfs 上必紅（第二輪 R2-12）
+    for (let i = 0; i < 300; i++) s.put(`f${String(i).padStart(4, '0')}.zip`, 60)
+    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '100', ...slowScan(8) })
     await pet.until(/按 Ctrl\+C/)
     let most = 0
     const seen = new Set()
@@ -1134,7 +1155,7 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
     assert.ok(seen.size >= 1, '前提：看得到掃描子行程')
     assert.equal(most, 1, `同時有 ${most} 個掃描子行程`)
     const kids = childrenOf(pet.child.pid)
-    assert.equal(kids.length, 1, '前提：一千個檔還在掃')
+    assert.equal(kids.length, 1, '前提：放慢的掃描還在掃')
     assert.doesNotMatch(pet.out(), /開機掃描：掃了/, '前提：開機掃描還沒掃完')
     await pet.stop()
     const t1 = Date.now()
@@ -1145,7 +1166,8 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
   test('掃描子行程被砍掉：記 lastError、pet 還活著、下一輪照掃', { skip: LINUX_ONLY }, async t => {
     const s = sandbox(t)
     for (let i = 0; i < 300; i++) s.put(`f${String(i).padStart(3, '0')}.zip`, 60)
-    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '1000' })
+    // 放慢：在 tmpfs 上 300 個檔零點幾秒就掃完，可能還沒抓到子行程它就結束了
+    const pet = startPet(t, s, { CONTEXTBOX_RESCAN_MS: '1000', ...slowScan(8) })
     const port = Number((await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1])
     await pet.until(/按 Ctrl\+C/)
     let first = []
@@ -1169,11 +1191,11 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
 // ── C3 ────────────────────────────────────────────────────────
 
 describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
-  /** 在 port 0 起一個什麼都回 200 的假 /health。 */
+  /** 在 port 0 起一個什麼都回 200 的假 /health。body 可以是函式（拿到請求與自己的埠，回要送的物件）。 */
   async function fakeHealth(t, body) {
     const srv = httpServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(body))
+      res.end(JSON.stringify(typeof body === 'function' ? body(req, srv.address().port) : body))
     })
     await new Promise(r => srv.listen(0, '127.0.0.1', r))
     t.after(() => { srv.closeAllConnections(); return new Promise(r => srv.close(r)) })
@@ -1201,7 +1223,8 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
     assert.match(r.out, /不是 ContextBox/)
   })
 
-  test('形狀像 ContextBox，但記錄上的 pet 行程已經不在了：不打開，離開碼 2', async t => {
+  // 第二輪 R2-9：身分改用 /health 的 proof，pid 不再算數（這條與下一條 pid 活著的冒牌都是 2，見 test/audit-0919-r2cli.test.mjs）
+  test('形狀像 ContextBox，但給不出 proof（記錄上的 pet 行程也已經不在了）：不打開，離開碼 2', async t => {
     const s = sandbox(t)
     const port = await fakeHealth(t, SHAPE)
     record(s, port, 2147483646)
@@ -1211,10 +1234,15 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
     assert.doesNotMatch(r.out, /\?k=/)
   })
 
-  test('對照：形狀對、記錄上的 pid 還活著 → 打開（0）', async t => {
+  test('對照：形狀對、而且算得出 proof（手上有鑰匙）→ 打開（0），記錄上的 pid 不在也一樣', async t => {
     const s = sandbox(t)
-    const port = await fakeHealth(t, SHAPE)
-    record(s, port, process.pid)
+    const token = 'r2-cli-token-for-proof'
+    writeFileSync(s.p.token, token)
+    const port = await fakeHealth(t, (req, own) => {
+      const nonce = new URL(req.url, 'http://x').searchParams.get('nonce') ?? ''
+      return { ...SHAPE, proof: healthProof(token, own, nonce) }
+    })
+    record(s, port, 2147483646)
     const r = await runAsync(s, ['open'])
     assert.equal(r.code, 0, r.out)
     assert.match(readFileSync(s.p.opened, 'utf8'), new RegExp(`^http://127\\.0\\.0\\.1:${port}/\\?k=`))
@@ -1231,7 +1259,7 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
     assert.match(pet.out(), /不是 ContextBox/, pet.out())
   })
 
-  test('pet 撞 port：形狀像 ContextBox，但記錄上的 pet 行程已經不在了 → 不印鑰匙，離開碼 2', async t => {
+  test('pet 撞 port：形狀像 ContextBox，但給不出 proof → 不印鑰匙，離開碼 2', async t => {
     const s = sandbox(t)
     const port = await fakeHealth(t, SHAPE)
     record(s, port, 2147483646)
@@ -1239,7 +1267,7 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
     const code = await pet.exited
     assert.equal(code, 2, pet.out())
     assert.doesNotMatch(pet.out(), /\?k=/, pet.out())
-    assert.match(pet.out(), /已經不在了/, pet.out())
+    assert.match(pet.out(), /證明不了/, pet.out())
   })
 
   test('pet 結束時清掉 pet_port', async t => {

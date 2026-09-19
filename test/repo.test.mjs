@@ -415,19 +415,63 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     assert.match(row[1], /`proposed`/)
   })
 
-  test('409 CONFLICT 那一列：全部放回的、復原還沒開始放回就出錯的，再 apply 都是 200，不是 409（D4、第三波之二）', () => {
+  test('409 CONFLICT 那一列：全部放回的、沒有復原紀錄的 partial／error，再 apply 都是 200、原樣回傳，不是 409（D4、第三波之二、第二輪 R2-3）', () => {
     const t = tables().find(t => t.header.some(h => /^code$/i.test(h)))
     const row = t.rows.find(r => r.includes('`CONFLICT`')) ?? []
     const when = row[t.header.findIndex(h => /什麼時候/.test(h))] ?? ''
+    const todo = row[t.header.findIndex(h => /呼叫端/.test(h))] ?? ''
     assert.ok(when, '找不到 CONFLICT 那一列')
     assert.doesNotMatch(when, /已經開始復原的計畫再 apply/, '「已經開始復原的計畫再 apply」太寬：全部放回的回 200')
     // 第三波之二：「停在 partial／error 的再 apply → 409」也太寬 —— 擋的是**有復原紀錄**的（applyPlan 看 journal 裡有沒有 restore）。
-    // 復原時第一個檔就 CHANGED 的 error 沒有復原紀錄，再 apply 回 200、變成 applied（下面 D4 那一條真的跑一次）
-    assert.doesNotMatch(when, /`partial`／`error` 的計畫再 apply/, '太寬：復原還沒開始放回就出錯的 error 再 apply 回 200')
+    assert.doesNotMatch(when, /`partial`／`error` 的計畫再 apply/, '太寬：沒有復原紀錄的 partial／error 再 apply 回 200')
     assert.match(when, /復原紀錄/, '要講清楚擋的是有復原紀錄的')
     assert.match(when, /`partial`/, '復原停在 partial 的再 apply 是 409')
-    assert.match(when, /`error`[^|]*200[^|]*`applied`/, '要講：還沒開始放回就出錯的 error 再 apply 回 200、變成 applied')
+    // **期望值改過**（第二輪 R2-3）：以前斷言「還沒開始放回就出錯的 error 再 apply 回 200、變成 applied」——
+    // 那時 applyPlan 會重試 partial／error。R2-3 起計畫是一次性的：跑完過的 partial／error 原樣回傳，
+    // status 還是 error，不會變成 applied（下面 D4 那一條真的跑一次）。
+    assert.doesNotMatch(when, /變成\s*`applied`/, 'R2-3 起 error 再 apply 不會變成 applied')
+    assert.match(when, /`partial`／`error`[^|]*200[^|]*原樣/, '要講：沒有復原紀錄的 partial／error 再 apply 回 200、原樣回傳')
+    assert.match(when, /還沒開始放回就出錯/, '復原時還沒開始放回就出錯的 error 也是這一種')
     assert.match(when, /`restored`[^；|]*200|200[^；|]*`restored`/, '要講全部放回的再 apply 回 200、status restored')
+    // 第二輪 R2-5b：started 是 true 的那份只能繼續或放回，呼叫端的做法要分開講
+    assert.match(todo, /`started`[^|]*放回/, '呼叫端該做什麼：started 是 true 時給「繼續」與「放回」')
+  })
+
+  test('「重送」那一列：apply 跑完一次之後重送原樣回傳，不重試；還沒跑完的 proposed 才接著做（第二輪 R2-3）', () => {
+    const row = tables().flatMap(t => t.rows).find(r => r[0] === '重送') ?? []
+    const text = row.join(' ')
+    assert.ok(text, '找不到通用規則的「重送」那一列')
+    assert.match(text, /`partial`／`error`[^|]*原樣/, 'partial／error 的 apply 重送原樣回傳')
+    assert.match(text, /不重試/)
+    assert.match(text, /`proposed`[^|]*接著/, '做到一半中斷的 proposed 重送是接著做完')
+  })
+
+  test('docs/api/cleanup-exec.md 不再說 partial／error 的 apply 可以重試（第二輪 R2-3）', () => {
+    const doc = readFileSync(join(REPO, 'docs', 'api', 'cleanup-exec.md'), 'utf8')
+    assert.doesNotMatch(doc, /partial\/error 的 apply 可重試/)
+    assert.doesNotMatch(doc, /仍可重跑/)
+    assert.match(doc, /原樣回傳/, '要講跑完過的計畫再 apply 原樣回傳')
+  })
+
+  test('docs/api/cleanup-exec.md 寫了中斷之後的收尾（recoverInterrupted、releaseStalePlans），EXDEV 不再說「可重試」（第二輪）', () => {
+    const doc = readFileSync(join(REPO, 'docs', 'api', 'cleanup-exec.md'), 'utf8')
+    assert.doesNotMatch(doc, /可重試錯誤/, 'EXDEV 是那一項失敗；計畫是一次性的，重試＝建新計畫')
+    // 文件寫到的匯出，核心真的有（改了名文件要跟著改）
+    for (const [name, file] of [['recoverInterrupted', 'cleanup-exec.ts'], ['releaseStalePlans', 'cleanup-plans.ts']]) {
+      assert.match(doc, new RegExp('`' + name + '\\('), `沒寫 ${name}`)
+      assert.match(readFileSync(join(REPO, 'core', file), 'utf8'), new RegExp('export function ' + name + '\\('), `${file} 沒有 ${name}`)
+    }
+  })
+
+  test('/health 的 proof：寫明訊息綁埠號、算法以 healthProof 為準（第二輪 R2-9）', () => {
+    // 算法本身是 CLI 那一組改的（core/server.ts 的 healthProof 多了 port）；這裡只釘住文件的說法，
+    // 不去比 server.ts —— 兩組分開交的時候，這一份的 server.ts 還是舊的簽名
+    const section = sectionOf(md, '## `GET /health`')
+    const intro = section.slice(0, section.indexOf('\n|'))
+    assert.match(intro, /`<埠號>:<nonce>`/, '訊息要寫出埠號')
+    assert.match(intro, /實際監聽/, '埠號是 server 實際監聽的那一個（port 0 的時候不是 0）')
+    assert.match(intro, /`healthProof\(token, port, nonce\)`/)
+    assert.doesNotMatch(intro, /訊息是 nonce 本身/)
   })
 
   test('不帶 token 的 /health 被遮掉的每一個欄位，遮蔽清單都有寫（D4）', () => {
@@ -786,10 +830,139 @@ describe('docs/cli.md（RC13）', () => {
     assert.match(md, /pet 沒在跑[^\n]*離開碼 2/)
   })
 
-  test('環境變數表有 pet／open 用的那三個', () => {
-    for (const v of ['CONTEXTBOX_PORT', 'CONTEXTBOX_RESCAN_MS', 'CONTEXTBOX_OPENER']) {
+  test('環境變數表有 pet／open 用的那四個', () => {
+    for (const v of ['CONTEXTBOX_PORT', 'CONTEXTBOX_RESCAN_MS', 'CONTEXTBOX_SCAN_TIMEOUT_MS', 'CONTEXTBOX_OPENER']) {
       assert.match(md, new RegExp('^\\| `' + v + '`', 'm'), `環境變數表沒有 ${v}`)
     }
+  })
+
+  // ── 2026-09-19 第二輪第二階段（CLI 那一組）：稽查 B 的 nit —— list 的範例頁尾與提示跟 CLI 印的不一樣，
+  //    而且沒有測試守著。改成跟「卡住的計畫」一樣真的跑一次 CLI，整段逐行比。
+
+  /** 一個 `### 標題` 那一節裡第一個程式碼區塊的每一行 */
+  const firstBlock = title => {
+    const sec = md.split(/^### /m).find(x => x.startsWith(title)) ?? ''
+    return /```\n([\s\S]*?)\n```/.exec(sec)?.[1]?.split('\n') ?? null
+  }
+
+  /** 在沙盒裡跑 CLI，env 全部指到沙盒 */
+  const sandboxCli = (home, cfg) => (...args) => spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
+    encoding: 'utf8', timeout: 60_000,
+    env: {
+      ...process.env, HOME: home, USERPROFILE: home,
+      CONTEXTBOX_CONFIG: cfg, CONTEXTBOX_DB: join(home, 'data.db'), CONTEXTBOX_QUARANTINE: join(home, 'q'),
+      CONTEXTBOX_TOKEN_PATH: join(home, 'token'), CONTEXTBOX_PORT: '0',
+    },
+  })
+
+  /**
+   * 照範例擺一個 Downloads，真的跑 cleanup scan、cleanup list，回 stdout 的每一行。
+   * 編號（id 的前幾碼）每次都不一樣，照檔名換成範例用的那幾碼。
+   */
+  function listExample(codes) {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-clilist-')))
+    try {
+      const dl = join(home, 'Downloads')
+      mkdirSync(dl)
+      const cfg = join(home, 'config.json')
+      // maxBytes 64 KB：65 KB 的備份.tar 就是「太大」
+      writeFileSync(cfg, JSON.stringify({
+        watch: [dl], filed: join(home, 'Filed'),
+        model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' }, readonly: false, maxBytes: 65536,
+      }))
+      const put = (name, content, days) => {
+        const f = join(dl, name)
+        writeFileSync(f, content)
+        const at = new Date(Date.now() - days * 86400_000)
+        utimesSync(f, at, at)
+      }
+      const cli = sandboxCli(home, cfg)
+      // 重複檔留哪一份看誰先被看到：先掃「(1)」那份，再放另一份，範例寫的就是留著「(1)」
+      put('smoke-report (1).pdf', 'SMOKE report content 34 bytes....\n', 30)
+      assert.equal(cli('cleanup', 'scan').status, 0, '前提')
+      put('smoke-report.pdf', 'SMOKE report content 34 bytes....\n', 30)
+      put('smoke-assets.zip', 'smoke assets zip!!\n', 60)
+      put('smoke-old.bin', 'smoke old binary file\n', 200)
+      put('備份.tar', Buffer.alloc(66560), 60)
+      assert.equal(cli('cleanup', 'scan').status, 0, '前提')
+      const r = cli('cleanup', 'list')
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      return r.stdout.replace(/\n+$/, '').split('\n')
+        .map(l => l.replace(/^(  \[)([0-9a-f-]+)(\] [✔☐] )(.+)$/, (_, a, c, b, name) => a + (codes[name] ?? c) + b + name))
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  }
+
+  test('cleanup list：範例跟 CLI 真的印的一字不差（頁尾、提示、需要人看的那段都算）', () => {
+    const doc = firstBlock('`cleanup list`')
+    assert.ok(doc, 'cli.md 找不到 cleanup list 的範例')
+    const codes = {}
+    for (const l of doc) {
+      const m = /^  \[([0-9a-f-]+)\] [✔☐] (.+)$/.exec(l)
+      if (m) codes[m[2]] = m[1]
+    }
+    assert.ok(Object.keys(codes).length >= 3, `前提：範例裡有編號：${JSON.stringify(codes)}`)
+    assert.deepEqual(listExample(codes), doc, 'cli.md 的 cleanup list 範例跟 CLI 印的不一樣')
+  })
+
+  test('「cleanup.screenshots」那句寫明那底下只清截圖、macOS 的截圖資料夾就是桌面', () => {
+    const line = md.split('\n').find(l => /cleanup\.screenshots/.test(l)) ?? ''
+    const para = md.slice(md.indexOf(line), md.indexOf(line) + 400)
+    assert.match(para, /只清截圖/, para)
+    assert.match(para, /macOS[^\n]*截圖資料夾就是桌面/, para)
+  })
+
+  test('重試的語意照第二輪：partial／error 再 apply 原樣回傳、重試＝重掃再建新計畫；中斷的 proposed 計畫 apply 會接著做', () => {
+    assert.match(md, /`partial`／`error`[^\n]*原樣/, '要寫 partial／error 的計畫再 apply 原樣回傳')
+    assert.match(md, /重試[^\n]*(cleanup scan|重掃)/, '要寫怎麼重試失敗的檔：重掃、建新計畫')
+    assert.match(md, /中斷[^\n]*`proposed`[^\n]*接著做|`proposed`[^\n]*中斷[^\n]*接著做/, '要寫做到一半中斷的計畫 apply 會接著做')
+    assert.doesNotMatch(md, /可重試|仍可重跑/)
+    assert.match(md, /`apply <已經套用過的計畫>`[^\n]*N 是 0/, '唯讀模式 apply 套用過的計畫：會清掉 0 個')
+    const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
+    assert.ok(cli.includes('再套用不會重試沒搬成的') && md.includes('再套用不會重試沒搬成的'), '唯讀模式那一句跟 CLI 印的一樣')
+  })
+
+  test('cancelled 怎麼印跟 CLI 一樣：沒有處理，本來就在原位', () => {
+    const row = md.split('\n').find(l => l.startsWith('| `cancelled`')) ?? ''
+    assert.match(row, /沒有處理/, row)
+    assert.match(row, /本來就在原位/, row)
+    assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes('沒有處理：計畫中途停了或放棄了，本來就在原位'), '前提：CLI 印的是這一句')
+  })
+
+  test('undo 的離開碼只看逐項，不看計畫的 status', () => {
+    const sec = md.split(/^### /m).find(x => x.startsWith('`cleanup undo`')) ?? ''
+    assert.match(sec, /逐項/, sec)
+    assert.match(sec, /status/, '要寫明不看計畫的 status')
+  })
+
+  test('每個清理指令之前先收尾：寫了中斷的搬移怎麼結掉、放太久沒開始的計畫自動放棄、BUSY 略過', () => {
+    assert.match(md, /收尾/)
+    assert.match(md, /60 分鐘|一小時/, '要寫多久沒開始的計畫會自動放棄')
+    assert.match(md, /另一個清理動作正在跑[^\n]*略過|略過[^\n]*另一個清理動作/, '要寫鎖被佔的時候收尾略過、指令照跑')
+  })
+
+  test('doctor 的新段落：中斷的計畫（跟 CLI 印的同一個樣子）、掃描問題、OneDrive、寵物還擔不擔心', () => {
+    const sec = md.split(/^### /m).find(x => x.startsWith('`doctor`')) ?? ''
+    for (const [what, re] of [
+      ['中斷的計畫', /中斷計畫/], ['放回', /cleanup undo 5c1e…/], ['做完', /cleanup apply 5c1e…/],
+      ['掃描問題', /掃描問題/], ['OneDrive', /OneDrive[^\n]*雲端/], ['跟寵物同一個判斷', /還在為它擔心/],
+    ]) assert.match(sec, re, `doctor 那一節沒寫 ${what}`)
+    // 中斷計畫那幾行照 CLI 真的印的樣子（數字、時間、id 換掉再比）
+    const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
+    for (const said of ['個檔，', '個已經在隔離區', '把已經搬走的放回原位：node cli.mjs cleanup undo', '把它做完：node cli.mjs cleanup apply',
+      '做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：']) {
+      assert.ok(cli.includes(said), `前提：CLI 印的有「${said}」`)
+      assert.ok(sec.includes(said), `doctor 那一節跟 CLI 印的不一樣，少了「${said}」`)
+    }
+  })
+
+  test('open／pet 的身分：寫了 nonce 與 proof（綁埠號），不再靠「記錄上的 pet 行程」', () => {
+    const sec = md.split(/^### /m).find(x => x.startsWith('`pet` 與 `open`')) ?? ''
+    assert.match(sec, /nonce/)
+    assert.match(sec, /proof/)
+    assert.match(sec, /埠號/)
+    assert.doesNotMatch(md, /記錄上的 pet 行程/, '身分不再看 pid')
+    assert.match(md, /pet 沒在跑[^\n]*不印/, 'pet 沒在跑的時候不印帶鑰匙的網址')
+    assert.match(sec, /打開瀏覽器|用瀏覽器打開/, '撞到自己的 pet 要打開瀏覽器')
   })
 })
 
@@ -1419,7 +1592,7 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
   test('6.5 講的是真的：CONTEXTBOX_PORT=0 時 open 改讀 pet 記下的 port；明講別的 port 才照用（真的跑 cli.mjs，第三波之二）', async t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-smoke-port-')))
     t.after(() => rmSync(dir, { recursive: true, force: true }))
-    // 兩個剛剛還開著、現在關掉的 port：保證沒有人在聽（open 回 2，但印出來的網址就是它挑的那個 port）
+    // 兩個剛剛還開著、現在關掉的 port：保證沒有人在聽（open 回 2；挑的是哪個 port，從「127.0.0.1:<port> 沒有回應」那句讀得到）
     const closedPort = async () => {
       const srv = createServer()
       await new Promise(r => srv.listen(0, '127.0.0.1', r))
@@ -1445,7 +1618,8 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
         },
       })
       assert.equal(r.status, 2, `前提：那個 port 沒有人在聽，open 回 2：${r.stdout}${r.stderr}`)
-      return /127\.0\.0\.1:(\d+)\/\?k=/.exec(r.stdout)?.[1]
+      // 第二輪 R2-9：pet 沒在跑時 open 不再印帶鑰匙的網址，挑的是哪個 port 從「127.0.0.1:<port> 沒有回應」那句讀
+      return /127\.0\.0\.1:(\d+)/.exec(r.stdout + r.stderr)?.[1]
     }
     assert.equal(open('0'), String(recorded), 'CONTEXTBOX_PORT=0（export 了）：open 還是去 pet 記下的 port')
     assert.equal(open(''), String(recorded), '對照：沒設也一樣')

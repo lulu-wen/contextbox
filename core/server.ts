@@ -67,15 +67,19 @@ export const sameToken = (a: string, b: string): boolean => {
 }
 
 /**
- * `/health?nonce=<32 個 hex>` 回的 proof：HMAC-SHA256，key 是 token、訊息是 nonce，hex（第二輪 R2-9a）。
+ * `/health?nonce=<32 個 hex>` 回的 proof：HMAC-SHA256，key 是 token、訊息是 `${port}:${nonce}`，hex（第二輪 R2-9）。
  *
  * `open` 與第二個 `pet` 要確定那個埠上的真的是自己的 pet，才把帶鑰匙的網址交出去。
  * 形狀可以模仿、pid 會被重用（稽核 C-e5）；**算得出 proof 的只有手上有 token 的那一個**。
  * proof 不洩漏 token（HMAC 反推不回 key），所以免 token 的 /health 也回 —— 問的一方還不知道對方是誰，
  * 不可以先把 token 送過去。呼叫端自己產生 nonce（每次不同），拿同一支算一次來比。
+ *
+ * **埠號綁在訊息裡**：server 用自己**實際監聽**的埠，呼叫端用自己**要連**的那個埠。
+ * 只算 nonce 的話，佔住 A 埠的冒牌可以把 nonce 轉給 B 埠上的真 pet，再把 proof 原封不動交回來（轉送攻擊）；
+ * 綁了埠號，真 pet 算的是 B，呼叫端要的是 A，對不上。
  */
-export function healthProof(token: string, nonce: string): string {
-  return createHmac('sha256', token).update(nonce).digest('hex')
+export function healthProof(token: string, port: number, nonce: string): string {
+  return createHmac('sha256', token).update(`${port}:${nonce}`).digest('hex')
 }
 
 /** nonce 的格式：剛好 32 個 hex（16 bytes）。不對就不回 proof，也不報錯。 */
@@ -332,9 +336,10 @@ export function start(opts: {
       //
       // 而且健康檢查失敗**本身就是健康狀態**，不該回 500。
       const hasToken = sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)
-      // proof：帶了格式正確的 nonce 才回（R2-9a）。免 token 也回 —— proof 不洩漏 token
+      // proof：帶了格式正確的 nonce 才回（R2-9a）。免 token 也回 —— proof 不洩漏 token。
+      // 埠號用自己實際監聽的那一個（listen(0) 的話不是 opts.port），綁住它才擋得掉轉送
       const nonce = url.searchParams.get('nonce')
-      const proof = nonce !== null && NONCE.test(nonce) ? { proof: healthProof(token, nonce) } : {}
+      const proof = nonce !== null && NONCE.test(nonce) ? { proof: healthProof(token, boundPort(), nonce) } : {}
       const hopts = { roots, screenshotsDir, quarantine: QUARANTINE, full: hasToken }
       let snap
       try { snap = healthSnapshot(F.db, hopts) }

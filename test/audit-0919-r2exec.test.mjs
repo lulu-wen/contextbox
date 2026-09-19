@@ -25,6 +25,22 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  * | R2-12a release 與 dismiss | 共用 dismissed 就互相變 no-op | 分開記 | release 後 dismiss／dismiss 後 release | 候選作廢／原樣 |
  * | R2-12a 舊版遷移 | release 過的算「拒絕過」 | 排除有 release 標記的 | release 過／dismiss 過 | 修回來／不修 |
  * | R2-12b 預覽表清理 | 只有路由清 | 核心清 | 過期兩天／過期一小時 | 刪／留 |
+ *
+ * ── 第二階段（第一階段驗證員找到的缺口）──────────────────────────
+ *
+ * | 段落 | 可能的錯 | 另一種解讀 | 成對例子 | 認定的答案 |
+ * |---|---|---|---|---|
+ * | X01 markFailure 回 null（套用） | 當成錯 | 另一個行程做完了＝這一項完成 | 單檔計畫、A 卡在 rename 前、B 接手做完（A 走得到寫計畫狀態）／兩檔（A 在下一次續約丟 BUSY） | A 回 applied、計畫 applied、沒有失敗原因／BUSY（已有） |
+ * | X12 markFailure 回 null（復原） | 當成錯 | 同上 | 單檔計畫的復原，B 接手放回 | A 回 restored、計畫 restored |
+ * | X08 清空被 BUSY 打斷後重送 | 從第 0 項重來 | 從停下來的那一項接著 | 第 0 項出錯、第 1 項刪掉、鎖被接走／沒有錯（已有） | deletedCount 2、errors 只有 1 條／總數 3、errors [] |
+ * | X09 created_at 讀不懂 | NaN 當成很舊、作廢 | fail closed：不動 | created_at 'garbage'（門檻 0）／一小時前 | 0、還是 proposed／1、dismissed |
+ * | X02 recoverInterrupted 的鎖 | 不拿鎖就改 journal | 拿鎖 | 鎖被活著、時間新的行程拿著／鎖是 31 分鐘前的殘留 | BUSY、started 不動／照常結掉 |
+ * | R2-2 測試在 tmpfs 上 | 兩次掃描落在同一毫秒 → 保留者換人 | 把 report.pdf 看到的時間調早 | first_seen_at 早一小時 | 跟檔案系統快慢無關，連跑 10 次都綠 |
+ * | R2-2 保留者平手 | 只比路徑：「report (1).pdf」（' ' < '.'）當保留者、原檔被列成重複 | 名字不像複本的優先，再比路徑 | 同一輪看到 report.pdf＋report (1).pdf／a.pdf＋b.pdf（都不像複本）／report (1)＋report (2) | 列 report (1).pdf、證據說會留著 report.pdf／列 b.pdf／列 report (2).pdf |
+ * | R2-2 平手才看名字 | 名字比時間優先 | 最早看到的優先 | report (1).pdf 早一小時被看到、report.pdf 後來才出現 | 保留 report (1).pdf、列 report.pdf |
+ * | R2-2 性質 | scanner 與路由的證據各挑各的保留者 | 同一支 keepersFirst | 結構化隨機：80 組、兩個時間、十種字尾、子資料夾，對照照定義排的慢速參考 | 清單＝整組扣掉保留者、證據指名保留者；三種決定方式（時間、名字、路徑）都真的走到 |
+ * | NOT_MOVED_GONE | 原檔還在、只是變了也說「找不到」 | 分成兩句 | rename 之前被殺＋原檔被追加／原檔被刪／原檔沒動 | reverted「原位置的檔已經不是當初那一份」／「原位置現在也找不到這個檔」／NOT_MOVED |
+ * | dismiss release 過的計畫 | 照樣作廢候選，另一份還沒套用的計畫照搬 | 撞到還活著的計畫就 CONFLICT、什麼都不改 | B（proposed）也有 a.zip／B 已經套用過（不再佔住檔案） | 409、候選與 release 標記都不動、B 照常套用／成功、b 作廢、a（已在隔離區）不動 |
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -43,6 +59,8 @@ import { prepareEmptyQuarantine, emptyQuarantine } from '../core/cleanup-quarant
 import { lockClock, withCleanupLock } from '../core/cleanup-journal.ts'
 import { scanDownloads, LEGACY_DISMISSED_REPAIR_KEY } from '../core/cleanup-scanner.ts'
 import { planOutcomes, listCandidates, healthSnapshot } from '../core/cleanup-routes.ts'
+// 命名空間匯入：新匯出的函式還沒寫出來的時候，只有用到它的那幾條紅
+import * as scanner from '../core/cleanup-scanner.ts'
 import { fixture } from './helpers/cleanup.mjs'
 
 assert.ok(FAKE_HOME, '前提：測試行程的家目錄已經換掉')
@@ -132,6 +150,22 @@ describe('R2-1a recoverInterrupted：只看檔案證據改 journal，不搬任�
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
     assert.equal(row(f, p.id, 'only.zip').status, 'started')
     assert.equal(readFileSync(r.to_path, 'utf8'), 'important-ish!', '沒有搬任何檔')
+  })
+
+  test('鎖被活著的行程拿著（時間是新的）→ BUSY，started 不動；鎖是 31 分鐘前的殘留 → 照常結掉（突變 X02）', t => {
+    const f = fixture(t, { 'only.zip': 'important-ish' })
+    const p = f.plan()
+    crash(f, 'apply', p.id, 'after-rename')
+    const hold = at => f.db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)')
+      .run(process.pid, `${new Date(at).toISOString()} someone-else`)
+    hold(Date.now())
+    try {
+      assert.throws(() => recoverInterrupted(f.db, f.opts), { code: 'BUSY' })
+      assert.equal(row(f, p.id, 'only.zip').status, 'started', '沒拿到鎖就改了 journal')
+    } finally { f.db.prepare('DELETE FROM cleanup_operation_lock').run() }
+    hold(Date.now() - 31 * 60_000)
+    assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
+    assert.equal(row(f, p.id, 'only.zip').status, 'done')
   })
 
   test('冪等：結完之後再跑一次，recovered 是 0', t => {
@@ -264,7 +298,7 @@ describe('R2-1c undo 碰到從沒完成的 quarantine 列', () => {
     assert.equal(undoPlan(f.db, p.id, f.opts).status, 'restored')
   })
 
-  test('started（rename 之前被殺）、使用者後來刪掉原檔 → 結成 reverted，計畫 restored', t => {
+  test('started（rename 之前被殺）、使用者後來刪掉原檔 → 結成 reverted「原位置現在也找不到這個檔」，計畫 restored', t => {
     const f = fixture(t, { 'only.zip': 'x' })
     const p = f.plan()
     crash(f, 'apply', p.id, 'before-rename')
@@ -274,7 +308,31 @@ describe('R2-1c undo 碰到從沒完成的 quarantine 列', () => {
     const r = row(f, p.id, 'only.zip')
     assert.equal(r.status, 'reverted')
     assert.notEqual(r.error, NOT_MOVED, '原位已經沒有檔，不可以說「檔案還在原位」')
+    assert.equal(r.error, '搬到一半中斷，沒有搬進隔離區；原位置現在也找不到這個檔。')
     assert.equal(outcomes(f, p.id)['only.zip'].outcome, 'failed')
+  })
+
+  test('started（rename 之前被殺）、原檔還在但被改過 → reverted「原位置的檔已經不是當初那一份」，不是「找不到」（驗證員 T4）', t => {
+    const f = fixture(t, { 'only.zip': 'important-ish' })
+    const p = f.plan()
+    crash(f, 'apply', p.id, 'before-rename')
+    appendFileSync(join(f.downloads, 'only.zip'), 'more')
+    assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 }, '前提：兩邊都對不上，recover 維持 started')
+    const u = undoPlan(f.db, p.id, f.opts)
+    assert.equal(u.status, 'restored', `不是 partial／error：${u.error}`)
+    const r = row(f, p.id, 'only.zip')
+    assert.deepEqual({ status: r.status, error: r.error },
+      { status: 'reverted', error: '搬到一半中斷，沒有搬進隔離區；原位置的檔已經不是當初那一份。' })
+    assert.equal(readFileSync(join(f.downloads, 'only.zip'), 'utf8'), 'important-ishmore', '原位的檔不動')
+  })
+
+  test('對照：started（rename 之前被殺）、原檔沒動、直接復原（沒先跑 recover）→ reverted（NOT_MOVED）', t => {
+    const f = fixture(t, { 'only.zip': 'important-ish' })
+    const p = f.plan()
+    crash(f, 'apply', p.id, 'before-rename')
+    assert.equal(undoPlan(f.db, p.id, f.opts).status, 'restored')
+    const r = row(f, p.id, 'only.zip')
+    assert.deepEqual({ status: r.status, error: r.error }, { status: 'reverted', error: NOT_MOVED })
   })
 
   test('對照：隔離區那份有內容但對不上（可能是搬進去之後被改過）→ 不結掉、不藏起來，計畫不是 restored', t => {
@@ -298,9 +356,16 @@ describe('R2-2 重複檔只提升可以建計畫的狀態', () => {
   const statusOf = (f, name) => f.db.prepare('SELECT status FROM file_items WHERE name=?').get(name)?.status
   const listed = f => listCandidates(f.db, { roots: f.opts.roots }).candidates
   const pending = f => healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine }).pendingCandidates
+  /**
+   * report.pdf 是一小時前就看到的（保留者）。**不調的話測試跟檔案系統的快慢有關**：tmpfs 上 fixture 的掃描
+   * 與下一次掃描常常落在同一毫秒，first_seen_at 平手（第一階段驗證員：/dev/shm 上 6 次紅 3 次）。
+   */
+  const seenEarlier = (f, name) => f.db.prepare('UPDATE file_items SET first_seen_at=? WHERE name=?')
+    .run(new Date(Date.now() - 3600_000).toISOString(), name)
 
   test('剛寫入的 report (1).pdf（稽查員 A 的 exp10）→ 不列、不算徽章；十分鐘後再掃 → 列出、預設勾', t => {
     const f = fixture(t, { 'report.pdf': 'same content' })
+    seenEarlier(f, 'report.pdf')
     const copy = join(f.downloads, 'report (1).pdf')
     writeFileSync(copy, 'same content')
     // watcher 的單檔掃描也走同一條
@@ -323,6 +388,8 @@ describe('R2-2 重複檔只提升可以建計畫的狀態', () => {
 
   test('mtime 在未來的重複檔 → 永遠不列', t => {
     const f = fixture(t, { 'report.pdf': 'same content' })
+    // 平手的話 copy.pdf（'c' < 'r'）會變成保留者、report.pdf 被列出來 —— 這條測的不是那個
+    seenEarlier(f, 'report.pdf')
     const copy = join(f.downloads, 'copy.pdf')
     writeFileSync(copy, 'same content')
     const future = new Date(Date.now() + 365 * 86400_000)
@@ -336,7 +403,7 @@ describe('R2-2 重複檔只提升可以建計畫的狀態', () => {
 
   test('對照：本來是重複檔候選、之後又被動過（變成 new）→ 候選收掉，不列', t => {
     const f = fixture(t, { 'report.pdf': 'same content', 'report (1).pdf': 'same content' })
-    // 同一輪看到的兩份，保留者照路徑排；列出來的是另一份
+    // 同一輪看到的兩份：名字像複本的那份被列出來（見下面「保留者平手」）
     const extra = listed(f).map(c => c.name)
     assert.equal(extra.length, 1, '前提：舊的重複檔列得出來')
     const now = new Date()
@@ -344,6 +411,126 @@ describe('R2-2 重複檔只提升可以建計畫的狀態', () => {
     f.scan()
     assert.equal(statusOf(f, extra[0]), 'new')
     assert.deepEqual(listed(f).map(c => c.name), [])
+  })
+})
+
+describe('R2-2 保留者平手（同一輪掃描看到的，first_seen_at 一樣）：名字不像複本的那份留著', () => {
+  const dups = f => listCandidates(f.db, { roots: f.opts.roots }).candidates
+    .filter(c => c.reasons.some(r => r.kind === 'duplicate'))
+  const seenAt = (f, name) => f.db.prepare('SELECT first_seen_at FROM file_items WHERE name=?').get(name).first_seen_at
+
+  test('report.pdf＋report (1).pdf → 列 report (1).pdf，證據說會留著 report.pdf；套用之後 report.pdf 還在', t => {
+    const f = fixture(t, { 'report.pdf': 'same content', 'report (1).pdf': 'same content' })
+    assert.equal(seenAt(f, 'report.pdf'), seenAt(f, 'report (1).pdf'), '前提：同一輪看到，平手')
+    const d = dups(f)
+    assert.deepEqual(d.map(c => c.name), ['report (1).pdf'], '原檔被列成重複、複本被留著')
+    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /會留著「report\.pdf」/)
+    assert.equal(applyPlan(f.db, f.plan().id, f.opts).status, 'applied')
+    assert.equal(readFileSync(join(f.downloads, 'report.pdf'), 'utf8'), 'same content')
+    assert.ok(!existsSync(join(f.downloads, 'report (1).pdf')))
+  })
+
+  test('報告.pdf＋報告 - 副本.pdf（Windows 的複製）→ 列副本', t => {
+    const f = fixture(t, { '報告.pdf': 'same content', '報告 - 副本.pdf': 'same content' })
+    assert.deepEqual(dups(f).map(c => c.name), ['報告 - 副本.pdf'])
+  })
+
+  test('對照：兩份都不像複本（a.pdf＋b.pdf）→ 照路徑，列 b.pdf', t => {
+    const f = fixture(t, { 'b.pdf': 'same content', 'a.pdf': 'same content' })
+    assert.deepEqual(dups(f).map(c => c.name), ['b.pdf'])
+  })
+
+  test('對照：兩份都像複本（report (1)＋report (2)）→ 照路徑，列 report (2).pdf', t => {
+    const f = fixture(t, { 'report (2).pdf': 'same content', 'report (1).pdf': 'same content' })
+    assert.deepEqual(dups(f).map(c => c.name), ['report (2).pdf'])
+  })
+
+  test('平手才看名字：report (1).pdf 早一小時被看到、report.pdf 後來才出現 → 留 report (1).pdf，列 report.pdf', t => {
+    const f = fixture(t, { 'report (1).pdf': 'same content' })
+    f.db.prepare('UPDATE file_items SET first_seen_at=?').run(new Date(Date.now() - 3600_000).toISOString())
+    const later = join(f.downloads, 'report.pdf')
+    writeFileSync(later, 'same content')
+    utimesSync(later, f.old, f.old)
+    f.scan()
+    const d = dups(f)
+    assert.deepEqual(d.map(c => c.name), ['report.pdf'])
+    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /會留著「report \(1\)\.pdf」/)
+  })
+
+  test('looksLikeCopy：瀏覽器、Windows、macOS 的複本字尾算；名字裡剛好有括號或「副本」兩個字的原檔不算', () => {
+    const copies = [
+      'report (1).pdf', 'report(2).pdf', 'report (12).tar.gz', 'report - Copy.pdf', 'report - Copy (2).pdf',
+      'report copy.pdf', 'report copy 2.pdf', '報告 - 副本.docx', '報告 - 複製.docx', '報告 - 副本 (2).docx',
+      '報告 的副本.docx', '報告 拷貝.docx', '報告 拷貝 2.docx', 'Copy of report.pdf', 'README (1)',
+    ]
+    const originals = [
+      'report.pdf', 'chapter (1) intro.pdf', '合約副本.pdf', 'copy.pdf', 'photocopy.pdf', '(1).pdf',
+      'Budget (2026).xlsx', 'report-1.pdf', 'README', '.bashrc',
+    ]
+    for (const n of copies) assert.equal(scanner.looksLikeCopy(n), true, n)
+    for (const n of originals) assert.equal(scanner.looksLikeCopy(n), false, n)
+  })
+
+  test('性質（結構化隨機）：清單上的重複檔＝整組扣掉保留者；證據指名的就是保留者；保留者照「時間、像不像複本、路徑」挑', t => {
+    const f = fixture(t, {})
+    // mulberry32：固定種子、可重現
+    let seed = 20260919
+    const rnd = n => {
+      seed = (seed + 0x6D2B79F5) | 0
+      let x = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x
+      return ((x ^ (x >>> 14)) >>> 0) % n
+    }
+    const bases = ['report', '報告', 'a', 'b', 'photo']
+    const tails = ['', ' (1)', ' (2)', '(3)', ' - Copy', ' - 副本', ' copy', ' copy 2', ' 拷貝', ' (2026)']
+    const times = [new Date(Date.now() - 7200_000).toISOString(), new Date(Date.now() - 3600_000).toISOString()]
+    const hits = { copyDecided: 0, timeBeatName: 0, pathDecided: 0 }
+    const groups = []
+    const used = new Set()
+    for (let g = 0; g < 80; g++) {
+      const sha = 'sha-prop-' + g
+      // 同一組用同一個主檔名（真的重複檔多半是這樣：report.pdf、report (1).pdf）
+      const base = bases[rnd(bases.length)] + g
+      const rows = []
+      for (let k = 0, n = 2 + rnd(3); k < n; k++) {
+        const dir = rnd(4) === 0 ? join(f.downloads, 'sub') : f.downloads
+        const name = base + tails[rnd(tails.length)] + '.pdf'
+        const path = join(dir, name)
+        if (used.has(path)) continue
+        used.add(path)
+        rows.push({ id: `p${g}-${k}`, name, path, first_seen_at: times[rnd(times.length)] })
+      }
+      if (rows.length < 2) continue
+      for (const r of rows) {
+        f.db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status,error)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(r.id, r.path, r.name, '.pdf', 10, sha, f.old.toISOString(), r.first_seen_at, r.first_seen_at, 'kept', null)
+      }
+      groups.push(rows)
+    }
+    scanner.addDuplicateCandidates(f.db, new Date().toISOString(), groups.flat().map(r => r.id), f.opts.roots)
+    const listed = new Map(listCandidates(f.db, { roots: f.opts.roots, limit: 1000 }).candidates
+      .filter(c => c.reasons.some(r => r.kind === 'duplicate')).map(c => [c.itemId, c]))
+    const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0
+    const copyOf = r => scanner.looksLikeCopy(r.name) ? 1 : 0
+    for (const rows of groups) {
+      // 慢速參考：直接照定義排
+      const keeper = [...rows].sort((a, b) => cmp(a.first_seen_at, b.first_seen_at) || copyOf(a) - copyOf(b) || cmp(a.path, b.path))[0]
+      const byPath = [...rows].sort((a, b) => cmp(a.first_seen_at, b.first_seen_at) || cmp(a.path, b.path))[0]
+      const byName = [...rows].sort((a, b) => copyOf(a) - copyOf(b) || cmp(a.first_seen_at, b.first_seen_at) || cmp(a.path, b.path))[0]
+      if (keeper !== byPath) hits.copyDecided++
+      else hits.pathDecided++
+      if (keeper !== byName) hits.timeBeatName++
+      assert.ok(!listed.has(keeper.id), `保留者 ${keeper.name} 被列出來了`)
+      for (const r of rows.filter(r => r !== keeper)) {
+        const c = listed.get(r.id)
+        assert.ok(c, `${r.name} 是多出來的，卻沒有列`)
+        const ev = c.reasons.find(x => x.kind === 'duplicate').evidence
+        assert.ok(ev.includes(`會留著「${keeper.name}」`), `${r.name} 的證據指名的不是保留者 ${keeper.name}：${ev}`)
+      }
+    }
+    // 生成器驗收：三種決定方式都要真的走到
+    assert.ok(hits.copyDecided > 5 && hits.timeBeatName > 5 && hits.pathDecided > 5, JSON.stringify(hits))
   })
 })
 
@@ -423,6 +610,19 @@ describe('R2-5a releaseStalePlans：放了很久、從沒開始的計畫自動�
     assert.equal(planWith(f, 'a.zip').status, 'proposed')
     assert.equal(releaseStalePlans(f.db, 30 * 60_000), 0, '沒有別的可以作廢')
   })
+
+  test('建立時間讀不懂的計畫不動（fail closed，突變 X09）；對照：一小時前的照樣作廢', t => {
+    const f = fixture(t, { 'a.zip': 'a', 'b.zip': 'b' })
+    const garbled = planWith(f, 'a.zip')
+    const stale = planWith(f, 'b.zip')
+    f.db.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run('garbage', garbled.id)
+    f.db.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run(new Date(Date.now() - 3600_000).toISOString(), stale.id)
+    assert.equal(releaseStalePlans(f.db, 0), 1)
+    assert.equal(getPlan(f.db, garbled.id).status, 'proposed', '建立時間讀不懂就當成很舊，作廢了')
+    assert.equal(getPlan(f.db, stale.id).status, 'dismissed')
+    assert.throws(() => releaseStalePlans(f.db, NaN), { code: 'BAD_CONFIG' })
+    assert.throws(() => releaseStalePlans(f.db, -1), { code: 'BAD_CONFIG' })
+  })
 })
 
 // ═══ R2-6 ・ 鎖被接手後的資料 ══════════════════════════════════════
@@ -449,6 +649,75 @@ describe('R2-6 鎖被接手之後', () => {
     assert.equal(getPlan(f.db, p.id).status, 'applied')
     assert.equal(f.db.prepare('SELECT count(*) n FROM cleanup_item_errors WHERE plan_id=?').get(p.id).n, 0)
     assert.equal(listQuarantine(f.db).length, 2)
+  })
+
+  /**
+   * A 在 rename 之前卡住超過 30 分鐘、B 接手把整份做完，然後 A 醒來。
+   * **單檔計畫**：A 沒有下一次續約可以丟 BUSY，會一路走到寫計畫狀態 —— 面板最常見的就是單檔。
+   * 兩檔的版本（上面那條）A 在下一項的續約就停了，看不到 A 怎麼算這一項（第一階段驗證員 T1／T13）。
+   */
+  function stalledThenTakenOver(t, f, action) {
+    const clock = lockClock.now
+    let skew = 0
+    lockClock.now = () => Date.now() + skew
+    t.after(() => { lockClock.now = clock })
+    const run = action === 'apply' ? applyPlan : undoPlan
+    let hook = () => {
+      skew = 31 * 60_000
+      assert.equal(run(f.db, f.planId, f.opts).status, action === 'apply' ? 'applied' : 'restored', '前提：B 把整份做完')
+    }
+    return withFs('renameSync', orig => function (from, to) {
+      if (hook) { const h = hook; hook = null; h() }
+      return orig.call(this, from, to)
+    }, () => run(f.db, f.planId, f.opts))
+  }
+
+  test('單檔計畫：A 卡在 rename 之前、B 接手做完 → A 醒來回 applied，不是 error（突變 X01）', t => {
+    const f = fixture(t, { 'only.zip': 'aaaa' })
+    const p = f.plan()
+    const a = stalledThenTakenOver(t, { ...f, planId: p.id }, 'apply')
+    assert.equal(a.status, 'applied', `A 把「另一個行程做完了」當成錯：${a.error}`)
+    assert.equal(a.quarantinedCount, 1)
+    assert.equal(getPlan(f.db, p.id).status, 'applied')
+    assert.equal(getPlan(f.db, p.id).error, null)
+    assert.equal(row(f, p.id, 'only.zip').status, 'done')
+    assert.equal(f.db.prepare('SELECT count(*) n FROM cleanup_item_errors WHERE plan_id=?').get(p.id).n, 0)
+    assert.equal(readFileSync(row(f, p.id, 'only.zip').to_path, 'utf8'), 'aaaa')
+  })
+
+  test('單檔計畫的復原：A 卡在 rename 之前、B 接手放回 → A 醒來回 restored，不是 error（突變 X12）', t => {
+    const f = fixture(t, { 'only.zip': 'aaaa' })
+    const p = f.plan()
+    assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+    const a = stalledThenTakenOver(t, { ...f, planId: p.id }, 'undo')
+    assert.equal(a.status, 'restored', `A 把「另一個行程放回去了」當成錯：${a.error}`)
+    assert.equal(getPlan(f.db, p.id).status, 'restored')
+    assert.equal(row(f, p.id, 'only.zip', 'restore').status, 'done')
+    assert.equal(readFileSync(join(f.downloads, 'only.zip'), 'utf8'), 'aaaa')
+  })
+
+  test('清空：第 0 項出錯、第 1 項刪掉之後鎖被接走 → 重送從第 2 項接著做，第 0 項的錯只報一次（突變 X08）', t => {
+    const f = fixture(t, { 'a.zip': 'aaaa', 'b.zip': 'bbbb', 'c.zip': 'cccc' })
+    const p = f.plan()
+    assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+    f.db.prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - 8 * 86400_000).toISOString())
+    const prep = prepareEmptyQuarantine(f.db, f.opts)
+    const seqs = JSON.parse(f.db.prepare('SELECT entries FROM cleanup_empty_requests WHERE token=?').get(prep.token).entries)
+    assert.equal(seqs.length, 3)
+    const first = f.db.prepare('SELECT to_path FROM cleanup_journal WHERE seq=?').get(seqs[0]).to_path
+    chmodSync(first, 0o600)
+    appendFileSync(first, '!')   // 第 0 項：隔離區的檔被改過，清空會拒絕（CHANGED）
+    const steal = i => {
+      if (i === 1) f.db.prepare(`UPDATE cleanup_operation_lock SET owner='2099-01-01T00:00:00.000Z thief'`).run()
+    }
+    assert.throws(() => emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true, onProgress: steal }), { code: 'BUSY' })
+    f.db.exec('DELETE FROM cleanup_operation_lock')
+    assert.equal(f.db.prepare(`SELECT count(*) n FROM cleanup_purges WHERE status='done'`).get().n, 1, '前提：刪了第 1 項')
+    const r = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true })
+    assert.equal(r.deletedCount, 2)
+    assert.equal(r.deletedBytes, 8)
+    assert.deepEqual(r.errors.map(e => e.seq), [seqs[0]], `同一個錯報了不只一次：${JSON.stringify(r.errors)}`)
+    assert.ok(existsSync(first) && readFileSync(first, 'utf8').endsWith('!'), '出錯的那一個沒有被刪')
   })
 
   test('清空刪了 1 個之後鎖被接走（稽查員 B 的 r1）→ 同一個確認碼重送，總數是 3', t => {
@@ -507,6 +776,30 @@ describe('R2-12a release 與 dismiss 分開記', () => {
     assert.deepEqual(releases(f), [])
     f.scan()
     assert.deepEqual(listedNames(f), [])
+  })
+
+  test('release A、用同一個檔建 B（還沒套用）、再 dismiss A → 409 CONFLICT，候選與 release 標記都不動，B 照常套用（驗證員 T9）', t => {
+    const f = fixture(t, { 'a.zip': 'a', 'b.zip': 'b' })
+    const A = f.plan()
+    assert.equal(A.items.length, 2, '前提：A 有 a、b')
+    releasePlan(f.db, A.id)
+    const B = planWith(f, 'a.zip')
+    const statuses = () => f.db.prepare(`SELECT i.name, c.status FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
+      ORDER BY i.name, c.kind`).all().map(r => `${r.name}:${r.status}`)
+    const before = statuses()
+    assert.throws(() => dismissPlan(f.db, A.id), { code: 'CONFLICT' })
+    assert.deepEqual(statuses(), before, '撞到還活著的計畫，候選一個都不可以動')
+    assert.deepEqual(releases(f), [A.id], 'release 標記還在')
+    assert.equal(getPlan(f.db, B.id).status, 'proposed')
+    assert.deepEqual(listedNames(f).sort(), ['a.zip', 'b.zip'], '清單跟 B 一致：a 還是候選')
+    assert.equal(applyPlan(f.db, B.id, f.opts).status, 'applied')
+
+    // 對照：B 套用過（不再佔住檔案）之後，dismiss A 照常：b 作廢；a 已經在隔離區，不動
+    assert.equal(dismissPlan(f.db, A.id).status, 'dismissed')
+    assert.deepEqual(releases(f), [])
+    const after = Object.fromEntries(f.db.prepare(`SELECT i.name, c.status FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id`)
+      .all().map(r => [r.name, r.status]))
+    assert.deepEqual(after, { 'a.zip': 'quarantined', 'b.zip': 'dismissed' })
   })
 
   test('對照：只 release → 重掃之後還在清單上；再 release 一次原樣回傳', t => {
