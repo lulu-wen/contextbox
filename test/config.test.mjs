@@ -97,8 +97,8 @@ describe('金鑰只能放在我們自己的環境變數裡', () => {
   })
 
   test('CONTEXTBOX_ 開頭的可以', () => {
-    const r = normalize({ model: { keyEnv: 'CONTEXTBOX_SPARK_KEY' } })
-    assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_SPARK_KEY')
+    const r = normalize({ model: { keyEnv: 'CONTEXTBOX_OTHER_KEY' } })
+    assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_OTHER_KEY')
     assert.deepEqual(r.problems, [])
   })
 

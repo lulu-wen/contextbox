@@ -261,7 +261,7 @@ export function displayPath(path: string, roots: string[]): { folder: string; su
 
   // folder 是家目錄名字的話等於洩漏使用者名稱，不如不給
   const folder = basename(hit.root)
-  // 比整條路徑，不要比 basename —— /mnt/backup/lulumi 跟家目錄沒關係
+  // 比整條路徑，不要比 basename —— /mnt/backup/alice 跟家目錄沒關係
   return { folder: resolve(hit.root) === resolve(homedir()) ? '' : folder, subdir }
 }
 

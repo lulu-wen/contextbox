@@ -660,15 +660,17 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
 
 // ═══ 第三波之二 ・ 根目錄 README 照現況寫 ═══════════════════════
 
-describe('README.md 的頁面說明照現況寫（第三波之二）', () => {
-  const md = readFileSync(join(REPO, 'README.md'), 'utf8')
+describe('面板說明照現況寫（第三波之二）', () => {
+  // 2026-09-20：README 改寫成作品說明（給外面的人看的），面板那一整段搬到 docs/面板.md。
+  // 這一組檢查跟的是**內容**不是檔名，所以換檔案就好，該守的還是一樣要守。
+  const md = readFileSync(join(REPO, 'docs', '面板.md'), 'utf8')
   const demoJs = readFileSync(join(REPO, 'core', 'assets', 'cleanup-demo.js'), 'utf8')
 
   test('按 D 的範例來源：寫 demo 真的讀的那一份（core/assets/demo-candidates.json），份數也對', () => {
     // demo 讀的是 /assets/demo-candidates.json（server.ts 對到 core/assets/）—— 不是 docs/api 的產生器輸出
     assert.match(demoJs, /fetch\('\/assets\/demo-candidates\.json'\)/, '前提：demo 讀的是這一份')
     const line = md.split('\n').find(l => /按 \*\*D\*\*/.test(l)) ?? ''
-    assert.ok(line, 'README 沒有講按 D')
+    assert.ok(line, 'docs/面板.md 沒有講按 D')
     assert.ok(line.includes('`core/assets/demo-candidates.json`'), `範例來源寫錯了：${line}`)
     assert.ok(!md.includes('docs/api/cleanup-candidates.json'), 'docs/api 的範例會隨產生器重產，demo 不讀它')
     const n = JSON.parse(readFileSync(join(REPO, 'core', 'assets', 'demo-candidates.json'), 'utf8')).candidates.length
