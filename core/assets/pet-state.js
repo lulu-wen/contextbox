@@ -1,4 +1,6 @@
-const quaso = document.getElementById('quaso')
+function getQuaso() {
+  return document.getElementById('quaso')
+}
 
 const VALID_STATES = new Set([
   'idle',
@@ -19,15 +21,30 @@ function currentState() {
 }
 
 function renderState() {
+  const quaso = getQuaso()
+  if (!quaso) return
+
   const state = currentState()
 
   if (quaso.dataset.petState === state) return
 
   quaso.dataset.petState = state
 
-  document.dispatchEvent(new CustomEvent('quaso:statechange', {
-    detail: { state },
-  }))
+  if (typeof quaso.querySelectorAll === 'function') {
+    for (const button of quaso.querySelectorAll('#quaso-tools button:not(#quaso-worried)')) {
+      button.disabled = state === 'worried'
+    }
+  }
+
+  if (
+    typeof document !== 'undefined' &&
+    typeof document.dispatchEvent === 'function' &&
+    typeof CustomEvent === 'function'
+  ) {
+    document.dispatchEvent(new CustomEvent('quaso:statechange', {
+      detail: { state }
+    }))
+  }
 }
 
 export function setPetBaseState(state) {

@@ -53,16 +53,16 @@ test('模擬操作歷史需 token，支援儲存、讀取與選取復原', async
 })
 
 test('寵物公開素材可載入，模型格式正確，HEAD 不回 body', async () => {
-  const r = await call('/assets/quaso_v8.glb', { token: null, origin: null })
+  const r = await call('/assets/quaso_v10.glb', { token: null, origin: null })
   assert.equal(r.status, 200)
   assert.equal(r.headers.get('content-type'), 'model/gltf-binary')
   assert.equal(Buffer.from(await r.arrayBuffer()).subarray(0, 4).toString(), 'glTF')
-  const head = await call('/assets/quaso_v8.glb', { method: 'HEAD', token: null, origin: null })
+  const head = await call('/assets/quaso_v10.glb', { method: 'HEAD', token: null, origin: null })
   assert.equal(head.status, 200)
   assert.equal(await head.text(), '')
-  // pet-state.js 不在清單裡：它從來沒有被 commit 過，也沒有任何程式 import 它
+  
   // （grep 全 repo 只有這一行寫過它）。之後真的加了這個檔，連同 PET_ASSETS 一起加回來。
-  for (const file of ['pet-viewer.js', 'cleanup-demo.js', 'cleanup-demo-state.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
+  for (const file of ['pet-viewer.js', 'pet-state.js', 'cleanup-demo.js', 'cleanup-demo-state.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
     const script = await call('/assets/' + file, { token: null, origin: null })
     assert.equal(script.status, 200, file)
     assert.match(script.headers.get('content-type'), /javascript/)
@@ -78,8 +78,8 @@ test('素材路由只允許清單內檔案，維持來源與個資防線', async
     const r = await call(path, { token: null, origin: null })
     assert.equal(r.status, 404)
   }
-  assert.equal((await call('/assets/quaso_v8.glb', { origin: 'https://evil.example.com' })).status, 403)
-  assert.equal((await call('/assets/quaso_v8.glb', { method: 'POST' })).status, 405)
+  assert.equal((await call('/assets/quaso_v10.glb', { origin: 'https://evil.example.com' })).status, 403)
+  assert.equal((await call('/assets/quaso_v10.glb', { method: 'POST' })).status, 405)
   assert.equal((await call('/facts', { token: null, origin: null })).status, 401)
 })
 

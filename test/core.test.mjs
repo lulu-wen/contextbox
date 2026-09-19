@@ -56,14 +56,14 @@ test('擴充套件問一組欄位，拿回四種不同指示', () => {
       'contact.address.registered',       // 敏感，要再點
       'education[].school',               // 兩筆，要選
       'writing.autobiography',            // 要生成
-      'person.birthdate',                 // 庫裡沒有
+      'person.name.family',               // 非敏感欄位，庫裡沒有
     ]).map(r => [r.key, r.action])
   )
   assert.equal(plan['person.name.full'], 'fill')
   assert.equal(plan['contact.address.registered'], 'confirm-each-time')
   assert.equal(plan['education[].school'], 'pick')
   assert.equal(plan['writing.autobiography'], 'compose')
-  assert.equal(plan['person.birthdate'], 'missing')
+  assert.equal(plan['person.name.family'], 'missing')
 })
 
 test('到期的事實會被標 stale', () => {

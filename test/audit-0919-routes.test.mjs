@@ -398,7 +398,7 @@ describe('RC11 失敗原因只有一套翻譯、要保存、「需要你查看�
     writeFileSync(join(f.downloads, '報告 (1).pdf'), 'SMOKE 報告')
     // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
     // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
-    scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
+    scanDownloads({ db: f.db, ...f.opts, minStableMs: 0, now: new Date(Date.now() + 1000) })
     const p = createPlan(f.db)
     const applied = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     assert.equal(applied.code, 200)

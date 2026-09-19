@@ -2110,26 +2110,80 @@ describe('P3 面板自己有動作在跑時，/health 逾時不算斷線（稽�
    * 'ok' 真的送、'timeout' 丟逾時、'bad' 回 { ok: false }、gate 物件就停在那個關卡，放行時丟逾時。
    */
   async function slowUi(t, s, slow) {
-    const ctl = { gate: null, health: 'ok' }
+    const ctl = {
+      gate: null,
+      health: 'ok',
+      healthCompleted: 0
+    }
+
     const wrap = async (url, init, next) => {
       const path = String(url)
+
       if (path.startsWith('/health')) {
         const h = ctl.health
+
         if (h === 'timeout') throw TIMEOUT()
-        if (h === 'bad') return new Response(JSON.stringify({ ok: false }), { status: 200 })
-        if (h && typeof h === 'object') { h.reached = true; await h.promise; throw TIMEOUT() }
-        return next(url, init)
+
+        if (h === 'bad') {
+          ctl.healthCompleted += 1
+          return new Response(
+            JSON.stringify({ ok: false }),
+            { status: 200 }
+          )
+        }
+
+        if (h && typeof h === 'object') {
+          h.reached = true
+          await h.promise
+          throw TIMEOUT()
+        }
+
+        const response = await next(url, init)
+        ctl.healthCompleted += 1
+        return response
       }
-      if (ctl.gate && (init?.method ?? 'GET') === 'POST' && slow.test(path)) {
+
+      if (
+        ctl.gate &&
+        (init?.method ?? 'GET') === 'POST' &&
+        slow.test(path)
+      ) {
         const g = ctl.gate
         g.reached = true
         await g.promise
       }
+
       return next(url, init)
     }
+
     const ui = await mountUi(t, s, { wrap })
-    await until(() => petState(ui) && petState(ui) !== 'worried', '第一次輪詢拿到 /health')
-    return { ui, ctl, poll: () => ui.$('quaso-connection-retry').onclick() }
+
+    await until(
+      () =>
+        ctl.healthCompleted > 0 &&
+        ui.$('quaso-connection-retry').disabled === false,
+      '第一次輪詢完整完成'
+    )
+
+    return {
+      ui,
+      ctl,
+      poll: async () => {
+        // 確保前一次 pollHealth 已經完整結束
+        await until(
+          () => ui.$('quaso-connection-retry').disabled === false,
+          '等待前一次 /health 輪詢完成'
+        )
+
+        await ui.$('quaso-connection-retry').onclick()
+
+        // 確保這一次也完整跑完
+        await until(
+          () => ui.$('quaso-connection-retry').disabled === false,
+          '等待這次 /health 輪詢完成'
+        )
+      }
+    }
   }
 
   test('**套用還沒回來時 /health 逾時 → 寵物不擔心、不跳斷線；套用回來之後照常輪詢（逾時就擔心）**', async t => {
