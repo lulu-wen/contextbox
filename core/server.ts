@@ -157,6 +157,7 @@ const PET_ASSETS = new Map([
   ['/assets/cleanup-demo-state.js', ['assets/cleanup-demo-state.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-real-state.js', ['assets/cleanup-real-state.js', 'text/javascript; charset=utf-8']],
   ['/assets/demo-candidates.json', ['assets/demo-candidates.json', 'application/json; charset=utf-8']],
+  ['/assets/pet-state.js', ['assets/pet-state.js', 'text/javascript; charset=utf-8']],
   ...['three.module.js', 'three.core.js', 'GLTFLoader.js', 'BufferGeometryUtils.js'].map(name =>
     [`/assets/vendor/${name}`, [`assets/vendor/${name}`, 'text/javascript; charset=utf-8']]),
 ] as [string, [string, string]][])
