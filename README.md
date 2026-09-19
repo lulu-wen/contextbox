@@ -133,17 +133,21 @@ node cli.mjs pet       # 開寵物與面板（網址與鑰匙會印出來）
 設定檔在 `~/.contextbox/config.json`，第一次跑會自己建一份。
 預設**只**清理 `Downloads`，整理好的東西放 `~/Documents/Filed`。
 
-想讓它真的看懂內容，要自己接一個 OpenAI 相容的端點：
+**這個 repo 裡沒有預設的模型端點** —— 要不要讓模型看你的檔案、看雲端的還是你自己機器上的，
+是你的決定。設定長這樣：
 
 ```json
-{ "model": { "baseUrl": "https://你的端點/v1", "name": "模型名", "keyEnv": "CONTEXTBOX_MODEL_KEY" } }
+{ "model": { "baseUrl": "http://127.0.0.1:11434/v1", "name": "你的模型名稱", "keyEnv": "CONTEXTBOX_MODEL_KEY" } }
 ```
 
 ```bash
-export CONTEXTBOX_MODEL_KEY="..."   # 金鑰只從環境變數讀
+export CONTEXTBOX_MODEL_KEY="..."   # 金鑰只從環境變數讀；本地模型通常不用
 ```
 
-沒接模型也能用 —— 清理、連拍、重複檔那一條線不需要模型。
+本地跑、自架閘道、雲端 API 各有什麼代價，以及你選的端點要滿足哪三件事
+（OpenAI 相容、真的支援 `json_schema`、要看截圖得是視覺模型），寫在 **[docs/接模型.md](docs/接模型.md)**。
+
+**沒接模型也能用** —— 清理、連拍、重複檔那一條線完全不需要模型，也一次都不會連出去。
 
 ### 擴充套件
 
