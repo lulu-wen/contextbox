@@ -1,0 +1,75 @@
+{
+  "method": "PIL 讀 RGB，灰階 = (299R + 587G + 114B + 500) // 1000（與 core/png.ts 相同），raw 列優先、gzip",
+  "images": {
+    "01-same-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "7fa998405ffbb9ee94e70c6dbf88f6c800a28571c4909a4e68ec0341d2d24240"
+    },
+    "01-same-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "f85d42fe4eb9ddfd9192ef8aba6e60b9d8db544f9c2e8b35fe732a8f6d842c76"
+    },
+    "02-typed-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "28f164b34d3454aac1a1d2f6e181ab4cc34585e9f5a145190c718a3882950ce5"
+    },
+    "03-check-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "6d66c54bb577d33785fa2c31f6728dc25192c8f7db6ea678bcaa76b1eabb322e"
+    },
+    "03-check-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "a49f8af1b3cc25c12960138aaf167018a76c216f2f16d13dd0195b9f388f1b0c"
+    },
+    "04-dialog-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "790fc4cd2a8887350744eb30bdd733385631ec783772cdfd3abc17bc50770a88"
+    },
+    "04-dialog-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "26bbd496996745d909024f9a9f9bd2536d025869f0b5a2ab3caf92f8fc239998"
+    },
+    "05-scroll-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "ab7b817992e8874275435ae56bd2b679950c7434177377716dc1a4c5981c696d"
+    },
+    "05-scroll-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "7528e5754eebed1d152fcb57adcb83c32e122f8e646c11cb15e8f38de131905c"
+    },
+    "06-size-b": {
+      "width": 1280,
+      "height": 720,
+      "sha256": "3d635f6400a2805cb5bbfe7fec7290a1356ae2c815f93655545bc47060afda45"
+    },
+    "07-doc-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "fa54ce3f2c9fb3205348f7683d94baf3326bbeb3ff5212bdbc66181bc3bae662"
+    },
+    "07-doc-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "8956fe1a739711ee7b76dd3f5562e70e11326bdf762c4c4c5e6d7d2aa4d83f1a"
+    },
+    "08-text-a": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "fa54ce3f2c9fb3205348f7683d94baf3326bbeb3ff5212bdbc66181bc3bae662"
+    },
+    "08-text-b": {
+      "width": 1280,
+      "height": 860,
+      "sha256": "8a4e873aaa64b20dfd6b0ee815e647e1131e9c62e924505c34c428bab5eb5e75"
+    }
+  }
+}

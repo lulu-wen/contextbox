@@ -1,0 +1,703 @@
+{
+ "method": "PIL 畫 RGB 再 convert('L')（文件頁直接畫 L），與對抗式驗證的合成程式相同；非底圖只存與底圖不同的方塊",
+ "images": {
+  "s03-new-msg-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "6e2659259562ff506acf1bd23d1d09e70835ea71cdce2113194a4765206e6fa6"
+  },
+  "s01-ok-vs-no-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "0599645abec5e27e277646b7888d8adc04d0a520b6e0eb78707a33cfea821ca4",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    83,
+    39
+   ]
+  },
+  "s01-ok-vs-no-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "8728c3b96f8826539b660578ba7c54b8ceadafa410043d947bb36e1b2cfd6cdc",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    97,
+    39
+   ]
+  },
+  "s02-time-change-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "bc4eaab87b75be4fc0f110db9e9580af77aaabeffac7a6811063216b3784d256",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    233,
+    39
+   ]
+  },
+  "s02-time-change-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "f826175686fffe6c4a041d5d3fc3a3cff0f3e1a01c6b48ed4b20562e68a79628",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    233,
+    39
+   ]
+  },
+  "s03-new-msg-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "eee36c69f33b54130617c2a4c88987b6bc4c7d4924022de396e5956b29ab2124",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    321,
+    39
+   ]
+  },
+  "s04-long-diff-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "495b8c759d55aeb81f7631c88e5470b24c2fbf67c82be59c49f9443efe249144",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    419,
+    39
+   ]
+  },
+  "s04-long-diff-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "a2bb5f31ebea12da7cecbbcced829888de35b933f092462c47f53d128f092877",
+   "base": "s03-new-msg-a",
+   "patch": [
+    24,
+    320,
+    419,
+    39
+   ]
+  },
+  "s08-graymeta-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "337f3ff724d63cea1a56d236529f7e6303bd0d443dd2dbc2b2a7158069ec552c",
+   "base": "s03-new-msg-a",
+   "patch": [
+    1072,
+    304,
+    51,
+    13
+   ]
+  },
+  "s08-graymeta-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "24c89d90f68a082441ff2715d7f823d624d92f40a52826d212c26074e5f4378e",
+   "base": "s03-new-msg-a",
+   "patch": [
+    1072,
+    304,
+    51,
+    13
+   ]
+  },
+  "s09-caret-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "00f7e1e71fbe47a7acb7dbd6acfbd4837fe94454394a27a90fe97fdf3cfd56ba",
+   "base": "s03-new-msg-a",
+   "patch": [
+    44,
+    806,
+    1,
+    21
+   ]
+  },
+  "s09-caret-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "6a2928b6c2b7dfa1e6215c2b04ca9c354fbeb3c4731a68b53d178ef92d5842ec",
+   "base": "s03-new-msg-a",
+   "patch": [
+    84,
+    806,
+    1,
+    21
+   ]
+  },
+  "s12-clock-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "869f6a8c0998a3301183b615693a88da624635bfdc12091d5b1ac5aa705b2aa5",
+   "base": "s03-new-msg-a",
+   "patch": [
+    1217,
+    24,
+    8,
+    11
+   ]
+  },
+  "s05-dark-ok-no-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "156385e20a9b521a98f2f2a56edb7e632ba057bf406c4422946b4725c8325ea9"
+  },
+  "s05-dark-ok-no-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "2798aadbf282a89111a1360887c6c87081dd27752c280abaf8cfa2a43d22162b",
+   "base": "s05-dark-ok-no-a",
+   "patch": [
+    82,
+    320,
+    39,
+    39
+   ]
+  },
+  "s06-dark-time-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "065be3bb80f8ac0e263232868042b812489c45a18f146d823eea86d43b2c0663",
+   "base": "s05-dark-ok-no-a",
+   "patch": [
+    82,
+    320,
+    175,
+    39
+   ]
+  },
+  "s06-dark-time-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "e9a1f1c6e8d1364abae8fec728f131bd0d17bec81b43731ea505b717cd2a268b",
+   "base": "s05-dark-ok-no-a",
+   "patch": [
+    82,
+    320,
+    175,
+    39
+   ]
+  },
+  "s07-dark-long-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "015b19ded340fe0656f3ec71a913ee224bd80433b386b0ea19e0f0be92952e1c",
+   "base": "s05-dark-ok-no-a",
+   "patch": [
+    82,
+    320,
+    361,
+    39
+   ]
+  },
+  "s07-dark-long-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "e1ca52e92b67baec26f5928ae835012318187f8b709e4f123ce72a2fbdcae29c",
+   "base": "s05-dark-ok-no-a",
+   "patch": [
+    82,
+    320,
+    361,
+    39
+   ]
+  },
+  "s10-editor-caret-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "1d7d3d80c5a23fc9a8f1296d43af1aad16bc7f4a560774f651e8e3e63851d6c2"
+  },
+  "s10-editor-caret-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "5684a4592e563d52a8406db98df1f00a65c7ece700347d612a98bac89866fb43",
+   "base": "s10-editor-caret-a",
+   "patch": [
+    102,
+    40,
+    35,
+    259
+   ]
+  },
+  "s11-editor-line-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "1a7edd8bef6de617096bff19d383911f6ccb2a2c94093fdcdc072b21896146ab",
+   "base": "s10-editor-caret-a",
+   "patch": [
+    102,
+    40,
+    2,
+    19
+   ]
+  },
+  "s11-editor-line-b": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "58bec78da63a2f2e31ce70c2ae7bb49ff726738cadd1675e5ef4393b319f896b",
+   "base": "s10-editor-caret-a",
+   "patch": [
+    102,
+    40,
+    126,
+    19
+   ]
+  },
+  "s14-4k-new-msg-a": {
+   "width": 3840,
+   "height": 2160,
+   "sha256": "956d553171f3816e34e3837370e3363d60566bebcbc5ec790f11d27813b7edaa"
+  },
+  "s13-4k-long-a": {
+   "width": 3840,
+   "height": 2160,
+   "sha256": "272ef5f4248c29979100fc9625b2faa067b4d76fd00b67483fd45525c6980ce4",
+   "base": "s14-4k-new-msg-a",
+   "patch": [
+    24,
+    320,
+    419,
+    39
+   ]
+  },
+  "s13-4k-long-b": {
+   "width": 3840,
+   "height": 2160,
+   "sha256": "8e98d504d140db2a69d68cf89b83ff50affd5f5410311da72205e26224662b4f",
+   "base": "s14-4k-new-msg-a",
+   "patch": [
+    24,
+    320,
+    419,
+    39
+   ]
+  },
+  "s14-4k-new-msg-b": {
+   "width": 3840,
+   "height": 2160,
+   "sha256": "7ec9421f7954941e4dce5eddd000496809130724b6b20c3d1f4e0a29b8727e13",
+   "base": "s14-4k-new-msg-a",
+   "patch": [
+    24,
+    320,
+    321,
+    39
+   ]
+  },
+  "s18-phone-clock-a": {
+   "width": 1170,
+   "height": 2532,
+   "sha256": "ea4d3ef08eb706a6452fc2a2be63d4edb343c68f55998d21d46ca41431a95208"
+  },
+  "s17-phone-ok-no-a": {
+   "width": 1170,
+   "height": 2532,
+   "sha256": "88ce3ea398c0a2b9201b7a9fb769335552d367b02e5d29c7ae76455ad53912d8",
+   "base": "s18-phone-clock-a",
+   "patch": [
+    72,
+    960,
+    247,
+    115
+   ]
+  },
+  "s17-phone-ok-no-b": {
+   "width": 1170,
+   "height": 2532,
+   "sha256": "345c922226aa3b3280bada77983d65149b8b83dc7a3dc979afa1218e63ec6f77",
+   "base": "s18-phone-clock-a",
+   "patch": [
+    72,
+    960,
+    289,
+    115
+   ]
+  },
+  "s18-phone-clock-b": {
+   "width": 1170,
+   "height": 2532,
+   "sha256": "4a9697cd85b324117f813bc796191426f0d1a71f6b2de88f7c3b50eab66cdc58",
+   "base": "s18-phone-clock-a",
+   "patch": [
+    983,
+    71,
+    21,
+    32
+   ]
+  },
+  "r-fhd1x-long-a": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "acfca9e41e40de80f6521b50ef511f745fbdacd8cc86235585f8a59eaa7ef3dd"
+  },
+  "r-fhd1x-long-b": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "cad2f14e24bc14141b80b92471c38c442164a98994bf97d52d391eb61cb3c6be",
+   "base": "r-fhd1x-long-a",
+   "patch": [
+    96,
+    333,
+    322,
+    16
+   ]
+  },
+  "r-mac13-2x-long-a": {
+   "width": 2560,
+   "height": 1600,
+   "sha256": "cdcfe0782f2bc42519e5a4ef8dcba415d26b9ca103a606ad41272be65ef223f9"
+  },
+  "r-mac13-2x-long-b": {
+   "width": 2560,
+   "height": 1600,
+   "sha256": "28082e8db72e202a612010ccfd7494b2250bb0e18f3eaf835d4495075c79b568",
+   "base": "r-mac13-2x-long-a",
+   "patch": [
+    193,
+    666,
+    642,
+    29
+   ]
+  },
+  "r-mac15-2x-long-a": {
+   "width": 2880,
+   "height": 1800,
+   "sha256": "96e05ae4ceaa01d81e582735bb6210b01be7b2f15a7e8cf5759aac561cc0a50e"
+  },
+  "r-mac15-2x-long-b": {
+   "width": 2880,
+   "height": 1800,
+   "sha256": "8d35c9f43e9758c29f3d9b232d555e87ab5cce32b7b28eba1be2fbe7dda29520",
+   "base": "r-mac15-2x-long-a",
+   "patch": [
+    193,
+    666,
+    642,
+    29
+   ]
+  },
+  "r-mac16-2x-long-a": {
+   "width": 3456,
+   "height": 2234,
+   "sha256": "930948725f07210a197f4c3814297ce2f4aeddbdb4f59c8e5ebd7cae01e08b89"
+  },
+  "r-mac16-2x-long-b": {
+   "width": 3456,
+   "height": 2234,
+   "sha256": "1151231b25cebd60c3e15d7fc948eba581c9b0b749d832d8392acffccba00ac2",
+   "base": "r-mac16-2x-long-a",
+   "patch": [
+    193,
+    666,
+    642,
+    29
+   ]
+  },
+  "k-1920-False-a": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "c468e1406aa6a25f33d36702f48acc1257085e1026acfea4e9dae40acf42e55f"
+  },
+  "k-1920-False-b4": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "06cfd2b9f3864dbc53fa2cfb6470648a17204cadfa1158e0d375eacc7d4ac545",
+   "base": "k-1920-False-a",
+   "patch": [
+    80,
+    294,
+    640,
+    93
+   ]
+  },
+  "k-1920-True-a": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "a0970d8cb1eb0cb14fc44cf81c29d81ea18649a36c38f13c8e9f674990ce4b3e"
+  },
+  "k-1920-True-b6": {
+   "width": 1920,
+   "height": 1080,
+   "sha256": "86bb74d99e408838a45dafffd0b943d47c70d676142888b4d466ec6e6a1ac39c",
+   "base": "k-1920-True-a",
+   "patch": [
+    80,
+    294,
+    640,
+    143
+   ]
+  },
+  "k-1280-False-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "36247e37b579d9020c3ee70f5858c665bd5480104465b40a09ed04d9f3165bf7",
+   "base": "k-1920-False-a",
+   "crop": [
+    0,
+    0,
+    1280,
+    860
+   ],
+   "patch": [
+    80,
+    845,
+    640,
+    15
+   ]
+  },
+  "k-1280-False-b1": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "2f07e306594e918dcaa39383ecf04eaf3b803db774f42d306f833672423196b0",
+   "base": "k-1280-False-a",
+   "patch": [
+    80,
+    294,
+    640,
+    18
+   ]
+  },
+  "k-1280-True-a": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "69673000411b9c348640086ca024d23d06c8ad127928524c21148e279baa3d3b",
+   "base": "k-1920-True-a",
+   "crop": [
+    0,
+    0,
+    1280,
+    860
+   ],
+   "patch": [
+    80,
+    845,
+    640,
+    15
+   ]
+  },
+  "k-1280-True-b1": {
+   "width": 1280,
+   "height": 860,
+   "sha256": "8cddb6f898f11b8d989324bdc3e3fa1a856fd31289e101e2580663be53f8bf0c",
+   "base": "k-1280-True-a",
+   "patch": [
+    80,
+    294,
+    640,
+    18
+   ]
+  }
+ },
+ "pairs": [
+  {
+   "name": "s01-ok-vs-no",
+   "a": "s01-ok-vs-no-a",
+   "b": "s01-ok-vs-no-b",
+   "burst": false,
+   "why": "1280×860 聊天：最後一則「好」→「不行」（規格衝突，見測試）"
+  },
+  {
+   "name": "s02-time-change",
+   "a": "s02-time-change-a",
+   "b": "s02-time-change-b",
+   "burst": false,
+   "why": "1280×860 聊天：集合時間地點不同（早上九→下午三、R103→R204）"
+  },
+  {
+   "name": "s03-new-msg",
+   "a": "s03-new-msg-a",
+   "b": "s03-new-msg-b",
+   "burst": false,
+   "why": "1280×860 聊天：多一整則新訊息"
+  },
+  {
+   "name": "s04-long-diff",
+   "a": "s04-long-diff-a",
+   "b": "s04-long-diff-b",
+   "burst": false,
+   "why": "1280×860 聊天：最後一則整句不同（約 25 字）"
+  },
+  {
+   "name": "s05-dark-ok-no",
+   "a": "s05-dark-ok-no-a",
+   "b": "s05-dark-ok-no-b",
+   "burst": false,
+   "why": "1280×860 深色：「好」→「不行」（規格衝突，見測試）"
+  },
+  {
+   "name": "s06-dark-time",
+   "a": "s06-dark-time-a",
+   "b": "s06-dark-time-b",
+   "burst": false,
+   "why": "1280×860 深色：集合時間地點不同"
+  },
+  {
+   "name": "s07-dark-long",
+   "a": "s07-dark-long-a",
+   "b": "s07-dark-long-b",
+   "burst": false,
+   "why": "1280×860 深色：最後一則整句不同"
+  },
+  {
+   "name": "s08-graymeta",
+   "a": "s08-graymeta-a",
+   "b": "s08-graymeta-b",
+   "burst": true,
+   "why": "只有淺灰小字的已讀時間不同"
+  },
+  {
+   "name": "s09-caret",
+   "a": "s09-caret-a",
+   "b": "s09-caret-b",
+   "burst": true,
+   "why": "只有輸入框游標位置不同"
+  },
+  {
+   "name": "s10-editor-caret",
+   "a": "s10-editor-caret-a",
+   "b": "s10-editor-caret-b",
+   "burst": true,
+   "why": "編輯器只有游標位置不同"
+  },
+  {
+   "name": "s11-editor-line",
+   "a": "s11-editor-line-a",
+   "b": "s11-editor-line-b",
+   "burst": false,
+   "why": "編輯器：一行程式碼改了（x + 1 → x * 2 - 7）"
+  },
+  {
+   "name": "s12-clock",
+   "a": "s03-new-msg-a",
+   "b": "s12-clock-b",
+   "burst": true,
+   "why": "只有右上角時鐘不同"
+  },
+  {
+   "name": "s13-4k-long",
+   "a": "s13-4k-long-a",
+   "b": "s13-4k-long-b",
+   "burst": false,
+   "why": "3840×2160（100%）：最後一則整句不同"
+  },
+  {
+   "name": "s14-4k-new-msg",
+   "a": "s14-4k-new-msg-a",
+   "b": "s14-4k-new-msg-b",
+   "burst": false,
+   "why": "3840×2160（100%）：多一整則新訊息"
+  },
+  {
+   "name": "s17-phone-ok-no",
+   "a": "s17-phone-ok-no-a",
+   "b": "s17-phone-ok-no-b",
+   "burst": false,
+   "why": "手機直式 3x：「好」→「不行」（規格衝突，見測試）"
+  },
+  {
+   "name": "s18-phone-clock",
+   "a": "s18-phone-clock-a",
+   "b": "s18-phone-clock-b",
+   "burst": true,
+   "why": "手機直式 3x：只有時鐘不同"
+  },
+  {
+   "name": "r-fhd1x-long",
+   "a": "r-fhd1x-long-a",
+   "b": "r-fhd1x-long-b",
+   "burst": false,
+   "why": "1920×1080（100%）：最後一則整句不同"
+  },
+  {
+   "name": "r-mac13-2x-long",
+   "a": "r-mac13-2x-long-a",
+   "b": "r-mac13-2x-long-b",
+   "burst": false,
+   "why": "2560×1600（2x）：最後一則整句不同"
+  },
+  {
+   "name": "r-mac15-2x-long",
+   "a": "r-mac15-2x-long-a",
+   "b": "r-mac15-2x-long-b",
+   "burst": false,
+   "why": "2880×1800（2x）：最後一則整句不同"
+  },
+  {
+   "name": "r-mac16-2x-long",
+   "a": "r-mac16-2x-long-a",
+   "b": "r-mac16-2x-long-b",
+   "burst": false,
+   "why": "3456×2234（2x）：最後一則整句不同"
+  },
+  {
+   "name": "k-1280-False-b1",
+   "a": "k-1280-False-a",
+   "b": "k-1280-False-b1",
+   "burst": false,
+   "why": "1280×860 淺色文件：換掉 1 整行（40 字，16px）"
+  },
+  {
+   "name": "k-1280-True-b1",
+   "a": "k-1280-True-a",
+   "b": "k-1280-True-b1",
+   "burst": false,
+   "why": "1280×860 深色文件：換掉 1 整行"
+  },
+  {
+   "name": "k-1920-False-b4",
+   "a": "k-1920-False-a",
+   "b": "k-1920-False-b4",
+   "burst": false,
+   "why": "1920×1080 淺色文件：換掉 4 整行"
+  },
+  {
+   "name": "k-1920-True-b6",
+   "a": "k-1920-True-a",
+   "b": "k-1920-True-b6",
+   "burst": false,
+   "why": "1920×1080 深色文件：換掉 6 整行"
+  }
+ ],
+ "glyphs": {
+  "chars": "的一是不了人我在有他這中大來上國個到說們為子和你地出道也時年得就那要下以生會自著去之過家學對可她裡後小麼心多天而能好都然沒日於起還發成事只作當想看文無開手十用主行方又如前所本見經頭面公同三已老",
+  "sizes": [
+   14,
+   18,
+   21,
+   28
+  ],
+  "cells": [
+   [
+    14,
+    16
+   ],
+   [
+    18,
+    19
+   ],
+   [
+    21,
+    21
+   ],
+   [
+    28,
+    28
+   ]
+  ],
+  "sha256": "55575f285a071af2c471919193ee5bf95365cd5b7c5b81a3b50183020af97a67",
+  "layout": "依 sizes 的順序，每個大小 len(chars) 個字，每字 cells[i][0]×cells[i][1] 位元組，列優先"
+ }
+}

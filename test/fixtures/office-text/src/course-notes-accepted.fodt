@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+ xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+ xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:body>
+  <office:text>
+   <text:h text:outline-level="1">資料結構 第3週 講義</text:h>
+   <text:p>本週主題：堆疊與佇列 &amp; &lt;鏈結串列&gt; “引號”</text:p>
+   <text:p>章節<text:tab/>頁碼</text:p>
+   <text:p>第一行<text:line-break/>第二行</text:p>
+   <table:table table:name="課程資訊">
+    <table:table-column table:number-columns-repeated="2"/>
+    <table:table-row>
+     <table:table-cell office:value-type="string"><text:p>課程</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>資料結構</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="string"><text:p>授課教師</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>王老師</text:p></table:table-cell>
+    </table:table-row>
+   </table:table>
+   <text:p>期中考範圍是第1到第5章（含習題）</text:p>
+   <text:p>Emoji 測試 😀 結尾</text:p>
+  </office:text>
+ </office:body>
+</office:document>
