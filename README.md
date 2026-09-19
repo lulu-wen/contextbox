@@ -154,6 +154,16 @@ export CONTEXTBOX_MODEL_KEY="..."   # 金鑰只從環境變數讀
 
 ---
 
+## 授權
+
+[Apache License 2.0](LICENSE)。
+
+唯一的第三方程式碼是隨專案保存的 Three.js 0.180.0（MIT，只用在前端 3D 寵物），
+來源與授權見 [core/assets/vendor/README.md](core/assets/vendor/README.md)。
+後端零外部依賴。
+
+---
+
 ## 這一輪不做
 
 真的寫進行事曆、向量語意搜尋、多機同步、雲端備份。
