@@ -1,10 +1,27 @@
 import { createDemo } from './cleanup-demo-state.js'
 import {
+  setPetBaseState,
+  setPetTransientState,
+  clearPetTransientState,
+  flashPetState,
+} from './pet-state.js'
+import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
+
+document.addEventListener('quaso:statechange', event => {
+  const text = $('pet-state-text')
+  if (text) text.textContent = event.detail.state
+})
+// 頁面剛載入時先顯示目前 state
+const petStateText = $('pet-state-text')
+if (petStateText) {
+  petStateText.textContent = $('quaso').dataset.petState || 'idle'
+}
+
 const panel = $('cleanup-panel')
 const alertButton = $('quaso-cleanup-alert')
 let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
@@ -89,6 +106,45 @@ function renderScanProblems(probs = scanProblems()) {
     $('quaso-status').textContent = probs.length ? scanProblemText(probs) : RESTING_BUBBLE
   }
 }
+function systemHealthProblem() {
+  if (!healthChecked) return null
+
+  // server 完全沒有回應
+  if (!health) {
+    return {
+      type: 'offline',
+      message: '暫時連不上 ContextBox。'
+    }
+  }
+
+  // DB 故障
+  if (health.db?.ok === false || health.ok === false) {
+    return {
+      type: 'db',
+      message: 'ContextBox 資料庫暫時無法使用。'
+    }
+  }
+
+  // watcher 沒有正常運作
+  // 監看的資料夾真的不存在
+  if ((health.watcher?.rootsMissing ?? 0) > 0) {
+    return {
+      type: 'watcher',
+      message: '有清理資料夾不存在，請檢查設定。'
+    }
+  }
+
+  // scanner 回報問題
+  const probs = scanProblems()
+  if (probs.length > 0) {
+    return {
+      type: 'scan',
+      message: scanProblemText(probs)
+    }
+  }
+
+  return null
+}
 function updateAlert() {
   const count = demo ? demo.candidates.length : health?.pendingCandidates
   $('quaso-candidate-count').textContent = count == null ? '—' : count > 99 ? '99+' : String(count)
@@ -96,18 +152,29 @@ function updateAlert() {
   const label = count == null ? '候選數量尚未取得，點擊重試' : `${source}待清檔案 ${count} 個，點擊開啟清理面板`
   alertButton.setAttribute('aria-label', label)
   alertButton.title = label
-  const offline = healthChecked && !health
-  alertButton.classList.toggle('attention', count > 0 && !offline)
-  const state = offline ? 'worried' : count > 0 ? 'found' : health?.watcher?.ok ? 'watching' : 'idle'
-  $('quaso').dataset.petState = state
-  $('quaso-worried').hidden = !offline
+  const problem = systemHealthProblem()
+  const worried = Boolean(problem)
+
+  alertButton.classList.toggle(
+    'attention',
+    count > 0 && !worried
+  )
+
+  const state =
+    worried ? 'worried'
+    : count > 0 ? 'found'
+    : 'idle'
+
+  setPetBaseState(state)
+
+$('quaso-worried').hidden = !worried
   // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
   // 掃描出過問題就先講那件事（R3-12b）：「監看中」在一個檔都沒掃到的時候是在騙人
   const probs = scanProblems()
   $('quaso-stage').title = probs.length ? `⚠ 上次掃描有問題（${probs.length} 個） · 點我看說明`
     : health?.watcher?.ok ? `📁 ${folderPhrase(health.watcher, { quoted: false })} · 監看中` : '與可頌貓對話'
   renderScanProblems(probs)
-  if (count > previousCount && !offline) {
+  if (count > previousCount && !worried) {
     $('quaso-stage').classList.remove('found-hop')
     void $('quaso-stage').offsetWidth
     $('quaso-stage').classList.add('found-hop')
@@ -264,6 +331,33 @@ alertButton.onclick = async () => {
     else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
   } catch { $('cleanup-list').replaceChildren(paragraph('讀取失敗，請確認伺服器已啟動，關閉面板後點垃圾桶重試。')) }
 }
+$('cleanup-select-all').onclick = () => {
+  if (busy) return
+
+  const s = session()
+  if (!s || s.canUndo || s.locked) return
+
+  for (const item of s.candidates) {
+    s.select(item.itemId, true)
+  }
+
+  request = null
+  render()
+}
+
+$('cleanup-select-none').onclick = () => {
+  if (busy) return
+
+  const s = session()
+  if (!s || s.canUndo || s.locked) return
+
+  for (const item of s.candidates) {
+    s.select(item.itemId, false)
+  }
+
+  request = null
+  render()
+}
 $('cleanup-close').onclick = () => panel.close()
 panel.addEventListener('close', () => { if (!alertButton.hidden) alertButton.focus() })
 $('cleanup-dismiss').onclick = () => {
@@ -275,91 +369,222 @@ $('cleanup-dismiss').onclick = () => {
 /** 真的清理。訊息**一律照後端說的結果講**，不用勾選數去推算。 */
 async function operateReal(kind) {
   if (kind === 'apply') {
-    result(real.pendingPlan ? '正在繼續上次那份……' : real.locked ? '正在重試（沿用同一份，不會多搬）……' : '正在搬進隔離區……')
+    result(
+      real.pendingPlan
+        ? '正在繼續上次那份……'
+        : real.locked
+          ? '正在重試（沿用同一份，不會多搬）……'
+          : '正在搬進隔離區……'
+    )
+
     const r = await real.apply()
+
     if (r.status === 'stale') {
       result('清單在你看的時候更新了（例如有檔案被刪掉、或已經被別的地方清過）。一個都還沒動，請再確認一次勾選。')
-      return
+      return false
     }
+
     if (r.status === 'pending-plan') {
       result(pendingPlanMessage(r.plan))
-      return
+      return false
     }
+
     const m = applyMessage(r)
     result(m.text)
     notice(m.notice)
-  } else if (kind === 'release') {
+
+    return true
+  }
+
+  if (kind === 'release') {
     result('正在放棄上次那份……')
+
     const r = await real.release()
-    result(`已放棄上次那份（${r.items.length} 個檔案），沒有動任何檔案。現在可以重新勾選再清理。`
-      + (r.reloadFailed ? '\n（清單沒有重新整理成功。關掉面板再打開就會更新。）' : ''))
-  } else if (kind === 'putback') {
-    // 做到一半中斷的那份：把已經在隔離區的放回原位，還沒搬的不動（R2-5b）
+
+    result(
+      `已放棄上次那份（${r.items.length} 個檔案），沒有動任何檔案。現在可以重新勾選再清理。`
+      + (r.reloadFailed
+        ? '\n（清單沒有重新整理成功。關掉面板再打開就會更新。）'
+        : '')
+    )
+
+    // release 不是「完成清理」
+    return false
+  }
+
+  if (kind === 'putback') {
     result('正在把已經搬走的放回原位……')
+
     const m = undoMessage(await real.putBack())
     result(m.text)
     notice(m.notice)
-  } else {
-    result('正在放回原位……')
-    const r = await real.undo()
-    // 只講發生了什麼。**不講「之後不會再被提議」**：之後符合新的理由會再出現；
-    // 原位置被佔時放回來的那份會改名，重掃後以重複檔的身分被預設勾起來。
-    // 寵物的話也看結果：全部放回、部分放回、一個都沒放回，三種不同的話（RC9）。
-    const m = undoMessage(r)
-    result(m.text)
-    notice(m.notice)
-  }
-}
 
+    return true
+  }
+
+  // undo
+  result('正在放回原位……')
+
+  const r = await real.undo()
+  const m = undoMessage(r)
+
+  result(m.text)
+  notice(m.notice)
+
+  return true
+}
+function seriousOperationError(error) {
+  // createReal 已經判定操作結果不確定
+  if (real?.uncertain) return true
+
+  // 沒有 HTTP status：
+  // fetch failed / timeout / server disconnected
+  if (!error?.status) return true
+
+  // server internal error
+  if (error.status >= 500) return true
+
+  return false
+}
 async function operate(kind) {
   if (busy) return
+
   busy = true
+
+  // ① 操作開始
+  if (kind === 'apply') {
+    setPetTransientState('cleaning')
+  } else if (kind === 'undo' || kind === 'putback') {
+    setPetTransientState('restoring')
+  }
+
   render()
+
+  // ─────────────────────────────
+  // REAL MODE
+  // ─────────────────────────────
   if (!isDemo()) {
-    try { await tracked(() => operateReal(kind)) }
-    catch (error) {
-      // 伺服器明確回的錯（有 status）結果是確定的：只講原因，勾選照樣可以改（RC8）。
-      // 只有網路斷了才是「結果不明」。
-      const lines = [safeName(error.message)]
-      if (real.uncertain) {
-        lines.push(!real.pendingPlan ? '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。'
-          : real.pendingPlan.started ? '結果還沒確認。再按一次「繼續上次那份」或「放回已經搬走的」都是安全的，不會多搬。'
-          : '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。')
+    try {
+      const completed = await tracked(() => operateReal(kind))
+
+      // ② 真的完成清理 / 復原才 happy
+      if (completed) {
+        flashPetState('happy', 2000)
+      } else {
+        clearPetTransientState()
       }
-      result(lines.join('\n'))
-    } finally {
+
+  } catch (error) {
+    const serious = seriousOperationError(error)
+
+    if (serious) {
+      setPetTransientState('worried')
+    } else {
+      clearPetTransientState()
+    }
+
+    const lines = [safeName(error.message)]
+
+    if (real.uncertain) {
+      lines.push(
+        !real.pendingPlan
+          ? '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。'
+          : real.pendingPlan.started
+            ? '結果還沒確認。再按一次「繼續上次那份」或「放回已經搬走的」都是安全的，不會多搬。'
+            : '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。'
+      )
+    }
+
+    result(lines.join('\n'))
+  } finally {
       busy = false
       render()
     }
-    pollHealth()   // 徽章數字馬上更新，不用等五秒（動作已經結束，這次輪詢的結果照常算數）
+
+    pollHealth()
     return
   }
-  result(kind === 'apply' ? '正在模擬移入隔離區……' : '正在模擬復原……')
+
+  // ─────────────────────────────
+  // DEMO MODE
+  // ─────────────────────────────
+
+  result(
+    kind === 'apply'
+      ? '正在模擬移入隔離區……'
+      : '正在模擬復原……'
+  )
+
   try {
     if (kind === 'apply') {
-      const candidateIds = demo.candidates.filter(c => demo.selected.has(c.itemId)).flatMap(c => c.candidateIds)
-      request ??= { requestId: crypto.randomUUID(), candidateIds }
+      const candidateIds = demo.candidates
+        .filter(c => demo.selected.has(c.itemId))
+        .flatMap(c => c.candidateIds)
+
+      request ??= {
+        requestId: crypto.randomUUID(),
+        candidateIds
+      }
+
       const saved = await demoHistoryApi('history', request)
-      if (!saved.canUndo) throw new Error('這次操作已在其他頁面復原，請重新示範。')
+
+      if (!saved.canUndo) {
+        throw new Error('這次操作已在其他頁面復原，請重新示範。')
+      }
+
       currentOperation = saved.id
       request = null
+
       const response = demo.apply()
-      const message = `模擬清理完成：${response.quarantined} 個檔案，共 ${bytes(response.bytesFreed)} 已移入模擬隔離區。未勾選的檔案保留原樣。`
+
+      const message =
+        `模擬清理完成：${response.quarantined} 個檔案，共 ${bytes(response.bytesFreed)} 已移入模擬隔離區。未勾選的檔案保留原樣。`
+
       result(message)
       notice('整理好了！想改變心意，隨時可以復原這次清理。')
+
+      // cleaning → happy
+      flashPetState('happy', 2000)
+
     } else {
-      await demoHistoryApi('undo', { operationIds: [currentOperation] })
+      await demoHistoryApi('undo', {
+        operationIds: [currentOperation]
+      })
+
       const response = demo.undo()
+
       currentOperation = null
-      result(`已模擬復原 ${response.restored} 個檔案，回到清理前的清單與勾選狀態。`)
+
+      result(
+        `已模擬復原 ${response.restored} 個檔案，回到清理前的清單與勾選狀態。`
+      )
+
       notice('都幫你放回來了！')
+
+      // restoring → happy
+      flashPetState('happy', 2000)
     }
+
     updateAlert()
+
   } catch (error) {
-    result(error.message)
+    clearPetTransientState()
+    const lines = [safeName(error.message)]
+
+    if (real.uncertain) {
+      lines.push(
+        !real.pendingPlan
+          ? '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。'
+          : real.pendingPlan.started
+            ? '結果還沒確認。再按一次「繼續上次那份」或「放回已經搬走的」都是安全的，不會多搬。'
+            : '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。'
+      )
+    }
+
+    result(lines.join('\n'))
   } finally {
-    busy = false
-    render()
+      busy = false
+      render()
   }
 }
 $('cleanup-apply').onclick = () => {
@@ -460,78 +685,170 @@ $('cleanup-history-prev').onclick = () => { historyOffset = Math.max(0, historyO
 $('cleanup-history-next').onclick = () => { historyOffset += 20; refreshHistory() }
 $('cleanup-history-undo').onclick = async () => {
   if (historyBusy || busy || !historySelected.size) return
+
   historyBusy = true
+
+  // ① 開始復原
+  setPetTransientState('restoring')
+
   const operationIds = [...historySelected]
+
   renderHistory()
-  historyResult(demoEnabled ? '正在復原勾選的模擬動作……' : '正在把勾選的清理放回原位……')
+
+  historyResult(
+    demoEnabled
+      ? '正在復原勾選的模擬動作……'
+      : '正在把勾選的清理放回原位……'
+  )
+
   let message
+
   try {
-    const response = await tracked(() => historyApi('undo', { operationIds }))
+    const response = await tracked(() =>
+      historyApi('undo', { operationIds })
+    )
+
     if (!demoEnabled) {
-      // 真的復原：檔案回到原位，但**不會回到清理清單**（A 的規則：復原過就代表想留著）。
-      // 目前這一輪若不是結果不明，就丟掉，下次打開面板重新載入。
+      // ─────────────────────────
+      // 真實模式
+      // ─────────────────────────
+
       if (real && !real.locked) real = null
-      if (panel.open && panel.dataset.mode === 'local') panel.close()
+
+      if (panel.open && panel.dataset.mode === 'local') {
+        panel.close()
+      }
+
       pollHealth()
-      // 放回幾個、沒放回哪幾個（附原因）照轉接器算好的講；寵物的話也看結果（RC9）。
-      // 以前不管結果一律說「都幫你放回來了」—— 一個都沒放回的時候也是。
+
       const m = historyUndoMessage(response)
+
       message = m.text
       notice(m.notice)
-    } else {
-    const currentDemo = demo ?? savedDemo
-    if (currentOperation && response.operationIds.includes(currentOperation) && currentDemo?.canUndo) {
-      currentDemo.undo()
-      currentOperation = null
-      $('cleanup-result').hidden = true
-    }
-    currentDemo?.restoreItems(response.restoredItems ?? [])
-    updateAlert()
-    if (panel.open && panel.dataset.mode === 'demo') render()
-    message = `已復原 ${response.restored} 次模擬清理，共 ${response.restoredFiles} 個檔案。`
-      + (response.alreadyRestored ? `另有 ${response.alreadyRestored} 筆先前已復原。` : '')
-      + (demo ? `待清理清單目前有 ${demo.candidates.length} 個檔案，可點垃圾桶查看。` : '按 D 可開啟示範清單。')
-    notice('已放回待清理清單，點垃圾桶就能看到。')
-    }
-  } catch {
-    message = '復原尚未確認完成，請重新載入紀錄後重試。'
-  } finally {
-    historyBusy = false
-    await refreshHistory()
-    historyResult(message)
-  }
-}
 
+    } else {
+      // ─────────────────────────
+      // Demo 模式
+      // ─────────────────────────
+
+      const currentDemo = demo ?? savedDemo
+
+      if (
+        currentOperation &&
+        response.operationIds.includes(currentOperation) &&
+        currentDemo?.canUndo
+      ) {
+        currentDemo.undo()
+        currentOperation = null
+        $('cleanup-result').hidden = true
+      }
+
+      currentDemo?.restoreItems(response.restoredItems ?? [])
+
+      updateAlert()
+
+      if (panel.open && panel.dataset.mode === 'demo') {
+        render()
+      }
+
+      message =
+        `已復原 ${response.restored} 次模擬清理，共 ${response.restoredFiles} 個檔案。`
+        + (
+          response.alreadyRestored
+            ? `另有 ${response.alreadyRestored} 筆先前已復原。`
+            : ''
+        )
+        + (
+          demo
+            ? `待清理清單目前有 ${demo.candidates.length} 個檔案，可點垃圾桶查看。`
+            : '按 D 可開啟示範清單。'
+        )
+
+      notice('已放回待清理清單，點垃圾桶就能看到。')
+    }
+
+    // ② 復原 API 成功
+    // restoring → happy → 2 秒後回 base state
+    flashPetState('happy', 2000)
+
+  } catch (error) {
+  // ③ 復原失敗
+  // 結果無法確認 → worried
+  setPetTransientState('worried')
+
+  console.error('History undo failed:', error)
+
+  message = '復原尚未確認完成，請重新載入紀錄後重試。'
+
+} finally {
+  historyBusy = false
+
+  await refreshHistory()
+
+  historyResult(message)
+}
+}
 
 async function pollHealth() {
   if (healthBusy || stopped) return
+
   clearTimeout(healthTimer)
   healthBusy = true
+
   const retry = $('quaso-connection-retry')
   retry.disabled = true
   retry.textContent = '正在連線……'
-  const epoch = actionEpoch
-  let settled = true
+
+  // 記住這次 health request 開始時的 action 世代。
+  // 即使 timeout 發生時 action 已經結束，也能知道這次輪詢曾經和 action 重疊。
+  const epochAtStart = actionEpoch
+
   try {
-    if (mockOffline) throw new Error('Mock backend offline')
-    // 帶 token 問（window.api 會帶）：資料夾名（watcher.watching）只給帶 token 的（U4）
-    const snapshot = await window.api('/health', { signal: AbortSignal.timeout(4000) })
-    // 後端回了話（包括說自己壞了的 ok: false）就是結論，動作在不在跑都一樣
-    health = snapshot.ok ? snapshot : null
+    if (mockOffline) {
+      throw new Error('Mock backend offline')
+    }
+
+    const snapshot = await window.api('/health', {
+      signal: AbortSignal.timeout(4000)
+    })
+
+    // Server 有明確回答就相信它。
+    // 即使正在清理，ok:false 仍然是真正的 health 問題。
+    health = snapshot
+    healthChecked = true
+
   } catch {
-    // **沒回應**（逾時、連不上）的時候，面板自己的動作在這次輪詢期間跑過（開始時就在跑、或中途開始／結束）
-    // → 多半是 server 正忙著搬檔，這次不算數，寵物維持上一次的樣子；動作結束之後的輪詢照常算（稽核 C-f14）。
-    // 模擬離線（按 O）照樣算數。
-    if (!mockOffline && (actionsInFlight > 0 || epoch !== actionEpoch)) settled = false
-    else health = null
+    const overlappedWithAction =
+      actionsInFlight > 0 ||
+      actionEpoch !== epochAtStart
+
+    if (!mockOffline && overlappedWithAction) {
+      // P3：
+      // 這次 health timeout 和清理／復原操作重疊，
+      // 很可能只是 server 正忙，所以不能判定斷線。
+      //
+      // 刻意不改 health，也不改 healthChecked。
+    } else {
+      // 沒有任何面板操作干擾，這次 timeout 才算真的連不上。
+      health = null
+      healthChecked = true
+    }
+
+  } finally {
+    healthBusy = false
+    retry.disabled = false
+    retry.textContent = '重試連線'
   }
-  if (settled) healthChecked = true
-  healthBusy = false
-  retry.disabled = false
-  retry.textContent = '重試連線'
-  if (health) closeConnectionWarning()
+
+  if (!systemHealthProblem()) {
+    closeConnectionWarning()
+  }
+
   updateAlert()
-  if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
+
+  if (!stopped) {
+    healthTimer = setTimeout(pollHealth, 5000)
+  }
 }
 $('quaso-connection-retry').onclick = pollHealth
 function closeConnectionWarning() {

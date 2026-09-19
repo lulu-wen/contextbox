@@ -289,6 +289,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   </div>
   <button id="quaso-stage" type="button" aria-label="與可頌貓對話"
     aria-expanded="false" aria-controls="quaso-dialog"></button>
+  <div class="pet-state-debug">
+    Pet State: <strong id="pet-state-text">idle</strong>
+  </div>
   <div id="quaso-tools" aria-label="寵物快捷操作">
     <button id="quaso-settings-toggle" type="button" aria-label="待機動畫設定" title="待機動畫設定"
       aria-expanded="false" aria-controls="quaso-settings"><span aria-hidden="true">⚙</span></button>
@@ -323,6 +326,12 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
+
+  <div class="cleanup-select-actions">
+    <button id="cleanup-select-all" type="button">全部勾選</button>
+    <button id="cleanup-select-none" type="button">全部取消</button>
+  </div>
+
   <div id="cleanup-list"></div>
   <div id="cleanup-needs-human" class="cleanup-note"></div>
   <p id="cleanup-summary" aria-live="polite"></p>
