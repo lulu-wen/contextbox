@@ -6,6 +6,12 @@
  *   node tools/demo-setup.mjs --dir <path>     做在別的地方
  *   node tools/demo-setup.mjs --force          資料夾已經有東西也照做（只補檔，不刪）
  *   node tools/demo-setup.mjs --seed-model     順便掃一次，並把「模型的答案」預先塞進快取（P2）
+ *   node tools/demo-setup.mjs --live-model     現場真的問模型：把你自己的 model 設定抄進沙盒，
+ *                                              **不預塞答案**（預塞了 think 就直接命中快取，等於沒問）
+ *     ・ 端點從哪來（依序）：--base-url／--model-name 旗標 → 環境變數
+ *       CONTEXTBOX_MODEL_BASEURL／CONTEXTBOX_MODEL_NAME → 你真的 ~/.contextbox/config.json
+ *     ・ **金鑰永遠不經過這支程式**：它只從環境變數讀（config.model.keyEnv），
+ *       這裡連讀都不讀，更不會印出來
  *
  * 它會建出一個假的家目錄：Downloads 裡放一批**看起來像真的**的檔（安裝檔、壓縮檔、
  * 重複下載、很久沒動的檔、連拍截圖、課程講義），設定檔指到這個沙盒，
@@ -17,7 +23,7 @@
  *
  * 檔案的時間是**往回撥**的（清理規則看「多久沒動」），所以一建好就有東西可以清。
  */
-import { mkdirSync, writeFileSync, utimesSync, existsSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
@@ -178,10 +184,64 @@ put('IMG_2041.txt', Buffer.from(
   + '考試時間：下週三第 3、4 節，可帶一張 A4 手寫小抄。\n'), 5)
 note('IMG_2041.txt', 5, '相機預設名，內容是考試範圍')
 
+// ── 一份不可以被送出去的檔 ──────────────────────────────────
+//
+// 瀏覽器匯出的密碼清單。**檔名一點都不可疑**（沒有 password、沒有「機密」），
+// 內容也沒有任何一條金鑰樣式命中 —— P2 的驗證員就是拿這個把整份帳密送去問模型的。
+// 現在 core/model-guard.ts 的 looksLikeCredentialTable 會攔下來，
+// `think` 那一行會寫「沒送出去 1 個」，清單上講得出為什麼。
+//
+// **裡面的帳號密碼都是假的**，而且故意寫成一看就知道是範例的樣子。
+put('logins.csv', Buffer.from(
+  'url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed\n'
+  + 'https://portal.example.edu,s1234567@example.edu,DemoOnly-NotARealPassword-1,,,{demo-1},1694500000000,1694500000000\n'
+  + 'https://mail.example.com,demo.user@example.com,DemoOnly-NotARealPassword-2,,,{demo-2},1694500000000,1694500000000\n'
+  + 'https://shop.example.net,demo.user@example.com,DemoOnly-NotARealPassword-3,,,{demo-3},1694500000000,1694500000000\n'), 12)
+note('logins.csv', 12, '瀏覽器匯出的密碼清單 —— 檔名不可疑，靠內容擋下來，不會送給模型')
+
+// ── --live-model：現場真的問模型 ──────────────────────────────
+//
+// 黑克松的主題就是 agent，所以 demo 主線要跑真的模型。但**端點不可以寫死在 repo 裡**
+// （那是每個人自己的選擇，而且寫死內部位址等於把它公開）。所以這裡是「抄你自己已經設好的那一份」：
+// 旗標 → 環境變數 → 你真的 ~/.contextbox/config.json。抄不到就照實講，沙盒照樣做得起來。
+//
+// **金鑰不經過這支程式**：它只活在環境變數裡（設定檔的 keyEnv 指的那一個），跑 demo 的那個視窗要有它。
+const live = flag('--live-model')
+const modelCfg = { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' }
+let modelFrom = ''
+if (live) {
+  const fromFlag = { baseUrl: opt('--base-url', ''), name: opt('--model-name', '') }
+  const fromEnv = {
+    baseUrl: (process.env.CONTEXTBOX_MODEL_BASEURL ?? '').trim(),
+    name: (process.env.CONTEXTBOX_MODEL_NAME ?? '').trim(),
+  }
+  let fromFile = { baseUrl: '', name: '', keyEnv: '' }
+  try {
+    const raw = JSON.parse(readFileSync(join(realHome, '.contextbox', 'config.json'), 'utf8'))
+    const m = raw && typeof raw === 'object' ? raw.model : null
+    if (m && typeof m === 'object') {
+      fromFile = {
+        baseUrl: typeof m.baseUrl === 'string' ? m.baseUrl.trim() : '',
+        name: typeof m.name === 'string' ? m.name.trim() : '',
+        keyEnv: typeof m.keyEnv === 'string' ? m.keyEnv.trim() : '',
+      }
+    }
+  } catch { /* 沒有、讀不到、不是 JSON —— 都當成沒設定，不要讓 demo 做不起來 */ }
+
+  if (fromFlag.baseUrl && fromFlag.name) { Object.assign(modelCfg, fromFlag); modelFrom = '指令上給的' }
+  else if (fromEnv.baseUrl && fromEnv.name) { Object.assign(modelCfg, fromEnv); modelFrom = '環境變數' }
+  else if (fromFile.baseUrl && fromFile.name) {
+    modelCfg.baseUrl = fromFile.baseUrl
+    modelCfg.name = fromFile.name
+    if (fromFile.keyEnv) modelCfg.keyEnv = fromFile.keyEnv
+    modelFrom = '你自己的 ~/.contextbox/config.json'
+  }
+}
+
 const cfg = {
   watch: [downloads],
   filed: join(home, 'Documents', 'Filed'),
-  model: { baseUrl: '', name: '', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
+  model: modelCfg,
   readonly: false,
   pdfPages: 3,
   maxBytes: 20971520,
@@ -220,7 +280,8 @@ const SEEDED = [
   }],
 ]
 
-if (flag('--seed-model')) {
+// --live-model 的時候**不預塞**：塞了 think 會直接命中快取，等於沒有真的問模型。
+if (flag('--seed-model') && !live) {
   const dbPath = join(dir, 'data.db')
   const { open: openDb } = await import(new URL('../core/db.ts', import.meta.url))
   const { scanDownloads } = await import(new URL('../core/cleanup-scanner.ts', import.meta.url))
@@ -271,6 +332,23 @@ console.log('把這幾行貼進終端機（只影響這個視窗，不會動到�
 console.log('')
 for (const line of env) console.log('  ' + line)
 console.log('')
+// --live-model 的狀況要講清楚：抄到了什麼、金鑰在不在、下一步怎麼確認接得上。
+// **不印端點網址** —— demo 常常是投影出去的，那是你自己的位址。
+if (live) {
+  console.log('')
+  if (modelCfg.baseUrl && modelCfg.name) {
+    console.log(`模型：現場真的問（設定抄自${modelFrom}，模型名稱 ${modelCfg.name}）。`)
+    console.log('　　　沒有預塞任何答案 —— 畫面上看到的每一句都是這一次問出來的。')
+    if (!String(process.env[modelCfg.keyEnv] ?? '').trim()) {
+      console.log(`⚠ 這個視窗還沒有 ${modelCfg.keyEnv}。金鑰只從環境變數讀，貼上面那幾行之後記得也 export 它。`)
+    }
+  } else {
+    console.log('⚠ --live-model 但找不到可以用的模型設定（旗標、環境變數、你自己的 ~/.contextbox/config.json 都沒有）。')
+    console.log('　 沙盒照樣做好了，但「看懂內容」是關的。要嘛補設定，要嘛改用 --seed-model 跑示範答案。')
+  }
+}
+
+console.log('')
 console.log('然後照著跑：')
 console.log(`  cd ${REPO}`)
 console.log('  node cli.mjs cleanup scan       # 掃一遍，看它找到什麼')
@@ -278,7 +356,11 @@ console.log('  node cli.mjs cleanup list       # 清單：✔ 的是預設會清
 console.log('  node cli.mjs cleanup apply      # 搬進隔離區（七天內都放得回來）')
 console.log('  node cli.mjs cleanup undo       # 反悔：全部放回原位')
 console.log('  node cli.mjs pet                # 開寵物與面板（網址會印出來）')
-console.log('  node cli.mjs think              # 讓模型看一輪（沒設定模型就不做事；--seed-model 已經先塞好答案）')
+console.log(live
+  ? '  node cli.mjs think              # **真的問模型**（一次一個檔，一個檔幾秒；失敗會講是連不上還是答不對）'
+  : '  node cli.mjs think              # 讓模型看一輪（沒設定模型就不做事；--seed-model 已經先塞好答案）')
+console.log('  node cli.mjs rename             # 它怎麼稱呼這些檔（改得回來）')
+console.log('  node cli.mjs file               # 同一堂課歸在一起（搬得回來）')
 console.log('')
 console.log('')
 console.log('想再 demo 一次（清單會因為「放回去的不再提議」而變空）：')
