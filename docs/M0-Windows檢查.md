@@ -66,13 +66,10 @@ cd contextbox
 $env:CONTEXTBOX_MODEL_KEY = "<金鑰>"
 ```
 
-金鑰在 Linux 那台的 `~/.contextbox/env`。要自己要一把新的也可以：
+金鑰在 Linux 那台的 `~/.contextbox/env`（權限 0600，不要貼到任何地方）。
+模型閘道的位址與換金鑰的方式看你們自己的部署說明。
 
-```powershell
-curl -X POST http://100.88.5.227/porin/v1/keys/rotate -H "authorization: Bearer <舊金鑰>"
-```
-
-打模型要 **Tailscale 通**。前五步不需要。
+打模型要 **內網通得到閘道**。前五步不需要。
 
 ---
 

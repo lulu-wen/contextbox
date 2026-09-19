@@ -96,7 +96,7 @@ describe('模型網址', () => {
       'https://api.example.com/v1',
       'http://127.0.0.1:8000/v1',
       'http://localhost:8000/v1',
-      'http://100.88.5.227/porin/v1',        // Tailscale 的 CGNAT 網段，使用者的叢集就在這
+      'http://100.64.0.1/v1',                // CGNAT 網段（Tailscale 這類內網就落在這裡）
       'http://192.168.1.50:8000/v1',
       'http://10.0.0.5/v1',
       'http://172.16.3.9/v1',

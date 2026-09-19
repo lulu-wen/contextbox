@@ -60,7 +60,9 @@ test('寵物公開素材可載入，模型格式正確，HEAD 不回 body', asyn
   const head = await call('/assets/quaso_v8.glb', { method: 'HEAD', token: null, origin: null })
   assert.equal(head.status, 200)
   assert.equal(await head.text(), '')
-  for (const file of ['pet-viewer.js', 'pet-state.js', 'cleanup-demo.js', 'cleanup-demo-state.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
+  // pet-state.js 不在清單裡：它從來沒有被 commit 過，也沒有任何程式 import 它
+  // （grep 全 repo 只有這一行寫過它）。之後真的加了這個檔，連同 PET_ASSETS 一起加回來。
+  for (const file of ['pet-viewer.js', 'cleanup-demo.js', 'cleanup-demo-state.js', 'vendor/three.module.js', 'vendor/three.core.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js']) {
     const script = await call('/assets/' + file, { token: null, origin: null })
     assert.equal(script.status, 200, file)
     assert.match(script.headers.get('content-type'), /javascript/)
