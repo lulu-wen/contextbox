@@ -8,6 +8,7 @@
  *   node cli.mjs cleanup ...         清理：scan、list、apply、undo、release、quarantine
  *   node cli.mjs think               讓模型看一輪還沒看過的檔（要先設定 model 與金鑰）
  *   node cli.mjs rename              替沒取名的檔改名（列建議／--apply／--undo，改得回來）
+ *   node cli.mjs file                把同一堂課的檔歸成資料夾（列建議／--apply／--undo，搬得回來）
  *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
  *   node cli.mjs watch               常駐監看設定裡的資料夾
  *   node cli.mjs list [狀態]          看收件匣
@@ -41,6 +42,9 @@ import { applyPlan, undoPlan, checkedPath, recoverInterrupted } from './core/cle
 import {
   applyRenames, listRenames, recoverInterruptedRenames, RENAME_BATCH_MAX, renameSuggestions, undoRenames,
 } from './core/rename.ts'
+import {
+  applyFilings, FILING_BATCH_MAX, filingSuggestions, listFilings, recoverInterruptedFilings, undoFilings,
+} from './core/filing.ts'
 import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
 import { CleanupError } from './core/cleanup-journal.ts'
@@ -91,6 +95,8 @@ const SKIP_PLAN_MARGIN_MS = 5 * 60_000
 const DISMISSED_WHO = '有人放棄了它，或建立之後超過一小時沒有套用、自動放棄'
 /** `rename` 印幾筆「最近改過的」，也是 `--undo <編號>` 認得的範圍（兩邊一定要一樣）。 */
 const RENAME_LIST = 20
+/** `file` 印幾筆「最近整理過的」，也是 `--undo <編號>` 認得的範圍（跟改名同一個規矩）。 */
+const FILING_LIST = 20
 const DEFAULT_PORT = 7391
 /** 這支檔案自己。pet 的全量掃描開子行程跑的就是它（C2）。 */
 const CLI_FILE = fileURLToPath(import.meta.url)
@@ -338,7 +344,10 @@ function needsSettling() {
       AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id = p.id) LIMIT 1`).get(cutoff)) return true
     // 改名也要收尾（P3）：以前只有 rename 指令會收，pet 與 doctor 都不收 ——
     // 改名被砍之後只要先掃一次，那一筆就再也收不了尾、也復原不回來（P3 驗證員）
-    return Boolean(db.prepare(`SELECT 1 FROM renames WHERE status='started' LIMIT 1`).get())
+    if (db.prepare(`SELECT 1 FROM renames WHERE status='started' LIMIT 1`).get()) return true
+    // 歸檔也一樣（P4）。搬家更嚴重：filed 不在掃描範圍裡，沒收到尾的那一筆
+    // 不會有任何別的東西把它接回來
+    return Boolean(db.prepare(`SELECT 1 FROM filings WHERE status='started' LIMIT 1`).get())
   } catch { return false }   // 還沒有清理的表：沒有東西要收尾
 }
 
@@ -371,6 +380,7 @@ function settleCleanupState({ skipPlanId = null } = {}) {
     () => { recoverInterrupted(db, execOpts()); rememberStuckJournal() },
     () => releaseStalePlans(db, staleCutoffMs(skipPlanId), { skipPlanId: skipPlanId ?? undefined }),
     () => recoverInterruptedRenames(db),
+    () => recoverInterruptedFilings(db),
   ]
   for (const step of steps) {
     try { step() }
@@ -1478,6 +1488,143 @@ switch (cmd) {
     break
   }
 
+  /**
+   * 把同一堂課的檔歸成結構化資料夾（P4）。**沒有自動歸檔的路徑**：`file` 只列，`--apply` 才搬。
+   *
+   *   node cli.mjs file                       列出建議
+   *   node cli.mjs file --apply [編號⋯]        搬進「整理好的」資料夾（不給編號 ＝ 清單上全部）
+   *   node cli.mjs file --undo [紀錄 id⋯]      復原（不給 id ＝ 最近那一次）
+   *
+   * 離開碼照 docs/cli.md：0 成功（含「沒有東西要整理」）、1 輸入錯、2 後端錯、3 部分失敗。
+   */
+  case 'file': {
+    showProblems()
+    const scope = {
+      roots: CLEAN_ROOTS, filed: config.filed, quarantine: QUARANTINE,
+      readonly: config.readonly, restoreRoots: restoreRootList(),
+    }
+    // 每一次都先收尾上一次被砍在中間的整理（看檔案實際在哪決定那一列是 done 還是 reverted）
+    try { recoverInterruptedFilings(db) }
+    catch (e) { warn(`⚠ 收尾上次中斷的整理時出錯（${why(e?.message ?? e)}），這次先略過。`) }
+
+    const undoAt = args.indexOf('--undo')
+    const applyAt = args.indexOf('--apply')
+    if (undoAt >= 0 && applyAt >= 0) {
+      warn('--apply 與 --undo 不能一起用。')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo')
+    if (unknown) {
+      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>。`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+
+    // ── 復原 ─────────────────────────────────────────────────
+    if (undoAt >= 0) {
+      const ids = args.slice(undoAt + 1).filter(a => !a.startsWith('--'))
+      // **跟下面列出來的那一批同一個數字**（跟改名同一個理由：印編號與解析編號要用同一個集合）
+      const done = listFilings(db, FILING_LIST).filter(r => r.status === 'done')
+      let picked
+      if (ids.length) {
+        const short = shortIds(done.map(r => r.id))
+        picked = []
+        for (const raw of ids) {
+          const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
+          const hits = done.filter(r => r.id.toLowerCase().startsWith(code))
+          if (code.length < 4) { warn(`--undo ${shown(raw)}：紀錄 id 至少 4 碼，就是 file 清單上 [ ] 裡的那幾碼。`); picked = null; break }
+          if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一筆可以復原。先跑 node cli.mjs file 看紀錄。`); picked = null; break }
+          if (hits.length > 1) {
+            warn(`編號 ${shown(raw)} 對到不只一筆，請多打幾碼：\n`
+              + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(r.to)}`).join('\n'))
+            picked = null
+            break
+          }
+          if (!picked.includes(hits[0].id)) picked.push(hits[0].id)
+        }
+        if (!picked) { process.exitCode = EXIT.badInput; break }
+      }
+      let r
+      try { r = undoFilings(db, picked ? { ids: picked } : { last: true }, scope) }
+      catch (e) { fail(e, 'undo'); break }
+      for (const o of r.results) {
+        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.name)}　（原本的位置已經有同名的檔，放回來的這一份叫這個，沒有覆蓋任何檔）`)
+        else if (o.ok) say(`  ↩ ${shown(o.name)}`)
+        else say(`  ✘ 沒有搬回　—— ${shown(o.why)}`)
+      }
+      const bad = r.results.filter(o => !o.ok).length
+      say(`\n搬回 ${r.results.length - bad} 個${bad ? `，${bad} 個沒有搬回` : ''}。`)
+      if (bad) process.exitCode = EXIT.partial
+      break
+    }
+
+    // ── 列建議 ───────────────────────────────────────────────
+    let list
+    try { list = filingSuggestions(db, scope) }
+    catch (e) { fail(e, 'file'); break }
+    const rows = list.items
+    const short = shortIds(rows.map(r => r.itemId))
+
+    if (applyAt < 0) {
+      if (!rows.length) {
+        say(`${rootsLabel()} 裡沒有可以整理的檔。`)
+        say('（只會提議模型看得出是哪一堂課的檔；模型還沒看過的先跑 node cli.mjs think。）')
+      } else {
+        say(`有 ${rows.length} 個檔可以整理（**這些是模型的意見，不是事實**）：\n`)
+        for (const r of rows) {
+          say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
+          say(`         → ${shown(r.toFolder)}/`)
+          say(`         模型認為：${shown(r.course)}／${shown(r.topic || '看不出來')}`
+            + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
+          if (r.evidence) say(`         證據：${shown(r.evidence)}`)
+        }
+        say(`\n要整理的話：node cli.mjs file --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
+        say(`整理好的東西會放在 ${shown(config.filed)}，之後不會再被清理提議。`)
+        say('整理完反悔：node cli.mjs file --undo')
+      }
+      const recent = listFilings(db, FILING_LIST).filter(r => r.status === 'done')
+      if (recent.length) {
+        say('\n最近整理過的（都還可以復原）：')
+        const rs = shortIds(recent.map(r => r.id))
+        for (const r of recent) say(`  [${rs.get(r.id)}] ${shown(r.to)} → ${shown(r.toFolder)}/`)
+      }
+      break
+    }
+
+    // ── 真的搬 ───────────────────────────────────────────────
+    const codes = args.slice(applyAt + 1).filter(a => !a.startsWith('--'))
+    let chosen = rows
+    if (codes.length) {
+      const picked = resolveCodes(rows, codes, '--apply')
+      if (picked.error) { warn(picked.error); process.exitCode = EXIT.badInput; break }
+      chosen = picked.rows
+    }
+    if (!chosen.length) {
+      say(`${rootsLabel()} 裡沒有可以整理的檔，這次什麼都沒做。`)
+      break
+    }
+    if (config.readonly) {
+      warn('目前是唯讀模式，不會搬動任何檔案。')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    let r
+    try { r = applyFilings(db, chosen.map(c => ({ itemId: c.itemId, course: c.course, kind: c.kind })), scope) }
+    catch (e) { fail(e, 'file'); break }
+    for (const o of r.results) {
+      if (o.ok) say(`  ✔ ${shown(o.name)} → ${shown(o.toFolder)}/${o.to === o.name ? '' : shown(o.to)}`)
+      else say(`  ✘ ${shown(o.name || '這個檔')}　—— ${shown(o.why)}`)
+    }
+    const ok = r.results.filter(o => o.ok).length
+    const bad = r.results.length - ok
+    say(`\n整理好 ${ok} 個${bad ? `，${bad} 個沒有搬` : ''}。`)
+    if (r.remaining) say(`一次最多整理 ${FILING_BATCH_MAX} 個，還有 ${r.remaining} 個，再跑一次就會做到它們。`)
+    if (ok) say('反悔的話：node cli.mjs file --undo')
+    if (bad) process.exitCode = EXIT.partial
+    break
+  }
+
   case 'watch': {
     showProblems()
     if (!config.watch.length) { warn('設定裡沒有任何監看資料夾。'); process.exit(1) }
@@ -1529,6 +1676,9 @@ switch (cmd) {
       port: want, roots: CLEAN_ROOTS, quarantine: QUARANTINE,
       maxBytes: config.maxBytes, readonly: config.readonly,
       restoreRoots: restoreRootList(), screenshotsDir: SHOTS,
+      // 歸檔（P4）搬進去的那棵樹。不傳的話 server 會用它自己的預設，
+      // 與 pet 印出來的「歸檔到……」就可能不是同一個資料夾。
+      filed: config.filed,
     })
     let port
     try { port = await srv.ready }
@@ -2147,6 +2297,10 @@ switch (cmd) {
   node cli.mjs rename                      看有哪些沒取名的檔可以改名（模型的建議）
   node cli.mjs rename --apply [編號⋯]       改名（改得回來）
   node cli.mjs rename --undo [紀錄 id⋯]     復原改名（不給 id 就是最近那一次）
+
+  node cli.mjs file                        看哪些檔可以歸到課程資料夾（模型的建議）
+  node cli.mjs file --apply [編號⋯]         整理（搬得回來）
+  node cli.mjs file --undo [紀錄 id⋯]       復原整理（不給 id 就是最近那一次）
   node cli.mjs watch                       常駐監看
   node cli.mjs propose <檔案>...            手動收一個檔案
   node cli.mjs list [狀態]                  看收件匣

@@ -35,6 +35,27 @@ describe('監看與歸檔資料夾', () => {
     assert.ok(r.problems.some(p => /排除/.test(p)), '要說明歸檔的會被排除掉')
   })
 
+  test('歸檔資料夾在**清理**資料夾底下：要出聲（不然「整理好的不再被提議清理」不成立）', () => {
+    // 稽核（2026-09-20）：watch 那一邊有警告，cleanup.roots 這一邊沒有，
+    // 而 filed=~/Downloads/Filed 是很自然的設法 —— 那樣搬進去的檔過一陣子又會被列成候選。
+    const d = tmp()
+    const dl = join(d, 'Downloads')
+    mkdirSync(dl, { recursive: true })
+    const r = normalize({ cleanup: { roots: [dl] }, filed: join(dl, 'Filed') })
+    assert.deepEqual(r.config.cleanup.roots, [dl], '清理資料夾一定要留著（只出聲，不改設定）')
+    assert.ok(r.problems.some(p => /清理資料夾/.test(p) && /清理候選/.test(p)), JSON.stringify(r.problems))
+  })
+
+  test('歸檔資料夾跟清理資料夾分開的時候不要亂警告', () => {
+    const d = tmp()
+    const dl = join(d, 'Downloads')
+    const filed = join(d, 'Filed')
+    mkdirSync(dl, { recursive: true })
+    mkdirSync(filed, { recursive: true })
+    const r = normalize({ cleanup: { roots: [dl] }, filed, watch: [dl] })
+    assert.equal(r.problems.filter(p => /清理候選/.test(p)).length, 0, JSON.stringify(r.problems))
+  })
+
   test('監看資料夾在歸檔資料夾底下：要出聲，不然等於白看', () => {
     const d = tmp()
     const filed = join(d, 'Filed')

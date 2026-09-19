@@ -317,6 +317,33 @@ CREATE TABLE IF NOT EXISTS renames (
   undone_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_renames_item ON renames(item_id, at);
+
+-- ── 歸檔（P4） ───────────────────────────────────────────────
+-- 每一次「把一個檔搬進整理好的那棵樹」一列。跟 renames 同一套想法，但**搬家比改名更容易讓人找不到檔**：
+-- 改名還在同一個資料夾，搬家是換地方 —— 所以 from_dir 是唯一一份「它本來住在哪」。
+-- 先寫 started 再動檔案，搬完才寫 done；當機之後靠「檔案實際在哪」收尾
+-- （core/filing.ts 的 recoverInterruptedFilings）。
+--
+-- from_dir／to_dir 是**真路徑**，只在本機用來組出要動的檔；**不可以回給畫面**（不變量 8）。
+-- 畫面只看得到相對於 filed 的那一段（課程/作業系統/講義）。
+-- name 是搬的時候的檔名，to_name 是同名加序號之後真正落地的名字 —— 復原要靠這兩個。
+-- topic 不進路徑（太細會變成一堆只有一個檔的資料夾），但記在這裡。
+CREATE TABLE IF NOT EXISTS filings (
+  id        TEXT PRIMARY KEY,
+  item_id   TEXT NOT NULL REFERENCES file_items(id),
+  name      TEXT NOT NULL,            -- 搬的時候的檔名
+  from_dir  TEXT NOT NULL,            -- 原本的資料夾（真路徑，不回給畫面）
+  to_dir    TEXT NOT NULL,            -- 搬去哪（filed 底下）
+  to_name   TEXT NOT NULL,            -- 同名加序號之後真正的名字
+  course    TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  topic     TEXT,
+  status    TEXT NOT NULL CHECK (status IN ('started','done','reverted','failed')),
+  error     TEXT,
+  at        TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_filings_item ON filings(item_id, at);
 `
 
 /**

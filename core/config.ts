@@ -335,13 +335,22 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
     keyEnv: keyEnv || d.model.keyEnv,
   }
 
+  const cleanup = cleanupOf(o.cleanup, d.cleanup.roots, shots, problems, sys)
+  // filed 落在**清理範圍**底下：跟上面那一條對稱，但後果不一樣 ——
+  // 清理掃得到 filed，所以歸檔搬進去的檔過一陣子又會被列成清理候選
+  // （「整理好的東西不再被提議清理」就不成立了）。一樣不動 roots，只出聲。
+  const swallowsFiled = cleanup.roots.filter(r => filed === r || under(r, filed))
+  if (swallowsFiled.length) {
+    problems.push(`歸檔資料夾 ${filed} 在清理資料夾 ${swallowsFiled.join('、')} 底下，整理好的檔過一陣子還是會被列成清理候選。建議把它放到清理範圍外面。`)
+  }
+
   return {
     config: {
       watch, filed, model,
       readonly: readonlyOf(o.readonly, problems),
       pdfPages: ranged(o.pdfPages, 1, 10, d.pdfPages, 'pdfPages', problems),
       maxBytes: ranged(o.maxBytes, 1024, 200 * 1024 * 1024, d.maxBytes, 'maxBytes', problems),
-      cleanup: cleanupOf(o.cleanup, d.cleanup.roots, shots, problems, sys),
+      cleanup,
     },
     problems,
   }

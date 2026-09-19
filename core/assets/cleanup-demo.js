@@ -2,7 +2,7 @@ import { createDemo } from './cleanup-demo-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
-  modelOpinionLines, createRenames, renameLines,
+  modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -16,6 +16,9 @@ const bursts = createBursts((path, init) => window.api(path, init))
 // 建議的名字（P3）：模型看得出內容、但檔名沒取名的檔。示範模式不用它（同上）。
 // **一個都不預設勾**：改名只有 renames 那一份紀錄救得回來，不像清理還有隔離區。
 const renames = createRenames((path, init) => window.api(path, init))
+// 歸檔建議（P4）：模型看得出是哪一堂課的檔。示範模式不用它（同上）。
+// **一個都不預設勾**：搬家比改名更容易讓人找不到檔，只有 filings 那一份紀錄救得回來。
+const filings = createFilings((path, init) => window.api(path, init))
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
@@ -294,6 +297,41 @@ function renderRenames() {
   if (renames.more) box.append(paragraph(`另外還有 ${renames.more} 個，改完這幾個再打開面板就會看到。`, 'evidence'))
 }
 
+/**
+ * 歸檔建議（P4）。**沒有建議就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的整理按鈕會讓人以為示範會動到自己的檔）。
+ *
+ * 每一列都寫著「模型認為⋯⋯」與證據，**一個勾選框都不預設勾起來**。
+ */
+function renderFilings() {
+  const box = $('cleanup-filings')
+  box.replaceChildren()
+  const items = isDemo() ? [] : filings.items
+  box.hidden = items.length === 0
+  $('cleanup-file').hidden = items.length === 0
+  $('cleanup-file-undo').hidden = isDemo() || !filings.canUndo
+  if (!items.length) return
+  box.append(paragraph('歸檔建議 · 這些是模型的意見，不是事實。勾起來按「整理」才會搬，而且搬得回來。', 'cleanup-note'))
+  for (const item of items) {
+    const lines = filingLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-filing-row'
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = filings.selected.has(item.itemId)
+    check.disabled = busy
+    check.onchange = () => { filings.select(item.itemId, check.checked); summary() }
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    label.append(check, head)
+    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    box.append(row)
+  }
+  if (filings.more) box.append(paragraph(`另外還有 ${filings.more} 個，整理完這幾個再打開面板就會看到。`, 'evidence'))
+}
+
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
@@ -304,6 +342,7 @@ function render() {
   for (const id of ['cleanup-undo', 'cleanup-dismiss']) $(id).hidden = false
   renderBursts()
   renderRenames()
+  renderFilings()
   // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個
   const inBurst = isDemo() ? new Set() : bursts.memberIds()
   let listed = 0
@@ -335,7 +374,8 @@ function render() {
     if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
     $('cleanup-list').append(card)
   }
-  if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length) {
+  if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length
+    && !$('cleanup-filings').children.length) {
     $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
   }
   $('cleanup-needs-human').replaceChildren()
@@ -372,6 +412,7 @@ async function toggleDemo() {
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   bursts.clear()   // 連拍組是本機模式的東西；切模式時把 blob: 網址還回去
   renames.clear()  // 建議的名字也是本機模式的東西
+  filings.clear()  // 歸檔建議也是
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -398,7 +439,7 @@ async function openCleanupPanel() {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
   $('cleanup-needs-human').replaceChildren()
@@ -417,6 +458,8 @@ async function openCleanupPanel() {
     applyBurstDefaults(real, bursts.groups)
     // 建議的名字（P3）。後端沒有這幾條就是空的，面板照常
     await renames.load()
+    // 歸檔建議（P4）。後端沒有這幾條就是空的，面板照常
+    await filings.load()
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
     else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
@@ -498,6 +541,29 @@ async function renameOperate(kind) {
   pollHealth()
 }
 
+/**
+ * 整理與復原整理。跟清理、改名走同一套忙碌旗標（三邊都會動同一批檔，後端也是同一把鎖）。
+ * **訊息一律照後端的逐項結果講**，不用勾選數推算。
+ */
+async function filingOperate(kind) {
+  if (busy || isDemo()) return
+  busy = true
+  render()
+  result(kind === 'apply' ? '正在整理……' : '正在把檔案搬回原本的資料夾……')
+  try {
+    const r = await tracked(() => (kind === 'apply' ? filings.apply() : filings.undo()))
+    result(r.message)
+  } catch (error) {
+    result(safeName(error.message))
+  } finally {
+    busy = false
+    // 搬走的檔不在清理範圍裡了 —— 清單要重讀一次再畫
+    try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
+    render()
+  }
+  pollHealth()
+}
+
 async function operate(kind) {
   if (busy) return
   busy = true
@@ -566,6 +632,8 @@ $('cleanup-apply').onclick = () => {
 $('cleanup-undo').onclick = () => operate('undo')
 $('cleanup-rename').onclick = () => renameOperate('apply')
 $('cleanup-rename-undo').onclick = () => renameOperate('undo')
+$('cleanup-file').onclick = () => filingOperate('apply')
+$('cleanup-file-undo').onclick = () => filingOperate('undo')
 $('cleanup-release').onclick = () => operate('release')
 $('cleanup-putback').onclick = () => operate('putback')
 $('cleanup-reset').onclick = () => {

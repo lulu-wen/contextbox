@@ -147,8 +147,8 @@ export function suggestedFileName(currentName: string, suggested: unknown): stri
 
 // ── 誰可以被提議改名 ────────────────────────────────────────
 
-/** 可以動的檔案狀態。跟清理的 PLANNABLE_STATUSES 同一組：new 的不碰（還在下載）。 */
-const RENAMABLE_STATUSES = ['candidate', 'kept', 'restored'] as const
+/** 可以動的檔案狀態。跟清理的 PLANNABLE_STATUSES 同一組：new 的不碰（還在下載）。歸檔（P4）用同一組。 */
+export const RENAMABLE_STATUSES = ['candidate', 'kept', 'restored'] as const
 
 /**
  * 信心「低」的不提議（不變量 7）。**只有「高」與「中」算數** ——
@@ -178,7 +178,8 @@ export type RenameScope = {
   readonly?: boolean
 }
 
-type ItemRow = {
+/** 動檔案的那幾支（改名 P3、歸檔 P4）看的 file_items 欄位。 */
+export type ItemRow = {
   id: string; path: string; name: string; status: string; error: string | null
   naming: string | null; mtime: string
 }
@@ -213,13 +214,13 @@ function midRename(db: DatabaseSync, itemId: string): boolean {
 }
 
 /** 路徑上（不含檔名）有沒有 . 開頭或金鑰資料夾。跟 cleanup-exec 的 inProtectedDir 同一條。 */
-function inProtectedDir(target: string): boolean {
+export function inProtectedDir(target: string): boolean {
   return target.split(/[\\/]+/).filter(Boolean).map(s => s.toLowerCase()).slice(0, -1)
     .some(s => s.startsWith('.') || DENY_DIRS.includes(s))
 }
 
 /** 這個檔在不在任何一個（過得了捷徑檢查的）清理根目錄底下。 */
-function underSomeRoot(roots: readonly string[], target: string): boolean {
+export function underSomeRoot(roots: readonly string[], target: string): boolean {
   return roots.some(root => {
     let real: string
     try { real = checkedPath(root, true) } catch { return false }
@@ -228,39 +229,65 @@ function underSomeRoot(roots: readonly string[], target: string): boolean {
 }
 
 /** 隔離區裡的檔一律不碰。 */
-function inQuarantine(scope: RenameScope, target: string): boolean {
+export function inQuarantine(scope: RenameScope, target: string): boolean {
   if (!scope.quarantine) return false
   const q = resolve(scope.quarantine)
   return q === target || under(q, target)
 }
 
 /**
+ * 訊息裡那兩個會隨動作變的詞。**只有詞不一樣，判斷完全一樣** ——
+ * 改名（P3）與歸檔（P4）擋的是同一批檔，不可以有兩份會走樣的判斷。
+ *
+ * - `act`：動作本身（「改名」／「歸檔」），接在「先不⋯⋯」「不能⋯⋯」「上一次⋯⋯還沒收尾」後面
+ * - `it`：整句的「不動它」（「不改它的名字」／「不搬它」）
+ */
+export type MoveWords = { act: string; it: string }
+export const RENAME_WORDS: MoveWords = { act: '改名', it: '不改它的名字' }
+
+/**
+ * 動使用者的檔之前，**改名與歸檔共用**的那幾條擋門。可以動回 null，不可以回一句人話（不帶路徑）。
+ *
+ * `mid` 是「這個檔有沒有一筆自己這條線還沒收尾的紀錄」——
+ * 改名看 renames、歸檔看 filings，表不一樣，所以由呼叫端傳進來；順序跟以前一樣夾在計畫與 mtime 之間。
+ *
+ * 列清單與真的動手走的是同一支 —— **不准有第二份判斷**。
+ */
+export function whyNotTouchable(
+  db: DatabaseSync, item: ItemRow, scope: RenameScope, words: MoveWords,
+  mid?: (db: DatabaseSync, itemId: string) => boolean,
+): string | null {
+  if (item.error) return `這個檔上次掃描就出過問題，先不${words.act}。`
+  if (item.status === 'new') return '這個檔才剛出現，還在等它穩定下來。'
+  if (!(RENAMABLE_STATUSES as readonly string[]).includes(item.status)) {
+    return `這個檔現在的狀態不能${words.act}（可能在隔離區，或已經不見了）。`
+  }
+  if (execRefusesName(item.name) || inProtectedDir(item.path)) {
+    return `這是受保護的檔案，${words.it}。`
+  }
+  if (inQuarantine(scope, item.path)) return `這個檔在隔離區裡，${words.it}。`
+  if (!underSomeRoot(scope.roots, item.path)) return '這個檔不在設定的清理資料夾裡。'
+  if (heldByPlan(db, item.id)) return '它在一份還沒處理完的清理計畫裡，先把那一份做完或放棄。'
+  if (mid && mid(db, item.id)) return `上一次${words.act}還沒收尾，先跑一次收尾再試。`
+  // 十分鐘內還在變動的不碰（跟清理同一條規矩）。這裡看的是上次掃描記下來的 mtime ——
+  // 便宜、不用碰磁碟，列清單時每一列都要算。真的動手前 checkFile 會再用磁碟上的時間確認一次。
+  const mtime = Date.parse(item.mtime)
+  if (Number.isFinite(mtime) && Date.now() - mtime < SETTLE_MS) {
+    return `這個檔十分鐘內還在變動，先不${words.act}。等一下再試一次。`
+  }
+  return null
+}
+
+/**
  * 這個檔現在可不可以被改名。可以回 null，不可以回一句**人話**（不帶路徑）。
- * 列清單與真的改名走的是同一支 —— 不准有第二份判斷。
+ *
+ * 只有第一條是改名專屬的（使用者自己取的名字最大）；其餘跟歸檔共用 whyNotTouchable。
  */
 export function whyNotRenamable(db: DatabaseSync, item: ItemRow, scope: RenameScope): string | null {
   if (item.naming !== 'untitled' && item.naming !== 'generic') {
     return '這個檔已經有名字了，不動使用者自己取的名字。'
   }
-  if (item.error) return '這個檔上次掃描就出過問題，先不改名。'
-  if (item.status === 'new') return '這個檔才剛出現，還在等它穩定下來。'
-  if (!(RENAMABLE_STATUSES as readonly string[]).includes(item.status)) {
-    return '這個檔現在的狀態不能改名（可能在隔離區，或已經不見了）。'
-  }
-  if (execRefusesName(item.name) || inProtectedDir(item.path)) {
-    return '這是受保護的檔案，不改它的名字。'
-  }
-  if (inQuarantine(scope, item.path)) return '這個檔在隔離區裡，不改它的名字。'
-  if (!underSomeRoot(scope.roots, item.path)) return '這個檔不在設定的清理資料夾裡。'
-  if (heldByPlan(db, item.id)) return '它在一份還沒處理完的清理計畫裡，先把那一份做完或放棄。'
-  if (midRename(db, item.id)) return '上一次改名還沒收尾，先跑一次收尾再試。'
-  // 十分鐘內還在變動的不碰（跟清理同一條規矩）。這裡看的是上次掃描記下來的 mtime ——
-  // 便宜、不用碰磁碟，列清單時每一列都要算。真的動手前 checkFile 會再用磁碟上的時間確認一次。
-  const mtime = Date.parse(item.mtime)
-  if (Number.isFinite(mtime) && Date.now() - mtime < SETTLE_MS) {
-    return '這個檔十分鐘內還在變動，先不改名。等一下再試一次。'
-  }
-  return null
+  return whyNotTouchable(db, item, scope, RENAME_WORDS, midRename)
 }
 
 /**
@@ -337,7 +364,7 @@ export type RenameOutcome = {
 export type RenameRequest = { itemId: unknown; to?: unknown }
 
 /** 目錄裡現在有哪些名字（小寫）。「只差大小寫」也算同名，所以一律折成小寫比。 */
-function namesTaken(db: DatabaseSync, dir: string): Set<string> {
+export function namesTaken(db: DatabaseSync, dir: string): Set<string> {
   const taken = new Set<string>()
   for (const entry of readdirSync(dir)) taken.add(entry.toLowerCase())
   // 資料庫裡還記著、但檔案已經不在的路徑也算佔住：file_items.path 有 UNIQUE，
@@ -369,14 +396,18 @@ export function freeName(wanted: string, ext: string, taken: ReadonlySet<string>
   return ''
 }
 
-/** 檔案現在的樣子。不是一般檔、是捷徑、被硬鏈結的一律不碰。 */
-function checkFile(path: string): { dev: number; ino: number; mtimeMs: number } {
+/**
+ * 檔案現在的樣子。不是一般檔、是捷徑、被硬鏈結的一律不碰。
+ * `words` 只換訊息裡的詞（歸檔說「不搬它」），判斷完全一樣。
+ */
+export function checkFile(path: string, words: MoveWords = RENAME_WORDS):
+  { dev: number; ino: number; mtimeMs: number } {
   const st = lstatSync(path)
-  if (st.isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', '這是一個捷徑（symlink），不改它的名字。')
-  if (!st.isFile()) throw new CleanupError('UNSAFE_FILE', '這不是一般檔案，不改它的名字。')
-  if (st.nlink > 1) throw new CleanupError('UNSAFE_FILE', '這個檔案被硬鏈結到別的地方，不改它的名字。')
+  if (st.isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', `這是一個捷徑（symlink），${words.it}。`)
+  if (!st.isFile()) throw new CleanupError('UNSAFE_FILE', `這不是一般檔案，${words.it}。`)
+  if (st.nlink > 1) throw new CleanupError('UNSAFE_FILE', `這個檔案被硬鏈結到別的地方，${words.it}。`)
   if (Date.now() - st.mtimeMs < SETTLE_MS) {
-    throw new CleanupError('TOO_FRESH', '這個檔十分鐘內還在變動，先不改名。等一下再試一次。')
+    throw new CleanupError('TOO_FRESH', `這個檔十分鐘內還在變動，先不${words.act}。等一下再試一次。`)
   }
   return { dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs }
 }
@@ -408,7 +439,7 @@ function namingOf(name: string): { state: string; why: string } {
  * UNIQUE(file_items.path)，例外被吞掉，那一筆改名就永遠停在 started、永遠復原不回來（P3 驗證員）。
  * 所以：那個路徑已經有一列的話，**改跟著那一列走**（順便補上 naming），舊那列留給掃描自己收。
  */
-function followFile(db: DatabaseSync, itemId: string, dir: string, name: string): string {
+export function followFile(db: DatabaseSync, itemId: string, dir: string, name: string): string {
   const nm = namingOf(name)
   const path = join(dir, name)
   const other = db.prepare('SELECT id FROM file_items WHERE path=?').get(path) as { id: string } | undefined
@@ -421,7 +452,7 @@ function followFile(db: DatabaseSync, itemId: string, dir: string, name: string)
   return itemId
 }
 
-const itemById = (db: DatabaseSync, id: string): ItemRow | null =>
+export const itemById = (db: DatabaseSync, id: string): ItemRow | null =>
   (db.prepare('SELECT id, path, name, status, error, naming, mtime FROM file_items WHERE id=?')
     .get(id) as ItemRow | undefined) ?? null
 

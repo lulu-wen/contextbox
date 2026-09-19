@@ -1895,6 +1895,11 @@ export type RouteCtx = {
   /** 截圖資料夾（config 的 cleanup.screenshotsDir）：清單、徽章、預設清理、建計畫在這底下只收截圖類。 */
   screenshotsDir?: string | null | (() => string | null)
   quarantine: string
+  /**
+   * 「整理好的」資料夾（config 的 `filed`）。**只有歸檔（P4）那三條用得到**；
+   * 沒給的話那三條回 500 BAD_CONFIG（不猜一個位置去搬使用者的檔）。
+   */
+  filed?: string | (() => string)
   /** 這兩個只有會動檔案的 route 才需要。跟 roots 一樣可以是 thunk（延後讀設定）。 */
   maxBytes?: number | (() => number)
   readonly?: boolean | (() => boolean)
@@ -2007,6 +2012,9 @@ export const HTTP_FOR_CODE: Record<string, number> = {
   OUTSIDE_ROOT: 500,
   NO_DUPLICATE: 500,
   VERIFY_FAILED: 500,
+  // 歸檔（P4）：`filed` 在另一顆碟，rename 回 EXDEV。**不硬搬**（複製＋刪除等於刪檔），
+  // 所以它只出現在逐項結果裡，那一項失敗、其他項照做。
+  CROSS_DEVICE: 500,
 }
 
 /**

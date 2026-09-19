@@ -347,6 +347,10 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 建議的名字（P3）。**模型的意見，不是事實**：每一列都寫著「模型認為」，
        勾起來按「改名」才會真的動檔案，旁邊永遠有「復原改名」。沒有建議的時候整區不顯示。 -->
   <div id="cleanup-renames" hidden></div>
+  <!-- 歸檔建議（P4）。**模型的意見，不是事實**：一列一個「檔名 → 課程/作業系統/講義」，
+       勾起來按「整理」才會真的搬檔，旁邊永遠有「復原整理」。沒有建議的時候整區不顯示。
+       只給相對於「整理好的」資料夾的那一段 —— 絕對路徑永遠不離開後端。 -->
+  <div id="cleanup-filings" hidden></div>
   <div id="cleanup-list"></div>
   <div id="cleanup-needs-human" class="cleanup-note"></div>
   <p id="cleanup-summary" aria-live="polite"></p>
@@ -359,6 +363,8 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <button id="cleanup-undo" type="button" hidden>復原這次清理</button>
     <button id="cleanup-rename" type="button" hidden>改名</button>
     <button id="cleanup-rename-undo" type="button" hidden>復原改名</button>
+    <button id="cleanup-file" type="button" hidden>整理</button>
+    <button id="cleanup-file-undo" type="button" hidden>復原整理</button>
     <button id="cleanup-dismiss" type="button">這次略過</button>
     <button id="cleanup-reset" type="button">重新示範</button>
   </div>

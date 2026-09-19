@@ -31,6 +31,7 @@ import { Facts } from './facts.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { renameRoutes } from './rename-routes.ts'
+import { filingRoutes } from './filing-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
@@ -174,6 +175,12 @@ function uiHtml(token: string): string {
 
 export function start(opts: {
   port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string
+  /**
+   * 「整理好的」資料夾（config 的 `filed`，P4 的歸檔只搬到這底下）。
+   * **故意不放進 needCfg**：只為了它去讀（甚至建立）使用者的設定檔，就是 RC16 修過的那個坑。
+   * 沒給、而且這一次本來就沒讀設定檔時，用跟 core/config.ts 同一個預設。
+   */
+  filed?: string
   /** 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。 */
   maxBytes?: number; readonly?: boolean
   /**
@@ -217,6 +224,10 @@ export function start(opts: {
   const QUARANTINE = opts.quarantine
     ?? process.env.CONTEXTBOX_QUARANTINE
     ?? join(homedir(), '.contextbox', 'quarantine')
+  // 歸檔（P4）搬進去的那棵樹。讀了設定檔就用設定的；**沒給又沒讀設定檔就是「不知道」**——
+  // 猜一個家目錄底下的位置等於在沒人講過的地方搬使用者的檔。那時 /file/* 回 BAD_CONFIG
+  // （空字串會被 filing-routes 的 scopeOf 擋下來），這正是文件寫的那一條 500。
+  const filedDir = opts.filed ?? (loaded ? cfg().filed : '')
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -405,6 +416,16 @@ export function start(opts: {
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('改名不掃描') },
+      })) return
+      // 歸檔（P4）。跟改名一樣只認自己那個前綴（`/file/`），認不得就回 false。
+      // restoreRoots 是「原本的資料夾不見了可以建回來」的範圍，跟復原同一份（R2-4）。
+      if (filingRoutes({
+        db: F.db, roots, quarantine: QUARANTINE, filed: () => filedDir,
+        restoreRoots: () => restoreRootList,
+        maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('歸檔不掃描') },
       })) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({

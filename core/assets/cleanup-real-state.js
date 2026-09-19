@@ -957,3 +957,125 @@ export function createRenames(api) {
     clear() { items = []; total = 0; selected = new Set(); undoable = false },
   }
 }
+/** 面板一次畫幾列歸檔建議（跟改名同一個數字）。 */
+export const FILING_SHOWN = 50
+
+/**
+ * 一列歸檔建議要印的字：`檔名 → 課程/作業系統/講義`、模型說了什麼、證據。
+ *
+ * **永遠標明是模型的意見**（這一按就會把使用者的檔搬到別的資料夾 —— 比改名更難自己找回來）。
+ * 檔名、課名、證據都是不可信的輸入（檔名由別人決定，課名與證據是模型讀使用者的檔讀出來的），
+ * 一律 safeName。`toFolder` 是相對於「整理好的」資料夾的那一段，**後端從來不給絕對路徑**。
+ */
+export function filingLines(item) {
+  if (!item || typeof item !== 'object') return null
+  const name = safeName(String(item.name ?? ''))
+  const folder = safeName(String(item.toFolder ?? ''))
+  if (!name || !folder) return null
+  const seeded = item.seeded === true
+  const course = safeName(String(item.course ?? '').trim()) || '看不出來'
+  const topic = safeName(String(item.topic ?? '').trim()) || '看不出來'
+  const confidence = safeName(String(item.confidence ?? '').trim()) || '低'
+  const evidence = safeName(String(item.evidence ?? '').trim())
+  return {
+    seeded,
+    head: `${name} → ${folder}`,
+    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
+    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
+      + '這是模型的意見，不是事實 —— 你按了「整理」才會搬，而且搬得回來。',
+  }
+}
+
+/** 整理的結果講成一句話。**逐項都要講**：一個沒搬成不可以被「整理好 3 個」蓋過去。 */
+export function filingApplyMessage(r) {
+  const results = Array.isArray(r?.results) ? r.results : []
+  const ok = results.filter(x => x.ok)
+  const bad = results.filter(x => !x.ok)
+  const lines = [`整理好 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有搬` : ''}。`]
+  for (const o of ok) lines.push(`・${safeName(o.name)} → ${safeName(o.toFolder)}/${o.to === o.name ? '' : safeName(o.to)}`)
+  for (const o of bad) lines.push(`・${safeName(o.name) || '這個檔'}：${why(o.why)}`)
+  if (r?.remaining) lines.push(`還有 ${r.remaining} 個沒做，再按一次就會做到它們。`)
+  if (ok.length) lines.push('反悔的話按「復原整理」，檔案會搬回原本的資料夾。')
+  return lines.join('\n')
+}
+
+/** 復原的結果。原位被佔走時**一定要講放回來的叫什麼**（不然使用者找不到那個檔）。 */
+export function filingUndoMessage(r) {
+  const results = Array.isArray(r?.results) ? r.results : []
+  const ok = results.filter(x => x.ok)
+  const bad = results.filter(x => !x.ok)
+  const lines = [`搬回 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有搬回` : ''}。`]
+  for (const o of ok) {
+    lines.push(o.restoredAs
+      ? `・原本的位置已經有同名的檔，放回來的這一份叫「${safeName(o.restoredAs)}」（沒有覆蓋任何檔）。`
+      : `・${safeName(o.name)}`)
+  }
+  for (const o of bad) lines.push(`・沒有搬回：${why(o.why)}`)
+  return lines.join('\n')
+}
+
+/**
+ * 面板的「歸檔建議」那一區。
+ *
+ * **一個勾選框都不預設勾起來**：搬家比改名更容易讓人找不到檔（改名還在同一個資料夾），
+ * 而且這些課名是模型給的。使用者自己勾，自己按。
+ *
+ * 後端沒有這幾條（舊版回 404／501）或讀不到，一律當成「沒有建議」—— 歸檔是附加的，
+ * 不可以讓整個清理面板打不開。
+ */
+export function createFilings(api) {
+  let items = [], total = 0, selected = new Set(), undoable = false
+
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) })
+
+  return {
+    get items() { return items },
+    get selected() { return selected },
+    /** 沒畫出來的還有幾個 */
+    get more() { return Math.max(0, total - items.length) },
+    /** 剛整理過、可以復原 */
+    get canUndo() { return undoable },
+
+    select(id, checked) {
+      if (!items.some(i => i.itemId === id)) return
+      if (checked) selected.add(id)
+      else selected.delete(id)
+    },
+
+    async load() {
+      let body = null
+      try { body = await api('/file/suggestions') }
+      catch { items = []; total = 0; selected = new Set(); return items }
+      const all = Array.isArray(body?.items) ? body.items.filter(i => i && typeof i.itemId === 'string') : []
+      total = all.length
+      items = all.slice(0, FILING_SHOWN)
+      // 還在清單上的保留使用者的勾選，不在的丟掉
+      const keep = new Set(items.map(i => i.itemId))
+      selected = new Set([...selected].filter(id => keep.has(id)))
+      return items
+    },
+
+    /** 整理。**只送勾起來的那幾個，而且連課名與類型一起送** —— 後端不會自己猜。 */
+    async apply() {
+      const chosen = items.filter(i => selected.has(i.itemId))
+      if (!chosen.length) throw new Error('請先勾選要整理的檔。')
+      const r = await post('/file/apply', { items: chosen.map(i => ({ itemId: i.itemId, course: i.course, kind: i.kind })) })
+      undoable = Array.isArray(r?.results) && r.results.some(x => x.ok)
+      selected = new Set()
+      const message = filingApplyMessage(r)
+      try { await this.load() } catch { /* 重載失敗不可以蓋掉結果：檔案已經搬了 */ }
+      return { message, result: r }
+    },
+
+    /** 復原最近那一次整理（同一批一起回去）。 */
+    async undo() {
+      const r = await post('/file/undo', { last: true })
+      undoable = false
+      const message = filingUndoMessage(r)
+      try { await this.load() } catch { /* 同上 */ }
+      return { message, result: r }
+    },
+
+    clear() { items = []; total = 0; selected = new Set(); undoable = false },
+  }
+}

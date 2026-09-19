@@ -4,7 +4,7 @@
  * **不打真的模型**：`seed()` 寫的是 model_views 那一列（快取鍵就是內容的 sha256 ＋ 提示詞版本，
  * 跟 tools/demo-setup.mjs --seed-model 走同一條路），所以不需要叢集也能跑完整條線。
  */
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { open } from '../../core/db.ts'
@@ -33,6 +33,10 @@ export function sandbox(t, files = {}, { days = 30 } = {}) {
   for (const [name, content] of Object.entries(files)) put(name, content)
 
   const scope = { roots: [downloads], quarantine: join(dir, 'quarantine') }
+  // 「整理好的」資料夾（P4）。**故意跟 Downloads 平行、不在清理範圍裡** ——
+  // 搬進去的檔就不再被掃描收成候選（預想的預期行為 3）。一開始不建，第一次歸檔才長出來。
+  const filed = join(dir, 'Filed')
+  const fileScope = { ...scope, filed }
   const scan = () => scanDownloads({ db, roots: [downloads], quarantine: scope.quarantine, maxBytes: 20 * 1024 * 1024 })
   scan()
 
@@ -75,7 +79,25 @@ export function sandbox(t, files = {}, { days = 30 } = {}) {
   const idOf = name => db.prepare('SELECT id FROM file_items WHERE path=?').get(join(downloads, name))?.id ?? null
   const rowOf = name => db.prepare('SELECT * FROM file_items WHERE path=?').get(join(downloads, name)) ?? null
 
-  return { db, dbPath, dir, downloads, scope, scan, seed, seedRaw, put, idOf, rowOf }
+  /** filed 底下有哪些東西（相對路徑，排序過）。歸檔的測試拿它比「真的搬到哪裡」。 */
+  const filedTree = () => {
+    const out = []
+    const walk = (at, prefix) => {
+      let entries = []
+      try { entries = readdirSync(at, { withFileTypes: true }) } catch { return }
+      for (const e of [...entries].sort((a, b) => a.name < b.name ? -1 : 1)) {
+        const rel = prefix ? prefix + '/' + e.name : e.name
+        out.push(e.isDirectory() ? rel + '/' : rel)
+        if (e.isDirectory()) walk(join(at, e.name), rel)
+      }
+    }
+    walk(filed, '')
+    return out
+  }
+
+  return {
+    db, dbPath, dir, downloads, filed, scope, fileScope, scan, seed, seedRaw, put, idOf, rowOf, filedTree,
+  }
 }
 
 /** 一段看得出是哪一堂課的講義內容（要超過 30 個字，模型那條線才收）。 */

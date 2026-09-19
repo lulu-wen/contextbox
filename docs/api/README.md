@@ -78,6 +78,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 500 | `UNSAFE_PATH` | 隔離區或檔案的路徑不安全（捷徑、硬鏈結、不是資料夾） | 同上 |
 | 500 | `UNSAFE_JOURNAL` | 搬移紀錄對不上 | 同上 |
 | 500 | `UNSAFE_FILE` | 清空時檔案太大或認不出身分 | 同上 |
+| 500 | `CROSS_DEVICE` | 歸檔時「整理好的」資料夾在另一顆碟（`EXDEV`）。**不會**用複製＋刪除頂替，那等於刪檔；只出現在逐項結果的 `why` | 告訴使用者把 `filed` 設在同一顆碟 |
 | 500 | `CHANGED` | 檔案在建計畫之後變了（多半只出現在逐項結果） | 重新掃描、建新計畫 |
 | 500 | `MISSING` | 隔離區的檔案不見了（多半只出現在逐項結果） | 請使用者看一眼 |
 | 500 | `PURGED` | 已經清空，無法復原（多半只出現在逐項結果） | 告訴使用者 |
@@ -124,6 +125,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `POST /cleanup/quarantine/empty` | `token`、`confirmed` |
 | `POST /rename/apply` | `items`（`[{ itemId, to }]`） |
 | `POST /rename/undo` | `ids`、`last` |
+| `POST /file/apply` | `items`（`[{ itemId, course, kind }]`） |
+| `POST /file/undo` | `ids`、`last` |
 
 ## 檔案清單
 
@@ -444,4 +447,55 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 - `last` 是**最近那一次**（同一批 apply 一起回去）
 - 逐項結果 `{ id, itemId, ok, to, restoredAs, why }`。原本的名字被別的檔佔走時，
   放回來的那一份會加序號，`restoredAs` 就是它真正的名字 —— **一定要講出來**，不然使用者找不到
+- 找不到那幾筆 404 `NOT_FOUND`；兩個欄位都沒帶 400 `BAD_BODY`
+
+## 歸檔（P4，三條都要 token）
+
+**搬家比改名更容易讓人找不到檔**：改名還在同一個資料夾，搬家是換地方。所以：只提議、不自動搬，
+每一次都有紀錄，`undo` 搬得回原本的資料夾。回應裡**只有檔名與相對於「整理好的」資料夾的那一段**
+（`課程/作業系統/講義`），絕對路徑只留在後端的 `filings` 表（`from_dir`／`to_dir`）。
+
+### `GET /file/suggestions`
+
+```json
+{ "items": [{ "itemId": "…", "name": "未命名文件 (3).txt", "course": "作業系統", "kind": "筆記",
+              "topic": "死結", "confidence": "高", "evidence": "作業系統 第 6 章 死結 …",
+              "seeded": false, "toFolder": "課程/作業系統/筆記" }] }
+```
+
+- 只列模型看得出是哪一堂課的檔：信心「低」的不列、`course` 是「看不出來」的不列
+- **`naming` 不看**：已經有名字的檔照樣要歸類（取好名字跟歸不歸得了類是兩回事）
+- `toFolder` 是 `課程/<課名>/<類型>`，**相對於設定檔的 `filed`**。類型是模型的 `kind`
+  （講義／作業／考試／筆記／程式／報告／表單／對話／其他），認不得的一律進「其他」；
+  主題不進路徑（太細會變成一堆只有一個檔的資料夾）
+- 課名**過跟改名同一層清理**，上限 40 個碼位；洗完是空的就不列。
+  已經有那個資料夾（含只差空白、全形、大小寫的）就照既有的寫法回
+- 狀態不能動的不列：`new`（十分鐘內還在變動）、在隔離區、在一份還沒套用的清理計畫裡、
+  受保護的檔名、**已經在 `filed` 底下的**
+- `?limit=` 是 1～1000，不合法回 400 `BAD_BODY`
+- 沒設定 `filed` → 500 `BAD_CONFIG`（不猜一個位置去搬使用者的檔）
+
+### `POST /file/apply`
+
+`{ "items": [{ "itemId": "…", "course": "作業系統", "kind": "筆記" }] }` → `{ "results": […], "remaining": 0 }`
+
+- **只接明確指名的**，沒有「全部」這種捷徑：沒帶 `items`、帶空陣列、帶 `null` 一律 400 `BAD_BODY`
+- `course`／`kind` 可以不給（用模型的看法）；給了也一樣走那一層清理
+- 一次最多 100 個，多的不做，數字回在 `remaining`
+- 逐項結果 `{ itemId, ok, name, toFolder, to, why, id }`。一個檔失敗不影響其他檔，整個請求仍然 200
+- 目標資料夾已經有同名的（**含只差大小寫**）→ 自動加 `-2`⋯`-99`，**不覆蓋任何檔**；
+  真正落地的名字在 `to`
+- 目標資料夾會現建（`mkdir -p`），**只在 `filed` 底下**，而且整條路徑拒捷徑（不通過就這一項失敗）
+- `filed` 在另一顆碟 → 那一項 `ok: false`，`why` 講原因（`CROSS_DEVICE`），其他項照做
+- 唯讀模式 403 `READ_ONLY`；清理正在跑 503 `BUSY`（帶 `Retry-After`）
+
+### `POST /file/undo`
+
+`{ "ids": ["…"] }` 或 `{ "last": true }` → `{ "results": […] }`
+
+- `last` 是**最近那一次**（同一批 apply 一起回去）
+- 逐項結果 `{ id, itemId, ok, name, restoredAs, why }`。原本的位置已經有同名的檔時，
+  放回來的那一份會加序號，`restoredAs` 就是它真正的名字 —— **一定要講出來**，不然使用者找不到
+- 搬回**原本的資料夾**，就算那個資料夾不在 `cleanup.roots` 裡（那是它原本的家）。
+  資料夾不見了才要在放回範圍內建回來；範圍外不建，逐項結果講原因
 - 找不到那幾筆 404 `NOT_FOUND`；兩個欄位都沒帶 400 `BAD_BODY`

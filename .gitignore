@@ -6,3 +6,6 @@ node_modules/
 
 # Claude Code 的暫時工作目錄
 .claude/worktrees/
+
+# demo 沙盒（tools/demo-setup.mjs 的預設位置）
+demo-sandbox/
