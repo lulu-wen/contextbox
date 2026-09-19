@@ -32,7 +32,8 @@
     "scan": null,
     "apply": null,
     "undo": null,
-    "empty": null
+    "empty": null,
+    "model": null
   },
   "scanProblems": [],
   "facts": 0

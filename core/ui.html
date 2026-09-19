@@ -235,6 +235,10 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   .cleanup-file p { margin: 6px 0 0 28px; font-size: 13px; line-height: 1.5; }
   .cleanup-file .evidence { color: #796c5b; }
+  /* 模型的看法（P2）。**看得出來跟規則講的話不一樣**：那是意見，不是事實。
+     示範答案再加一層虛線框，evaluator 不會把預先塞的答案當成真的問過的。 */
+  .cleanup-model { color: #4a5b7a; font-style: italic; margin: 6px 0 0; }
+  .cleanup-model-seeded { border-left: 3px dashed #9aa7bd; padding-left: 8px; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
   .cleanup-shot { width: 150px; }

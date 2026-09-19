@@ -6,6 +6,7 @@
  *   node cli.mjs pet                 啟動寵物與清理面板（印出帶鑰匙的網址）
  *   node cli.mjs open                打開寵物與清理面板（pet 要先在跑）
  *   node cli.mjs cleanup ...         清理：scan、list、apply、undo、release、quarantine
+ *   node cli.mjs think               讓模型看一輪還沒看過的檔（要先設定 model 與金鑰）
  *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
  *   node cli.mjs watch               常駐監看設定裡的資料夾
  *   node cli.mjs list [狀態]          看收件匣
@@ -21,6 +22,9 @@
  *   CONTEXTBOX_OPENER      open 用來打開網址的程式（預設看作業系統）
  */
 import { load, modelReady, modelKey, CONFIG_PATH } from './core/config.ts'
+import { modelEnabled, whyDisabled, PROMPT_VERSION } from './core/model.ts'
+import { modelStats } from './core/model-store.ts'
+import { thinkRound, ROUND_MAX_ITEMS } from './core/model-queue.ts'
 import { admit } from './core/guard.ts'
 import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
@@ -70,6 +74,11 @@ const RESCAN_MS = 30 * 60_000
 const SCAN_TIMEOUT_MS = 10 * 60_000
 /** 背景掃描逾時記進 lastError 的那句話（掃描種類） */
 const SCAN_TIMEOUT_WHY = '背景掃描逾時（資料夾可能卡住了）'
+/**
+ * pet 多久讓模型看一輪（P2）。比重掃密一點：新下載的檔十分鐘內就會有「模型認為⋯⋯」，
+ * 而一輪最多 20 個檔（一個 7～10 秒），最壞情況三分鐘，不會兩輪疊在一起。
+ */
+const THINK_MS = 10 * 60_000
 /** 從沒開始的計畫放多久就自動放棄（第二輪 R2-5，核心的 releaseStalePlans）。 */
 const STALE_PLAN_MS = 60 * 60_000
 /** 指名一份計畫時，自動放棄的門檻往前多留這麼久（第三輪 R3-6b，見 staleCutoffMs）。 */
@@ -938,6 +947,51 @@ function scanTimeoutFromEnv() {
   return Number.isInteger(n) && n >= 100 ? n : null
 }
 
+/** pet 多久讓模型看一輪（測試調小）。 */
+function thinkFromEnv() {
+  const n = Number(process.env.CONTEXTBOX_THINK_MS)
+  return Number.isInteger(n) && n >= 100 ? n : null
+}
+
+/** 「今天」的起點（這台機器的日曆日）。model_calls 的 at 是 ISO，字串比得動。 */
+function startOfToday() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
+}
+
+/**
+ * doctor 的「看懂內容」那一段（P2）。模型有沒有設定、今天送了幾次、平均幾秒、幾次失敗、
+ * 幾個檔因為像機密沒送。**一個字都不印檔案內容。**
+ */
+function modelDoctorLines() {
+  const off = whyDisabled(config)
+  let st
+  try { st = modelStats(db, startOfToday()) }
+  catch { st = null }
+  if (off) {
+    const lines = [`看懂內容  ✗ ${off}。`]
+    // demo 沙盒沒有模型，但 --seed-model 已經把示範答案塞進快取了 ——
+    // 不講的話，doctor 說「沒開」而面板上卻寫著「模型認為⋯⋯」，看起來像壞掉
+    if (st?.seeded) lines.push(`          （快取裡有 ${st.seeded} 筆 demo 的示範答案，面板上會標「示範答案」。）`)
+    return lines
+  }
+  if (!st) return ['看懂內容  ✓ 開著（今天的紀錄讀不出來）']
+  const secs = st.avgMs == null ? null : (st.avgMs / 1000).toFixed(1)
+  const out = [
+    `看懂內容  ✓ 開著（提示詞版本 ${PROMPT_VERSION}）`,
+    `          今天送了 ${st.calls} 次`
+      + (st.ok ? `，${st.ok} 次有答案${secs === null ? '' : `（平均 ${secs} 秒）`}` : '')
+      + (st.failed ? `，${st.failed} 次失敗` : '，沒有失敗'),
+  ]
+  out.push(`          ${st.secretSkips} 個檔因為看起來像機密沒送`
+    + (st.skips > st.secretSkips ? `，另外 ${st.skips - st.secretSkips} 個因為太短或問不到沒送` : ''))
+  out.push(`          快取裡有 ${st.views} 筆看法`
+    + (st.seeded ? `（其中 ${st.seeded} 筆是 demo 的示範答案）` : '')
+    + '。這些是模型的意見，不會自動改名或搬檔。')
+  return out
+}
+
 /** open 要連哪個 port：明講的（環境變數）→ pet 記下來的 → 7391 */
 function petPort() {
   const env = portFromEnv()
@@ -1014,7 +1068,20 @@ function inOneDrive(p) {
 }
 
 /** 錯誤種類的說法（doctor 用） */
-const KIND_LABEL = { scan: '掃描', apply: '清理（套用）', undo: '復原', empty: '清空隔離區' }
+const KIND_LABEL = { scan: '掃描', apply: '清理（套用）', undo: '復原', empty: '清空隔離區', model: '問模型' }
+
+/** `think` 的逐項那一行。**只印檔名與模型講的字，不印內容、不印路徑。** */
+function thinkLine(p) {
+  const head = `[${p.index}/${p.total}] ${shown(p.name)}`
+  const what = p.source === 'image' ? '截圖' : '文件'
+  if (p.outcome === 'asked' || p.outcome === 'cached') {
+    const who = p.outcome === 'cached' ? '（之前問過一樣的內容，直接用那次的答案）' : ''
+    return `  ✔ ${head}　—— 模型認為：${shown(p.course || '看不出來')}／${shown(p.topic || '看不出來')}`
+      + `（信心 ${shown(p.confidence || '低')}）${who}`
+  }
+  if (p.outcome === 'skipped') return `  － ${head}　—— ${shown(p.why ?? '沒送出去')}`
+  return `  ✘ ${head}（${what}）　—— ${shown(p.why ?? '問不到')}`
+}
 
 /**
  * 用系統的方式打開網址：Linux xdg-open、macOS open、Windows start。打不開回 false，呼叫端只印網址。
@@ -1185,6 +1252,8 @@ switch (cmd) {
       // 真的打一次。設定檔填對不代表連得到——靜默失敗是這種工具最大的敵人。
       say(`連線      ${await probeModel(config, key)}`)
     }
+    // P2：看懂內容。**沒設定就只講一句「沒開」**，不報錯、不留空白
+    for (const line of modelDoctorLines()) say(line)
     say('')
     const c = items.counts()
     const total = Object.values(c).reduce((a, b) => a + b, 0)
@@ -1206,6 +1275,61 @@ switch (cmd) {
       + (r.rejected ? `，${r.rejected} 個被擋下` : '') + '。')
     if (!modelReady(config)) {
       say('（模型還沒設定，所以只有記下來，還沒有人去看懂它。設定好之後跑 `node cli.mjs doctor` 確認。）')
+    }
+    break
+  }
+
+  /**
+   * 手動讓模型看一輪（P2）。pet 在背景做的就是這件事，這一條是給人自己跑的。
+   *
+   * **沒設定模型就什麼都不做**：講一句怎麼設定，離開碼 0（那不是錯，是還沒接）。
+   * 連續失敗三次停掉的話離開碼是 2（後端錯）—— 腳本據此決定要不要重試。
+   */
+  case 'think': {
+    showProblems()
+    if (!modelEnabled(config)) {
+      say(`看懂內容還沒開：${whyDisabled(config)}。`)
+      say(`設定檔 ${shown(cfgPath)} 裡的 model.baseUrl 與 model.name 填好，金鑰放進環境變數 ${shown(config.model.keyEnv)}，再跑一次。`)
+      say('（沒有模型不影響其他功能：掃描、清理、面板照常。）')
+      break
+    }
+    let limit = ROUND_MAX_ITEMS
+    const li = args.indexOf('--limit')
+    if (li >= 0) {
+      const n = Number(args[li + 1])
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        warn('--limit 要是 1 到 500 之間的整數。')
+        process.exitCode = EXIT.badInput
+        break
+      }
+      limit = n
+    }
+    say(`問模型：${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
+    say(`一次問一個檔，每個最多 60 秒。按 Ctrl+C 可以停（停在哪裡就是哪裡，不會留下半筆）。`)
+    const ac = new AbortController()
+    const stopThinking = () => { if (!ac.signal.aborted) ac.abort() }
+    process.on('SIGINT', stopThinking)
+    process.on('SIGTERM', stopThinking)
+    const r = await thinkRound({
+      db, config, roots: CLEAN_ROOTS, limit, signal: ac.signal,
+      onError: w => noteError(new Error(w), 'model'),
+      onProgress: p => say(thinkLine(p)),
+    })
+    process.off('SIGINT', stopThinking)
+    process.off('SIGTERM', stopThinking)
+    say('')
+    if (!r.total) {
+      say('沒有需要問的檔（有文字的文件與截圖都已經看過了，或還沒掃描過）。')
+      break
+    }
+    say(`這一輪：排了 ${r.total} 個，問到 ${r.asked} 個`
+      + `，命中快取 ${r.cached} 個，沒送出去 ${r.skipped} 個，失敗 ${r.failed} 次。`)
+    if (r.cancelled) say('（你按了停，剩下的等下一輪。）')
+    say('模型講的是**意見**，不是事實：不會因為它說了就自動改名或搬檔。面板上都標著「模型認為」。')
+    if (r.asked) noteOk('model')
+    if (r.stopped) {
+      warn('⚠ ' + shown(r.stopped))
+      process.exitCode = EXIT.backend
     }
     break
   }
@@ -1387,9 +1511,50 @@ switch (cmd) {
       onProblem: m => warn('⚠ ' + shown(m)),
     })
     w.start()
+
+    // ── P2：背景讓模型看一輪 ─────────────────────────────────
+    //
+    // **不可以卡住掃描或面板**（預想的不變量 5）：一次一輪、一輪一個檔，全部是 async，
+    // server 照常回應。沒設定模型就整段不存在（一個計時器都不開）。
+    // 同時間只有一輪：上一輪還沒跑完就跳過這一次 —— 模型只有一張卡，排隊沒有意義。
+    const thinkMs = thinkFromEnv() ?? THINK_MS
+    const thinkAbort = new AbortController()
+    let thinking = false
+    let thinkTimer = null
+    const thinkOnce = async () => {
+      if (thinking || stopping || !modelEnabled(config)) return
+      thinking = true
+      try {
+        const r = await thinkRound({
+          db, config, roots: CLEAN_ROOTS, signal: thinkAbort.signal,
+          onError: msg => noteError(new Error(msg), 'model'),
+        })
+        if (r.asked) {
+          noteOk('model')
+          say(`模型看懂了 ${r.asked} 個檔（另外 ${r.cached} 個用之前的答案）。打開面板就看得到「模型認為⋯⋯」。`)
+        }
+        if (r.stopped) warn('⚠ ' + shown(r.stopped))
+      } catch (e) {
+        // thinkRound 自己不丟例外，這裡只是保險：一輪壞掉不可以讓 pet 死掉
+        noteError(e, 'model')
+      } finally { thinking = false }
+    }
+    if (modelEnabled(config)) {
+      say(`看懂內容：${shown(config.model.name)} —— 背景每 ${every(thinkMs)}看一輪還沒看過的檔，一次一個。`)
+      say('　（模型講的是意見，面板會標明；不會因為它說了就自動改名或搬檔。）')
+      // 開機先讓掃描與面板站穩再問（模型一個檔要 7～10 秒）
+      setTimeout(() => { void thinkOnce() }, Math.min(3000, thinkMs)).unref()
+      thinkTimer = setInterval(() => { void thinkOnce() }, thinkMs)
+    } else {
+      const off = whyDisabled(config)
+      if (off) say(`看懂內容：沒開（${off}）。其他功能照常。`)
+    }
+
     say('按 Ctrl+C 停止。')
     const bye = () => {
       stopping = true
+      thinkAbort.abort()
+      if (thinkTimer) clearInterval(thinkTimer)
       clearInterval(heartbeat); clearInterval(rescan); w.stop()
       // 掃描子行程一起收掉，不然 pet 結束了它還在寫資料庫
       if (scanning) { try { scanning.kill() } catch { /* 已經結束了 */ } }
@@ -1834,6 +1999,7 @@ switch (cmd) {
   node cli.mjs cleanup undo [計畫 id]       復原（不給 id 就是最近一次）
   node cli.mjs cleanup release <計畫 id>    放棄一份還沒套用的計畫（不動檔案）
   node cli.mjs cleanup quarantine [--empty] 看隔離區／清空（要滿七天、要二次確認）
+  node cli.mjs think                       讓模型看一輪還沒看過的檔（沒設定模型就不做事）
   node cli.mjs watch                       常駐監看
   node cli.mjs propose <檔案>...            手動收一個檔案
   node cli.mjs list [狀態]                  看收件匣

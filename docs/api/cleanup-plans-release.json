@@ -1,20 +1,20 @@
 {
-  "id": "9c95d300-22a2-4ba6-98e7-ff877c8ee1a3",
+  "id": "06e1d45f-ad0f-4a9c-8b42-1fa079d9d465",
   "status": "dismissed",
   "itemCount": 1,
-  "createdAt": "2026-09-19T08:19:52.137Z",
+  "createdAt": "2026-09-19T10:57:54.528Z",
   "appliedAt": null,
   "error": null,
   "bytes": 16,
   "items": [
     {
-      "itemId": "39605adc-9c7e-4410-9893-b27089df2b26",
+      "itemId": "08a49825-dfac-48cc-ad87-37dfe01f68f8",
       "name": "Screenshot 2026-01-02 141203.png",
       "bytes": 16,
-      "mtime": "2026-05-22T08:19:51.395Z",
+      "mtime": "2026-05-22T10:57:53.664Z",
       "candidateIds": [
-        "1a734327-eb4b-4702-83f7-dcecae21e201",
-        "64da405e-c6fd-4177-b506-893b70e2e04e"
+        "2a0d02aa-f5b2-4863-8db8-84ba6ce4e43b",
+        "6fff4932-b0c4-46c9-b95a-e167ead6dd25"
       ],
       "skipped": false,
       "reasons": [

@@ -2,6 +2,7 @@ import { createDemo } from './cleanup-demo-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
+  modelOpinionLines,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -156,6 +157,18 @@ function paragraph(text, className = '') {
   p.className = className
   return p
 }
+/**
+ * 把「模型認為⋯⋯」掛到一張卡片（或一張縮圖）上（P2）。沒有看法就什麼都不加。
+ *
+ * **只加字，不碰勾選框**（預想的不變量 4）：模型說了不代表要清、要改名。
+ * 示範答案多一個 class，樣式上看得出來那不是真的問過的。
+ */
+function appendModelOpinion(node, model) {
+  const lines = modelOpinionLines(model)
+  if (!lines) return
+  const head = paragraph(lines.head, lines.seeded ? 'cleanup-model cleanup-model-seeded' : 'cleanup-model')
+  node.append(head, paragraph(lines.note, 'evidence'))
+}
 /** 面板最上面那一句。本機模式講真的資料夾名（U4），拿不到就講「監看資料夾」。 */
 function modeNote() {
   $('cleanup-mode-note').textContent = isDemo()
@@ -197,6 +210,7 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   cell.append(frame)
   if (keep) {
     cell.append(paragraph(`留著 · ${safeName(shot.name)}`, 'cleanup-shot-keep'))
+    appendModelOpinion(cell, shot.model)
     return cell
   }
   const label = document.createElement('label')
@@ -212,6 +226,7 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   name.textContent = safeName(shot.name)
   label.append(check, name)
   cell.append(label, paragraph(bytes(shot.bytes), 'evidence'))
+  appendModelOpinion(cell, shot.model)
   return cell
 }
 
@@ -276,6 +291,8 @@ function render() {
     for (const reason of item.reasons) {
       card.append(paragraph(safeName(reason.reason)), paragraph(safeName(reason.evidence), 'evidence'))
     }
+    // 模型對這個檔的看法（P2）。示範模式沒有這一段（那時畫面上是假的清單）
+    if (!isDemo()) appendModelOpinion(card, item.model)
     if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
     $('cleanup-list').append(card)
   }

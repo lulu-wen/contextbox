@@ -261,6 +261,38 @@ CREATE TABLE IF NOT EXISTS file_texts (
   at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_file_texts_at ON file_texts(at);
+
+-- ── 模型看懂內容（P2） ───────────────────────────────────────
+-- 模型看過的東西：**快取，也是結果**。鍵是「內容的 sha256 ＋ 提示詞版本」，不是路徑 ——
+-- 同一份檔複製兩份只問一次，改過內容的重問。存進來的每一個欄位都是**模型的意見**，
+-- 不是事實：畫面要標明是模型說的、信心多少、證據是什麼，不可以因為它說了就自動改名或搬檔。
+CREATE TABLE IF NOT EXISTS model_views (
+  key        TEXT PRIMARY KEY,   -- sha256(內容) + ':' + 提示詞版本
+  item_id    TEXT,               -- 最近一次是哪個檔（只是方便查，不是主鍵）
+  source     TEXT NOT NULL,      -- image／text
+  course     TEXT, topic TEXT, kind TEXT, suggested_name TEXT,
+  evidence   TEXT, confidence TEXT,           -- 高／中／低
+  model      TEXT NOT NULL, prompt_version TEXT NOT NULL,
+  at         TEXT NOT NULL,
+  seeded     INTEGER NOT NULL DEFAULT 0       -- 1 ＝ demo 預先塞的，畫面要標示
+);
+CREATE INDEX IF NOT EXISTS ix_model_views_item ON model_views(item_id);
+
+-- 每一次真的送出去的紀錄。**不存內容**，只存「送了多少」與「多久」——
+-- 使用者查得到「今天送了幾次、平均幾秒」，而帳本本身不可以變成第二份內容外洩管道。
+CREATE TABLE IF NOT EXISTS model_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, item_id TEXT, source TEXT NOT NULL,
+  bytes_sent INTEGER, chars_sent INTEGER, ok INTEGER NOT NULL, ms INTEGER, error TEXT,
+  -- 失敗算誰的帳：'answer'（模型有回應但答案不能用）算這個檔的，'transport'（連不上、逾時、5xx）不算
+  blame TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_model_calls_at ON model_calls(at);
+
+-- 沒送出去的與為什麼（看起來像機密、太短、問不到）。一個檔一列。
+CREATE TABLE IF NOT EXISTS model_skips (
+  item_id TEXT PRIMARY KEY, why TEXT NOT NULL, at TEXT NOT NULL
+);
 `
 
 /**
@@ -286,6 +318,7 @@ function lockDown(path: string, createdDir: string | undefined) {
 const ADDED_COLUMNS: [string, string, string][] = [
   ['file_items', 'naming', `naming TEXT CHECK (naming IN ('untitled','generic','named'))`],
   ['file_items', 'naming_why', 'naming_why TEXT'],
+  ['model_calls', 'blame', 'blame TEXT'],
 ]
 
 /**

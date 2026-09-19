@@ -36,6 +36,7 @@ import { keepersFirst } from './cleanup-scanner.ts'
 import { decodePngGray } from './png.ts'
 import { resizeGray } from './imagehash.ts'
 import { encodeGrayPng } from './png-write.ts'
+import { opinionsFor, type ModelOpinion } from './model-store.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -71,8 +72,12 @@ export const META = {
 /**
  * 會記成功與錯誤的動作種類（第二輪 R2-10）。**寵物只在「最新的錯誤之後，同一種動作成功過」時才不擔心** ——
  * 以前任何一次成功都算，pet 每 30 分鐘的背景重掃一成功，一直壞著的套用就被蓋掉了（稽核 C-e6）。
+ *
+ * `model` 是 P2 加的（看懂內容）：它不是一條 HTTP 路由，是背景佇列 —— 模型連續失敗三次時
+ * 記一筆這一種的錯。分開一種的理由跟上面一樣：**模型叫不動不可以被一次成功的掃描蓋掉**，
+ * 反過來模型好了也不該讓寵物不再擔心一個一直搬不動的清理。
  */
-export const ACTION_KINDS = ['scan', 'apply', 'undo', 'empty'] as const
+export const ACTION_KINDS = ['scan', 'apply', 'undo', 'empty', 'model'] as const
 export type ActionKind = (typeof ACTION_KINDS)[number]
 const isActionKind = (k: unknown): k is ActionKind => typeof k === 'string' && (ACTION_KINDS as readonly string[]).includes(k)
 /** 每一種動作最近一次成功的 meta key：cleanup_last_ok_scan、cleanup_last_ok_apply… */
@@ -145,6 +150,13 @@ export type CandidateRow = {
   candidateIds: string[]
   /** 依信心由高到低 */
   reasons: CandidateReason[]
+  /**
+   * 模型對這個檔的看法（P2），沒問過是 null。
+   *
+   * **這是意見，不是事實**：面板要標明是模型說的、信心多少、證據是什麼，而且
+   * **不可以**因為它說了就自動打勾或改名（預想的不變量 4）。`seeded` 是 demo 預先塞的示範答案。
+   */
+  model: ModelOpinion | null
 }
 
 export type NeedsHumanRow = {
@@ -582,6 +594,9 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
   const pre = rootPrefixes(opts.roots)
 
   const rows: CandidateRow[] = []
+  // 模型的看法一次查完（一個檔最多兩次索引查詢）。查不到就是 null —— 沒接模型時這裡永遠是空的
+  const opinions = safe(() => opinionsFor(db, all.rows.slice(0, limit).map(g => g.item.id)),
+    new Map<string, ModelOpinion>())
   let bytes = 0, checkedCount = 0, checkedBytes = 0
   for (const g of all.rows) {
     // 一個檔一個決定，用**最高**信心那條。
@@ -616,6 +631,7 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
       vetoed: null,
       candidateIds: g.cands.map(c => c.id),
       reasons,
+      model: opinions.get(item.id) ?? null,
     })
     bytes += item.bytes
   }
@@ -1691,11 +1707,13 @@ export type BurstMemberView = {
   level: 'same' | 'similar'
   thumb: string
   boxes: BurstBox[]
+  /** 模型對這張截圖的看法（P2），沒問過是 null。**是意見，不是事實** */
+  model: ModelOpinion | null
 }
 export type BurstGroupView = {
   id: string
   level: 'same' | 'similar'
-  keep: { itemId: string; name: string; bytes: number; thumb: string }
+  keep: { itemId: string; name: string; bytes: number; thumb: string; model: ModelOpinion | null }
   members: BurstMemberView[]
 }
 
@@ -1736,7 +1754,9 @@ function parseBoxes(raw: string): BurstBox[] {
  *   （掃描端不去動範圍外的列，見 wireBursts 的 K5 註解）。
  * - **檔案狀態要還在**：搬進隔離區、不見了、讀不到的不列；少到剩一張的整組不列。
  */
-export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope): BurstGroupView[] {
+export function burstGroupsView(
+  db: DatabaseSync, scope: string[] | CleanupScope, opts: { models?: boolean } = {},
+): BurstGroupView[] {
   const m = scopeMatcher(scopeOf(scope))
   const rows = safe(() => db.prepare(
     `SELECT b.item_id, b.group_id, b.keep_id, b.level, b.boxes, i.name, i.bytes, i.path, i.mtime
@@ -1757,6 +1777,14 @@ export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope
     else byGroup.set(r.group_id, [r])
   }
 
+  // 模型的看法（P2）。**縮圖那條路不查**（burstThumbPng 只是要知道「在不在組裡」）
+  const wantModels = opts.models !== false
+  const ids: string[] = []
+  if (wantModels) for (const list of byGroup.values()) for (const r of list) ids.push(r.item_id)
+  const opinions = wantModels
+    ? safe(() => opinionsFor(db, ids), new Map<string, ModelOpinion>())
+    : new Map<string, ModelOpinion>()
+
   const out: (BurstGroupView & { at: string })[] = []
   for (const [id, list] of byGroup) {
     const keep = list.find(r => r.item_id === r.keep_id)
@@ -1768,7 +1796,10 @@ export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope
       id,
       level,
       at: keep.mtime,
-      keep: { itemId: keep.item_id, name: keep.name, bytes: keep.bytes, thumb: thumbUrl(keep.item_id) },
+      keep: {
+        itemId: keep.item_id, name: keep.name, bytes: keep.bytes, thumb: thumbUrl(keep.item_id),
+        model: opinions.get(keep.item_id) ?? null,
+      },
       members: members.map(r => ({
         itemId: r.item_id,
         name: r.name,
@@ -1776,6 +1807,7 @@ export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope
         level: r.level === 'same' ? 'same' as const : 'similar' as const,
         thumb: thumbUrl(r.item_id),
         boxes: parseBoxes(r.boxes),
+        model: opinions.get(r.item_id) ?? null,
       })),
     })
   }
@@ -1792,7 +1824,7 @@ export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope
 export function burstThumbPng(db: DatabaseSync, scope: string[] | CleanupScope, itemId: string): Buffer | null {
   if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
   // 「在不在組裡」用跟 /cleanup/bursts 同一份判斷：畫面上看得到的才給得到圖
-  const inGroup = burstGroupsView(db, scope).some(g =>
+  const inGroup = burstGroupsView(db, scope, { models: false }).some(g =>
     g.keep.itemId === itemId || g.members.some(m => m.itemId === itemId))
   if (!inGroup) return null
   const row = safe(() => db.prepare(
@@ -1833,7 +1865,7 @@ export function burstThumbPng(db: DatabaseSync, scope: string[] | CleanupScope, 
  * 寫不進去（資料庫忙、唯讀）不算錯 —— 最壞是多問一次。
  */
 export function burstAsk(db: DatabaseSync, scope: string[] | CleanupScope): { groups: number; newGroups: number } {
-  const ids = burstGroupsView(db, scope).map(g => g.id)
+  const ids = burstGroupsView(db, scope, { models: false }).map(g => g.id)
   let asked: string[] = []
   const raw = safe(() => getMeta(db, BURST_ASKED_KEY), null)
   if (raw) {

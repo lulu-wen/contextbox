@@ -1,19 +1,19 @@
 {
-  "id": "e9e6be61-fea2-46f0-9cf5-4a19aa728c8a",
+  "id": "00674a03-4996-44b5-814d-c2ae0b0e6903",
   "status": "applied",
   "itemCount": 3,
-  "createdAt": "2026-09-19T08:19:51.830Z",
-  "appliedAt": "2026-09-19T08:19:51.910Z",
+  "createdAt": "2026-09-19T10:57:54.198Z",
+  "appliedAt": "2026-09-19T10:57:54.284Z",
   "error": null,
   "bytes": 38,
   "items": [
     {
-      "itemId": "ef681f5a-b468-41e8-b57b-71e23a9793f4",
+      "itemId": "e07d63c8-9758-4734-b501-1a5585745234",
       "name": "素材包.zip",
       "bytes": 19,
-      "mtime": "2026-07-21T08:19:51.395Z",
+      "mtime": "2026-07-21T10:57:53.664Z",
       "candidateIds": [
-        "570c08da-aee6-4103-b39f-c44b19fd8fc0"
+        "388f458f-58ec-44e1-a334-7ecf1576b6d7"
       ],
       "skipped": false,
       "reasons": [
@@ -28,12 +28,12 @@
       "why": null
     },
     {
-      "itemId": "e195b5ce-5238-430e-a4e5-65aa15104c4d",
+      "itemId": "365f75d4-e9a4-4d8d-af74-6c48c6d13170",
       "name": "安裝檔.msi",
       "bytes": 19,
-      "mtime": "2026-08-20T08:19:51.395Z",
+      "mtime": "2026-08-20T10:57:53.664Z",
       "candidateIds": [
-        "e08520ce-4bdf-43a4-b3f3-9a3975923750"
+        "c476d144-6108-4971-88d1-e70e341b6a2d"
       ],
       "skipped": false,
       "reasons": [
@@ -48,12 +48,12 @@
       "why": null
     },
     {
-      "itemId": "bd1f002c-04e4-48db-bd5f-7ce478258706",
+      "itemId": "bf8fed3e-c9c0-4c67-8f3b-d8b81bd4a0f9",
       "name": "空的.txt",
       "bytes": 0,
-      "mtime": "2026-09-16T08:19:51.395Z",
+      "mtime": "2026-09-16T10:57:53.664Z",
       "candidateIds": [
-        "fc5e77e0-37d1-4758-9578-d49a40079f53"
+        "ab49c83d-4ddd-4aba-a732-f5b7fd48e97f"
       ],
       "skipped": false,
       "reasons": [

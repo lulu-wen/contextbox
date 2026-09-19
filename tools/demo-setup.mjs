@@ -5,6 +5,7 @@
  *   node tools/demo-setup.mjs                  做在 ./demo-sandbox
  *   node tools/demo-setup.mjs --dir <path>     做在別的地方
  *   node tools/demo-setup.mjs --force          資料夾已經有東西也照做（只補檔，不刪）
+ *   node tools/demo-setup.mjs --seed-model     順便掃一次，並把「模型的答案」預先塞進快取（P2）
  *
  * 它會建出一個假的家目錄：Downloads 裡放一批**看起來像真的**的檔（安裝檔、壓縮檔、
  * 重複下載、很久沒動的檔、連拍截圖、課程講義），設定檔指到這個沙盒，
@@ -154,11 +155,27 @@ put('Screenshot 2026-09-18 at 14.02.44.png', shot({ lines: 9, badge: 3 }), 2)
 note('Screenshot …14.02.44.png', 2, '同版面但內容不同的截圖（不可以被當成連拍）')
 
 // 課程檔案（P2／P3／P4 的主角）：有的取好名字，有的沒有
-put('作業系統_第5章_行程排程.txt', Buffer.from('作業系統 第 5 章 行程排程\n\nFCFS、SJF、Round Robin 的比較與計算題。\n'), 9)
+put('作業系統_第5章_行程排程.txt', Buffer.from(
+  '作業系統 第 5 章 行程排程\n\n'
+  + '一、排班準則：CPU 使用率、產能、周轉時間、等待時間、回應時間。\n'
+  + '二、FCFS：先到先服務，會有護送效應（convoy effect）。\n'
+  + '三、SJF：最短工作優先，理論上平均等待時間最小，但需要預估執行時間。\n'
+  + '四、Round Robin：時間配額 q 的選擇；q 太大退化成 FCFS，太小則切換成本高。\n'
+  + '課堂練習：給定五個行程的到達時間與執行時間，畫出甘特圖並算平均等待時間。\n'), 9)
 note('作業系統_第5章_行程排程.txt', 9, '取好名字的講義')
-put('未命名文件 (3).txt', Buffer.from('作業系統 第 6 章 死結\n\n四個必要條件、銀行家演算法。\n'), 7)
+put('未命名文件 (3).txt', Buffer.from(
+  '作業系統 第 6 章 死結\n\n'
+  + '死結的四個必要條件：互斥、持有並等待、不可搶奪、環狀等待。\n'
+  + '處理方式：預防、避免（銀行家演算法）、偵測與恢復、鴕鳥策略。\n'
+  + '銀行家演算法：Available、Max、Allocation、Need 四張表，檢查安全序列是否存在。\n'
+  + '小考範圍到這裡，記得練習資源配置圖判斷有沒有環。\n'), 7)
 note('未命名文件 (3).txt', 7, '沒取名、但內容看得出是哪一堂課')
-put('IMG_2041.txt', Buffer.from('資料結構 期中考範圍\n\n堆疊、佇列、樹、圖的走訪。\n'), 5)
+put('IMG_2041.txt', Buffer.from(
+  '資料結構 期中考範圍\n\n'
+  + '第一部分：堆疊與佇列的實作與應用（中序轉後序、BFS 佇列）。\n'
+  + '第二部分：二元搜尋樹的插入、刪除與走訪；AVL 的四種旋轉。\n'
+  + '第三部分：圖的表示法、DFS 與 BFS、最短路徑（Dijkstra）。\n'
+  + '考試時間：下週三第 3、4 節，可帶一張 A4 手寫小抄。\n'), 5)
 note('IMG_2041.txt', 5, '相機預設名，內容是考試範圍')
 
 const cfg = {
@@ -172,6 +189,68 @@ const cfg = {
 }
 const cfgPath = join(dir, 'config.json')
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
+
+// ── --seed-model：把示範用的「模型答案」預先塞進快取（P2） ──────
+//
+// **為什麼要有**：評審與 demo 的機器上沒有模型叢集，而「看懂內容」正是這一期的主角。
+// 快取本來就是「同樣的內容只問一次」，所以把答案先寫進去，畫面就跑得完整個流程 ——
+// 而且那幾列 `seeded=1`，面板會標「示範答案」，不會假裝是真的問過的（預想的預期行為第 10 條）。
+//
+// 答案是 2026-09-19 用真的模型（Qwen3-VL-8B）跑一次抄回來的，證據那一段有截短。快取鍵是**內容的 sha256**，
+// 所以要先掃一次：`file_items` 有 id、`file_texts` 有讀出來的文字，算出來的鍵才跟真的問一次一樣
+// （真的接上模型跑 think 時會直接命中，不會把示範答案蓋掉）。
+const SEEDED = [
+  ['作業系統_第5章_行程排程.txt', {
+    course: '作業系統', topic: '行程排程', kind: '作業',
+    suggestedName: '作業系統_行程排程',
+    evidence: '作業系統 第 5 章 行程排程 一、排班準則：CPU 使用率、產能、周轉時間⋯⋯ 二、FCFS：先到先服務，會有護送效應',
+    confidence: '高',
+  }],
+  ['未命名文件 (3).txt', {
+    course: '作業系統', topic: '死結', kind: '筆記',
+    suggestedName: '作業系統_死結',
+    evidence: '作業系統 第 6 章 死結 死結的四個必要條件：互斥、持有並等待、不可搶奪、環狀等待',
+    confidence: '高',
+  }],
+  ['IMG_2041.txt', {
+    course: '資料結構', topic: '期中考範圍', kind: '考試',
+    suggestedName: '資料結構_期中考範圍',
+    evidence: '資料結構 期中考範圍 第一部分：堆疊與佇列的實作與應用（中序轉後序、BFS 佇列）',
+    confidence: '高',
+  }],
+]
+
+if (flag('--seed-model')) {
+  const dbPath = join(dir, 'data.db')
+  const { open: openDb } = await import(new URL('../core/db.ts', import.meta.url))
+  const { scanDownloads } = await import(new URL('../core/cleanup-scanner.ts', import.meta.url))
+  const { putModelView, viewKey } = await import(new URL('../core/model-store.ts', import.meta.url))
+  const { textPayload, PROMPT_VERSION } = await import(new URL('../core/model.ts', import.meta.url))
+  const db = openDb(dbPath)
+  try {
+    scanDownloads({ db, roots: [downloads], quarantine: join(dir, 'quarantine'), maxBytes: cfg.maxBytes })
+    const at = new Date().toISOString()
+    let n = 0
+    for (const [name, view] of SEEDED) {
+      const path = join(downloads, name)
+      const item = db.prepare('SELECT id FROM file_items WHERE path=?').get(path)
+      if (!item) { console.error(`  （跳過 ${name}：掃描沒有收到它）`); continue }
+      const row = db.prepare('SELECT text FROM file_texts WHERE item_id=?').get(item.id)
+      const text = typeof row?.text === 'string' ? row.text : null
+      if (!text) { console.error(`  （跳過 ${name}：還沒讀到它的文字）`); continue }
+      putModelView(db, {
+        key: viewKey(textPayload(text)), item_id: item.id, source: 'text',
+        course: view.course, topic: view.topic, kind: view.kind,
+        suggested_name: view.suggestedName, evidence: view.evidence, confidence: view.confidence,
+        model: '示範答案（demo-setup 預先塞的）', prompt_version: PROMPT_VERSION, at, seeded: 1,
+      })
+      n++
+    }
+    console.log('')
+    console.log(`已經預先塞了 ${n} 筆「模型的答案」到快取裡（畫面上會標「示範答案」）。`)
+    console.log('沒有模型叢集也看得到完整流程；真的接上模型之後，這幾筆不會被蓋掉。')
+  } finally { db.close() }
+}
 
 // ── 印出怎麼跑 ────────────────────────────────────────────────
 const env = [
@@ -199,6 +278,7 @@ console.log('  node cli.mjs cleanup list       # 清單：✔ 的是預設會清
 console.log('  node cli.mjs cleanup apply      # 搬進隔離區（七天內都放得回來）')
 console.log('  node cli.mjs cleanup undo       # 反悔：全部放回原位')
 console.log('  node cli.mjs pet                # 開寵物與面板（網址會印出來）')
+console.log('  node cli.mjs think              # 讓模型看一輪（沒設定模型就不做事；--seed-model 已經先塞好答案）')
 console.log('')
 console.log('')
 console.log('想再 demo 一次（清單會因為「放回去的不再提議」而變空）：')

@@ -685,6 +685,8 @@ function burstShot(raw, groupLevel) {
     thumb: typeof raw?.thumb === 'string' && THUMB_PATH.test(raw.thumb)
       ? raw.thumb : '/cleanup/thumb/' + encodeURIComponent(itemId),
     boxes: (Array.isArray(raw?.boxes) ? raw.boxes : []).map(burstBox).filter(Boolean),
+    // 模型的看法（P2）。舊版後端沒有這一欄 —— 沒有就是沒有，畫面少一行字而已
+    model: raw?.model && typeof raw.model === 'object' ? raw.model : null,
   }
 }
 
@@ -720,6 +722,32 @@ export function burstAskMessage(groups) {
   if (list.length === 1) return `這 ${burstShots(list[0])} 張截圖看起來是同一批，要留最新的就好嗎？`
   const total = list.reduce((n, g) => n + burstShots(g), 0)
   return `有 ${list.length} 組截圖看起來是同一批（一共 ${total} 張），要各留最新的那張就好嗎？`
+}
+
+/**
+ * 模型的看法 → 面板上的兩行字（P2）。沒有看法（沒接模型、還沒問到）回 null。
+ *
+ * **一定要標明是模型說的**（預想的不變量 4）：模型會自信地說錯，而它說的東西之後會變成
+ * 改名與歸檔的依據。所以畫面上永遠是「模型認為⋯⋯」＋信心＋證據，**而且不會因為它說了
+ * 就自動打勾** —— 這支只產生字，一個勾選框都不碰。
+ *
+ * `seeded` 是 demo 預先塞的示範答案，前面標「示範答案」，不可以假裝是真的問過的。
+ * 模型回的字是**不可信的輸入**（它讀的是使用者的檔）：一律走 safeName。
+ */
+export function modelOpinionLines(m) {
+  if (!m || typeof m !== 'object') return null
+  const pick = (v, dflt) => safeName(String(v ?? '').trim()) || dflt
+  const course = pick(m.course, '看不出來')
+  const topic = pick(m.topic, '看不出來')
+  const confidence = pick(m.confidence, '低')
+  const evidence = safeName(String(m.evidence ?? '').trim())
+  const seeded = m.seeded === true
+  return {
+    seeded,
+    head: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
+    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
+      + '這是模型的意見，不是事實 —— 不會因為它這樣說就改名或搬檔。',
+  }
 }
 
 /** 連拍區裡那一組的標題。檔名是不可信的輸入，一律 safeName。 */

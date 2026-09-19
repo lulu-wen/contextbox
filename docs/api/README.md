@@ -152,8 +152,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 **不帶 token 也回**（擴充套件與寵物用它判斷後端活著沒），所以不帶 token 的那一份**不給任何名字、路徑或時間**：
 `watcher.watching` 是空陣列、`watcher.lastHeartbeatAt` 與 `watcher.pid` 是 `null`、`lastError` 只說
 「有，帶 token 才看得到」、`lastErrorAt` 與 `lastOkAt` 是 `null`（同機任何行程都讀得到，時間會洩漏
-「使用者什麼時候清理過」）、`lastErrorKind` 是 `null`、`lastOkByKind` 底下四個時間（`lastOkByKind.scan`、
-`lastOkByKind.apply`、`lastOkByKind.undo`、`lastOkByKind.empty`）都是 `null`、`scanProblems` 是空陣列、
+「使用者什麼時候清理過」）、`lastErrorKind` 是 `null`、`lastOkByKind` 底下五個時間（`lastOkByKind.scan`、
+`lastOkByKind.apply`、`lastOkByKind.undo`、`lastOkByKind.empty`、`lastOkByKind.model`）都是 `null`、`scanProblems` 是空陣列、
 `quarantine.canEmptyAt` 與 `quarantine.oldestMtimeAt` 也是 `null`（同一個理由：
 `canEmptyAt` 減七天就是清理的時間）。`quarantine.canEmptyNow` 是布林、不帶時間，兩份都照給。
 兩份的**欄位一模一樣**，只有值被遮住 —— UI 用哪一份都不會拿到 `undefined`。
@@ -187,8 +187,8 @@ nonce 格式不對（不是剛好 32 個 hex，大小寫都收）就**沒有** `
 | `needsHumanCount` | 「需要你查看」有幾個 |
 | `lastError` | 最近一次**真的意外**，或一次**每一項都失敗**的套用／復原／清空：帶 token 是「ISO 時間 空白 人話」，不帶原文、不帶路徑 |
 | `lastErrorAt`、`lastOkAt` | 最近一次錯、最近一次成功（任何一種）的時間（帶 token 才有） |
-| `lastErrorKind` | 那次錯是哪一種動作：`scan`／`apply`／`undo`／`empty`，說不出來（舊資料、查詢的意外）是 `null`（帶 token 才有） |
-| `lastOkByKind` | 底下的 `scan`、`apply`、`undo`、`empty` 各是那一種動作最近一次成功的時間，沒成功過是 `null`（帶 token 才有）。**寵物只在「錯之後，同一種動作還沒成功過」時擔心**：套用壞了，背景重掃成功不算數；`lastErrorKind` 是 `null` 的錯，任何一次成功（`lastOkAt`）都算 |
+| `lastErrorKind` | 那次錯是哪一種動作：`scan`／`apply`／`undo`／`empty`／`model`（P2 的背景佇列：模型連續三次叫不動），說不出來（舊資料、查詢的意外）是 `null`（帶 token 才有） |
+| `lastOkByKind` | 底下的 `scan`、`apply`、`undo`、`empty`、`model` 各是那一種動作最近一次成功的時間，沒成功過是 `null`（帶 token 才有）。**寵物只在「錯之後，同一種動作還沒成功過」時擔心**：套用壞了，背景重掃成功不算數；`lastErrorKind` 是 `null` 的錯，任何一次成功（`lastOkAt`）都算 |
 | `scanProblems` | 最近一次完整掃描回報的問題（保險絲、打不開的資料夾、讀不到的檔），人話、不帶路徑、控制字元換成「·」，最多 50 條；沒問題是空陣列（帶 token 才有內容） |
 | `proof` | 只有帶了 `?nonce=<32 個 hex>` 才有，見上 |
 | `facts` | 已確認的事實筆數（擴充套件不帶 token 讀它） |
@@ -205,7 +205,10 @@ nonce 格式不對（不是剛好 32 個 hex，大小寫都收）就**沒有** `
 - `defaultCheckedCount`／`defaultCheckedBytes`：**全部**預設打勾的有幾個檔、多大，不受 `limit` 影響。
   「清掉打勾的 N 個」用這兩個，不要自己數 `candidates`
 - 每一列：`itemId`、`name`、`folder`、`subdir`、`bytes`、`mtime`、`kind`（信心最高的那條）、`confidence`、
-  `defaultChecked`、`vetoed`（目前永遠是 `null`）、`candidateIds`、`reasons[]`（`kind`、`confidence`、`reason`、`evidence`）
+  `defaultChecked`、`vetoed`（目前永遠是 `null`）、`candidateIds`、`reasons[]`（`kind`、`confidence`、`reason`、`evidence`）、
+  `model`（P2 模型對這個檔的看法：`course`、`topic`、`kind`、`suggestedName`、`evidence`、`confidence`（高／中／低）、
+  `model`、`at`、`seeded`；沒接模型或還沒問到是 `null`）。**那是意見不是事實**：面板要寫「模型認為⋯⋯」，
+  **不可以**因為它說了就自動打勾或改名；`seeded` 是 demo 預先塞的示範答案，畫面要標示
 - `needsHuman[]`：跟清理有關、但這個工具不處理的檔（太大算不出指紋、讀的時候出錯），`why` 是人話。
   沒有命中任何規則的大檔**不列**。`needsHumanTotal`／`needsHumanTruncated` 同上
 

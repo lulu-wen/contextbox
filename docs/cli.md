@@ -29,6 +29,9 @@ node cli.mjs cleanup quarantine              # 看隔離區
 node cli.mjs cleanup quarantine --empty      # 預覽清空（要滿七天），印出確認用的 token
 node cli.mjs cleanup quarantine --empty --yes <token>   # 真的清空預覽裡的那些
 
+node cli.mjs think                           # 讓模型看一輪還沒看過的檔（P2）
+node cli.mjs think --limit <n>               #   這一輪最多看幾個（1～500，預設 20）
+
 node cli.mjs watch                           # 常駐監看（截圖功能，既有）
 ```
 
@@ -48,6 +51,27 @@ node cli.mjs watch                           # 常駐監看（截圖功能，既
 macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的舊壓縮檔、安裝檔一樣不會被當成垃圾（第二輪 R2-8）。
 `pet` 啟動時與 `doctor` 會講出哪一個是截圖資料夾。
 
+### `think`：讓模型看懂內容（P2）
+
+`think` 手動跑一輪；`pet` 在背景每 10 分鐘自己跑一輪。兩邊做的是同一件事：
+
+- **沒設定模型就什麼都不做**（`model.baseUrl`、`model.name` 沒填，或金鑰的環境變數是空的）：
+  講一句怎麼設定，離開碼 **0** —— 那不是錯，是還沒接。掃描、清理、面板全部照常。
+- 只問兩種檔：**讀得到 30 個字以上的文件**、**有長相指紋的 PNG 截圖**。其他不問。
+- **送出去之前先過濾**：名字像機密的（`.env`、`id_rsa`、`*.key`、`credentials`、`token`、
+  `secret`、`password`、`錢包`…）與內容像機密的（`BEGIN PRIVATE KEY`、`AKIA…`、`ghp_…`、
+  `sk-…`、身分證字號、信用卡號）**一律不送**，並記一句「看起來像機密，沒送出去」。
+  `doctor` 講得出有幾個檔因為這樣沒送。
+- **一次一個、每個最多 60 秒**。文件最多送 2000 字，截圖縮到長邊 1344 的灰階 PNG。
+- **同樣的內容只問一次**（快取鍵是內容的 sha256 ＋ 提示詞版本）：複製出來的第二份直接命中，
+  改過內容的重問。
+- **連續失敗 3 次就這一輪停**，記成最近出錯（種類 `model`），離開碼 **2**。下一輪再試。
+- Ctrl+C 可以停，停在哪裡就是哪裡，**不會留下半筆**。
+
+模型講的是**意見**，不是事實：面板上一律寫「模型認為：⋯⋯（信心 ⋯）」並附證據，
+**不會**因為它說了就自動打勾、改名或搬檔。`tools/demo-setup.mjs --seed-model` 預先塞進去的
+答案會標「示範答案」。
+
 ### 環境變數
 
 | 變數 | 用途 |
@@ -60,6 +84,7 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 | `CONTEXTBOX_PORT` | `pet`／`open` 的 port（預設 7391；`0` ＝ 讓系統挑一個空的，`pet` 會把實際的 port 記下來給 `open` 用） |
 | `CONTEXTBOX_RESCAN_MS` | `pet` 全部重掃一次的間隔，毫秒（預設 30 分鐘；最小 100） |
 | `CONTEXTBOX_SCAN_TIMEOUT_MS` | `pet` 的背景掃描最多跑多久，毫秒（預設 10 分鐘；最小 100）。超過就殺掉、記成最近出錯 |
+| `CONTEXTBOX_THINK_MS` | `pet` 多久讓模型看一輪，毫秒（預設 10 分鐘；最小 100）。沒設定模型時整段不啟用 |
 | `CONTEXTBOX_OPENER` | `open` 用來打開網址的程式（預設看作業系統：`xdg-open`、`open`、`start`） |
 
 `test/smoke-cleanup.md` 用這幾個把整份 smoke 關在沙盒裡；測試 spawn CLI 時也一定要給假的 `HOME`，

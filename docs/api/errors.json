@@ -6,24 +6,24 @@
       "error": "這個檔案已有待處理的清理計畫。",
       "code": "CONFLICT",
       "blockingPlan": {
-        "id": "e9e6be61-fea2-46f0-9cf5-4a19aa728c8a",
+        "id": "00674a03-4996-44b5-814d-c2ae0b0e6903",
         "status": "proposed",
-        "createdAt": "2026-09-19T08:19:51.830Z",
+        "createdAt": "2026-09-19T10:57:54.198Z",
         "started": false,
         "restoring": false,
         "items": [
           {
-            "itemId": "ef681f5a-b468-41e8-b57b-71e23a9793f4",
+            "itemId": "e07d63c8-9758-4734-b501-1a5585745234",
             "name": "素材包.zip",
             "bytes": 19
           },
           {
-            "itemId": "e195b5ce-5238-430e-a4e5-65aa15104c4d",
+            "itemId": "365f75d4-e9a4-4d8d-af74-6c48c6d13170",
             "name": "安裝檔.msi",
             "bytes": 19
           },
           {
-            "itemId": "bd1f002c-04e4-48db-bd5f-7ce478258706",
+            "itemId": "bf8fed3e-c9c0-4c67-8f3b-d8b81bd4a0f9",
             "name": "空的.txt",
             "bytes": 0
           }
