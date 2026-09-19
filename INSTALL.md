@@ -1,6 +1,12 @@
 # 安裝
 
-**骨架版。** M3 之前會補完 Windows／macOS 的實際步驟與截圖。
+**想先看看它做什麼，不用安裝** —— 做一個假的家目錄跑 demo 就好，你真的檔案一個字都不會被動到：
+
+```bash
+node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+```
+
+逐步畫面在 [docs/DEMO.md](docs/DEMO.md)。下面是**真的裝來用**的步驟。
 
 ---
 
@@ -52,9 +58,9 @@ powershell -ExecutionPolicy Bypass -File os\windows\install.ps1
 要開機自動啟動就加 `-Startup`。細節與移除方式看
 [os/windows/README.md](os/windows/README.md)。
 
-> ⚠️ **OneDrive 檔案隨選**：如果你的 Downloads 是「僅線上」的佔位檔，
-> 掃描時會需要讀檔案內容來算指紋。**M0 要驗這件事不會把整個資料夾拉回本機。**
-> 驗完會把結論寫在這裡。
+> ⚠️ **OneDrive 檔案隨選還沒實測**：如果你的 Downloads 是「僅線上」的佔位檔，
+> 掃描要讀檔案內容算指紋，有可能把整個資料夾拉回本機。
+> 在有人實測之前，**這種設定請先不要把 OneDrive 的路徑寫進 `cleanup.roots`**。
 
 ---
 
@@ -95,6 +101,7 @@ node cli.mjs pet
 ~/.contextbox/data.db          資料庫，權限 0600
 ~/.contextbox/quarantine/      清掉的檔案放這裡，七天後才能清空
 ~/.contextbox/token            本機 server 的鑰匙
+~/Documents/Filed/             歸檔（`node cli.mjs file`）搬進去的那棵樹，只會往裡面搬
 ```
 
 **Windows 上的 `~` 是 `%USERPROFILE%`。**
