@@ -1,0 +1,112 @@
+{
+  "_說明": "demo 模式專用的範例資料，給 3 分鐘展示用。內容是手寫的、刻意挑了看起來真實的檔名與大小。**不要**跟 docs/api/cleanup-candidates.json 共用 —— 那一份是從真的程式輸出產生的形狀契約，會隨實作重新產生；共用的話每次重產都會弄壞 demo 與它的測試（2026-09-18 真的發生過）。",
+  "total": 3,
+  "bytes": 1076153706,
+  "generatedAt": "2026-09-15T08:41:10.221Z",
+  "candidates": [
+    {
+      "itemId": "i_44f",
+      "name": "report (1).pdf",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 2411882,
+      "mtime": "2026-08-30T11:02:00.000Z",
+      "kind": "duplicate",
+      "confidence": 98,
+      "defaultChecked": true,
+      "candidateIds": [
+        "c_7Qa"
+      ],
+      "reasons": [
+        {
+          "kind": "duplicate",
+          "confidence": 98,
+          "reason": "同內容的重複檔案",
+          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「report.pdf」"
+        }
+      ]
+    },
+    {
+      "itemId": "i_51c",
+      "name": "ubuntu-26.04.iso.crdownload",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 1073741824,
+      "mtime": "2026-09-01T03:20:00.000Z",
+      "kind": "partial",
+      "confidence": 95,
+      "defaultChecked": true,
+      "candidateIds": [
+        "c_8Bz"
+      ],
+      "reasons": [
+        {
+          "kind": "partial",
+          "confidence": 95,
+          "reason": "下載中斷留下的半成品",
+          "evidence": ".crdownload 副檔名，而且 12 天沒有變動"
+        }
+      ]
+    },
+    {
+      "itemId": "i_81d",
+      "name": "素材包.zip",
+      "folder": "Downloads",
+      "subdir": "2026/07",
+      "bytes": 786432000,
+      "mtime": "2026-07-10T22:15:00.000Z",
+      "kind": "archive",
+      "confidence": 65,
+      "defaultChecked": true,
+      "candidateIds": [
+        "c_2Ew",
+        "c_5Hq"
+      ],
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "舊壓縮檔通常是一次性下載",
+          "evidence": ".zip 壓縮檔，而且 65 天沒有變動"
+        },
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "65 天沒有變動，且副檔名 .zip 不在保護清單"
+        }
+      ]
+    },
+    {
+      "itemId": "i_92e",
+      "name": "Screenshot 2026-06-02 141203.png",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 482113,
+      "mtime": "2026-06-02T06:12:03.000Z",
+      "kind": "screenshot-noise",
+      "confidence": 35,
+      "defaultChecked": false,
+      "candidateIds": [
+        "c_3Fv"
+      ],
+      "reasons": [
+        {
+          "kind": "screenshot-noise",
+          "confidence": 35,
+          "reason": "舊截圖常常是暫時資訊",
+          "evidence": "檔名是 Screenshot 2026-06-02 141203.png，而且 105 天沒有變動"
+        }
+      ]
+    }
+  ],
+  "needsHuman": [
+    {
+      "itemId": "i_99f",
+      "name": "備份.tar",
+      "folder": "Downloads",
+      "bytes": 8589934592,
+      "why": "讀不到這個檔案：權限不足"
+    }
+  ]
+}

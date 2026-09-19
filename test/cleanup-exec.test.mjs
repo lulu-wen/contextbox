@@ -4,7 +4,7 @@ import fs, { existsSync, readFileSync, renameSync, symlinkSync, utimesSync, writ
 import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { applyPlan, listQuarantine, undoPlan } from '../core/cleanup-exec.ts'
+import { applyPlan, listQuarantine, recoverInterrupted, undoPlan } from '../core/cleanup-exec.ts'
 import { createPlan, dismissPlan } from '../core/cleanup-plans.ts'
 import { listJournal } from '../core/cleanup-journal.ts'
 import { fixture } from './helpers/cleanup.mjs'
@@ -34,7 +34,9 @@ test('apply preserves content/mtime and writes started before rename; replay mov
     assert.equal(fs.statSync(row.to_path).mtime.toISOString(), f.old.toISOString())
     assert.equal(row.sha256.length, 64)
   }
-  assert.deepEqual(applyPlan(f.db, p.id, f.opts), result)
+  // 重送原樣回傳，**只多一個 noop: true**（稽核第三輪 R3-2：呼叫端要分得出「這次什麼都沒做」）
+  assert.deepEqual(applyPlan(f.db, p.id, f.opts), { ...result, noop: true })
+  assert.equal(result.noop, false, '第一次真的搬了')
   assert.equal(calls.length, 2)
   assert.equal(listQuarantine(f.db).length, 2)
   assert.ok(!JSON.stringify(listQuarantine(f.db)).includes(f.dir))
@@ -101,8 +103,12 @@ for (const code of ['EACCES', 'EXDEV']) test(`${code} leaves source intact and r
     assert.equal(applyPlan(f.db, p.id, f.opts).status, 'error')
     assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'abc')
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
-  assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+  // 計畫是一次性的（稽核第二輪 R2-3）：同一份再 apply 原樣回傳、不重試；重試＝重掃之後建新計畫
+  assert.equal(applyPlan(f.db, p.id, f.opts).status, 'error')
   assert.equal(listJournal(f.db, p.id).length, 1)
+  f.scan()
+  assert.equal(applyPlan(f.db, f.plan().id, f.opts).status, 'applied')
+  assert.ok(!existsSync(join(f.downloads, 'a.zip')))
 })
 
 test('database failure after rename is recoverable and does not repeat the move', t => {
@@ -113,8 +119,15 @@ test('database failure after rename is recoverable and does not repeat the move'
   assert.equal(applyPlan(f.db, p.id, f.opts).status, 'error')
   assert.ok(!existsSync(join(f.downloads, 'a.zip')))
   f.db.exec('DROP TRIGGER fail_done')
-  assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+  // 計畫是一次性的（稽核第二輪 R2-3）：再 apply 原樣回傳。檔在隔離區，journal 停在 started
+  // （不是 failed），由 recoverInterrupted 看證據結成 done（R2-1a），之後照常復原
+  assert.equal(applyPlan(f.db, p.id, f.opts).status, 'error')
+  assert.equal(listJournal(f.db, p.id)[0].status, 'started')
+  assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
   assert.equal(listJournal(f.db, p.id).length, 1)
+  assert.equal(listJournal(f.db, p.id)[0].status, 'done')
+  assert.equal(undoPlan(f.db, p.id, f.opts).status, 'restored')
+  assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'abc')
 })
 
 test('a process crash after rename leaves a durable journal and reclaimable lock', t => {

@@ -5,25 +5,35 @@
     "ok": true
   },
   "watcher": {
-    "ok": false,
+    "ok": true,
     "lastHeartbeatAt": null,
     "pid": null,
-    "watching": [
-      "Screenshots",
-      "Downloads"
-    ],
-    "why": "從來沒跑過"
+    "rootsMissing": 0,
+    "watchingCount": 1,
+    "watching": [],
+    "why": null
   },
   "quarantine": {
-    "items": 12,
-    "bytes": 480123456,
-    "oldestAt": "2026-09-06T02:11:00.000Z",
-    "canEmptyAt": "2026-09-13T02:11:00.000Z",
-    "canEmptyNow": true
+    "items": 1,
+    "bytes": 13,
+    "oldestMtimeAt": null,
+    "canEmptyAt": null,
+    "canEmptyNow": true,
+    "orphans": 0,
+    "truncated": false
   },
-  "pendingCandidates": 6,
-  "needsHuman": 1,
-  "lastError": null,
-  "facts": 42,
-  "_註": "watching 只有資料夾的顯示名，沒有完整路徑。這個端點不需要 token，所以裡面不可以有檔名。"
+  "pendingCandidates": 2,
+  "needsHumanCount": 2,
+  "lastError": "有，帶 token 才看得到",
+  "lastErrorAt": null,
+  "lastOkAt": null,
+  "lastErrorKind": null,
+  "lastOkByKind": {
+    "scan": null,
+    "apply": null,
+    "undo": null,
+    "empty": null
+  },
+  "scanProblems": [],
+  "facts": 0
 }

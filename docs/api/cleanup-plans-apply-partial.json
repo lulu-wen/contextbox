@@ -1,41 +1,57 @@
 {
-  "id": "p_2026091302",
+  "id": "9e49b5b7-6632-4080-bbe0-869e795a4a12",
   "status": "partial",
-  "quarantined": 3,
-  "skipped": 1,
-  "failed": 1,
-  "bytesFreed": 2894,
-  "appliedAt": "2026-09-13T09:01:44.000Z",
-  "canUndo": true,
-  "note": "**搬到一半壞掉也要能復原已經搬成功的。** UI 不可以只畫成功的樣子。",
+  "itemCount": 2,
+  "createdAt": "2026-09-19T04:42:06.589Z",
+  "appliedAt": "2026-09-19T04:42:06.635Z",
+  "error": "檔案或資料夾不見了，請確認後重試。",
+  "bytes": 29,
   "items": [
     {
-      "candidateId": "c_7Qa",
-      "name": "report (1).pdf",
-      "outcome": "quarantined"
+      "itemId": "2d73d466-6bf5-4033-a00d-c61287f7ad2a",
+      "name": "發票.zip",
+      "bytes": 13,
+      "mtime": "2026-08-05T04:42:06.058Z",
+      "candidateIds": [
+        "b6d8c8ec-f778-4996-a97e-f0eba61a7826"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "舊壓縮檔通常是一次性下載",
+          "evidence": ".zip 壓縮檔，而且 45 天沒有變動"
+        }
+      ],
+      "outcome": "moved",
+      "why": null
     },
     {
-      "candidateId": "c_8Bz",
-      "name": "a.crdownload",
-      "outcome": "quarantined"
-    },
-    {
-      "candidateId": "c_9Cy",
-      "name": "空的.txt",
-      "outcome": "quarantined"
-    },
-    {
-      "candidateId": "c_1Dx",
-      "name": "Setup.msi",
-      "outcome": "skipped",
-      "why": "你取消了這一項"
-    },
-    {
-      "candidateId": "c_2Ew",
-      "name": "素材包.zip",
+      "itemId": "23398cd8-bd68-4917-8914-4908e7006418",
+      "name": "下載中.iso.crdownload",
+      "bytes": 16,
+      "mtime": "2026-09-16T04:42:06.058Z",
+      "candidateIds": [
+        "c113d473-c8ff-4dc7-913f-000d6e58f8ba"
+      ],
+      "skipped": false,
+      "reasons": [
+        {
+          "kind": "partial",
+          "confidence": 95,
+          "reason": "下載中斷留下的半成品",
+          "evidence": ".crdownload 副檔名，而且 3 天沒有變動"
+        }
+      ],
       "outcome": "failed",
-      "why": "檔案正在被別的程式使用，這次沒搬成功。等一下再試一次。",
-      "code": "EBUSY"
+      "why": "檔案或資料夾不見了，請確認後重試。"
     }
-  ]
+  ],
+  "quarantinedCount": 1,
+  "restoredCount": 0,
+  "quarantinedBytes": 13,
+  "undoable": true,
+  "noop": false,
+  "restoring": false
 }

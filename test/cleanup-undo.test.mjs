@@ -33,8 +33,10 @@ test('undo restores original bytes and mtime; repeated undo/apply remains termin
   assert.equal(r.undoable, false)
   assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'abc')
   assert.equal(fs.statSync(join(f.downloads, 'a.zip')).mtime.toISOString(), f.old.toISOString())
-  assert.deepEqual(undoPlan(f.db, f.p.id, f.opts), r)
-  assert.deepEqual(applyPlan(f.db, f.p.id, f.opts), r)
+  // 重送原樣回傳，**只多一個 noop: true**（稽核第三輪 R3-2）
+  assert.equal(r.noop, false, '第一次真的放回了')
+  assert.deepEqual(undoPlan(f.db, f.p.id, f.opts), { ...r, noop: true })
+  assert.deepEqual(applyPlan(f.db, f.p.id, f.opts), { ...r, noop: true })
   assert.deepEqual(listQuarantine(f.db), [])
 })
 
@@ -115,8 +117,10 @@ test('purge requires valid second confirmation; tokens expire and replays are id
   assert.throws(() => emptyQuarantine(f.db, { ...f.opts, token: p.token, confirmed: true }), { code: 'CONFIRMATION_EXPIRED' })
   const fresh = prepareEmptyQuarantine(f.db, f.opts)
   const opts = { ...f.opts, token: fresh.token, confirmed: true }
-  assert.deepEqual(emptyQuarantine(f.db, opts), { deletedCount: 1, deletedBytes: 3, errors: [] })
-  assert.deepEqual(emptyQuarantine(f.db, opts), { deletedCount: 1, deletedBytes: 3, errors: [] })
+  // setAside：不刪、也不算錯的那些（稽核第三輪）。這一組沒有，所以是空的。
+  assert.deepEqual(emptyQuarantine(f.db, opts), { deletedCount: 1, deletedBytes: 3, errors: [], setAside: [], noop: false })
+  // 重送同一個確認碼：原樣回傳，但這一次一個檔都沒刪（R3-2）
+  assert.deepEqual(emptyQuarantine(f.db, opts), { deletedCount: 1, deletedBytes: 3, errors: [], setAside: [], noop: true })
 })
 
 test('purge excludes unknown files and files restored after preview', t => {
@@ -157,7 +161,11 @@ test('purge rejects symlink/hardlink substitutions and modified contents', t => 
   writeFileSync(c.to_path, 'changed')
   const r = empty(f)
   assert.equal(r.deletedCount, 0)
-  assert.equal(r.errors.length, 3)
+  // **改過的答案（稽核第三輪）**：捷徑與硬鏈結是攻擊，照舊算錯；「內容被改過」是使用者自己動的，
+  // 不刪、但也不算錯 —— 以前算錯，清空從此固定回離開碼 3，隔離區永遠清不空。
+  assert.equal(r.errors.length, 2, '捷徑、硬鏈結還是錯')
+  assert.deepEqual(r.setAside.length, 1, '內容改過的那個放到一邊')
+  assert.match(r.setAside[0].why, /內容跟當初搬進去的不一樣/)
   assert.equal(readFileSync(external, 'utf8'), 'keep')
 })
 

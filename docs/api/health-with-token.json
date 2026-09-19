@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "version": "0.1.0",
+  "db": {
+    "ok": true
+  },
+  "watcher": {
+    "ok": true,
+    "lastHeartbeatAt": "2026-09-19T04:42:06.827Z",
+    "pid": 4114192,
+    "rootsMissing": 0,
+    "watchingCount": 1,
+    "watching": [
+      "Downloads"
+    ],
+    "why": null
+  },
+  "quarantine": {
+    "items": 1,
+    "bytes": 13,
+    "oldestMtimeAt": "2026-08-05T04:42:06.058Z",
+    "canEmptyAt": "2026-09-18T04:42:06.821Z",
+    "canEmptyNow": true,
+    "orphans": 0,
+    "truncated": false
+  },
+  "pendingCandidates": 2,
+  "needsHumanCount": 2,
+  "lastError": "2026-09-19T04:42:06.683Z 只處理一般檔案，不處理捷徑或硬鏈結。",
+  "lastErrorAt": "2026-09-19T04:42:06.683Z",
+  "lastOkAt": "2026-09-19T04:42:06.765Z",
+  "lastErrorKind": "apply",
+  "lastOkByKind": {
+    "scan": "2026-09-19T04:42:06.385Z",
+    "apply": "2026-09-19T04:42:06.645Z",
+    "undo": "2026-09-19T04:42:06.765Z",
+    "empty": null
+  },
+  "scanProblems": [],
+  "facts": 0
+}

@@ -1,0 +1,94 @@
+{
+  "total": 4,
+  "offset": 0,
+  "limit": 20,
+  "operations": [
+    {
+      "id": "fdfe7a53-2811-4932-917e-b5b87c042ad2",
+      "status": "dismissed",
+      "createdAt": "2026-09-19T04:42:06.796Z",
+      "appliedAt": null,
+      "restoredAt": null,
+      "canUndo": false,
+      "restoring": false,
+      "itemCount": 1,
+      "bytes": 16,
+      "items": [
+        {
+          "itemId": "ae86a519-4222-4488-92af-5432375a35c1",
+          "name": "Screenshot 2026-01-02 141203.png",
+          "bytes": 16
+        }
+      ]
+    },
+    {
+      "id": "638cc155-d47f-4b3b-bfb2-87e4ade501ef",
+      "status": "dismissed",
+      "createdAt": "2026-09-19T04:42:06.661Z",
+      "appliedAt": null,
+      "restoredAt": null,
+      "canUndo": false,
+      "restoring": false,
+      "itemCount": 1,
+      "bytes": 22,
+      "items": [
+        {
+          "itemId": "18be94e3-80f3-4f42-975a-d5bab88d85e5",
+          "name": "很舊的.bin",
+          "bytes": 22
+        }
+      ]
+    },
+    {
+      "id": "9e49b5b7-6632-4080-bbe0-869e795a4a12",
+      "status": "partial",
+      "createdAt": "2026-09-19T04:42:06.589Z",
+      "appliedAt": "2026-09-19T04:42:06.635Z",
+      "restoredAt": null,
+      "canUndo": true,
+      "restoring": false,
+      "itemCount": 2,
+      "bytes": 29,
+      "items": [
+        {
+          "itemId": "2d73d466-6bf5-4033-a00d-c61287f7ad2a",
+          "name": "發票.zip",
+          "bytes": 13
+        },
+        {
+          "itemId": "23398cd8-bd68-4917-8914-4908e7006418",
+          "name": "下載中.iso.crdownload",
+          "bytes": 16
+        }
+      ]
+    },
+    {
+      "id": "ddb302a3-e10b-4f6a-9267-5b47f9f4c8d8",
+      "status": "restored",
+      "createdAt": "2026-09-19T04:42:06.441Z",
+      "appliedAt": "2026-09-19T04:42:06.533Z",
+      "restoredAt": "2026-09-19T04:42:06.741Z",
+      "canUndo": false,
+      "restoring": true,
+      "itemCount": 3,
+      "bytes": 38,
+      "items": [
+        {
+          "itemId": "b654eeb8-7b21-4185-8535-f3008a995b54",
+          "name": "素材包.zip",
+          "bytes": 19
+        },
+        {
+          "itemId": "8a3926cb-4675-49c9-8f62-f1b2aab69a39",
+          "name": "安裝檔.msi",
+          "bytes": 19
+        },
+        {
+          "itemId": "ffd044dd-feb4-427c-935f-a98b50dcd3f2",
+          "name": "空的.txt",
+          "bytes": 0
+        }
+      ]
+    }
+  ]
+}

@@ -177,6 +177,29 @@ CREATE TABLE IF NOT EXISTS cleanup_journal (
   error     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_journal_plan ON cleanup_journal(plan_id, seq);
+
+-- 套用失敗的原因。**file_items.error 會被下一次掃描改寫**（upsert 的 error=excluded.error），
+-- 只存在那裡的話，重掃一次，計畫的逐項結果就從「十分鐘內還在變動」變成「原因不明」。
+-- 所以 applyPlan 每一項失敗的當下就寫進這張表（cleanup-exec.ts 的 markFailure），
+-- 同一份計畫重試成功時刪掉；planOutcomes 先讀它。誰呼叫 applyPlan 都一樣，不靠 route 或 CLI 補記。
+-- why 一定是翻過的人話、不帶路徑。
+CREATE TABLE IF NOT EXISTS cleanup_item_errors (
+  plan_id TEXT NOT NULL REFERENCES cleanup_plans(id),
+  item_id TEXT NOT NULL,
+  why     TEXT NOT NULL,
+  at      TEXT NOT NULL,
+  PRIMARY KEY (plan_id, item_id)
+);
+
+-- 「放棄」（release）過的計畫。release 與 dismiss 都讓計畫停在 dismissed，
+-- 但意思不一樣：release 是「這份卡住了，我不要它」（候選不動），dismiss 是「我拒絕這些檔」
+-- （候選作廢）。只看 status 分不出來的話，先 release 再 dismiss 會變成 no-op，
+-- 舊版遷移也會把 release 過的當成「使用者拒絕過」（稽核第二輪 R2-12）。
+-- 放在這裡而不是清理的懶建表：掃描器的遷移在任何清理動作之前就會讀它。
+CREATE TABLE IF NOT EXISTS cleanup_plan_releases (
+  plan_id TEXT PRIMARY KEY REFERENCES cleanup_plans(id),
+  at      TEXT NOT NULL
+);
 `
 
 /**
@@ -205,7 +228,10 @@ export function open(path: string = DEFAULT_DB): DatabaseSync {
   // 實測全新資料庫 12 個 process 同時開，只有 1 個活下來，
   // 其餘 11 個直接丟 database is locked。而 Windows 右鍵選一次選 8 個檔
   // 就是 8 個 process 同時開。
-  db.exec('PRAGMA busy_timeout = 5000')
+  // 15 秒不是隨便訂的：右鍵一次選 20 個檔就是 20 個行程同時開一個
+  // 還不存在的資料庫，每一個都要建 schema。5 秒在慢碟或機器忙的時候
+  // 真的會有人被鎖在外面（測試實測過偶發 1/12）。
+  db.exec('PRAGMA busy_timeout = 15000')
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)

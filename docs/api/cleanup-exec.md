@@ -22,7 +22,7 @@ import { prepareEmptyQuarantine, emptyQuarantine } from '../../core/cleanup-quar
 
 // db 由既有 core/db.ts open() 提供；opts 只能由後端設定產生。
 const opts = {
-  roots: config.watch, // D 應傳 cleanup 專用 roots，預設只有 Downloads
+  roots: config.cleanup.roots, // 清理專用的根目錄，預設只有 Downloads（不是截圖功能的 watch）
   quarantine: DEFAULT_QUARANTINE,
   maxBytes: config.maxBytes,
   readonly: config.readonly,
@@ -59,12 +59,23 @@ const emptied = emptyQuarantine(db, { ...opts, token: body.token, confirmed: bod
 
 - `candidateIds` 省略：採 A 的 `DEFAULT_CHECK_MIN`，預設只選中、高信心；空陣列是沒有選任何檔案，不是全部。
 - 明確帶 candidate ids 可以選入低信心，但仍不能繞過路徑、大小、敏感檔案等保護。
+- （第二輪 R2-8）HTTP route 建計畫走 `cleanup-routes.ts` 的 `createPlanForRoots`：截圖資料夾（`cleanup.screenshotsDir`）底下只收截圖類的候選，其他的 id 回 `STALE_CANDIDATE`。直接呼叫 `createPlan` 不會替你篩這一層，見 `docs/api/README.md` 的清單一節。
 - 一個檔案的所有理由會放進同一份計畫；`itemCount` 與 `bytes` 不會重複計算。`skippedIds` 是 **candidate id**；略過其中一個理由就略過整個檔案。
 - `requestId` 讓建立計畫重送回同一 plan；相同 requestId 指定不同候選回 `CONFLICT`。D 的 HTTP route 應要求這個欄位（或從 Idempotency-Key header 提供）。
-- apply 開始後，略過決定會固定；重試可以省略 skippedIds 或帶相同選取。已完成、已復原、已取消的 plan 不會再搬檔。
-- partial/error 的 apply 可重試。開始 undo 後只能繼續 undo，不能重新 apply。若檔案已變更，先 undo 結束舊 plan，再掃描、建立新 plan。
+- apply 開始後，略過決定會固定；接著做（還沒跑完的 proposed）可以省略 skippedIds 或帶相同選取。已完成、已復原、已取消的 plan 不會再搬檔。
+- （2026-09-19 稽核第二輪 R2-3）**跑完過一次的 plan 再 apply 原樣回傳**：applied、partial、error 都一樣，不重試任何一項、不會再搬檔（以前 partial/error 會重試失敗的那幾個；使用者用別份計畫搬走又放回之後，遲到的重送會把它再搬一次）。只有還沒跑完的 proposed（包括做到一半中斷、已經有 journal 的）會接著做。停在 proposed／partial／error 而且有 restore journal 的（開始 undo 過）再 apply 回 `CONFLICT`，只能繼續 undo；applied 與 restored 一律原樣回傳。失敗的檔要重試，就重新掃描、建立新 plan。
+- （2026-09-19 稽核 RC4 之後）**計畫是一次性的**：只有 `proposed` 的計畫會佔住檔案，partial/error 的計畫不再擋新計畫，重試＝建新計畫。還沒開始的計畫可以用 `releasePlan` 放棄（計畫作廢、候選不動）；`dismissPlan` 則是使用者拒絕這些檔。做到一半中斷的 proposed 計畫不能放棄（`releasePlan` 回 `CONFLICT`），只能接著 apply 做完，或 undo 把已經在隔離區的放回原位（還沒搬的不動）。
 - dismiss 只接受未開始執行的 plan；已搬動的計畫請 undo。
 - 清空 token 五分鐘有效，綁定當次預覽的 journal entries。重送同一 token 回原結果；失敗項目要重新預覽、再次確認後重試。
+
+### 中斷之後的收尾（2026-09-19 稽核第二輪）
+
+套用或復原做到一半被砍（kill -9、斷電、Ctrl+C 落在 rename 與寫 done 之間）時，journal 停在 `started`，逐項結果是 `unknown`：**說不準檔案在原位還是在隔離區**。畫面上的原因不再叫人「再套用一次」—— 跑完過的 plan 再 apply 原樣回傳，接不完。
+
+- `recoverInterrupted(db, opts)`（`cleanup-exec.ts`）：只看檔案證據改 journal，**不搬任何檔**。隔離區那份指紋相符 → done；原位那份相符、隔離區只有預留的空檔 → reverted（`NOT_MOVED`）；復原中斷、檔還在隔離區 → failed（可以再復原）；其他維持 `started`。拿清理鎖（別的行程拿著回 `BUSY`）；只改資料庫，唯讀模式也能跑；計畫的 status 不動。回 `{ recovered }`。呼叫端在讀或動清理狀態之前先跑一次（CLI 的指令、pet 開機與背景重掃）。
+- `releaseStalePlans(db, olderThanMs)`（`cleanup-plans.ts`）：放棄放了超過 `olderThanMs`、**從沒開始**（沒有任何 journal）的 proposed 計畫，語意跟 `releasePlan` 一樣（候選不動）。建立時間讀不懂的不動。回放棄了幾份。
+- `undoPlan` 碰到**根本不在隔離區**的項目（隔離區那個位置不存在，或只是預留的 0 byte 空檔）直接跳過、不算錯；`started` 的那種結成 reverted（原位還在是 `NOT_MOVED`，原位也不見了是 `NOT_MOVED_GONE`）。隔離區那個位置有內容、指紋又對不上 → `VERIFY_FAILED`「隔離區裡的這個檔跟當初搬進去的對不上，沒有放回；請人工檢查隔離區。」，那一列不動。做到一半中斷的 proposed 計畫 undo 之後，從來沒碰過的項目逐項是 `cancelled`。
+- apply 的 rename 之後驗證沒過：原位還空著就**搬回原位**（那一項 failed，原因 `MOVED_BACK`）；搬不回去（原位已經有別的檔）就留在隔離區，journal 維持 `started`、逐項 `unknown`，留給 `recoverInterrupted` 與 undo。
 
 ### DTO 與錯誤
 
@@ -78,9 +89,14 @@ items: [{ itemId, name, bytes, mtime, candidateIds, skipped,
 
 `applyPlan/undoPlan` 額外回 `quarantinedCount`、`quarantinedBytes`、`restoredCount`、`undoable`。檔案層級失敗會回 `partial/error`，錯誤文字不帶 OS 路徑；成功項目仍可復原。
 
+`applyPlan` 另外回兩個布林（2026-09-19 稽核第三輪 R3-17）。兩個講的都是「**這一次**做了什麼」，`status` 與 `quarantinedCount` 講的則是計畫累積到現在的樣子：
+
+- `noop`：`true` ＝ 這一次**一個檔都沒有動**，只是把跑完過的計畫原樣回傳（上面 R2-3 那一條）。`quarantinedCount` 這時一定是 0，但反過來不成立 —— 每一項都真的搬失敗時它也是 0，那時 `noop` 是 `false`。呼叫端（CLI 與面板）要分開講：no-op 不可以印成剛清完，也不可以當成「這一種動作成功了」去清掉還沒解決的錯誤。
+- `stoppedEarly`：`true` ＝ 還沒做完就**停在中途**（例如清理鎖被另一個清理動作接走，`BUSY`）。已經做到的在逐項結果裡，還沒碰到的一個都沒動；之後再 `apply` 同一份會從停下來的地方接著做。不是「動作沒執行」，呼叫端不可以回「什麼都沒發生」。
+
 `listQuarantine` 回陣列：`seq, planId, itemId, name, bytes, quarantinedAt, canEmptyAt, canEmptyNow`。`quarantinedBytes` 是 Downloads 搬出的大小；同磁碟隔離不會釋放實際磁碟空間。
 
-頂層 `CleanupError` 可依 `code` 映射 HTTP：`BAD_BODY/EMPTY_PLAN/CONFIRMATION_REQUIRED` → 400、`NOT_FOUND` → 404、`CONFLICT/BUSY/STALE_CANDIDATE/CONFIRMATION_EXPIRED` → 409、`READ_ONLY` → 403。設定與無法預期的錯誤回通用 500；不要把 SQLite/OS exception.message 直接送到 UI。
+頂層 `CleanupError` 的 `code` 對到哪一個 HTTP 狀態碼，**以 `docs/api/README.md` 的錯誤表為準** —— 那是唯一一張，跟 `core/cleanup-routes.ts` 的 `HTTP_FOR_CODE` 一致，`test/repo.test.mjs` 會比。（這裡原本另外寫了一份對應，跟實作不一樣：`EMPTY_PLAN` 其實是 409、`BUSY` 是 503、`CONFIRMATION_EXPIRED` 是 410、`CONFIRMATION_REQUIRED` 是 428。）設定與無法預期的錯誤回通用 500；不要把 SQLite/OS exception.message 直接送到 UI。
 
 `planSnapshots`、`listJournal`、`activeQuarantine` 等為後端內部資料，含原始路徑，**不要直接 JSON 回給 UI**。
 
@@ -117,6 +133,6 @@ undo 優先原路徑，已被檔案、資料夾或 dangling symlink 佔用時改
 
 ## 目前限制
 
-- 跨磁碟 rename（EXDEV）不使用 copy+delete，回可重試錯誤並保留原檔。隔離區需與來源同磁碟，或後續增加符合安全規格的跨磁碟方案。
+- 跨磁碟 rename（EXDEV）不使用 copy+delete：那一項失敗、保留原檔。計畫是一次性的（見上面 R2-3），把隔離區放到跟來源同一顆碟之後要重新掃描、建新 plan；或後續增加符合安全規格的跨磁碟方案。
 - 目的地使用 `wx` 專屬保留檔及身分檢查，防止一般碰撞；純 Node 的 rename 無法提供跨平台的原子 no-replace。對於另一個有相同 OS 權限的行程，恰好在最後檢查與系統呼叫之間換檔／改目錄，仍存在競態；不要將此功能當作惡意本機行程的隔離機制。
 - 支援行程中斷復原；未驗證斷電與檔案系統損毀復原。資料庫和隔離區應一起保留。

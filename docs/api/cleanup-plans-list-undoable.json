@@ -1,0 +1,25 @@
+{
+  "total": 1,
+  "offset": 0,
+  "limit": 20,
+  "operations": [
+    {
+      "id": "9e49b5b7-6632-4080-bbe0-869e795a4a12",
+      "status": "partial",
+      "createdAt": "2026-09-19T04:42:06.589Z",
+      "appliedAt": "2026-09-19T04:42:06.635Z",
+      "restoredAt": null,
+      "canUndo": true,
+      "restoring": false,
+      "itemCount": 1,
+      "bytes": 13,
+      "items": [
+        {
+          "itemId": "2d73d466-6bf5-4033-a00d-c61287f7ad2a",
+          "name": "發票.zip",
+          "bytes": 13
+        }
+      ]
+    }
+  ]
+}

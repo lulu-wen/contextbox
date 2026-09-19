@@ -15,6 +15,7 @@
  * todo 的失敗不算失敗，整份跑起來仍然是綠的，但它會一直提醒有這件事沒做。
  * 詳情看每一個 todo 自己的說明。
  */
+import './helpers/isolate-home.mjs'   // 一定要第一個 import，見那支檔的說明
 import { test, before, after, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
@@ -733,7 +734,9 @@ describe('擴充套件送一整張表過來，server 回的 plan 形狀', () => 
     call('/facts', { method: 'POST', body: JSON.stringify({ key, value }) })
 
   before(async () => {
-    S = start({ port: 0, db: join(dir, 'plan.db'), token: TOKEN })
+    // roots 等全部給：不給的話 server 會延後去讀使用者真的設定檔
+    S = start({ port: 0, db: join(dir, 'plan.db'), token: TOKEN,
+      roots: [dir], quarantine: join(dir, 'q'), maxBytes: 1e7, readonly: false })
     base = `http://127.0.0.1:${await S.ready}`
 
     // 一份看起來像真的履歷表單會需要的資料

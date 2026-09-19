@@ -107,7 +107,9 @@ describe('cleanup scanner', () => {
       '半成品不需要讀內容算 hash')
   })
 
-  test('候選條件消失時，舊 proposed candidate 會被 dismiss', () => {
+  // 2026-09-19 稽核 RC3：規則不再成立設 skipped（條件回來時 upsert 會改回 proposed），
+  // dismissed 只留給使用者真的拒絕。原本這條斷言 'dismissed'。
+  test('候選條件消失時，舊 proposed candidate 會改成 skipped（不是永久 dismissed）', () => {
     const p = touchOld('maybe.tmp', '', 2)
     scan()
     assert.equal(candidates()[0].kind, 'empty')
@@ -119,7 +121,7 @@ describe('cleanup scanner', () => {
 
     assert.equal(
       db.prepare(`SELECT status FROM cleanup_candidates WHERE kind='empty'`).get().status,
-      'dismissed')
+      'skipped')
     assert.equal(db.prepare(`SELECT status FROM file_items WHERE name='maybe.tmp'`).get().status, 'kept')
   })
 

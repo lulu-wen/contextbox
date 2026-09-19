@@ -1,39 +1,206 @@
 {
-  "_說明": "每一種錯誤長什麼樣。error 給人看，code 給程式判斷。",
-  "400": {
-    "error": "candidateIds 要是一個字串陣列。",
-    "code": "BAD_BODY"
+  "撞到一份還沒套用的計畫（回擋住這次勾選的那一份）": {
+    "request": "POST /cleanup/plans",
+    "status": 409,
+    "body": {
+      "error": "這個檔案已有待處理的清理計畫。",
+      "code": "CONFLICT",
+      "blockingPlan": {
+        "id": "ddb302a3-e10b-4f6a-9267-5b47f9f4c8d8",
+        "status": "proposed",
+        "createdAt": "2026-09-19T04:42:06.441Z",
+        "started": false,
+        "restoring": false,
+        "items": [
+          {
+            "itemId": "b654eeb8-7b21-4185-8535-f3008a995b54",
+            "name": "素材包.zip",
+            "bytes": 19
+          },
+          {
+            "itemId": "8a3926cb-4675-49c9-8f62-f1b2aab69a39",
+            "name": "安裝檔.msi",
+            "bytes": 19
+          },
+          {
+            "itemId": "ffd044dd-feb4-427c-935f-a98b50dcd3f2",
+            "name": "空的.txt",
+            "bytes": 0
+          }
+        ]
+      }
+    }
   },
-  "401": {
-    "error": "token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。",
-    "code": "BAD_TOKEN"
+  "已經套用的計畫再 dismiss": {
+    "request": "POST /cleanup/plans/:id/dismiss",
+    "status": 409,
+    "body": {
+      "error": "計畫已開始執行，請使用復原。",
+      "code": "CONFLICT"
+    }
   },
-  "403": {
-    "error": "網頁不能直接讀這個。",
-    "code": "FORBIDDEN"
+  "已經開始的計畫不能放棄": {
+    "request": "POST /cleanup/plans/:id/release",
+    "status": 409,
+    "body": {
+      "error": "這份計畫已經開始執行，不能放棄；要還原請用復原。",
+      "code": "CONFLICT"
+    }
   },
-  "404": {
-    "error": "找不到這個 plan。",
-    "code": "NOT_FOUND"
+  "這台機器的設定有問題（例如隔離區不是資料夾）": {
+    "request": "POST /cleanup/plans/:id/apply",
+    "status": 500,
+    "body": {
+      "error": "只處理一般檔案，不處理捷徑或硬鏈結。",
+      "code": "UNSAFE_PATH"
+    }
   },
-  "409_applied": {
-    "error": "這個 plan 已經套用過了，不會再搬一次。",
-    "code": "PLAN_ALREADY_APPLIED"
+  "confirmed 不是布林": {
+    "request": "POST /cleanup/quarantine/empty",
+    "status": 400,
+    "body": {
+      "error": "confirmed 要是 true 或 false。",
+      "code": "BAD_BODY"
+    }
   },
-  "409_young": {
-    "error": "隔離區裡最舊的東西還不到七天，先不能清空。",
-    "code": "QUARANTINE_TOO_YOUNG"
+  "預覽過了但沒帶 confirmed": {
+    "request": "POST /cleanup/quarantine/empty",
+    "status": 428,
+    "body": {
+      "error": "請先預覽，再次確認清空隔離區。",
+      "code": "CONFIRMATION_REQUIRED"
+    }
   },
-  "409_confirm": {
-    "error": "清空隔離區要再確認一次，請帶 confirm。",
-    "code": "CONFIRM_REQUIRED"
+  "沒先預覽就直接確認": {
+    "request": "POST /cleanup/quarantine/empty",
+    "status": 428,
+    "body": {
+      "error": "清空確認無效，請重新預覽。",
+      "code": "CONFIRMATION_REQUIRED"
+    }
   },
-  "413": {
-    "error": "送來的資料太大了。",
-    "code": "BODY_TOO_LARGE"
+  "預覽的 token 過期了": {
+    "request": "POST /cleanup/quarantine/empty",
+    "status": 410,
+    "body": {
+      "error": "清空確認已過期，請重新預覽。",
+      "code": "CONFIRMATION_EXPIRED"
+    }
   },
-  "500": {
-    "error": "後端出錯了，這一步沒有動到任何檔案。",
-    "code": "INTERNAL"
+  "找不到那份計畫": {
+    "request": "GET /cleanup/plans/:id",
+    "status": 404,
+    "body": {
+      "error": "找不到這份清理計畫。",
+      "code": "NOT_FOUND"
+    }
+  },
+  "計畫 id 的 %xx 壞掉": {
+    "request": "GET /cleanup/plans/%E0%A4%A",
+    "status": 400,
+    "body": {
+      "error": "計畫 id 的格式不正確。",
+      "code": "BAD_BODY"
+    }
+  },
+  "body 不是 JSON": {
+    "request": "POST /cleanup/plans",
+    "status": 400,
+    "body": {
+      "error": "看不懂送來的資料。",
+      "code": "BAD_BODY"
+    }
+  },
+  "candidateIds 是 null（沒帶才是預設）": {
+    "request": "POST /cleanup/plans",
+    "status": 400,
+    "body": {
+      "error": "候選 id 必須是字串陣列，最多 5000 筆。",
+      "code": "BAD_BODY"
+    }
+  },
+  "limit 超出範圍": {
+    "request": "GET /cleanup/candidates?limit=0",
+    "status": 400,
+    "body": {
+      "error": "limit 要是 1 到 1000 之間的整數。",
+      "code": "BAD_BODY"
+    }
+  },
+  "清單變了（id 已經不在清單上）": {
+    "request": "POST /cleanup/plans",
+    "status": 409,
+    "body": {
+      "error": "候選已變更，請重新掃描並建立計畫。",
+      "code": "STALE_CANDIDATE"
+    }
+  },
+  "沒有勾任何東西": {
+    "request": "POST /cleanup/plans",
+    "status": 409,
+    "body": {
+      "error": "沒有選擇可清理的檔案。",
+      "code": "EMPTY_PLAN"
+    }
+  },
+  "用錯方法": {
+    "request": "GET /cleanup/scan",
+    "status": 405,
+    "headers": {
+      "allow": "POST"
+    },
+    "body": {
+      "error": "這個路徑只收 POST。",
+      "code": "BAD_METHOD"
+    }
+  },
+  "還沒做的功能": {
+    "request": "GET /cleanup/reveal",
+    "status": 501,
+    "body": {
+      "error": "這個功能還沒做好。",
+      "code": "NOT_IMPLEMENTED"
+    }
+  },
+  "body 超過 1 MB": {
+    "request": "POST /cleanup/plans",
+    "status": 413,
+    "body": {
+      "error": "送來的資料太大（上限 1 MB）。",
+      "code": "BODY_TOO_LARGE"
+    }
+  },
+  "沒帶 token": {
+    "request": "GET /cleanup/candidates",
+    "status": 401,
+    "body": {
+      "error": "token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。"
+    }
+  },
+  "網頁來的請求": {
+    "request": "GET /cleanup/candidates",
+    "status": 403,
+    "body": {
+      "error": "網頁不能直接讀事實庫"
+    }
+  },
+  "另一個清理動作正在跑": {
+    "request": "POST /cleanup/plans/:id/undo",
+    "status": 503,
+    "headers": {
+      "retry-after": "2"
+    },
+    "body": {
+      "error": "另一個清理動作正在進行，請稍後重試。",
+      "code": "BUSY"
+    }
+  },
+  "唯讀模式": {
+    "request": "POST /cleanup/plans",
+    "status": 403,
+    "body": {
+      "error": "目前是唯讀模式，不會建立清理計畫，也不會搬動任何檔案。",
+      "code": "READ_ONLY"
+    }
   }
 }

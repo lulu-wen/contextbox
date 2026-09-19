@@ -1,8 +1,8 @@
 {
-  "scanned": 412,
-  "candidates": 6,
-  "skipped": 2,
-  "errors": 1,
+  "scanned": 12,
+  "candidates": 11,
+  "skipped": 0,
+  "errors": 0,
   "truncated": false,
-  "_註": "errors 是讀不到的檔案，**不算掃描失敗** —— 它們記成 status=error，在 candidates 的 needsHuman 看得到。"
+  "problems": []
 }

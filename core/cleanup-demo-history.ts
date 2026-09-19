@@ -22,11 +22,11 @@ function ids(value: unknown): asserts value is string[] {
 }
 export function recordDemo(db: DatabaseSync, body: any) {
   ids(body?.candidateIds)
-  if (typeof body?.requestId !== 'string' || !body.requestId || body.requestId.length > 200) throw new Error('缺少操作識別碼，請重新整理後再試。')
+  if (typeof body?.requestId !== 'string' || !body.requestId || body.requestId.length > 200) throw new Error('缺少操作識別碼。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開後再試。')
   const selection = JSON.stringify([...new Set(body.candidateIds)].sort())
-  const fixture = JSON.parse(readFileSync(new URL('../docs/api/cleanup-candidates.json', import.meta.url), 'utf8'))
+  const fixture = JSON.parse(readFileSync(new URL('./assets/demo-candidates.json', import.meta.url), 'utf8'))
   const known = new Set(fixture.candidates.flatMap((i: any) => i.candidateIds))
-  if (body.candidateIds.some((id: string) => !known.has(id))) throw new Error('範例候選已變更，請重新整理。')
+  if (body.candidateIds.some((id: string) => !known.has(id))) throw new Error('範例候選已變更。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開。')
   const selected = new Set(body.candidateIds)
   const items = fixture.candidates.filter((i: any) => i.candidateIds.some((id: string) => selected.has(id)))
     .map((i: any) => ({ itemId: i.itemId, name: i.name, bytes: i.bytes, candidateIds: i.candidateIds }))
@@ -56,7 +56,7 @@ export function undoDemoHistory(db: DatabaseSync, operationIds: unknown) {
   try {
     const rows = [...new Set(operationIds)].map(id => {
       const row = db.prepare('SELECT * FROM cleanup_demo_history WHERE id=?').get(id) as Row | undefined
-      if (!row) throw new Error('找不到所選紀錄，請重新載入清單。')
+      if (!row) throw new Error('找不到所選紀錄。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開後再試。')
       return row
     })
     let restored = 0, restoredFiles = 0
