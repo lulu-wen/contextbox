@@ -513,14 +513,18 @@ describe('RC17 已經搬了／搬到一半，訊息不可以說沒有', () => {
     applyPlan(d, p.id, { roots: [s.dl], quarantine: s.p.q, maxBytes: 20971520 })
     const itemOf = name => d.prepare('SELECT id FROM file_items WHERE name=?').get(name).id
     /**
-     * 模擬搬到一半中斷：journal 停在 started，**而且說不準**。
-     * 第二輪 R2-1a 之後每個清理指令之前都會收尾：檔在隔離區、指紋對得上的 started 列會被結成 done
-     * （那是對的）。要留下「狀態不明」，隔離區那份的指紋就要對不上（搬進去之後還在變），原位也沒有。
+     * 模擬搬到一半中斷：journal 停在 started，**而且真的說不準**。
+     *
+     * 第二輪 R2-1a 之後每個清理指令之前都會收尾：檔在隔離區、指紋對得上的 started 列會被結成 done。
+     * 稽核第三輪 R3-4 又多結掉一種：隔離區有**真的內容**、只是指紋對不上 —— 那也叫「檔在隔離區」，
+     * 記成 done＋原因（以前它永遠停在 started，每個清單都看不到它）。
+     * 所以剩下唯一還會是「狀態不明」的，是**兩邊都沒有證據**：隔離區那個位置只剩 0 byte 的空檔、
+     * 原位也沒有那個檔 —— 收尾看不出它到底搬了沒。
      */
     const interrupt = name => {
       d.prepare(`UPDATE cleanup_journal SET status='started' WHERE plan_id=? AND item_id=? AND op='quarantine'`).run(p.id, itemOf(name))
       d.prepare(`UPDATE cleanup_plans SET status='applied' WHERE id=?`).run(p.id)
-      appendFileSync(join(s.p.q, p.id, itemOf(name), 'content'), '搬進去之後還在變')
+      writeFileSync(join(s.p.q, p.id, itemOf(name), 'content'), '')
     }
     return { s, d, p, interrupt }
   }

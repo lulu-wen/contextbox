@@ -241,7 +241,7 @@ describe('R2-1e 跑過的計畫裡，沒有 journal、也沒存原因的項目�
     assert.deepEqual(g.items.filter(i => s.untouched.includes(i.itemId)).map(i => i.outcome), ['cancelled', 'cancelled'])
   })
 
-  test('對照：有 cleanup_item_errors → failed＋存的原因；有 file_items.error → failed＋翻過的原因', t => {
+  test('對照：有 cleanup_item_errors → failed＋存的原因；只有全域的 file_items.error → 還是 cancelled（R3-8）', t => {
     const s = interruptedThenUndone(t)
     const [x, y] = s.untouched
     s.db.prepare('INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)')
@@ -249,7 +249,10 @@ describe('R2-1e 跑過的計畫裡，沒有 journal、也沒存原因的項目�
     s.db.prepare('UPDATE file_items SET error=? WHERE id=?').run(`EACCES: permission denied, open '${join(s.downloads, 'y')}'`, y)
     const o = routes.planOutcomes(s.db, s.planId)
     assert.deepEqual({ ...o.get(x) }, { outcome: 'failed', why: '這個檔案十分鐘內還在變動，先不搬。等一下再試一次。' })
-    assert.deepEqual({ ...o.get(y) }, { outcome: 'failed', why: '沒有權限讀這個檔案' })
+    // 稽核第三輪 R3-8 改了這一半的答案：file_items.error 是**全域**的（每個檔一份），
+    // 寫它的人不只這份計畫 —— 下一次掃描讀不到那個檔、另一份計畫失敗都會寫。
+    // 這份計畫從來沒碰過 y（沒有 journal、也沒有 cleanup_item_errors），就是「沒處理到」。
+    assert.deepEqual({ ...o.get(y) }, { outcome: 'cancelled', why: null })
   })
 
   test('recordItemErrors 不可以把「只有存下來的原因」那一項當成 cancelled 刪掉', t => {
@@ -925,13 +928,18 @@ describe('R2-10 寵物只在「同一種動作」之後成功過才不擔心', (
     const p = call(f, 'POST', '/cleanup/plans', {}).body
     call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     f.db.prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - 8 * DAY).toISOString())
+    // **真的錯**用硬鏈結替換（攻擊）：內容被改過在第三輪改成「放到一邊」，不再算錯
+    const other = join(f.dir, 'elsewhere.bin')
+    writeFileSync(other, 'x')
     for (const j of f.db.prepare(`SELECT to_path FROM cleanup_journal WHERE plan_id=? AND op='quarantine'`).all(p.id)) {
-      writeFileSync(j.to_path, '隔離區的檔被改過')
+      rmSync(j.to_path)
+      linkSync(other, j.to_path)
     }
     const preview = call(f, 'POST', '/cleanup/quarantine/empty', {}).body
     assert.equal(preview.itemCount, 2)
     const done = call(f, 'POST', '/cleanup/quarantine/empty', { token: preview.token, confirmed: true }).body
     assert.equal(done.deletedCount, 0, '前提：一個都沒刪')
+    assert.equal(done.errors.length, 2, '前提：兩個都是真的錯')
     assert.equal(health(f).lastErrorKind, 'empty')
   })
 
@@ -941,7 +949,10 @@ describe('R2-10 寵物只在「同一種動作」之後成功過才不擔心', (
     call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
     f.db.prepare('UPDATE cleanup_move_details SET completed_at=?').run(new Date(Date.now() - 8 * DAY).toISOString())
     const [first] = f.db.prepare(`SELECT to_path FROM cleanup_journal WHERE plan_id=? AND op='quarantine' ORDER BY seq`).all(p.id)
-    writeFileSync(first.to_path, '隔離區的檔被改過')
+    const other = join(f.dir, 'elsewhere.bin')
+    writeFileSync(other, 'x')
+    rmSync(first.to_path)
+    linkSync(other, first.to_path)   // 真的錯（硬鏈結替換）；內容被改過現在是 setAside
     const preview = call(f, 'POST', '/cleanup/quarantine/empty', {}).body
     assert.equal(preview.itemCount, 2)
     const done = call(f, 'POST', '/cleanup/quarantine/empty', { token: preview.token, confirmed: true }).body

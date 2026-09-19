@@ -224,6 +224,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #cleanup-panel h2, #cleanup-history-panel h2 { margin: 0; font-size: 22px; }
   .cleanup-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .cleanup-note { font-size: 13px; color: #796c5b; }
+  .cleanup-warn { color: #8a4b1f; background: #fdf3e7; border-radius: 8px; padding: 8px 10px; }
   #cleanup-panel button, #cleanup-history-panel button { border: 1px solid #d9c7ab; border-radius: 10px;
     padding: 9px 13px; background: #fff5df; color: #514637; cursor: pointer; }
   #cleanup-panel button:disabled, #cleanup-history-panel button:disabled { opacity: .5; cursor: default; }
@@ -319,6 +320,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <button id="cleanup-close" type="button" aria-label="關閉清理面板">關閉</button>
   </div>
   <p id="cleanup-mode-note" class="cleanup-note">示範模式 · 以下為範例檔案，清理與復原不會動到你電腦上真的檔案。</p>
+  <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
+       面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
+  <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
   <div id="cleanup-list"></div>
   <div id="cleanup-needs-human" class="cleanup-note"></div>
   <p id="cleanup-summary" aria-live="polite"></p>

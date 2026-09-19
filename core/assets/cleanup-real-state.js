@@ -67,6 +67,11 @@ export function applyOutcome(plan) {
     unknown: pick('unknown'),
     bytesFreed: plan.quarantinedBytes,
     undoable: plan.undoable,
+    // **只信後端說的**（稽核第三輪 R3-17）。面板不可以用 moved === 0 去猜：
+    // 「全部搬失敗」跟「這份先前就跑完了、這次一個檔都沒動」對使用者是兩件完全不同的事。
+    // 後端還沒加這兩個欄位時一律 false（舊 server 配新面板時照舊的樣子講）。
+    noop: plan.noop === true,
+    stoppedEarly: plan.stoppedEarly === true,
   }
 }
 
@@ -74,11 +79,22 @@ export function applyOutcome(plan) {
  * 套用之後結果框與寵物要講的話。
  * 「原檔都還在原位」**只在沒搬成的全部是 failed 時才說**（RC17(3)）：
  * unknown 的檔可能已經在隔離區，照實講「狀態不明」。
+ *
+ * **後端說 noop 的時候完全不走下面那一段**（稽核第三輪 R3-17）：跑完過的計畫再 apply 是
+ * 原樣回傳，一個檔都不會動。照 moved 去印的話，使用者按了「繼續上次那份」會看到
+ * 「搬進隔離區 0 個檔案…七天內可以復原」—— 跟剛清完一模一樣，只差數字是 0。
  */
 export function applyMessage(r) {
   const failed = r.failed ?? [], unknown = r.unknown ?? []
   if (r.status === 'dismissed') {
     return { text: '這份計畫已經被放棄了，這次沒有動任何檔案。', notice: '這次沒有動任何檔案。' }
+  }
+  if (r.noop) {
+    return {
+      text: '這次什麼都沒做：這份清單先前就已經處理過了，沒有動任何檔案。\n'
+        + '要清理別的檔案，請關掉面板再打開，重新勾選。',
+      notice: '這次沒有動任何檔案。',
+    }
   }
   const lines = [`搬進隔離區 ${r.moved} 個檔案，${formatBytes(r.bytesFreed ?? 0)}。七天內可以復原。`]
   if (failed.length && !unknown.length) {
@@ -89,8 +105,13 @@ export function applyMessage(r) {
     for (const f of failed) lines.push(`・${safeName(f.name)} —— 沒搬，原檔還在原位：${why(f.why)}`)
     for (const u of unknown) lines.push(`・${safeName(u.name)} —— 狀態不明：${why(u.why)}`)
   }
+  // 中途停下來（例如清理鎖被別的動作接走）：已經做到的照實講，但不可以說成「做完了」
+  if (r.stoppedEarly) {
+    lines.push('這一次停在中途，還沒做完 —— 這份清單裡還沒處理的，下次按「繼續上次那份」會接著做。')
+  }
   if (r.reloadFailed) lines.push('（清單沒有重新整理成功。關掉面板再打開就會更新。）')
-  const notice = r.moved ? '整理好了！想改變心意，隨時可以復原這次清理。'
+  const notice = r.stoppedEarly ? '這次停在中途，還沒做完，狀態寫在面板上。'
+    : r.moved ? '整理好了！想改變心意，隨時可以復原這次清理。'
     : unknown.length ? '這次的結果還不確定，狀態寫在面板上。'
     : '這次一個都沒搬成，原因寫在面板上。'
   return { text: lines.join('\n'), notice }

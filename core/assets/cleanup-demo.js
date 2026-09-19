@@ -54,6 +54,41 @@ function notice(message) {
   $('quaso-dialog').hidden = false
   $('quaso-stage').setAttribute('aria-expanded', 'true')
 }
+
+// ── 掃描問題（稽核第三輪 R3-12b）────────────────────────────────
+//
+// 「清理資料夾不存在、子資料夾打不開」這一類的話，以前只有 CLI 的 doctor 看得到：
+// 面板照樣列清單、寵物照樣說「沒事，在發呆」，而工具其實一個檔都沒掃到。
+// 帶 token 的 /health 就有 scanProblems（後端已經把完整路徑換成資料夾名），面板拿它來講。
+// 示範模式不講：那時候畫面上是假的清單，掛真的警告只會讓人分不清在看什麼。
+
+/** 寵物「沒事做」時的台詞。有掃描問題就換掉它。 */
+const RESTING_BUBBLE = '今天吃可頌了嗎？'
+
+/** 後端回報的掃描問題。名字是不可信的輸入 —— 後端已經擋過一次，這裡照樣 safeName。 */
+function scanProblems() {
+  const raw = health?.scanProblems
+  if (isDemo() || !Array.isArray(raw)) return []
+  return raw.filter(x => typeof x === 'string' && x).map(safeName)
+}
+
+const scanProblemText = probs =>
+  `⚠ 上次掃描回報了 ${probs.length} 個問題，可能有檔案沒有掃到：${probs.join('；')}`
+
+/**
+ * 掃描問題畫到三個地方：面板頂端的提示、寵物的 stage title、寵物泡泡的靜止台詞。
+ *
+ * **對話框開著的時候不動泡泡** —— 那裡可能正顯示剛做完的結果（「都幫你放回來了！」）。
+ * 輪詢每五秒跑一次，蓋掉它等於把使用者剛做的事洗掉。
+ */
+function renderScanProblems(probs = scanProblems()) {
+  const note = $('cleanup-scan-problems')
+  note.textContent = probs.length ? scanProblemText(probs) : ''
+  note.hidden = probs.length === 0
+  if ($('quaso-dialog').hidden) {
+    $('quaso-status').textContent = probs.length ? scanProblemText(probs) : RESTING_BUBBLE
+  }
+}
 function updateAlert() {
   const count = demo ? demo.candidates.length : health?.pendingCandidates
   $('quaso-candidate-count').textContent = count == null ? '—' : count > 99 ? '99+' : String(count)
@@ -67,7 +102,11 @@ function updateAlert() {
   $('quaso').dataset.petState = state
   $('quaso-worried').hidden = !offline
   // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
-  $('quaso-stage').title = health?.watcher?.ok ? `📁 ${folderPhrase(health.watcher, { quoted: false })} · 監看中` : '與可頌貓對話'
+  // 掃描出過問題就先講那件事（R3-12b）：「監看中」在一個檔都沒掃到的時候是在騙人
+  const probs = scanProblems()
+  $('quaso-stage').title = probs.length ? `⚠ 上次掃描有問題（${probs.length} 個） · 點我看說明`
+    : health?.watcher?.ok ? `📁 ${folderPhrase(health.watcher, { quoted: false })} · 監看中` : '與可頌貓對話'
+  renderScanProblems(probs)
   if (count > previousCount && !offline) {
     $('quaso-stage').classList.remove('found-hop')
     void $('quaso-stage').offsetWidth

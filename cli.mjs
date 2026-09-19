@@ -37,7 +37,7 @@ import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
 import { CleanupError } from './core/cleanup-journal.ts'
 import { scanDownloads } from './core/cleanup-scanner.ts'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { basename, resolve, join } from 'node:path'
@@ -72,6 +72,8 @@ const SCAN_TIMEOUT_MS = 10 * 60_000
 const SCAN_TIMEOUT_WHY = '背景掃描逾時（資料夾可能卡住了）'
 /** 從沒開始的計畫放多久就自動放棄（第二輪 R2-5，核心的 releaseStalePlans）。 */
 const STALE_PLAN_MS = 60 * 60_000
+/** 指名一份計畫時，自動放棄的門檻往前多留這麼久（第三輪 R3-6b，見 staleCutoffMs）。 */
+const SKIP_PLAN_MARGIN_MS = 5 * 60_000
 /** 放棄了的計畫是誰放棄的：人，或收尾（STALE_PLAN_MS）。CLI 分不出來，兩種都講 */
 const DISMISSED_WHO = '有人放棄了它，或建立之後超過一小時沒有套用、自動放棄'
 const DEFAULT_PORT = 7391
@@ -199,6 +201,34 @@ function emptyTokenProblem(token) {
   return Date.now() >= Date.parse(row.expires_at) ? '清空確認已過期，請重新預覽。' : null
 }
 
+/**
+ * 清空做到一半停下來的時候，**已經永久刪掉幾個**（第三輪 R3-3b）。
+ *
+ * 核心每刪掉一項就把進度寫進 cleanup_empty_progress（R2-6），做完才刪掉那一列 ——
+ * 所以這一列還在，就代表上一次沒做完。只讀，不改。讀不到（沒有那張表、JSON 壞了）回 null，
+ * 那種情況照舊只講「被打斷」，不亂報數字。
+ */
+/** 已經永久刪掉幾個（cleanup_purges 的 done）。用來判斷「**這一次**有沒有真的動到東西」。 */
+function countPurged() {
+  try {
+    const ready = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='cleanup_purges'`).get()
+    if (!ready) return 0
+    return Number(db.prepare(`SELECT count(*) n FROM cleanup_purges WHERE status='done'`).get()?.n) || 0
+  } catch { return 0 }
+}
+
+function emptyProgress(token) {
+  try {
+    const ready = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='cleanup_empty_progress'`).get()
+    const row = ready ? db.prepare('SELECT result FROM cleanup_empty_progress WHERE token=?').get(token) : undefined
+    if (!row?.result) return null
+    const v = JSON.parse(row.result)
+    return Number.isFinite(v?.deletedCount)
+      ? { deletedCount: Number(v.deletedCount), deletedBytes: Number(v.deletedBytes) || 0 }
+      : null
+  } catch { return null }
+}
+
 // ── meta：給健康檢查用的心跳 ──────────────────────────────────
 const setMeta = (k, v) =>
   db.prepare(`INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).run(k, String(v))
@@ -243,22 +273,86 @@ function noteError(e, kind) {
  * 其他錯講一行，指令照跑 —— 收尾是幫忙，不是前提。
  */
 /**
+ * 收尾試過、收不動的 journal 列長什麼樣（第三輪 R3-11）。
+ * 隔離區那份與原位那份的**大小與 mtime** —— 兩邊都沒變的話，recoverInterrupted 再跑一次
+ * 一定還是收不動（它比的是同一組檔案的指紋）。故意不算 SHA-256：那正是要避免的成本。
+ */
+function journalRowShape(row) {
+  const of = p => {
+    try {
+      const st = statSync(p, { throwIfNoEntry: false })
+      return st ? `${st.size}@${st.mtimeMs}` : '-'
+    } catch { return '?' }   // 讀不到：每次都當成「不一樣」，寧可多試一次
+  }
+  return `${row.status}|${of(row.to_path)}|${of(row.from_path)}`
+}
+
+/** 收尾動得了的那幾種 journal 列（跟核心的 recoverInterrupted 同一組：只有 quarantine 與 restore 收得掉）。 */
+const startedJournalRows = () => db.prepare(
+  `SELECT seq, status, from_path, to_path FROM cleanup_journal
+   WHERE status='started' AND op IN ('quarantine','restore') ORDER BY seq`).all()
+
+/** meta 裡記的「這幾列收不動」。壞掉、還沒有就是空的。 */
+function stuckJournalMemo() {
+  try {
+    const v = JSON.parse(getMeta(META.stuckJournal) ?? '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+  } catch { return {} }
+}
+
+/**
  * 有沒有東西要收尾？**先唯讀問一次，沒有就不要去拿清理鎖。**
  * pet 每 30 分鐘重掃前都會收尾，無條件拿鎖的話，剛好在面板或 CLI 動作時會讓對方收到 BUSY
- * （第二輪第二階段驗證員）。這兩個查詢都不寫任何東西。
+ * （第二輪第二階段驗證員）。這幾個查詢都不寫任何東西。
+ *
+ * **收不動的列要記得**（第三輪 R3-11）：recoverInterrupted 對「兩邊都對不上」的列明文維持 started
+ * （例如 rename 完成了、驗證沒過、原位又被佔住的 LEFT_IN_QUARANTINE）。只問「有沒有 started」的話，
+ * 那一列讓這支函式**永遠**回 true —— 之後每一個清理指令與 pet 的每一輪都會拿清理寫鎖、
+ * 對那些檔重算 SHA-256（一份最多 maxBytes），「沒事就不拿鎖」形同失效。
+ * 所以比對 meta 裡記下來的樣子：同一列、隔離區與原位那兩個檔都沒變 → 這次不必再試。
+ * 檔案變動了（樣子對不上）、或出現新的 started 列 → 照常再試一次。
  */
 function needsSettling() {
   try {
-    if (db.prepare(`SELECT 1 FROM cleanup_journal WHERE status='started' LIMIT 1`).get()) return true
+    const memo = stuckJournalMemo()
+    for (const row of startedJournalRows()) {
+      if (memo[row.seq] !== journalRowShape(row)) return true
+    }
     const cutoff = new Date(Date.now() - STALE_PLAN_MS).toISOString()
     return Boolean(db.prepare(`SELECT 1 FROM cleanup_plans p WHERE p.status='proposed' AND p.created_at < ?
       AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id = p.id) LIMIT 1`).get(cutoff))
   } catch { return false }   // 還沒有清理的表：沒有東西要收尾
 }
 
-function settleCleanupState() {
+/**
+ * 收尾跑完之後，把**還是 started 的那幾列**記成「收不動」（第三輪 R3-11）。
+ * 每次整份覆寫：收掉的列自動不見，不用另外清。recoverInterrupted 真的跑完才記 ——
+ * 被 BUSY 擋掉那一次什麼都沒試，記了會把一列本來收得掉的列擋在外面。
+ */
+function rememberStuckJournal() {
+  try {
+    const next = {}
+    for (const row of startedJournalRows()) next[row.seq] = journalRowShape(row)
+    setMeta(META.stuckJournal, JSON.stringify(next))
+  } catch { /* 寫不進去就算了：頂多下一次再拿一次鎖 */ }
+}
+
+/**
+ * 收尾。`skipPlanId` 是使用者這一次**指名**的那一份計畫（第三輪 R3-6b）：
+ * 不可以在同一個指令裡先把它自動放棄，然後回報「什麼都沒做、成功」。
+ *
+ * **唯讀模式整個不做**（第三輪 R3-9）：這兩支都會寫資料庫 —— recoverInterrupted 改 journal，
+ * releaseStalePlans 改 cleanup_plans 與 cleanup_plan_releases。使用者拿唯讀模式當純預覽
+ * （docs/cli.md、smoke 第 0 步），一個 `cleanup list`、甚至一個純診斷的 `doctor`
+ * 就把放著的待處理計畫作廢，面板按「繼續上次那份」只會拿到「這份計畫已經被放棄了」。
+ */
+function settleCleanupState({ skipPlanId = null } = {}) {
+  if (config.readonly) return
   if (!needsSettling()) return
-  const steps = [() => recoverInterrupted(db, execOpts()), () => releaseStalePlans(db, STALE_PLAN_MS)]
+  const steps = [
+    () => { recoverInterrupted(db, execOpts()); rememberStuckJournal() },
+    () => releaseStalePlans(db, staleCutoffMs(skipPlanId), { skipPlanId: skipPlanId ?? undefined }),
+  ]
   for (const step of steps) {
     try { step() }
     catch (e) {
@@ -268,6 +362,29 @@ function settleCleanupState() {
   }
   // pet 的 server 跟這裡是同一個行程：隔離區的計數有快取，journal 剛改過就不可以再用
   try { invalidateQuarantineCache() } catch { /* 沒有快取就算了 */ }
+}
+
+/**
+ * 這一次的收尾要放棄「放了多久」的計畫（第三輪 R3-6b）。
+ *
+ * 平常就是 STALE_PLAN_MS。使用者指名一份計畫（`cleanup apply <id>`／`cleanup undo <id>`）的時候，
+ * 門檻放寬到**那一份的建立時間之前** —— 也就是「這一次只放棄比它更舊的」。不然 `cleanup apply <id>`
+ * 會在前一毫秒把使用者指名的那一份作廢，然後印「這次什麼都沒做」、回 0（腳本會判定清理完成）。
+ *
+ * 同時也把 `{ skipPlanId }` 交給核心：那是 releaseStalePlans 之後會認的參數，
+ * 到位之後這裡的門檻只是多一層保險（它現在只收兩個參數，第三個會被忽略）。
+ */
+function staleCutoffMs(skipPlanId) {
+  if (!skipPlanId) return STALE_PLAN_MS
+  try {
+    const row = db.prepare(`SELECT created_at FROM cleanup_plans WHERE id=? AND status='proposed'`).get(skipPlanId)
+    const at = row ? Date.parse(row.created_at) : NaN
+    if (!Number.isFinite(at)) return STALE_PLAN_MS
+    // 留一段緩衝：核心是用**它自己的** Date.now() 減這個毫秒數算門檻，晚我們幾毫秒到幾秒
+    // （慢的磁碟、拿鎖等了一下）。不留緩衝的話門檻會剛好落在那一份的建立時間之後，它還是被作廢。
+    // 代價是「建立時間比它早不到五分鐘」的別份計畫這一次也留著 —— 下一個沒指名的指令會收掉。
+    return Math.max(STALE_PLAN_MS, Date.now() - at + SKIP_PLAN_MARGIN_MS)
+  } catch { return STALE_PLAN_MS }
 }
 
 /**
@@ -421,6 +538,23 @@ function parseApplyArgs(list) {
   return out
 }
 
+/**
+ * 這個指令**指名**了哪一份計畫（第三輪 R3-6b）。收尾要跳過它：使用者明講要跑的那一份，
+ * 不可以被同一個指令的自動放棄搶先作廢。指名不到就回 null（照舊全部收）。
+ * 只有 apply 與 undo 會指名；release 指名的那一份本來就是要作廢的，不用跳過。
+ */
+function namedPlanId(sub, argv) {
+  if (sub === 'apply') {
+    const p = parseApplyArgs(argv.slice(1))
+    return p.error ? null : p.planId
+  }
+  if (sub === 'undo') {
+    const a = argv[1]
+    return a && !a.startsWith('--') ? a : null
+  }
+  return null
+}
+
 /** 清單上那一列長什麼樣。每一列都要有原因 —— 沒有原因就不該出現。 */
 function printCandidate(c, code) {
   const box = c.defaultChecked ? '✔' : '☐'
@@ -554,34 +688,89 @@ function explainConflict(e, candidateIds) {
   process.exitCode = EXIT.badInput
 }
 
-/** 真的套用一份計畫，印逐項結果。remaining／skippedRows 是預設清理才有的補充。 */
-function runApply(id, { remaining = 0, skippedRows = [] } = {}) {
-  let r
+/** 這份計畫在 cleanup_journal 裡有幾列（拿來判斷「這一次真的動到東西了沒」）。 */
+function journalRowCount(id) {
+  try { return Number(db.prepare('SELECT count(*) n FROM cleanup_journal WHERE plan_id=?').get(id)?.n ?? 0) }
+  catch { return 0 }
+}
+
+/**
+ * 真的套用一份計畫，印逐項結果。remaining／skippedRows 是預設清理才有的補充。
+ * `alreadyRun` 是「呼叫之前這份計畫就已經跑過了」（applied／partial／error）—— 見下面的 no-op。
+ *
+ * 這支要處理三種收場，畫面與離開碼都不一樣：
+ *
+ * 1. **正常**：照舊，逐項結果＋「搬進隔離區 N 個」＋復原指令。
+ * 2. **no-op**（第三輪 R3-2b／R3-15）：跑過的計畫再套用，核心原樣回傳、一個檔都不碰（R2-3）。
+ *    以前畫面跟剛搬完一模一樣（「搬進隔離區 1 個」「後悔的話：cleanup undo」），使用者會以為剛剛真的清了；
+ *    記帳也把它當成「這一種動作成功了」，一個一直壞著的套用錯就被標成「好了」。
+ *    現在照實說「先前已經跑過了，這次什麼都沒做」，並給真正的下一步（重掃、建一份新的）。
+ * 3. **做到一半被打斷**（第三輪 R3-3b）：清理鎖被另一個清理動作接走（renew 丟 BUSY，
+ *    或核心之後回 `stoppedEarly`）。以前一丟錯就 `fail()` → 回 2、一行逐項結果都沒印、連計畫 id 都沒給 ——
+ *    但檔已經在隔離區了，而 2 的意思是「這個動作根本沒執行」（不變量 7），腳本會據此重試。
+ *    現在照常印計畫 id 與逐項結果，離開碼照逐項；**這一次真的一列都沒動到**才回 2。
+ */
+function runApply(id, { remaining = 0, skippedRows = [], alreadyRun = false } = {}) {
+  const rowsBefore = journalRowCount(id)
+  let r = null, stopped = null
   try { r = applyPlan(db, id, execOpts()) }
-  catch (e) { fail(e, 'apply'); return }
+  catch (e) {
+    // 這一次一列都沒動到 → 動作真的沒執行，照舊 fail（BUSY → 2、其他照 exitFor）
+    if (journalRowCount(id) <= rowsBefore) { fail(e, 'apply'); return }
+    // 動到東西了：意外照記（BUSY 不算意外，核心的 isSurprise 會過濾），
+    // 但畫面與離開碼走下面那一條 —— 回 2 會讓腳本以為什麼都沒發生。
+    noteError(e, 'apply')
+    stopped = cliProblem(e)
+  }
+  // 核心之後會改成回傳 stoppedEarly（不丟例外）：兩條路都要接得住
+  if (r?.stoppedEarly) stopped = shown(r.stoppedEarly.why ?? '被另一個清理動作打斷了。')
+  // `noop` 是核心之後會回的欄位；它還沒到（或沒回）的時候，用「套用前就已經跑過了」判斷 ——
+  // 那正是 applyPlan 原樣回傳的條件（cleanup-exec.ts 的 R2-3），兩者是同一件事。
+  const noop = !stopped && (r?.noop === true || alreadyRun)
+
   // 失敗原因**馬上**存起來：下一次掃描會改寫 file_items.error，重掃之後原因就變成「原因不明」（RC11）。
   // 存不進去不可以讓結果消失 —— 檔案已經搬了。
   try { recordItemErrors(db, id) }
   catch (e) { warn(`⚠ 失敗原因存不進去（${why(e?.message)}），重新掃描之後可能看不到原因。`) }
-  noteResult('apply', r)
+  // 被打斷的那一次不記：BUSY 本來就不算意外（核心的 isSurprise），而它也還沒做完，不是一次成功。
+  if (!stopped) noteResult('apply', noop ? { ...r, noop: true } : r)
 
-  say(`計畫 ${r.id}`)
-  const outcomes = planOutcomes(db, r.id)
-  for (const i of r.items) say(applyLine(i, outcomes.get(i.itemId)))
+  say(`計畫 ${id}`)
+  const outcomes = planOutcomes(db, id)
+  // 被打斷的時候 r 是 null（核心丟了例外）：逐項要照資料庫裡現在的樣子印，不是照回傳值
+  let items = r?.items ?? null
+  if (!items) { try { items = getPlan(db, id).items } catch { items = [] } }
+  for (const i of items) say(applyLine(i, outcomes.get(i.itemId)))
   for (const row of skippedRows) say(`  － ${shown(row.name)}　${mb(row.bytes)}　（你略過了，這次不清）`)
-  say(`\n搬進隔離區 ${r.quarantinedCount} 個，${mb(r.quarantinedBytes)}。`)
-  if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
-  if (remaining > 0) say(`一次最多清 ${PLAN_MAX} 個，剩下 ${remaining} 個下次再清（再跑一次 node cli.mjs cleanup apply）。`)
+
+  if (noop) {
+    say('\n這份計畫先前已經跑過了，這次什麼都沒做（沒有搬動、也沒有刪除任何檔案）。')
+    say('再套用不會重試沒搬成的（計畫是一次性的）。要重新清：node cli.mjs cleanup scan，'
+      + '再 node cli.mjs cleanup apply（會照現在的清單建一份新的）。')
+    const inQ = items.filter(i => outcomes.get(i.itemId)?.outcome === 'moved').length
+    if (inQ) say(`先前搬進隔離區的 ${inQ} 個還在裡面，要放回原位：node cli.mjs cleanup undo ${id}`)
+  } else if (stopped) {
+    const moved = items.filter(i => outcomes.get(i.itemId)?.outcome === 'moved').length
+    warn(`\n⚠ 被另一個清理動作打斷，做到一半就停了（${stopped}）。`)
+    say(`已經搬進隔離區 ${moved} 個。再跑一次 node cli.mjs cleanup apply ${id} 會從停下來的地方接著做；`
+      + `要把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+  } else {
+    say(`\n搬進隔離區 ${r.quarantinedCount} 個，${mb(r.quarantinedBytes)}。`)
+    if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
+    if (remaining > 0) say(`一次最多清 ${PLAN_MAX} 個，剩下 ${remaining} 個下次再清（再跑一次 node cli.mjs cleanup apply）。`)
+  }
 
   // **離開碼照逐項結果，不看計畫的 status**（第二輪 R2-1）。逐項才是實話：status 是整份計畫的摘要，
   // 對不上逐項的時候（例如 partial 但每一項都搬了），照 status 回 3 就是叫腳本去看一個不存在的問題。
   // 找不到逐項結果的當成狀態不明（倒向要人看一眼）。
-  const kinds = r.items.map(i => outcomes.get(i.itemId)?.outcome)
+  const kinds = items.map(i => outcomes.get(i.itemId)?.outcome)
   const failed = kinds.filter(k => k === 'failed').length
   const unknown = kinds.filter(k => k === 'unknown' || k === undefined).length
   // cancelled／pending：計畫中途停了，這一項從來沒碰過（沒有任何搬移紀錄）
   const untouched = kinds.filter(k => k === 'cancelled' || k === 'pending').length
   if (!failed && !unknown && !untouched) return
+  // 這幾行講的是**這份計畫現在的樣子**（哪幾個沒搬成、哪幾個狀態不明、哪幾個沒處理到），
+  // no-op 與被打斷的那兩種也照印 —— 上面已經把「為什麼這一次沒動」講清楚了，這裡補「所以現在是什麼狀況」。
   // **「原檔都還在原位」只在失敗的全部是 failed 時才說**（RC17）。
   // unknown 是搬到一半中斷：rename 可能已經做完了，檔案可能在隔離區 —— 說「都還在原位」是在說謊。
   if (failed && !unknown) warn('\n⚠ 上面 ✘ 的沒搬成。原檔都還在原位，沒有任何東西被刪除。')
@@ -628,7 +817,9 @@ function applyExisting(id) {
     for (const i of plan.items) say(applyLine(i, o.get(i.itemId)))
     return
   }
-  runApply(plan.id)
+  // **跑過的計畫再套用是 no-op**（核心的 R2-3：applied／partial／error 原樣回傳，一個檔都不碰）。
+  // 唯讀那一條上面已經講了；非唯讀這一條以前一個字都沒講（第三輪 R3-15），畫面跟剛失敗一次一模一樣。
+  runApply(plan.id, { alreadyRun: ['applied', 'partial', 'error'].includes(plan.status) })
 }
 
 /**
@@ -857,13 +1048,20 @@ const ftsQuery = q =>
 
 switch (cmd) {
   case 'doctor': {
-    // 先收尾（R2-1a）：中斷的搬移不結掉的話，下面的隔離區會少算、中斷的計畫也列不出來
+    // 先收尾（R2-1a）：中斷的搬移不結掉的話，下面的隔離區會少算、中斷的計畫也列不出來。
+    // 唯讀模式它自己會整個跳過（R3-9）—— 純診斷不可以改資料庫，下面那一行會講清楚。
     settleCleanupState()
     say('ContextBox 檢查')
     say('')
     say(`設定檔    ${shown(cfgPath)}${created ? '（還沒有，剛剛幫你建了一份）' : ''}`)
     say(`資料庫    ${shown(DEFAULT_DB)}`)
     say(`唯讀模式  ${config.readonly ? '開著（清理只會說，不會搬也不會刪任何檔案）' : '關著'}`)
+    // 唯讀模式連收尾都不做（R3-9）：中斷的搬移不會結掉、放太久的計畫不會自動放棄。
+    // 不講的話，doctor 底下那些數字（隔離區、中斷計畫）看起來像是「已經收過尾」的樣子。
+    if (config.readonly) {
+      say('          唯讀模式：不會自動收尾 —— 中斷的搬移不會結掉，放太久沒套用的計畫也不會自動放棄。')
+      say('          要真的收尾，把 CONTEXTBOX_READONLY 關掉再跑一次。')
+    }
     say('')
     say('監看資料夾（截圖與收件）')
     for (const r of config.watch) say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
@@ -1244,8 +1442,12 @@ switch (cmd) {
     const json = sub === 'scan' && args.includes('--json')
     if (!json) showProblems()
     // 會讀或動清理狀態的子指令，先收尾（R2-1a／R2-5）：中斷的搬移結掉、放太久沒開始的計畫放棄。
-    // 不給 id 的 undo 要找得到單檔被砍的那份，quarantine 要列得出它，list 不能被一份早就沒人要的計畫佔著
-    if (['scan', 'list', undefined, 'apply', 'undo', 'release', 'quarantine'].includes(sub)) settleCleanupState()
+    // 不給 id 的 undo 要找得到單檔被砍的那份，quarantine 要列得出它，list 不能被一份早就沒人要的計畫佔著。
+    // **使用者指名的那一份不可以被這一次的收尾作廢**（第三輪 R3-6b）：`cleanup apply <放了兩小時的 id>`
+    // 以前會先自動放棄它，再印「已經放棄了，這次什麼都沒做」、回 0。
+    if (['scan', 'list', undefined, 'apply', 'undo', 'release', 'quarantine'].includes(sub)) {
+      settleCleanupState({ skipPlanId: namedPlanId(sub, args) })
+    }
 
     if (sub === 'scan') {
       let r
@@ -1465,7 +1667,10 @@ switch (cmd) {
           say('唯讀模式：不會刪任何檔案，這次一個都沒動。')
           break
         }
-        let r
+        let r = null, stopped = null
+        // **這一次真的刪了幾個**：累計進度（含上一次被打斷那批）不能當成這一次的成績。
+        // 以前用累計數判斷，連鎖都沒拿到（一個檔都沒刪）也會印「刪掉 2 個」、回 3（稽核第三輪）。
+        const purgedBefore = countPurged()
         try { r = emptyQuarantine(db, { ...execOpts(), token, confirmed: true }) }
         catch (e) {
           if (e instanceof CleanupError && (e.code === 'CONFIRMATION_REQUIRED' || e.code === 'CONFIRMATION_EXPIRED')) {
@@ -1473,11 +1678,38 @@ switch (cmd) {
             process.exitCode = EXIT.badInput
             break
           }
-          fail(e, 'empty')
+          // **被另一個清理動作打斷**（第三輪 R3-3b）：檔已經被**永久刪掉**幾個了，
+          // 只印一句「鎖被接走」、回 2（＝動作沒執行）是說謊，而且使用者永遠不知道刪了幾個。
+          // 核心把進度存在 cleanup_empty_progress 裡（R2-6），讀得到就照實講。
+          const done = e instanceof CleanupError ? emptyProgress(token) : null
+          // 這一次一個檔都沒刪（例如連鎖都沒拿到）→ 動作沒執行，照常回 2
+          if (!done || !done.deletedCount || countPurged() === purgedBefore) { fail(e, 'empty'); break }
+          stopped = { why: shown(e.message), ...done }
+        }
+        // 核心之後會改成回傳 stoppedEarly（不丟例外）：兩條路都要接得住
+        if (r?.stoppedEarly) {
+          if (countPurged() === purgedBefore) { fail(new CleanupError('BUSY', r.stoppedEarly.why), 'empty'); break }
+          stopped = { ...r, why: shown(r.stoppedEarly.why ?? '被另一個清理動作打斷了。') }
+        }
+        if (stopped) {
+          say(`刪掉 ${stopped.deletedCount} 個，${mb(stopped.deletedBytes)}。`)
+          warn(`\n⚠ 被另一個清理動作打斷，刪到一半就停了（${stopped.why}）。`)
+          say('刪掉的救不回來了。剩下的要接著刪：再跑一次 '
+            + `node cli.mjs cleanup quarantine --empty --yes ${shown(token)}`
+            + '（確認碼過期的話重新預覽：node cli.mjs cleanup quarantine --empty）。')
+          process.exitCode = EXIT.partial
           break
         }
+        // noop：同一個確認碼重送，核心回上一次存下來的結果、一個檔都沒再刪（不記成「清空成功過」，R3-2b）
         noteResult('empty', r)
         say(`刪掉 ${r.deletedCount} 個，${mb(r.deletedBytes)}。`)
+        if (r.noop === true) say('這個確認碼先前已經用過了，這次什麼都沒做（上面是那一次的結果）。')
+        // 放到一邊的（內容跟當初不一樣、或已經不在隔離區）：講清楚，但**不算失敗**
+        // —— 以前算成錯，清空從此固定回 3，隔離區永遠清不空（稽核第三輪）。
+        for (const x of r.setAside ?? []) say(`  ・${shown(x.why)}`)
+        if ((r.setAside ?? []).length) {
+          say(`隔離區在 ${shown(QUARANTINE)}，看完自己刪掉就好；下一次清空會把那幾列收掉。`)
+        }
         if (r.errors.length) {
           warn(`${r.errors.length} 個沒刪成：`)
           for (const x of r.errors) warn(`  ${shown(x.error)}`)

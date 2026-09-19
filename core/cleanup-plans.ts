@@ -194,16 +194,26 @@ export function releasePlan(db: DatabaseSync, id: string) {
  * 為什麼要：一份建了沒套用的計畫會一直佔住它的檔（createPlan 撞 CONFLICT），寵物也一直說
  * 「有 1 份清單等你確認」，而面板不一定找得到它（稽核第二輪 R2-5）。**有 journal 的不動**：
  * 做到一半中斷的計畫只能接著做完或復原，不能假裝沒發生過。建立時間讀不懂的也不動（fail closed）。
+ *
+ * `opts.skipPlanId`：**這一次使用者指名要套用的那一份不可以被同一個指令作廢**（稽核第三輪 R3-6）。
+ * 以前 `cleanup apply <id>` 的收尾會在前一毫秒把那份 release 掉，指令接著說「已經放棄了，
+ * 這次什麼都沒做」然後回 0 —— 包裝這支 CLI 的腳本會判定「清理完成」。
  */
-export function releaseStalePlans(db: DatabaseSync, olderThanMs: number): number {
+export function releaseStalePlans(
+  db: DatabaseSync, olderThanMs: number, opts: { skipPlanId?: string } = {},
+): number {
   if (!Number.isFinite(olderThanMs) || olderThanMs < 0) {
     throw new CleanupError('BAD_CONFIG', '自動放棄計畫的時間要是 0 以上的毫秒數。')
+  }
+  const skip = opts?.skipPlanId
+  if (skip !== undefined && (typeof skip !== 'string' || !skip || skip.length > 200)) {
+    throw new CleanupError('BAD_BODY', '要跳過的計畫 id 必須是 1 到 200 字元的字串。')
   }
   return withCleanupLock(db, () => transaction(db, () => {
     const cutoff = Date.now() - olderThanMs
     const stale = (db.prepare(`SELECT id, created_at FROM cleanup_plans p WHERE status='proposed'
       AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id=p.id)`).all() as { id: string; created_at: string }[])
-      .filter(p => Date.parse(p.created_at) < cutoff)
+      .filter(p => p.id !== skip && Date.parse(p.created_at) < cutoff)
     for (const p of stale) release(db, p.id)
     return stale.length
   }))

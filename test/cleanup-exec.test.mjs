@@ -34,7 +34,9 @@ test('apply preserves content/mtime and writes started before rename; replay mov
     assert.equal(fs.statSync(row.to_path).mtime.toISOString(), f.old.toISOString())
     assert.equal(row.sha256.length, 64)
   }
-  assert.deepEqual(applyPlan(f.db, p.id, f.opts), result)
+  // 重送原樣回傳，**只多一個 noop: true**（稽核第三輪 R3-2：呼叫端要分得出「這次什麼都沒做」）
+  assert.deepEqual(applyPlan(f.db, p.id, f.opts), { ...result, noop: true })
+  assert.equal(result.noop, false, '第一次真的搬了')
   assert.equal(calls.length, 2)
   assert.equal(listQuarantine(f.db).length, 2)
   assert.ok(!JSON.stringify(listQuarantine(f.db)).includes(f.dir))

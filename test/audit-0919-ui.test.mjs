@@ -1129,7 +1129,11 @@ describe('RC16 擴充套件：「去補」要帶 ?k= 開手填頁，而且 k 不
       runtime: { onMessage: { addListener: f => listeners.push(f) }, onInstalled: { addListener() {} }, openOptionsPage() {} },
       tabs: { create: async o => { created.push(o); return { id: 1 } } },
     }
-    vm.runInNewContext(BG, { chrome, fetch: realFetch, AbortSignal, console, URL, encodeURIComponent })
+    // crypto／TextEncoder：R3-7 起 background.js 會先算 proof（Web Crypto 的 HMAC-SHA256）
+    vm.runInNewContext(BG, {
+      chrome, fetch: realFetch, AbortSignal, console, URL, encodeURIComponent,
+      crypto: globalThis.crypto, TextEncoder,
+    })
     const send = msg => new Promise(resolve => {
       const keep = listeners[0](msg, { id: 'ext', origin: 'https://jobs.example.com', tab: { id: 9 } }, resolve)
       if (keep !== true) resolve(undefined)
@@ -1640,7 +1644,11 @@ describe('U6 擴充套件的「去補」：開分頁之前先驗 token', () => {
       runtime: { onMessage: { addListener: f => listeners.push(f) }, onInstalled: { addListener() {} }, openOptionsPage() {} },
       tabs: { create: async o => { created.push(o); return { id: 1 } } },
     }
-    vm.runInNewContext(BG, { chrome, fetch: realFetch, AbortSignal, console, URL, encodeURIComponent })
+    // crypto／TextEncoder：R3-7 起 background.js 會先算 proof（Web Crypto 的 HMAC-SHA256）
+    vm.runInNewContext(BG, {
+      chrome, fetch: realFetch, AbortSignal, console, URL, encodeURIComponent,
+      crypto: globalThis.crypto, TextEncoder,
+    })
     const send = msg => new Promise(resolve => {
       const keep = listeners[0](msg, { id: 'ext', origin: 'https://jobs.example.com', tab: { id: 9 } }, resolve)
       if (keep !== true) resolve(undefined)
@@ -1648,16 +1656,22 @@ describe('U6 擴充套件的「去補」：開分頁之前先驗 token', () => {
     return { send, created }
   }
 
-  test('**稽核 U6：存的 token 過期（server 換過鑰匙）→ 不開分頁、BAD_TOKEN、講「鑰匙過期」與 node cli.mjs open**', async t => {
+  test('**稽核 U6：存的 token 過期（server 換過鑰匙）→ 不開分頁、講「鑰匙過期」與 node cli.mjs open**', async t => {
+    // **代碼從 BAD_TOKEN 換成 UNPROVEN（稽核第三輪 R3-7）**：現在連 401 都走不到 ——
+    // 送出任何帶 token 的請求之前先要對方證明「手上有這把鑰匙」，而用舊鑰匙算出來的 proof
+    // 跟真 server 用新鑰匙算的對不上。這一步分不出「我的鑰匙過期」與「那不是 ContextBox」
+    //（兩者都是 HMAC 對不上），所以訊息要把兩種可能都講出來。
+    // 這一條原本要守的三件事一個都不能少：不開分頁、講「鑰匙過期」與 node cli.mjs open、訊息不帶 token。
     const s = await serve(t, {})
     const bg = loadBackground({ token: 'old-token-from-last-week', port: s.port })
     const r = await bg.send({ type: 'open-home' })
     assert.equal(r?.ok, false, JSON.stringify(r))
-    assert.equal(r.error, 'BAD_TOKEN')
-    assert.equal(bg.created.length, 0, '一定是 401 的分頁不要開')
+    assert.equal(r.error, 'UNPROVEN')
+    assert.equal(bg.created.length, 0, '一定打不開的分頁不要開')
     assert.match(r.message, /鑰匙過期/)
     assert.ok(r.message.includes('node cli.mjs open'), r.message)
     assert.ok(!r.message.includes('old-token-from-last-week'), '訊息會到網頁那一側，不可以帶 token')
+    // 「一個帶 token 的請求都沒送出去」在 test/audit-0919-r3ext.test.mjs 用假的 fetch 逐一數
   })
 
   test('對照：token 對 → 開 1 個分頁', async t => {
@@ -1737,7 +1751,10 @@ const petState = ui => ui.$('quaso').dataset.petState
 const worried = ui => petState(ui) === 'worried' || ui.$('quaso-worried').hidden === false
 
 /**
- * 稽查員 B 的 r7：names 建一份計畫，套用到第一個檔搬完之後，鎖被接走（trigger 模擬）→ 503 BUSY。
+ * 稽查員 B 的 r7：names 建一份計畫，套用到第一個檔搬完之後，鎖被接走（trigger 模擬）。
+ *
+ * 稽核第三輪 R3-3 之後**不再是 503 BUSY**：核心停在那一項、把已經做完的收好，
+ * 回 200＋`stoppedEarly`（呼叫端才報得出已經搬了幾個、給得出計畫 id）。
  * 計畫還是 proposed，已經有一個檔在隔離區。回 { planId, moved（搬走的那一個）, rest（還在的） }。
  */
 async function interruptAfterFirst(s, names) {
@@ -1749,7 +1766,7 @@ async function interruptAfterFirst(s, names) {
   const e = await s.raw(`/cleanup/plans/${plan.id}/apply`, { method: 'POST', body: '{}' }).catch(e => e)
   s.exec('DROP TRIGGER steal')
   s.exec('DELETE FROM cleanup_operation_lock')
-  assert.equal(e.code, 'BUSY', `前提：套用中途 BUSY（${e}）`)
+  assert.ok(e?.stoppedEarly?.why, `前提：套用中途鎖被接走、回 stoppedEarly（${JSON.stringify(e)}）`)
   const moved = names.filter(n => !s.has(n))
   assert.equal(moved.length, 1, `前提：剛好一個搬走了（${moved}）`)
   assert.equal(s.planStatus(plan.id), 'proposed', '前提：計畫還是 proposed')
@@ -2294,7 +2311,9 @@ describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', (
       }
     }
     walk(join(REPO, 'core'))
-    walk(join(REPO, 'docs', 'api'))
+    // docs 整棵都要掃，不是只有 docs/api（第三輪 B）：docs/cli.md 剛好在掃描範圍外，
+    // 所以它原樣引用這句已經刪掉的字串半年都沒人發現，整套照樣全綠。
+    walk(join(REPO, 'docs'))
     assert.deepEqual(hits, [])
   })
 
@@ -2445,6 +2464,174 @@ describe('P5 性質：面板給「放棄」的那一份，後端一定放棄得�
     }
     // 生成器驗收：每一條路都要真的走到
     for (const [k, n] of Object.entries(hits)) assert.ok(n > 0, `生成器沒有走到 ${k}：${JSON.stringify(hits)}`)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2026-09-19 稽核第三輪・面板（R3-12b 掃描問題、noop／stoppedEarly 的呈現）
+//
+// 期望值在實作之前寫死（build-round Step 1）。
+//
+// | 段落 | 可能的錯誤 | 另一種合理解讀 | 能分辨兩者的例子（成對） | 認定的答案 |
+// |---|---|---|---|---|
+// | R3-12b 從哪裡讀 | 面板自己再掃一次、或讀 /pet/state（頁面根本沒讀它） | 帶 token 的 /health 的 scanProblems | 清理資料夾被刪掉之後重掃／對照：資料夾正常 | 前者：寵物泡泡與面板頂端都講得出問題；後者：泡泡是「今天吃可頌了嗎？」、提示藏著 |
+// | R3-12b 泡泡 | 每一輪輪詢都把泡泡蓋掉（剛做完的結果會被洗掉） | 對話框開著就不動它 | 復原完（notice 開著對話框）之後下一輪輪詢／對話框關著 | 前者：泡泡還是「都幫你放回來了！」；後者：泡泡換成警告 |
+// | R3-12b 文字 | 帶絕對路徑（後端已經去掉，但面板可能自己補） | 只講資料夾名 | 清理根目錄在 /tmp/xxx 底下 | 三個地方（泡泡、stage title、面板提示）都不可以出現 / 開頭的完整路徑 |
+// | R3-12b 示範模式 | 把真的掃描問題混進示範清單 | 示範模式不講 | 按 D 打開示範 | 面板提示藏起來 |
+// | noop | 照 moved=0 印成「搬進隔離區 0 個檔案…七天內可以復原」（看起來像剛清完） | 照實說「這次什麼都沒做」 | 後端回 noop: true／對照：真的搬了 0 個但不是 noop | noop：不可以出現「搬進隔離區」「七天內可以復原」「整理好了」；要講「沒有動任何檔案」 |
+// | noop 的來源 | 面板自己猜（moved===0 就當 noop） | 只信後端的 noop 欄位 | moved=0、noop 沒給（真的全部失敗） | 照舊講「一個都沒搬成，原因寫在面板上」 |
+// | stoppedEarly | 當成做完了 | 講「停在中途，還沒做完」 | 後端回 stoppedEarly: true | 結果框要講「停在中途」與「還沒處理的下次會接著做」 |
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 清理根目錄被刪掉 → 重掃一次，後端把「掃描問題」記下來（帶 token 的 /health 才看得到） */
+async function withScanProblem(s) {
+  rmSync(s.downloads, { recursive: true, force: true })
+  await s.raw('/cleanup/scan', { method: 'POST', body: '{}' })
+  const h = await s.raw('/health')
+  assert.ok(Array.isArray(h.scanProblems) && h.scanProblems.length > 0,
+    `前提：/health 回得出掃描問題：${JSON.stringify(h.scanProblems)}`)
+  return h.scanProblems
+}
+
+/** 畫面上不可以出現絕對路徑（POSIX 的 /a/b、Windows 的 C:\a）。`~/Downloads` 是後端刻意的寫法，放行。 */
+const ABSOLUTE = /(^|[\s「」（）:：])[/\\][A-Za-z0-9._-]+[/\\]|[A-Za-z]:[\\/]/
+
+describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看得到）', () => {
+  test('這一段的守門本身抓得到路徑（不是永遠成立的檢查）', () => {
+    for (const leak of [
+      '⚠ 掃描資料夾 /tmp/cb-ui-audit-x9/Downloads 不存在，這次沒有掃。',
+      '⚠ 掃描資料夾「/home/someone/Downloads」不存在。',
+      '⚠ 打不開 C:\\Users\\alice\\Downloads\\sub。',
+    ]) assert.ok(ABSOLUTE.test(leak), `沒抓到：${leak}`)
+    for (const ok of [
+      '⚠ 上次掃描回報了 1 個問題，可能有檔案沒有掃到：掃描資料夾「Downloads」不存在，這次沒有掃。',
+      '⚠ ~/Downloads/sub 打不開。',              // 後端把家目錄換成 ~ 是刻意的，不算絕對路徑
+      '📁 「Downloads」 · 監看中',
+    ]) assert.ok(!ABSOLUTE.test(ok), `誤抓：${ok}`)
+  })
+
+  test('**稽核 R3-12b：清理資料夾不見了 → 寵物泡泡與面板頂端都講得出來，而且沒有絕對路徑**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const problems = await withScanProblem(s)
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-status').textContent.includes(problems[0]), '寵物泡泡講出掃描問題')
+    const bubble = ui.$('quaso-status').textContent
+    assert.ok(!bubble.includes('今天吃可頌了嗎'), bubble)
+    assert.ok(!ABSOLUTE.test(bubble), `泡泡帶了絕對路徑：${bubble}`)
+    // stage 的 title（滑鼠移上去、螢幕閱讀器都讀得到）也不可以只說「監看中」
+    const title = ui.$('quaso-stage').title
+    assert.ok(/掃描/.test(title), `stage title 沒講掃描出問題：${title}`)
+    assert.ok(!ABSOLUTE.test(title), title)
+    // 面板頂端的提示
+    await ui.click('quaso-cleanup-alert')
+    const note = ui.$('cleanup-scan-problems')
+    assert.equal(note.hidden, false, '面板頂端的掃描提示藏著')
+    assert.ok(note.textContent.includes(problems[0]), note.textContent)
+    assert.ok(!ABSOLUTE.test(note.textContent), `面板提示帶了絕對路徑：${note.textContent}`)
+  })
+
+  test('對照：掃描沒問題 → 泡泡照舊、面板的提示藏著', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health')
+    assert.equal(ui.$('quaso-status').textContent, '今天吃可頌了嗎？')
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(ui.$('cleanup-scan-problems').hidden, true)
+    assert.equal(ui.$('cleanup-scan-problems').textContent, '')
+  })
+
+  test('**對話框正開著（剛做完一個動作）的時候不可以把泡泡蓋掉**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    await uiOnly(ui, 'a.zip')
+    await ui.click('cleanup-apply')
+    assert.equal(ui.$('quaso-dialog').hidden, false, '前提：做完動作之後對話框是開著的')
+    const said = ui.$('quaso-status').textContent
+    assert.match(said, /整理好了/)
+    // 現在才出現掃描問題（下一輪輪詢會讀到）
+    await withScanProblem(s)
+    await ui.click('quaso-connection-retry')      // 立刻再輪詢一次
+    assert.equal(ui.$('quaso-status').textContent, said, '對話框開著的時候不可以蓋掉剛剛的結果')
+  })
+
+  test('示範模式不把真的掃描問題混進來', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    await withScanProblem(s)
+    const ui = await mountUi(t, s)
+    await until(() => ui.$('cleanup-scan-problems').hidden === false, '本機模式先看得到')
+    await ui.key('d')
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(ui.$('cleanup-panel').dataset.mode, 'demo', '前提：示範模式')
+    assert.equal(ui.$('cleanup-scan-problems').hidden, true, '示範清單旁邊不該掛真的掃描問題')
+  })
+})
+
+describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完', () => {
+  test('**applyMessage：後端說 noop → 不講「搬進隔離區」「七天內可以復原」「整理好了」**', () => {
+    const m = applyMessage({
+      status: 'applied', planId: 'p1', moved: 0, bytesFreed: 0, failed: [], unknown: [], noop: true,
+    })
+    assert.ok(!/搬進隔離區/.test(m.text), m.text)
+    assert.ok(!/七天內可以復原/.test(m.text), m.text)
+    assert.ok(!/整理好了/.test(m.notice), m.notice)
+    assert.match(m.text, /沒有動任何檔案|什麼都沒做/)
+  })
+
+  test('對照：沒有 noop、真的搬了 0 個（全部失敗）→ 照舊講原因', () => {
+    const m = applyMessage({
+      status: 'partial', planId: 'p1', moved: 0, bytesFreed: 0,
+      failed: [{ itemId: '1', name: 'a.zip', why: '檔案不見了' }], unknown: [],
+    })
+    assert.match(m.text, /搬進隔離區 0 個檔案/)
+    assert.match(m.text, /原檔都還在原位/)
+    assert.match(m.notice, /一個都沒搬成/)
+  })
+
+  test('applyOutcome 要把 noop／stoppedEarly 從後端的回應帶上來（面板才講得出來）', () => {
+    const plan = {
+      id: 'p1', status: 'applied', items: [], quarantinedCount: 0, quarantinedBytes: 0, undoable: false,
+      noop: true, stoppedEarly: false,
+    }
+    assert.equal(applyOutcome(plan).noop, true)
+    assert.equal(applyOutcome(plan).stoppedEarly, false)
+    // 後端還沒加這兩個欄位的時候，一律當成 false（不可以變成 undefined 而被 ?? 當成別的意思）
+    assert.equal(applyOutcome({ ...plan, noop: undefined, stoppedEarly: undefined }).noop, false)
+    assert.equal(applyOutcome({ ...plan, noop: undefined, stoppedEarly: undefined }).stoppedEarly, false)
+    assert.equal(applyOutcome({ ...plan, noop: 'true' }).noop, false, '只認布林 true')
+  })
+
+  test('applyMessage：stoppedEarly → 要講「停在中途、還沒做完」', () => {
+    const m = applyMessage({
+      status: 'proposed', planId: 'p1', moved: 3, bytesFreed: 1024, failed: [], unknown: [], stoppedEarly: true,
+    })
+    assert.match(m.text, /搬進隔離區 3 個檔案/, '已經做到的照實講')
+    assert.match(m.text, /停在中途|還沒做完/, m.text)
+    assert.ok(!/整理好了/.test(m.notice), m.notice)
+  })
+
+  test('**面板：按「繼續上次那份」而後端其實什麼都沒做 → 畫面不可以像剛清完**', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    // 一份 proposed 的計畫擋著（面板一打開就會提示它）
+    const plan = await s.raw('/cleanup/plans', {
+      method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('a.zip'), requestId: 'noop-1' }),
+    })
+    // 後端把它當成「跑完過的計畫再 apply」：原樣回傳、一個檔都不動（exec 組加的 noop）
+    s.setHook((path, method) => (method === 'POST' && path.endsWith('/apply')
+      ? { status: 200, body: { ...plan, status: 'applied', quarantinedCount: 0, quarantinedBytes: 0, undoable: false, noop: true,
+          items: plan.items.map(i => ({ ...i, outcome: 'cancelled', why: null })) } }
+      : null))
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    assert.match(ui.$('cleanup-apply').textContent, /繼續上次那份/, '前提：面板提示了上次那份')
+    await ui.click('cleanup-apply')
+    const text = ui.$('cleanup-result').textContent
+    assert.ok(!/搬進隔離區/.test(text), `什麼都沒做卻說搬了：${text}`)
+    assert.ok(!/七天內可以復原/.test(text), text)
+    assert.match(text, /沒有動任何檔案|什麼都沒做/)
+    assert.ok(!/整理好了/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(s.has('a.zip'), '前提：檔案真的沒動')
   })
 })
 

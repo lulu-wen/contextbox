@@ -42,7 +42,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 來源 | Origin 只放行：沒有 Origin、`chrome-extension://…`、server 自己；其他 403 |
 | body | 一定是 JSON 物件。空的 body 等於 `{}`；看不懂（壞掉的 JSON、`null`、陣列、字串、form 格式）→ 400 `BAD_BODY`，**不會被當成「什麼都沒帶」**；**帶了這條路徑不認得的欄位**（拼錯的 `candidateID`、`skippedIDs`、snake_case 的 `candidate_ids`）也是 400 `BAD_BODY`，什麼都不做（各路徑收哪些欄位見下面「各路徑收的 body」）；超過 1 MB → 413 `BODY_TOO_LARGE` |
 | 方法 | 認得的路徑用錯方法 → 405 `BAD_METHOD`，帶 `Allow` header |
-| 重送 | 重送拿到同樣的結果，不會做第二次。`apply` 跑完一次之後（`applied`／`partial`／`error`）重送原樣回傳，不重試任何一項、不會再搬（第二輪 R2-3；以前 `partial`／`error` 會重試失敗的那幾個）；還沒跑完的 `proposed`（包括做到一半中斷的）重送是接著做完，做過的不會再做一次。`undo` 重送不會把放回的再搬一次，沒放回的會再試。`dismiss`、`release`、清空確認（同一個 token）重送拿到同樣的結果。建計畫靠 `requestId`（見下） |
+| 重送 | 重送拿到同樣的結果，不會做第二次。`apply` 跑完一次之後（`applied`／`partial`／`error`）重送原樣回傳，不重試任何一項、不會再搬（第二輪 R2-3；以前 `partial`／`error` 會重試失敗的那幾個），那一次的回應帶 `noop: true`，UI 不可以顯示成剛清完；還沒跑完的 `proposed`（包括做到一半中斷的）重送是接著做完，做過的不會再做一次。`undo` 重送不會把放回的再搬一次，沒放回的會再試。`dismiss`、`release`、清空確認（同一個 token）重送拿到同樣的結果。建計畫靠 `requestId`（見下） |
 | 時間 | 一律 ISO 8601，UTC |
 | 大小 | 一律 bytes，整數 |
 
@@ -279,6 +279,20 @@ CLI 那邊踩過一次：一律印 ✔，全失敗時畫面上是一排 ✔ 後�
 **C 請特別看 `cleanup-plans-apply-partial.json`** —— 搬到一半壞掉是**必做**的容錯（spec §6），
 UI 不能只畫成功的樣子。
 
+### `apply` 另外帶兩個頂層旗標（第三輪 R3-17）
+
+`POST …/apply` 的回應除了逐項結果，還有兩個**頂層**布林。兩個講的都是「**這一次**做了什麼」，
+`status` 與 `quarantinedCount` 看不出來 —— 它們講的是計畫累積到現在的樣子。
+
+| 欄位 | 值 |
+|---|---|
+| `noop` | 布林。`true` ＝ **這一次一個檔都沒有動**：這份計畫先前就跑完了（`applied`／`restored`／`dismissed`，或沒有復原紀錄的 `partial`／`error`），這一次的 `apply` 只是原樣回傳。**UI 不可以把它顯示成剛清完** —— 照 `quarantinedCount` 印的話，使用者按「繼續上次那份」會看到「搬進隔離區 0 個檔案…七天內可以復原」，跟剛清完只差一個數字。其他時候是 `false` |
+| `stoppedEarly` | 布林。`true` ＝ **還沒做完就停在中途**：例如清理鎖被另一個清理動作接走（`BUSY`）。已經搬好的在逐項結果裡，還沒碰到的一個都沒動。這不是「失敗」：之後再 `apply` 同一份會從停下來的地方接著做。UI 要講「停在中途、還沒做完」，不可以說成做完了。其他時候是 `false` |
+
+`noop` 是 `true` 的時候 `quarantinedCount` 一定是 0，**反過來不成立**：每一項都真的搬失敗時
+`quarantinedCount` 也是 0，但 `noop` 是 `false`（那時候要講失敗的原因）。
+所以 UI 不可以自己拿 `quarantinedCount === 0` 去猜 `noop`，要看這個欄位。
+
 ### `GET /cleanup/plans` —— 計畫列表
 
 形狀刻意跟 demo 的 `/demo/cleanup/history` 一樣（`{ total, offset, limit, operations }`），
@@ -297,7 +311,7 @@ UI 不能只畫成功的樣子。
 `undoable=1` 與 `pending=1` 同時帶的話，以 `undoable` 為準。
 `canUndo` 在三種篩法裡的意思都一樣：這份計畫現在還有沒有檔可以放回去（在隔離區，或復原到一半中斷）。
 
-`restoring` 是「這份已經開始復原了」（有任何 restore 紀錄）。**它是 true 的時候，`apply` 一定回 409**，唯一的出口是繼續 `undo`。面板拿它決定要不要給「繼續上次那份」那顆按鈕；`GET /cleanup/plans/:id` 與 409 的 `blockingPlan` 也帶同一個欄位。
+`restoring` 是「這份**有任何復原紀錄**」（開始放回過任何一個檔，不管那一個放回成功沒有）—— 它不是「復原做到一半」的意思，**全部放回完的（`status` 是 `restored`）也是 true**。它一個人決定不了 `apply` 會不會被擋，要跟 `status` 一起看：還沒收尾的 `proposed`／`partial`／`error` 而且 `restoring` 是 true → `apply` 回 409 `CONFLICT`（出口是繼續 `undo`）；`applied`／`restored`／`dismissed` → 不管 `restoring` 是什麼，`apply` 都回 200、原樣回傳、一個檔都不動。**「接著放回」那顆按鈕要看 `canUndo`，不是看 `restoring`**：全部放回完的那一筆 `restoring` 是 true 而 `canUndo` 是 false，按下去什麼都不會發生（`docs/api/cleanup-plans-list.json` 裡就有這一筆）。第一方面板只在 `proposed` 的計畫上讀 `restoring`，所以剛好沒踩到。`GET /cleanup/plans/:id` 與 409 的 `blockingPlan` 也帶同一個欄位。
 
 ### 復原的檔不會回到**這次的**清理清單
 

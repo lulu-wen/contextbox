@@ -89,6 +89,11 @@ items: [{ itemId, name, bytes, mtime, candidateIds, skipped,
 
 `applyPlan/undoPlan` 額外回 `quarantinedCount`、`quarantinedBytes`、`restoredCount`、`undoable`。檔案層級失敗會回 `partial/error`，錯誤文字不帶 OS 路徑；成功項目仍可復原。
 
+`applyPlan` 另外回兩個布林（2026-09-19 稽核第三輪 R3-17）。兩個講的都是「**這一次**做了什麼」，`status` 與 `quarantinedCount` 講的則是計畫累積到現在的樣子：
+
+- `noop`：`true` ＝ 這一次**一個檔都沒有動**，只是把跑完過的計畫原樣回傳（上面 R2-3 那一條）。`quarantinedCount` 這時一定是 0，但反過來不成立 —— 每一項都真的搬失敗時它也是 0，那時 `noop` 是 `false`。呼叫端（CLI 與面板）要分開講：no-op 不可以印成剛清完，也不可以當成「這一種動作成功了」去清掉還沒解決的錯誤。
+- `stoppedEarly`：`true` ＝ 還沒做完就**停在中途**（例如清理鎖被另一個清理動作接走，`BUSY`）。已經做到的在逐項結果裡，還沒碰到的一個都沒動；之後再 `apply` 同一份會從停下來的地方接著做。不是「動作沒執行」，呼叫端不可以回「什麼都沒發生」。
+
 `listQuarantine` 回陣列：`seq, planId, itemId, name, bytes, quarantinedAt, canEmptyAt, canEmptyNow`。`quarantinedBytes` 是 Downloads 搬出的大小；同磁碟隔離不會釋放實際磁碟空間。
 
 頂層 `CleanupError` 的 `code` 對到哪一個 HTTP 狀態碼，**以 `docs/api/README.md` 的錯誤表為準** —— 那是唯一一張，跟 `core/cleanup-routes.ts` 的 `HTTP_FOR_CODE` 一致，`test/repo.test.mjs` 會比。（這裡原本另外寫了一份對應，跟實作不一樣：`EMPTY_PLAN` 其實是 409、`BUSY` 是 503、`CONFIRMATION_EXPIRED` 是 410、`CONFIRMATION_REQUIRED` 是 428。）設定與無法預期的錯誤回通用 500；不要把 SQLite/OS exception.message 直接送到 UI。

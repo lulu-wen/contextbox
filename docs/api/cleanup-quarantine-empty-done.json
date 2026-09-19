@@ -2,5 +2,7 @@
   "phase": "done",
   "deletedCount": 1,
   "deletedBytes": 13,
-  "errors": []
+  "errors": [],
+  "setAside": [],
+  "noop": false
 }

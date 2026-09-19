@@ -11,6 +11,9 @@ import {
   CleanupError, cleanupProblem, execRefusesName, transaction, withCleanupLock, type JournalRow,
 } from './cleanup-journal.ts'
 import { candidateIdsFor, getPlan, planRow, planSnapshots, validateIds, type PlanSnapshot } from './cleanup-plans.ts'
+// **只搬不刪的唯一例外都住在 cleanup-quarantine.ts。** 這裡拿 dropReservation 收掉
+// putBack 自己建的 0 byte 佔位檔（稽核第三輪 R3-5）；循環 import 沒問題，兩邊都只在函式裡用。
+import { dropReservation } from './cleanup-quarantine.ts'
 
 export const DEFAULT_QUARANTINE = join(homedir(), '.contextbox', 'quarantine')
 
@@ -260,8 +263,15 @@ function reserveDestination(db: DatabaseSync, row: JournalRow) {
 
 /** rename 之後驗證沒過、已經把檔搬回原位 —— 那一項的原因（逐項結果是 failed）。 */
 export const MOVED_BACK = '搬進去之後檔案還在變動，已經放回原位。'
-/** rename 之後驗證沒過、原位又有了別的檔（或搬不回去）—— 檔留在隔離區，journal 維持 started。 */
-const LEFT_IN_QUARANTINE = '搬進去之後檔案還在變動，原位置已經有別的檔，沒有放回；檔案留在隔離區。'
+/**
+ * rename 之後驗證沒過、原位又有了別的檔（或搬不回去）—— **檔確實在隔離區**。
+ *
+ * 稽核第三輪 R3-4：以前這一支讓 journal 維持 started，結果 recoverInterrupted 結不掉
+ * （它要求指紋對得上，而走到這裡的前提就是對不上）、undo 一定丟 VERIFY_FAILED、
+ * 隔離區清單／可復原清單／健康檢查／doctor 四個地方都看不到它 —— 檔案在隔離區裡隱形。
+ * 現在**承認它在**：那一列記成 done，這句話存進 cleanup_item_errors 與 file_items.error。
+ */
+export const LEFT_IN_QUARANTINE = '搬進去之後檔案還在變動，沒有放回原位，請人工檢查隔離區。'
 
 /**
  * 隔離區那個位置有沒有**可能是搬進去的檔**：不存在、或是 0 byte（預留的空檔）→ 沒有。
@@ -278,16 +288,27 @@ function mayHoldMovedFile(path: string): boolean {
  * 不會蓋掉它。佔住之後被換掉（dev／ino 不對）也不搬。
  */
 function putBack(row: JournalRow): boolean {
+  // 自己建的佔位檔（還沒被 rename 換掉的話）。**搬回失敗就要收掉它**（稽核第三輪 R3-5）：
+  // 以前留在使用者的 Downloads 裡，檔名跟原檔一模一樣、內容是空的、權限還從 0644 變成 0600，
+  // 下一次掃描會把它當成新的空檔、預設打勾，下一次清理就把這個假檔搬走 —— 真內容還在隔離區。
+  let reserved: { dev: number; ino: number; mtime: string } | null = null
   try {
     checkedPath(dirname(row.from_path), true)
     const fd = openSync(row.from_path, 'wx', 0o600)
-    let held: { dev: number; ino: number }
-    try { held = fstatSync(fd) } finally { closeSync(fd) }
+    try {
+      const held = fstatSync(fd)
+      reserved = { dev: held.dev, ino: held.ino, mtime: held.mtime.toISOString() }
+    } finally { closeSync(fd) }
     const st = lstatSync(row.from_path)
-    if (st.dev !== held.dev || st.ino !== held.ino || st.size !== 0) return false
+    if (st.dev !== reserved.dev || st.ino !== reserved.ino || st.size !== 0) return false
     renameSync(row.to_path, row.from_path)
+    reserved = null   // rename 成功：佔位的那個 inode 已經被換掉，沒有東西要收
     return true
   } catch { return false }
+  finally {
+    // 只有「完全是自己剛建的那一個 0 byte 檔」會被刪，別人換上去的一律不動（dropReservation 自己驗）
+    if (reserved) { try { dropReservation(row.from_path, reserved) } catch { /* 收不掉就算了，不可以蓋掉原本的結果 */ } }
+  }
 }
 
 /** Journal is already committed. An exclusive empty reservation prevents ordinary
@@ -349,6 +370,42 @@ function markMoved(db: DatabaseSync, row: JournalRow) {
 }
 
 /**
+ * 隔離區那個位置有**真的內容**、但跟當初記下的指紋對不上 —— 檔確實搬進去了，
+ * 只是搬進去之後還在被寫（稽核第三輪 R3-4）。
+ *
+ * 0 byte 的預留空檔不算（那是「還沒搬」）；讀不到也不算（說不準的時候不可以下結論）。
+ */
+function quarantineMismatch(db: DatabaseSync, row: JournalRow, opts: ExecOptions): boolean {
+  if (row.op !== 'quarantine') return false
+  const at = fingerprintOrNull(row.to_path, opts.maxBytes)
+  if (!at || at.size === 0) return false
+  try { return !same(moveFingerprint(db, row.seq), at) } catch { return false }
+}
+
+/**
+ * **承認檔在隔離區**：那一列記成 done，原因同時寫進 cleanup_item_errors（跟著計畫走，重掃不會被蓋掉）
+ * 與 file_items.error（逐項結果馬上講得出來）。回傳有沒有真的改到（別人先結掉了就回 false）。
+ *
+ * 跟 markMoved 的差別只有一個：**不刪 cleanup_item_errors，反而寫一筆**。
+ * 這一項搬是搬進去了，但沒有驗證過，使用者該去看一眼隔離區裡那個檔。
+ */
+function markLeftInQuarantine(db: DatabaseSync, row: JournalRow): boolean {
+  const at = new Date().toISOString()
+  return transaction(db, () => {
+    const changed = Number(db.prepare(`UPDATE cleanup_journal SET status='done',error=? WHERE seq=? AND status='started'`)
+      .run(LEFT_IN_QUARANTINE, row.seq).changes) === 1
+    if (!changed) return false
+    db.prepare('UPDATE cleanup_move_details SET completed_at=COALESCE(completed_at,?) WHERE seq=?').run(at, row.seq)
+    db.prepare(`UPDATE file_items SET status='quarantined',error=? WHERE id=?`).run(LEFT_IN_QUARANTINE, row.item_id)
+    db.prepare(`UPDATE cleanup_candidates SET status='quarantined' WHERE item_id=?`).run(row.item_id)
+    db.prepare(`INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)
+                ON CONFLICT(plan_id,item_id) DO UPDATE SET why=excluded.why, at=excluded.at`)
+      .run(row.plan_id, row.item_id, LEFT_IN_QUARANTINE, at)
+    return true
+  })
+}
+
+/**
  * 記一項失敗。`planId` 有給（套用時）就**同時寫進 cleanup_item_errors**。
  *
  * 檢查沒過的失敗（TOO_FRESH、CHANGED…）根本不會寫 journal，只寫 file_items.error，
@@ -384,14 +441,41 @@ function markFailure(
   })
 }
 
-function result(db: DatabaseSync, id: string) {
+/** 這一次動作停在半路的原因（鎖被另一個清理動作接走）。呼叫端拿它決定要不要說「還沒做完」。 */
+export type StoppedEarly = { why: string }
+type ResultExtra = { noop?: boolean; stoppedEarly?: StoppedEarly }
+
+/**
+ * 一次動作的結果。
+ *
+ * - `noop`：這一次**一個檔都沒動**（跑過的計畫重送、已經放棄的、已經復原完的）。
+ *   稽核第三輪 R3-2：以前重送跟真的搬長得一模一樣，呼叫端把 no-op 當成「這一種動作成功了」，
+ *   把一個還沒解決的套用錯誤清掉。既有欄位的意思都不變，只是多講一句「這次什麼都沒做」。
+ * - `stoppedEarly`：鎖中途被接走，停在半路（稽核第三輪 R3-3）。沒停就不帶這個欄位。
+ */
+function result(db: DatabaseSync, id: string, extra: ResultExtra = {}) {
   const moved = db.prepare(`SELECT DISTINCT item_id FROM cleanup_journal WHERE plan_id=? AND op='quarantine' AND status='done'
     AND seq NOT IN (SELECT seq FROM cleanup_purges WHERE status='done')`).all(id) as { item_id: string }[]
   const restored = db.prepare(`SELECT DISTINCT item_id FROM cleanup_journal WHERE plan_id=? AND op='restore' AND status='done'`).all(id) as { item_id: string }[]
   const restoredIds = new Set(restored.map(r => r.item_id))
   const active = new Set(moved.filter(r => !restoredIds.has(r.item_id)).map(r => r.item_id))
   return { ...getPlan(db, id), quarantinedCount: active.size, restoredCount: restored.length,
-    quarantinedBytes: planSnapshots(db, id).filter(i => active.has(i.id)).reduce((n, i) => n + i.bytes, 0), undoable: active.size > 0 }
+    quarantinedBytes: planSnapshots(db, id).filter(i => active.has(i.id)).reduce((n, i) => n + i.bytes, 0),
+    undoable: active.size > 0, noop: false, ...extra }
+}
+
+/**
+ * 鎖被另一個清理動作接走（renew 丟 BUSY）時停下來，**不丟例外**（稽核第三輪 R3-3）。
+ *
+ * 以前直接讓 BUSY 冒出去：CLI 回 2（「動作沒執行」），其實已經有檔搬進隔離區、計畫停在半途，
+ * 一行逐項結果都沒印、連計畫 id 都沒給 —— 使用者沒有 undo 的入口。現在停在那裡、
+ * 把已經做完的收好，回傳帶 stoppedEarly，呼叫端才能逐項報告。其他錯照樣往上丟。
+ */
+function stopIfTakenOver(renew: () => void): StoppedEarly | null {
+  try { renew(); return null } catch (e) {
+    if (e instanceof CleanupError && e.code === 'BUSY') return { why: e.message }
+    throw e
+  }
 }
 
 export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { skippedIds?: string[] }) {
@@ -399,7 +483,8 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
   if (opts.skippedIds !== undefined) validateIds(opts.skippedIds)
   return withCleanupLock(db, renew => {
     const plan = planRow(db, id)
-    if (['applied', 'restored', 'dismissed'].includes(plan.status)) return result(db, id)
+    // 提早回傳的一律是 no-op：一個檔都不會動（R3-2）
+    if (['applied', 'restored', 'dismissed'].includes(plan.status)) return result(db, id, { noop: true })
     if (db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(id)) {
       throw new CleanupError('CONFLICT', '計畫已開始復原，請繼續復原。')
     }
@@ -408,7 +493,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
     // 放回（表示要留著）之後，遲到的重送、面板的「再試一次」、cleanup apply <id> 會把它再搬一次；
     // 復原失敗留下的 error 也被當成「套用失敗、可重試」。失敗的檔要重試就建一份新計畫。
     // proposed（包括做到一半中斷、有 journal 的）照舊接著做。
-    if (plan.status === 'partial' || plan.status === 'error') return result(db, id)
+    if (plan.status === 'partial' || plan.status === 'error') return result(db, id, { noop: true })
     const items = planSnapshots(db, id)
     const started = Boolean(db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id))
     if (opts.skippedIds !== undefined) {
@@ -433,10 +518,13 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
     const q = quarantineRoot(opts, true)
     const selected = new Set(getPlan(db, id).items.filter(i => !i.skipped).map(i => i.itemId))
     let done = 0
+    let stopped: StoppedEarly | null = null
     const errors: string[] = []
     for (const [index, item] of items.entries()) {
-      // 每處理一項就續約：一次跑超過 30 分鐘時，鎖不可以被別的行程當成殘留接走
-      renew()
+      // 每處理一項就續約：一次跑超過 30 分鐘時，鎖不可以被別的行程當成殘留接走。
+      // 被接走了就停在這裡（不丟例外），計畫留在 proposed，之後接得下去（R3-3）。
+      stopped = stopIfTakenOver(renew)
+      if (stopped) break
       opts.onProgress?.(index, items.length)
       const ids = candidateIdsFor(db, id, item.id)
       const skipped = ids.some(c => (db.prepare('SELECT skipped FROM cleanup_plan_items WHERE plan_id=? AND candidate_id=?').get(id, c) as any).skipped)
@@ -469,13 +557,22 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
         markMoved(db, row)
         done++
       } catch (e) {
-        // 隔離區那個位置有真的內容（rename 做完了：搬不回去、寫 done 失敗……）→ journal 維持 started，
+        // **搬進去了、驗證沒過、又搬不回原位**：檔確實在隔離區，承認它在（稽核第三輪 R3-4）。
+        // 那一列記成 done＋原因，隔離區清單才列得出來、七天後的清空才碰得到、undo 才說得出實話。
+        if (row && e instanceof CleanupError && e.code === 'VERIFY_FAILED' && e.message === LEFT_IN_QUARANTINE
+            && quarantineMismatch(db, row, opts) && markLeftInQuarantine(db, row)) {
+          errors.push(LEFT_IN_QUARANTINE)
+          continue
+        }
+        // 隔離區那個位置有真的內容（rename 做完了：寫 done 失敗……）→ journal 維持 started，
         // 不可以記成 failed：failed 的意思是「原檔還在原位」，檔會在隔離區裡隱形（稽核第二輪 R2-1b）
         const why = markFailure(db, row, item.id, e, id, row ? mayHoldMovedFile(row.to_path) : false)
         if (why === null) done++   // 另一個行程已經把這一項做完
         else errors.push(why)
       }
     }
+    // **停在半路就不寫計畫狀態**：它還是 proposed，使用者（或下一次指令）接得下去。
+    if (stopped) return result(db, id, { stoppedEarly: stopped })
     db.prepare('UPDATE cleanup_plans SET status=?,applied_at=COALESCE(applied_at,?),error=? WHERE id=?')
       .run(errors.length ? (done ? 'partial' : 'error') : 'applied', new Date().toISOString(), errors[0] ?? null, id)
     return result(db, id)
@@ -524,17 +621,20 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
   checkOptions(opts)
   return withCleanupLock(db, renew => {
     const plan = planRow(db, id)
-    if (['restored', 'dismissed'].includes(plan.status)) return result(db, id)
+    if (['restored', 'dismissed'].includes(plan.status)) return result(db, id, { noop: true })
     // **還沒開始的計畫沒有東西可以復原。** 以前照樣跑完、把計畫標成 restored，逐項變成
     // 「沒有搬動，原因不明」—— 一份從沒套用的計畫在歷史裡變成「復原過了」。判斷跟 releasePlan 一樣。
     if (plan.status === 'proposed' && !db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id)) {
       throw new CleanupError('CONFLICT', '這份計畫還沒套用，沒有東西可以復原；不要了請用放棄（release）。')
     }
     let restored = 0
+    let stopped: StoppedEarly | null = null
     const errors: string[] = []
     const items = planSnapshots(db, id).reverse()
     for (const [index, item] of items.entries()) {
-      renew()
+      // 鎖被接走就停在這裡：已經放回去的照實回報，計畫狀態不動，之後接得下去（R3-3）
+      stopped = stopIfTakenOver(renew)
+      if (stopped) break
       opts.onProgress?.(index, items.length)
       const q = latest(db, id, item.id, 'quarantine')
       if (!q) continue
@@ -587,6 +687,7 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
         else errors.push(why)
       }
     }
+    if (stopped) return result(db, id, { stoppedEarly: stopped })
     db.prepare('UPDATE cleanup_plans SET status=?,error=? WHERE id=?')
       .run(errors.length ? (restored ? 'partial' : 'error') : 'restored', errors[0] ?? null, id)
     return result(db, id)
@@ -612,7 +713,9 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
  *   「復原中斷，沒有放回」：這一項還在隔離區，逐項是 moved，可以再復原（failed 的列 undo 會接著做）
  * - 其他 → 維持 started
  *
- * 計畫本身的 status 不動：做到一半中斷的計畫照樣是 proposed，要接著做完或復原由使用者決定。
+ * **結完 journal 之後再收計畫**（稽核第三輪 R3-1）：整份其實已經做完的計畫以前永遠停在 proposed ——
+ * 寵物永遠說「有 1 份清單等你確認」，面板的待確認清單卻是空的，releaseStalePlans 依設計又不碰有
+ * journal 的計畫，任何自動路徑都收不掉它。見 settleProposedPlans。
  * 唯讀模式也可以跑：它只改資料庫，不動檔案。
  */
 export function recoverInterrupted(db: DatabaseSync, opts: ExecOptions): { recovered: number } {
@@ -628,8 +731,83 @@ export function recoverInterrupted(db: DatabaseSync, opts: ExecOptions): { recov
         if (row.op === 'quarantine' ? recoverMove(db, row, opts) : recoverRestore(db, row, opts)) recovered++
       } catch { /* 這一列說不準（路徑對不上、隔離區讀不到）：維持 started */ }
     }
+    settleProposedPlans(db)
     return { recovered }
   })
+}
+
+/** 一項在這份計畫裡的下場（settlePlan 用）。跟 cleanup-routes 的逐項結果同一套判斷。 */
+type ItemVerdict = 'moved' | 'restored' | 'failed' | 'skipped' | 'unresolved' | 'untouched'
+
+/**
+ * **把已經做完、卻還停在 proposed 的計畫收成正確的狀態**（稽核第三輪 R3-1）。回傳收了幾份。
+ *
+ * 只收「沒有還在半路的 journal 列（started），而且每一項都有下落」的 proposed 計畫：
+ * - 全部搬成 → applied；有失敗的 → partial；全部失敗 → error；全部放回了 → restored
+ * - **還有「沒處理到」的項目（沒有 journal 列、也沒有存下來的失敗原因）→ 維持 proposed**，
+ *   那才是真的中斷，使用者要接著做完或復原。
+ *
+ * 為什麼一定要在這裡做：recoverInterrupted 結掉 journal 之後，計畫本身沒有任何自動路徑會收 ——
+ * releaseStalePlans 明文跳過有 journal 的計畫，寵物只看 proposedPlans 的數量，
+ * 結果寵物永遠顯示「有 1 份清單等你確認」而面板的待確認清單是空的，使用者按不到任何東西。
+ * 任何一份判不出來的（讀不到快照、SQL 出錯）就不動它：說不準的時候不可以改使用者的狀態。
+ */
+function settleProposedPlans(db: DatabaseSync): number {
+  let settled = 0
+  const plans = db.prepare(`SELECT id FROM cleanup_plans WHERE status='proposed'`).all() as { id: string }[]
+  for (const p of plans) {
+    try { if (settlePlan(db, p.id)) settled++ } catch { /* 這一份說不準：維持 proposed */ }
+  }
+  return settled
+}
+
+function verdictOf(
+  db: DatabaseSync, planId: string, itemId: string, stored: Map<string, string>,
+): { verdict: ItemVerdict; why: string | null } {
+  const q = latest(db, planId, itemId, 'quarantine')
+  const r = latest(db, planId, itemId, 'restore')
+  if (q?.status === 'started' || r?.status === 'started') return { verdict: 'unresolved', why: null }
+  if (!q) {
+    if (latest(db, planId, itemId, 'skip')) return { verdict: 'skipped', why: null }
+    // 檢查沒過（TOO_FRESH、CHANGED…）根本不寫 journal，但套用當下會存原因 —— 那也是「處理過」。
+    // 兩樣都沒有才是真的沒碰過。
+    const why = stored.get(itemId)
+    return why === undefined ? { verdict: 'untouched', why: null } : { verdict: 'failed', why }
+  }
+  if (q.status === 'done') {
+    if (r?.status === 'done') return { verdict: 'restored', why: null }
+    // 搬進去了、驗證沒過（R3-4）：檔在隔離區，但這一項不算成功
+    const why = stored.get(itemId)
+    return why === undefined ? { verdict: 'moved', why: null } : { verdict: 'failed', why }
+  }
+  // **reverted ＝ 確認沒搬、檔還好端端在原位**（中斷在 rename 之前）。那是「還沒處理」，不是失敗：
+  // 判成 failed 的話，收尾會把一份接得完的計畫收成 error，之後 apply 一律 no-op，那個檔再也搬不動
+  // （稽核第三輪的驗證員抓到的回歸）。留成 unresolved，計畫維持 proposed，下一次 apply 會接著搬。
+  if (q.status === 'reverted' && stored.get(itemId) === undefined) return { verdict: 'unresolved', why: null }
+  return { verdict: 'failed', why: stored.get(itemId) ?? q.error }   // failed（或 reverted 而且套用當下記過原因）
+}
+
+function settlePlan(db: DatabaseSync, id: string): boolean {
+  const items = planSnapshots(db, id)
+  if (!items.length) return false
+  const stored = new Map((db.prepare('SELECT item_id, why FROM cleanup_item_errors WHERE plan_id=?')
+    .all(id) as { item_id: string; why: string }[]).map(r => [r.item_id, r.why]))
+  let moved = 0, restored = 0, failed = 0
+  let why: string | null = null
+  for (const item of items) {
+    const v = verdictOf(db, id, item.id, stored)
+    if (v.verdict === 'unresolved' || v.verdict === 'untouched') return false
+    if (v.verdict === 'moved') moved++
+    else if (v.verdict === 'restored') restored++
+    else if (v.verdict === 'failed') { failed++; why = why ?? v.why }
+  }
+  // 判斷跟 applyPlan／undoPlan 寫計畫狀態時一模一樣，不另外發明一套
+  const status = failed ? (moved || restored ? 'partial' : 'error')
+    : restored && !moved ? 'restored'
+    : 'applied'
+  return Number(db.prepare(
+    `UPDATE cleanup_plans SET status=?,applied_at=COALESCE(applied_at,?),error=? WHERE id=? AND status='proposed'`
+  ).run(status, new Date().toISOString(), failed ? why : null, id).changes) === 1
 }
 
 function recoverMove(db: DatabaseSync, row: JournalRow, opts: ExecOptions): boolean {
@@ -641,10 +819,15 @@ function recoverMove(db: DatabaseSync, row: JournalRow, opts: ExecOptions): bool
     return true
   }
   const atOriginal = fingerprintOrNull(row.from_path, opts.maxBytes)
-  if (atOriginal && same(expected, atOriginal) && !mayHoldMovedFile(row.to_path)) {
+  const stillAtOriginal = Boolean(atOriginal && same(expected, atOriginal))
+  if (stillAtOriginal && !mayHoldMovedFile(row.to_path)) {
     return Number(db.prepare(`UPDATE cleanup_journal SET status='reverted',error=? WHERE seq=? AND status='started'`)
       .run(NOT_MOVED, row.seq).changes) === 1
   }
+  // **隔離區那個位置有真的內容、指紋卻對不上**：檔就是搬進去了，只是搬進去之後還在被寫（R3-4）。
+  // 承認它在，記成 done＋原因；以前維持 started，每個清單都看不到它、undo 也動不了它。
+  // 原檔還好端端在原位的話不算（那種就不是「搬進去了」），fail closed。
+  if (!stillAtOriginal && atQuarantine && atQuarantine.size > 0) return markLeftInQuarantine(db, row)
   return false
 }
 

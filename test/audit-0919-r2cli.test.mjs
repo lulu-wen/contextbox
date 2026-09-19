@@ -268,7 +268,10 @@ function killHung(log) {
 describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInterrupted、releaseStalePlans）', () => {
   const statusOf = (s, id) => one(s, `SELECT status FROM cleanup_journal WHERE plan_id=? AND op='quarantine'`, id)?.status
 
-  test('C-exp8：單檔計畫在 rename 之後被砍 → quarantine 列得出、doctor 數得到並列出那份計畫、undo（不給 id）放回（0）', async t => {
+  // 稽核第三輪 R3-1 改了這一條的後半：收尾把 journal 結成 done 之後，**整份都做完的計畫也要收掉** ——
+  // 它不再是「做到一半中斷」，而是 applied。所以 doctor 的「中斷計畫」不該再列它（以前列著，
+  // 寵物也永遠說「有 1 份清單等你確認」而面板的待確認清單是空的），但隔離區照樣列得出來、undo 照樣放得回。
+  test('C-exp8：單檔計畫在 rename 之後被砍 → quarantine 列得出、計畫收成 applied（不再是中斷計畫）、undo（不給 id）放回（0）', async t => {
     const s = sandbox(t, { files: { 'only.zip': 120 } })
     assert.equal(s.run(['cleanup', 'scan']).code, 0)
     const p = createPlan(s.db())
@@ -285,10 +288,11 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     const doc = s.run(['doctor'])
     assert.equal(doc.code, 0, doc.out)
     assert.match(doc.out, /隔離區[^\n]*\n\s+1 個檔案/, doc.out)
-    assert.ok(doc.out.includes(p.id), `doctor 要列出做到一半中斷的計畫：\n${doc.out}`)
-    assert.match(doc.out, /1 個已經在隔離區/, doc.out)
-    assert.ok(doc.out.includes(`node cli.mjs cleanup undo ${p.id}`), doc.out)
-    assert.ok(doc.out.includes(`node cli.mjs cleanup apply ${p.id}`), doc.out)
+    assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', p.id).status, 'applied',
+      '整份都做完了，計畫不可以還停在 proposed（R3-1）')
+    assert.equal(one(s, `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).n, 0,
+      '寵物不可以再說「有 1 份清單等你確認」')
+    assert.doesNotMatch(doc.out, /中斷計畫/, `已經做完的不是中斷計畫：\n${doc.out}`)
 
     const u = s.run(['cleanup', 'undo'])
     assert.equal(u.code, 0, u.out)
@@ -302,14 +306,15 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
   test('每一個入口自己收尾：被砍之後第一個跑的是哪一個清理指令（scan／list／apply／undo／release／quarantine、doctor），都先把那一列結掉', async t => {
     const ok0 = r => assert.equal(r.code, 0, r.out)
     for (const [args, check] of [
-      [['doctor'], r => { ok0(r); assert.match(r.out, /隔離區[^\n]*\n\s+1 個檔案/, r.out); assert.match(r.out, /中斷計畫/, r.out) }],
+      // R3-1：單檔計畫整份做完了 → 收成 applied，不再是「中斷計畫」（隔離區照樣算得到那個檔）
+      [['doctor'], r => { ok0(r); assert.match(r.out, /隔離區[^\n]*\n\s+1 個檔案/, r.out); assert.doesNotMatch(r.out, /中斷計畫/, r.out) }],
       [['cleanup', 'quarantine'], r => { ok0(r); assert.match(r.out, /隔離區有 1 個檔案/, r.out) }],
       [['cleanup', 'undo'], r => { ok0(r); assert.match(r.out, /放回原位 1 個檔案/, r.out) }],
       [['cleanup', 'scan'], ok0],
       [['cleanup', 'list'], ok0],
       [['cleanup'], ok0],
       [['cleanup', 'apply'], () => {}],               // 那個檔已經不在 Downloads：沒東西清或撞到中斷的計畫，離開碼不管
-      [['cleanup', 'release', '<id>'], r => assert.match(r.out, /已經開始|做完|放回/, r.out)],   // 開始過的放棄不了（1）
+      [['cleanup', 'release', '<id>'], r => assert.match(r.out, /已經開始|做完|放回/, r.out)],   // 收完之後是 applied，放棄不了（1）
     ]) {
       const s = sandbox(t, { files: { 'only.zip': 120 } })
       s.run(['cleanup', 'scan'])
@@ -376,7 +381,14 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     assert.match(r.out, /a\.zip/, '放棄計畫不動候選：a.zip 還在清單上')
   })
 
-  test('apply <放了 61 分鐘的計畫>：先被自動放棄，講清楚是自動放棄的、檔不動（0）；對照：59 分鐘的照常套用', t => {
+  /**
+   * 這一條本來釘的是「apply <放了 61 分鐘的計畫> 會先被自己的收尾自動放棄」——
+   * **第三輪 R3-6b 判定那是 bug**（使用者指名要跑的那一份被同一個指令在前一毫秒作廢，
+   * 然後回報成功 0，包裝的腳本會判定「清理完成」）。指名的那一份現在會照常套用。
+   * 這裡改釘兩件事：(1) 指名的照常套用；(2) 被**別的**指令自動放棄之後再 apply，
+   * 還是要講清楚「可能是超過一小時自動放棄的」（原本那句話的價值）。
+   */
+  test('apply <放了 61 分鐘的計畫>：指名的照常套用；被別的指令自動放棄之後再 apply 才講「自動放棄」（0、檔不動）', t => {
     const s = sandbox(t, { files: { 'a.zip': 60, 'b.zip': 60 } })
     s.run(['cleanup', 'scan'])
     const d = s.db()
@@ -385,13 +397,19 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     const ago = min => new Date(Date.now() - min * 60_000).toISOString()
     d.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run(ago(61), old.id)
     d.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run(ago(59), young.id)
+    // 指名它：收尾要跳過它（R3-6b），檔真的搬走
     const r = s.run(['cleanup', 'apply', old.id])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /超過一小時沒有套用[^\n]*自動放棄/, r.out)
-    assert.ok(existsSync(join(s.dl, 'a.zip')), '自動放棄的計畫不可以搬檔')
+    assert.doesNotMatch(r.out, /已經放棄了/, `使用者指名的那一份被同一個指令的收尾作廢了：\n${r.out}`)
+    assert.ok(!existsSync(join(s.dl, 'a.zip')), `指名的計畫要照常套用：\n${r.out}`)
+    // 沒指名的那一份：放到超過一小時之後，任何一個清理指令的收尾都會放棄它
+    d.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run(ago(61), young.id)
+    assert.equal(s.run(['cleanup', 'list']).code, 0)
+    assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', young.id).status, 'dismissed', '前提：被自動放棄了')
     const y = s.run(['cleanup', 'apply', young.id])
     assert.equal(y.code, 0, y.out)
-    assert.ok(!existsSync(join(s.dl, 'b.zip')), y.out)
+    assert.match(y.out, /超過一小時沒有套用[^\n]*自動放棄/, y.out)
+    assert.ok(existsSync(join(s.dl, 'b.zip')), '已經放棄的計畫不可以搬檔')
   })
 
   test('pet 開機與每一輪背景重掃之前都先收尾（掃描子行程卡住、自己收不了尾也一樣）', async t => {
@@ -653,10 +671,14 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     const d = s.db()
     const row = n => d.prepare(`SELECT j.seq, j.to_path FROM cleanup_journal j JOIN file_items i ON i.id=j.item_id
       WHERE i.name=? AND j.op='quarantine' AND j.plan_id=?`).get(n, id)
-    // b：搬到一半中斷而且說不準（journal 停在 started、隔離區那份搬進去之後還在變）→ 收尾也結不掉，unknown
+    // b：搬到一半中斷而且**真的說不準** → 收尾也結不掉，unknown。
+    // 稽核第三輪 R3-4 之後「隔離區有真的內容、只是指紋對不上」會被收成 done（檔確實在隔離區），
+    // 所以要留下 unknown 就只剩「隔離區那個位置根本讀不出指紋」：這裡把它換成一個資料夾
+    // （別的程式搞出來的），原位也沒有那個檔 —— 兩邊都給不出證據。
     const b = row('b.zip')
     d.prepare(`UPDATE cleanup_journal SET status='started' WHERE seq=?`).run(b.seq)
-    writeFileSync(b.to_path, '搬進去之後還在變', { flag: 'a' })
+    rmSync(b.to_path)
+    mkdirSync(b.to_path)
     // c：滿七天、清空掉了 → purged
     d.prepare('UPDATE cleanup_move_details SET completed_at=? WHERE seq=?').run(new Date(Date.now() - 8 * DAY).toISOString(), row('c.zip').seq)
     const token = /--yes (\S+)/.exec(s.run(['cleanup', 'quarantine', '--empty']).out)?.[1]
@@ -715,7 +737,10 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     assert.match(ro.out, /會清掉 0 個檔案/, ro.out)
     assert.match(ro.out, /不會重試/, ro.out)
     const real = s.run(['cleanup', 'apply', id])
-    assert.match(real.out, /搬進隔離區 1 個/, `前提：真的再套用一次也沒有多搬：\n${real.out}`)
+    // 真的再套用一次也是 no-op：第三輪 R3-2b 之後不再印「搬進隔離區 1 個」（那會讓人以為剛剛真的清了），
+    // 改成照實說「先前已經跑過了，這次什麼都沒做」。
+    assert.match(real.out, /這次什麼都沒做/, `前提：真的再套用一次也沒有多搬：\n${real.out}`)
+    assert.doesNotMatch(real.out, /搬進隔離區 \d+ 個/, real.out)
     assert.ok(existsSync(join(s.dl, 'sub', 'b.zip')))
 
     const s2 = sandbox(t, { files: { 'c.zip': 60, 'd.zip': 60 } })

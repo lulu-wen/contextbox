@@ -45,7 +45,7 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs, {
-  appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync,
+  appendFileSync, chmodSync, existsSync, linkSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { spawnSync } from 'node:child_process'
@@ -140,16 +140,22 @@ describe('R2-1a recoverInterrupted：只看檔案證據改 journal，不搬任�
     assert.equal(statSync(before.to_path).size, 0, '預留空檔不刪（只有清空會刪檔）')
   })
 
-  test('說不準的（隔離區那份被改過、原位也沒有）→ 維持 started；再跑一次也是 0', t => {
+  // 稽核第三輪 R3-4 改了這一條的答案：**隔離區有真的內容、原位也沒有 → 檔就是在隔離區**。
+  // 以前維持 started，結果 recoverInterrupted 永遠結不掉、undo 拒絕、四個清單都看不到它。
+  // 現在記成 done＋「請人工檢查隔離區」，列得出來、清得掉、undo 說得出實話。
+  test('隔離區那份被改過、原位也沒有 → 承認它在隔離區（done＋原因）；再跑一次是 0（R3-4）', t => {
     const f = fixture(t, { 'only.zip': 'important-ish' })
     const p = f.plan()
     crash(f, 'apply', p.id, 'after-rename')
     const r = row(f, p.id, 'only.zip')
     chmodSync(r.to_path, 0o600)
     appendFileSync(r.to_path, '!')
-    assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
-    assert.equal(row(f, p.id, 'only.zip').status, 'started')
+    assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
+    assert.equal(row(f, p.id, 'only.zip').status, 'done')
+    assert.match(f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=?').get(p.id).why, /隔離區/)
+    assert.deepEqual(listQuarantine(f.db).map(q => q.name), ['only.zip'], '隔離區清單看得到它')
     assert.equal(readFileSync(r.to_path, 'utf8'), 'important-ish!', '沒有搬任何檔')
+    assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
   })
 
   test('鎖被活著的行程拿著（時間是新的）→ BUSY，started 不動；鎖是 31 分鐘前的殘留 → 照常結掉（突變 X02）', t => {
@@ -245,7 +251,7 @@ describe('R2-1b rename 之後驗證沒過：立刻搬回原位', () => {
     assert.equal(row(f, p.id, 'a.zip').error, '搬進去之後檔案還在變動，已經放回原位。')
   })
 
-  test('對照：原位又出現同名的新檔 → 不搬回（新檔不動），那一列維持 started，看得到（unknown）', t => {
+  test('對照：原位又出現同名的新檔 → 不搬回（新檔不動），那一列記成 done＋原因，看得到（R3-4）', t => {
     const f = fixture(t, { 'a.zip': 'aaaa', 'b.zip': 'bbbbbb' })
     const p = f.plan()
     const r = afterRename((from, to) => {
@@ -256,14 +262,21 @@ describe('R2-1b rename 之後驗證沒過：立刻搬回原位', () => {
     assert.equal(r.status, 'partial')
     assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'NEW DOWNLOAD', '原位的新檔沒有被蓋掉')
     const a = row(f, p.id, 'a.zip')
-    assert.equal(a.status, 'started', '不可以記成 failed（failed 的意思是「原檔還在原位」）')
+    // 不可以記成 failed（failed 的意思是「原檔還在原位」），也不可以維持 started（那樣誰都看不到它）：
+    // 檔確實在隔離區，就記成 done，把「沒有放回原位，請人工檢查隔離區」存起來（稽核第三輪 R3-4）
+    assert.equal(a.status, 'done')
+    assert.match(f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=? AND item_id=?')
+      .get(p.id, a.item_id).why, /隔離區/)
     assert.equal(readFileSync(a.to_path, 'utf8'), 'aaaamore', '檔在隔離區')
-    assert.equal(outcomes(f, p.id)['a.zip'].outcome, 'unknown')
-    // recoverInterrupted 與 undo 都認得它、都不會把它結成「沒搬」
+    assert.equal(outcomes(f, p.id)['a.zip'].outcome, 'moved')
+    assert.match(outcomes(f, p.id)['a.zip'].why, /隔離區/)
+    assert.deepEqual(listQuarantine(f.db).map(q => q.name).sort(), ['a.zip', 'b.zip'])
+    // 收尾不會再被它卡住；undo 照實說隔離區那份對不上，兩邊的檔都不動
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
     assert.notEqual(undoPlan(f.db, p.id, f.opts).status, 'restored')
-    assert.equal(row(f, p.id, 'a.zip').status, 'started')
+    assert.equal(row(f, p.id, 'a.zip').status, 'done')
     assert.equal(readFileSync(a.to_path, 'utf8'), 'aaaamore')
+    assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'NEW DOWNLOAD')
   })
 
   test('對照：rename 之後沒有變動 → 照常搬進隔離區', t => {
@@ -642,7 +655,11 @@ describe('R2-6 鎖被接手之後', () => {
     withFs('renameSync', orig => function (from, to) {
       if (hook) { const h = hook; hook = null; h() }
       return orig.call(this, from, to)
-    }, () => assert.throws(() => applyPlan(f.db, p.id, f.opts), { code: 'BUSY' }))
+    // 鎖被 B 接走：A 停在那一項、照實回報（稽核第三輪 R3-3），不再丟 BUSY
+    }, () => {
+      const a = applyPlan(f.db, p.id, f.opts)
+      assert.ok(a.stoppedEarly, `鎖被接走要回 stoppedEarly：${JSON.stringify(a.stoppedEarly)}`)
+    })
     const rows = f.db.prepare(`SELECT status FROM cleanup_journal WHERE plan_id=? AND op='quarantine'`).all(p.id)
     assert.deepEqual(rows.map(r => r.status), ['done', 'done'])
     assert.ok(Object.values(outcomes(f, p.id)).every(o => o.outcome === 'moved' && o.why === null))
@@ -706,18 +723,25 @@ describe('R2-6 鎖被接手之後', () => {
     assert.equal(seqs.length, 3)
     const first = f.db.prepare('SELECT to_path FROM cleanup_journal WHERE seq=?').get(seqs[0]).to_path
     chmodSync(first, 0o600)
-    appendFileSync(first, '!')   // 第 0 項：隔離區的檔被改過，清空會拒絕（CHANGED）
+    // 第 0 項換成**真的錯**（硬鏈結替換是攻擊）。「內容被改過」在第三輪改成「放到一邊」、不算錯，
+    // 那條路另外由 audit-0919-r3exec 的「內容對不上不算錯」守。
+    const other = join(f.dir, 'elsewhere.bin')
+    writeFileSync(other, 'x')
+    rmSync(first)
+    linkSync(other, first)
     const steal = i => {
       if (i === 1) f.db.prepare(`UPDATE cleanup_operation_lock SET owner='2099-01-01T00:00:00.000Z thief'`).run()
     }
-    assert.throws(() => emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true, onProgress: steal }), { code: 'BUSY' })
+    const stop = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true, onProgress: steal })
+    assert.ok(stop.stoppedEarly, `鎖被接走要回 stoppedEarly：${JSON.stringify(stop)}`)
+    assert.equal(stop.deletedCount, 1, '已經刪掉的要算進回傳（R3-3）')
     f.db.exec('DELETE FROM cleanup_operation_lock')
     assert.equal(f.db.prepare(`SELECT count(*) n FROM cleanup_purges WHERE status='done'`).get().n, 1, '前提：刪了第 1 項')
     const r = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true })
     assert.equal(r.deletedCount, 2)
     assert.equal(r.deletedBytes, 8)
     assert.deepEqual(r.errors.map(e => e.seq), [seqs[0]], `同一個錯報了不只一次：${JSON.stringify(r.errors)}`)
-    assert.ok(existsSync(first) && readFileSync(first, 'utf8').endsWith('!'), '出錯的那一個沒有被刪')
+    assert.ok(existsSync(first), '出錯的那一個沒有被刪')
   })
 
   test('清空刪了 1 個之後鎖被接走（稽查員 B 的 r1）→ 同一個確認碼重送，總數是 3', t => {
@@ -729,15 +753,20 @@ describe('R2-6 鎖被接手之後', () => {
     assert.equal(prep.itemCount, 3)
     f.db.exec(`CREATE TRIGGER steal AFTER UPDATE OF status ON cleanup_purges WHEN NEW.status='done'
       BEGIN UPDATE cleanup_operation_lock SET owner='2099-01-01T00:00:00.000Z thief'; END`)
-    assert.throws(() => emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true }), { code: 'BUSY' })
+    const stop = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true })
+    assert.ok(stop.stoppedEarly, `鎖被接走要回 stoppedEarly：${JSON.stringify(stop)}`)
+    assert.equal(stop.deletedCount, 1)
     f.db.exec('DROP TRIGGER steal')
     f.db.exec('DELETE FROM cleanup_operation_lock')
     assert.equal(f.db.prepare(`SELECT count(*) n FROM cleanup_purges WHERE status='done'`).get().n, 1, '前提：刪了 1 個')
     const r = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true })
     assert.deepEqual({ count: r.deletedCount, bytes: r.deletedBytes, errors: r.errors }, { count: 3, bytes: 12, errors: [] })
-    assert.deepEqual(Object.keys(r).sort(), ['deletedBytes', 'deletedCount', 'errors'], '回應形狀不變')
+    // 形狀只多 noop（稽核第三輪 R3-2）；stoppedEarly 只在真的停在半路時才有
+    // setAside 是第三輪加的：不刪、也不算錯的那些（內容跟當初不一樣、或已經不在隔離區）
+    assert.deepEqual(Object.keys(r).sort(), ['deletedBytes', 'deletedCount', 'errors', 'noop', 'setAside'], '回應形狀不對')
+    assert.equal(r.noop, false)
     const again = emptyQuarantine(f.db, { ...f.opts, token: prep.token, confirmed: true })
-    assert.deepEqual(again, r, '之後重送拿到同一份結果')
+    assert.deepEqual(again, { ...r, noop: true }, '之後重送拿到同一份結果，只多一句「這次什麼都沒做」')
   })
 
   describe('鎖的時間戳', () => {

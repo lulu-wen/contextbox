@@ -213,17 +213,23 @@ describe('b 長時間操作每處理一項就續約鎖', () => {
     assert.deepEqual(run.seen, ['BUSY', 'BUSY', 'BUSY', 'BUSY'])
   })
 
-  test('（推論）做到一半鎖被別人接走了 → 下一項續約時停下來回 BUSY，不刪別人的鎖；之後重跑接得完', t => {
+  test('（推論）做到一半鎖被別人接走了 → 下一項續約時停下來回 stoppedEarly，不刪別人的鎖；之後重跑接得完', t => {
     const f = fixture(t, { 'a.zip': 'a', 'b.zip': 'b', 'c.zip': 'c', 'd.zip': 'd' })
     const p = plans.createPlan(f.db)
     const other = open(f.dbPath)
     t.after(() => other.close())
     const thief = `${new Date().toISOString()} ${randomUUID()}`
     let n = 0
-    assert.throws(() => exec.applyPlan(f.db, p.id, { ...f.opts, onProgress: () => {
+    // 稽核第三輪 R3-3：不再丟 BUSY —— 停在那一項、把已經做完的收好、回傳帶 stoppedEarly，
+    // 呼叫端才報得出「已經搬了幾個」與計畫 id（以前 CLI 回 2「動作沒執行」，其實已經搬了幾個）
+    const r = exec.applyPlan(f.db, p.id, { ...f.opts, onProgress: () => {
       // 第二項開始前：別的行程認定這把鎖是殘留，接手了
       if (++n === 2) other.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, thief)
-    } }), { code: 'BUSY' })
+    } })
+    assert.ok(r.stoppedEarly, `要回 stoppedEarly：${JSON.stringify(r.stoppedEarly)}`)
+    assert.match(r.stoppedEarly.why, /清理鎖/)
+    assert.equal(f.db.prepare('SELECT status FROM cleanup_plans WHERE id=?').get(p.id).status, 'proposed',
+      '停在半路不可以寫計畫狀態，不然接不下去')
     assert.equal(f.db.prepare('SELECT owner FROM cleanup_operation_lock').get()?.owner, thief, '不可以刪掉別人的鎖')
     assert.ok(['a.zip', 'b.zip', 'c.zip', 'd.zip'].some(x => existsSync(join(f.downloads, x))), '停下來之後不可以再搬')
 

@@ -75,6 +75,15 @@ describe('只搬不刪', () => {
         // 四人分工 §9 B: the sole exception is the guarded quarantine purge.
         // Behavioral boundary tests live in cleanup-undo.test.mjs.
         if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(path)') return
+        // 稽核第三輪 R3-5 的第二個（也是唯一另一個）例外：dropReservation。
+        // 為什麼安全：它刪的**不是使用者的資料**，而是 putBack 幾微秒前自己用 'wx' 建的 0 byte
+        // 佔位檔 —— 那個 inode 從建立到現在沒有任何內容。搬回原位的 rename 失敗時不收掉它，
+        // 使用者的 Downloads 就會多一個檔名跟原檔一模一樣、內容是空的假檔（真內容還在隔離區），
+        // 下一次掃描還會把它當成空檔預設打勾、下一次清理連這個假檔一起搬走。
+        // 條件開到最緊：dev／ino／mtime 要完全等於當初建的那一個，而且必須是一般檔、nlink 1、
+        // 大小 0（lstat 一次、O_NOFOLLOW 開起來 fstat 再驗一次），任何一項對不上就什麼都不做。
+        // 邊界測試在 test/audit-0919-r3exec.test.mjs 的「R3-5」那一段。
+        if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(reservation)') return
         if (forbidden.test(line)) offenders.push(`${p.replace(REPO + '/', '')}:${i + 1} ${line.trim()}`)
       })
     }
@@ -1624,5 +1633,103 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
     assert.equal(open('0'), String(recorded), 'CONTEXTBOX_PORT=0（export 了）：open 還是去 pet 記下的 port')
     assert.equal(open(''), String(recorded), '對照：沒設也一樣')
     assert.equal(open(String(other)), String(other), '對照：明講的 port 照用')
+  })
+})
+
+// ═══ 第三輪 R3-16／R3-17 ・ restoring 的說法、apply 的新欄位 ═══════
+//
+// | 段落 | 可能的錯誤 | 另一種合理解讀 | 能分辨兩者的例子（成對） | 認定的答案 |
+// |---|---|---|---|---|
+// | restoring 是什麼 | 「復原做到一半」 | 「有任何復原紀錄」 | 全部放回完的計畫／從沒 undo 過的 | 前者 true（README 要講），後者 false |
+// | restoring 與 409 | true ⇒ apply 一定 409 | 還要看 status | 全部放回完（restored）再 apply／復原停在 partial 再 apply | 前者 200 原樣回傳、後者 409 |
+// | noop | 只是「moved 是 0」 | 「這一次一個檔都沒動」 | 跑完過的計畫再 apply／真的全部搬失敗 | 前者 noop true，後者 false |
+// | stoppedEarly | 「有項目失敗」 | 「還沒做完就停了，之後接得下去」 | 鎖被接走／全部做完但有 failed | 前者 true，後者 false |
+
+describe('R3-16 docs/api/README.md 對 restoring 的說法要跟實作一致', () => {
+  const md = readFileSync(join(REPO, 'docs', 'api', 'README.md'), 'utf8')
+  /** README 裡講 restoring 的那一段（`GET /cleanup/plans` 那一節裡的那一行） */
+  const line = md.split('\n').find(l => l.startsWith('`restoring`')) ?? ''
+
+  test('**真的跑一次：全部放回完的計畫 restoring 是 true，再 apply 回的是 200 原樣回傳、不是 409**', () => {
+    const DAY = 86400_000
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-restoring-')))
+    try {
+      const dl = join(dir, 'Downloads'), q = join(dir, 'quarantine')
+      mkdirSync(dl)
+      const db = openDb(join(dir, 'data.db'))
+      const opts = { roots: [dl], quarantine: q, maxBytes: 1 << 20 }
+      const p = join(dl, 'r16.zip')
+      writeFileSync(p, 'R16')
+      const t = new Date(Date.now() - 60 * DAY)
+      utimesSync(p, t, t)
+      scanDownloads({ db, ...opts })
+      const ids = listCandidates(db, { roots: [dl], limit: 1000 }).candidates.flatMap(c => c.candidateIds)
+      const id = createPlan(db, { candidateIds: ids, requestId: 'r3-16' }).id
+      assert.equal(applyPlan(db, id, opts).status, 'applied')
+      const undone = undoPlan(db, id, opts)
+      assert.equal(undone.status, 'restored', '前提：全部放回完了')
+      // 列表那一筆：restoring true、canUndo false（docs/api/cleanup-plans-list.json 就是這一種）
+      const listed = listPlans(db, { filter: null }).operations.find(o => o.id === id)
+      assert.equal(listed.restoring, true, 'restoring ＝ 有任何復原紀錄，全部放回完的也是 true')
+      assert.equal(listed.canUndo, false)
+      // **再 apply：不是 409**
+      const again = applyPlan(db, id, opts)
+      assert.equal(again.status, 'restored', '原樣回傳，status 不變')
+      db.close()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test('README 不可以說「restoring 是 true 的時候 apply 一定回 409」', () => {
+    assert.ok(line, '找不到 README 裡講 `restoring` 的那一行')
+    assert.doesNotMatch(line, /`apply`\s*一定回\s*409/, '全部放回完的計畫 restoring 也是 true，再 apply 回 200')
+    assert.doesNotMatch(line, /唯一的出口是繼續\s*`?undo`?/, '對 restored 的計畫按「接著放回」什麼都不會做（canUndo 是 false）')
+  })
+
+  test('README 要照實講：restoring ＝ 有任何復原紀錄，包含全部放回完的；409 只在還沒收尾的那幾種 status', () => {
+    assert.match(line, /復原紀錄/, 'restoring 的定義是「有任何復原紀錄」')
+    assert.match(line, /`restored`/, '要講全部放回完的（status restored）也是 true')
+    assert.match(line, /`proposed`|`partial`|`error`/, '要講 409 只在還沒收尾的那幾種 status')
+    assert.match(line, /200/, '要講 applied／restored／dismissed 再 apply 回 200')
+    assert.ok(/`canUndo`/.test(line), '要叫呼叫端改看 canUndo 決定「接著放回」那顆按鈕')
+  })
+
+  test('README 的說法跟自家範例檔對得上（cleanup-plans-list.json 那一筆 restored）', () => {
+    const list = JSON.parse(readFileSync(join(REPO, 'docs', 'api', 'cleanup-plans-list.json'), 'utf8'))
+    const restored = list.operations.filter(o => o.status === 'restored')
+    assert.ok(restored.length, '前提：範例檔裡有一筆 status restored')
+    for (const o of restored) {
+      assert.equal(o.restoring, true, '範例檔說全部放回完的 restoring 是 true')
+      assert.equal(o.canUndo, false)
+    }
+  })
+})
+
+describe('R3-17 apply 的新欄位 noop／stoppedEarly 要寫進文件', () => {
+  const md = readFileSync(join(REPO, 'docs', 'api', 'README.md'), 'utf8')
+  const exec = readFileSync(join(REPO, 'docs', 'api', 'cleanup-exec.md'), 'utf8')
+
+  test('README 講了 noop：這一次一個檔都沒動，UI 不可以顯示成剛清完', () => {
+    const sec = sectionOf(md, '## 每個計畫回應都帶**逐項結果**')
+    assert.ok(sec.length > 50, '找不到逐項結果那一節')
+    assert.match(sec, /`noop`/, 'README 沒講 noop')
+    const line = md.split('\n').find(l => /`noop`/.test(l) && /\|/.test(l)) ?? ''
+    assert.ok(line, 'noop 不在欄位表裡')
+    assert.match(line, /布林|`true`/, '要講它的型別／值')
+    assert.match(line, /沒有動|一個檔都沒/, '要講「這一次什麼都沒做」')
+    assert.match(sec, /不可以.*(剛清完|剛搬完)|別.*顯示成剛/, 'README 要叫 UI 不要顯示成剛清完')
+  })
+
+  test('README 講了 stoppedEarly：還沒做完就停了，之後接得下去', () => {
+    const line = md.split('\n').find(l => /`stoppedEarly`/.test(l) && /\|/.test(l)) ?? ''
+    assert.ok(line, 'README 的欄位表裡沒有 stoppedEarly')
+    assert.match(line, /停|中斷/, '要講它是「停在中途」')
+    assert.match(line, /接著|接得下去|重試/, '要講之後接得下去')
+  })
+
+  test('docs/api/cleanup-exec.md 也寫了這兩個欄位', () => {
+    for (const name of ['noop', 'stoppedEarly']) {
+      assert.match(exec, new RegExp('`' + name + '`'), `cleanup-exec.md 沒講 ${name}`)
+    }
+    assert.match(exec, /`noop`[^\n]*(?:沒有動|一個檔都沒)/, 'noop 的意思要寫清楚')
   })
 })

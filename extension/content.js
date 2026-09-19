@@ -361,7 +361,9 @@
     if (Array.isArray(r)) return { plan: r }
     if (r && Array.isArray(r.plan)) return { plan: r.plan }
     if (r && r.result && Array.isArray(r.result.plan)) return { plan: r.result.plan }
-    return { error: (r && (r.error || r.message)) || '背景程式沒有給我 plan' }
+    // **先拿 message**：r.error 是給程式分支用的代碼（UNPROVEN、NO_TOKEN…），
+    // 印在畫面上等於什麼都沒說。跟「去補」與 reveal 那兩處的取法一致。
+    return { error: (r && (r.message || r.error)) || '背景程式沒有給我 plan' }
   }
 
   // ── 五、畫面 ────────────────────────────────────────────────

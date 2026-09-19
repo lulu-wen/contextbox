@@ -53,6 +53,13 @@ export const META = {
   petPort: 'pet_port',
   /** 最近一次完整掃描回報的問題（已經去掉路徑、換掉控制字元），JSON 字串陣列，最多 MAX_SCAN_PROBLEMS 條。 */
   scanProblems: 'cleanup_scan_problems',
+  /**
+   * 收尾試過、**收不動**的 journal 列（第三輪 R3-11）。JSON 物件：`{ "<seq>": "<那一刻的樣子>" }`。
+   * 「樣子」是隔離區那份與原位那份的大小與 mtime —— 兩邊都沒變的話，再收一次的結果一定一樣，
+   * 所以 needsSettling 直接跳過它，不去拿清理鎖、不重算 SHA-256。任何一邊變了（或它終於收掉了），
+   * 這一列就不在裡面／對不上，下一個指令會照常再試一次。cli.mjs 的 needsSettling／settleCleanupState 在用。
+   */
+  stuckJournal: 'cleanup_stuck_journal',
 } as const
 
 /**
@@ -848,24 +855,42 @@ export function invalidateQuarantineCache() { countCache = null }
  */
 export function petState(
   h: {
-    db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown }
+    db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown; rootsMissing?: unknown }
     pendingCandidates: number; lastError: unknown
     lastErrorAt?: string | null; lastOkAt?: string | null
     lastErrorKind?: string | null; lastOkByKind?: Partial<Record<string, string | null>> | null
+    scanProblems?: unknown
   },
   counts: { proposedPlans: number; activeQuarantine: number },
 ) {
+  const problems = (Array.isArray(h.scanProblems) ? h.scanProblems : [])
+    .filter((p: unknown): p is string => typeof p === 'string' && p !== '')
+    .slice(0, MAX_SCAN_PROBLEMS)
+  const rootsMissing = typeof h.watcher.rootsMissing === 'number' && Number.isInteger(h.watcher.rootsMissing)
+    ? h.watcher.rootsMissing : 0
   const state =
     // 壞掉的時候顯示「找到 7 個可以清」是在騙人
     !h.db.ok || errorStillActive(h) ? 'worried'
+    // **掃描根本沒在掃也要擔心**（第三輪 R3-12）：清理資料夾不見了（使用者搬了家目錄、換了
+    // OneDrive 路徑、外接碟沒掛上）、或上一次掃描回報過問題的時候，掃描會安靜地回 0 個檔 ——
+    // 跟「很乾淨」長得一模一樣。以前這件事只有跑 CLI doctor 的人看得到，常駐在系統匣、
+    // 只看寵物與面板的使用者會一直被告知「沒事，在發呆」，而工具其實一個檔都沒在掃。
+    : rootsMissing > 0 || problems.length > 0 ? 'worried'
     // 使用者正在等確認，這時候跳「找到東西了」會蓋掉待辦
     : counts.proposedPlans > 0 ? 'waiting'
     : h.pendingCandidates > 0 ? 'found'
     : h.watcher.ok ? 'watching'
     : 'idle'
 
+  // **訊息裡不放問題的原文**（R3-12）：那些字串已經去過路徑，但寵物的對話框是最容易被截圖、
+  // 最容易被旁人看到的地方，檔名與資料夾名不必出現在那裡。詳情在 scanProblems 陣列裡，面板自己決定怎麼列。
+  const scanWhy = rootsMissing > 0
+    ? (rootsMissing > 1 ? `有 ${rootsMissing} 個清理資料夾好像不見了，先看一下 doctor。` : '清理資料夾好像不見了，先看一下 doctor。')
+    : `上次掃描回報了 ${problems.length} 個問題，先看一下 doctor。`
+
   const message =
-    state === 'worried' ? '後端出了點狀況，先看一下 doctor。'
+    !h.db.ok || errorStillActive(h) ? '後端出了點狀況，先看一下 doctor。'
+    : state === 'worried' ? scanWhy
     : state === 'waiting' ? `有 ${counts.proposedPlans} 份清單等你確認。`
     : state === 'found' ? `找到 ${h.pendingCandidates} 個可以清的檔案。`
     : state === 'watching' ? `盯著${watchingPhrase(h.watcher)}。`
@@ -877,6 +902,8 @@ export function petState(
     pendingCount: h.pendingCandidates,
     quarantinedCount: counts.activeQuarantine,
     undoable: counts.activeQuarantine > 0,
+    /** 上一次完整掃描回報的問題（人話、不帶完整路徑）。面板要看得到，不能只有 doctor（R3-12）。 */
+    scanProblems: problems,
   }
 }
 
@@ -1024,9 +1051,19 @@ export function recordOk(db: DatabaseSync, kind?: ActionKind): void {
  * - apply／undo：看計畫的 `status`，'error' 就是每一項都失敗（partial 算成功：有做成的）
  * - empty：看清空的結果，有錯而且一個都沒刪掉才算失敗
  * 存的原因是第一項的人話（B 的 cleanupProblem 寫的，不帶路徑），再過一次 safeWhy。
+ *
+ * **`noop`（這次什麼都沒做）既不算成功、也不算失敗**（第三輪 R3-2b）。跑過的計畫再 apply、
+ * 已經確認過的清空再送，核心會原樣回傳、一個檔都不碰（R2-3）。以前這種回傳走 recordOk，
+ * 於是任何一次重送（面板斷線重試、擴充套件重送、點歷史列、腳本 retry）都把一個**一直壞著**的
+ * 套用錯標成「好了」，寵物從擔心變成發呆 —— 正是 R2-10 要防的那件事（稽核第三輪 A）。
+ * 反過來也不可以記錯：那個 status='error' 是上一次留下的，重記只會把 lastError 的時間一直往後推，
+ * 讓一個早就過期的錯永遠續命（R3-15）。所以回 'noop'，meta 一個字都不動。
  */
-export function recordActionResult(db: DatabaseSync, kind: 'apply' | 'undo' | 'empty', result: unknown): 'error' | 'ok' {
-  const r = (result ?? {}) as { status?: unknown; error?: unknown; deletedCount?: unknown; errors?: { error?: unknown }[] }
+export function recordActionResult(db: DatabaseSync, kind: 'apply' | 'undo' | 'empty', result: unknown): 'error' | 'ok' | 'noop' {
+  const r = (result ?? {}) as {
+    status?: unknown; error?: unknown; deletedCount?: unknown; errors?: { error?: unknown }[]; noop?: unknown
+  }
+  if (r.noop === true) return 'noop'
   let why: string | null = null
   if (kind === 'empty') {
     if (Array.isArray(r.errors) && r.errors.length && !r.deletedCount) {
@@ -1372,8 +1409,11 @@ function outcomesOf(db: DatabaseSync, planId: string, opts: OutcomeOptions = {})
         // 還在隔離區。復原失敗過的話要講得出為什麼沒放回來（UI 的「沒放回」要用）。
         // 搬進隔離區成功時 markMoved 會清掉 file_items.error，所以隔離中的檔身上有 error，
         // 就是之後的復原失敗寫的（驗證沒過的那種不會寫 journal）。
-        why = (r?.status === 'failed' ? safeWhy(r.error) : null)
+        // **第三波 R3-4**：搬進去了、驗證沒過、又搬不回原位的那一種，原因存在 cleanup_item_errors
+        // （跟著計畫走，重掃不會蓋掉）—— 那句「請人工檢查隔離區」是使用者唯一的線索，不可以吞掉。
+        raw = (r?.status === 'failed' ? safeWhy(r.error) : null)
           ?? (i.status === 'quarantined' ? safeWhy(i.error) : null)
+        why = raw ?? storedAll.get(i.item_id) ?? null
       }
     }
     else if (q?.status === 'started') { outcome = 'unknown'; why = MOVE_INTERRUPTED }
@@ -1382,7 +1422,13 @@ function outcomesOf(db: DatabaseSync, planId: string, opts: OutcomeOptions = {})
     // 套用中斷在前幾項、之後按了復原（計畫變成 restored），後面那些從來沒碰過 ——
     // 以前掉進下面的 failed「沒有搬動，原因不明」，逐項結果不是實話（稽核 A-exp3）。
     // 檢查沒過（TOO_FRESH…）也不寫 journal，但它會存原因（cleanup_item_errors），所以照樣是 failed。
-    else if (!q && !storedAll.has(i.item_id) && !i.error) outcome = 'cancelled'
+    //
+    // **只看跟這份計畫有關的證據**（稽核第三輪 R3-8）：cleanup_journal 依 plan_id、
+    // cleanup_item_errors 依 (plan_id,item_id)。以前還看了 `i.error` —— 那是 file_items.error，
+    // 全域、每個檔一份，寫它的人不只這份計畫（下一次掃描讀不到那個檔、另一份計畫失敗都會寫）。
+    // 只要那個檔之後因為任何別的理由被寫上 error，這一項就從 cancelled 被打回 failed，
+    // 而且顯示的原因是別份計畫／別次掃描的原因，掛在這份計畫的歷史上。
+    else if (!q && !storedAll.has(i.item_id)) outcome = 'cancelled'
     else {
       outcome = 'failed'
       // 失敗原因有兩個地方：搬移失敗寫在 journal；**檢查沒過（例如 TOO_FRESH）
@@ -1439,6 +1485,14 @@ export function recordItemErrors(db: DatabaseSync, planId: string): number {
     for (const [itemId, x] of o) {
       if (x.outcome === 'failed') {
         if (!x.raw) continue
+        db.prepare(`INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)
+                    ON CONFLICT(plan_id,item_id) DO UPDATE SET why=excluded.why, at=excluded.at`)
+          .run(planId, itemId, x.raw, at)
+        n++
+      // **還在隔離區、但講得出原因的不可以刪掉**（稽核第三輪 R3-4）：
+      // 「搬進去之後檔案還在變動，沒有放回原位，請人工檢查隔離區」是隔離區那個檔唯一的線索，
+      // 刪掉它就等於又把這件事藏起來。照樣寫回去（file_items.error 會被下一次掃描蓋掉）。
+      } else if (x.outcome === 'moved' && x.raw) {
         db.prepare(`INSERT INTO cleanup_item_errors (plan_id,item_id,why,at) VALUES (?,?,?,?)
                     ON CONFLICT(plan_id,item_id) DO UPDATE SET why=excluded.why, at=excluded.at`)
           .run(planId, itemId, x.raw, at)
@@ -1880,6 +1934,10 @@ function route(ctx: RouteCtx): boolean {
   }
 
   if (p === '/cleanup/scan' && method === 'POST') {
+    // **這條也要過 body 白名單**（第三輪 R3-14）：它是唯一漏掉 R2-7 的寫入路徑，而 README 的說法是
+    // 全面的。目前它一個欄位都不讀，所以白名單是空的 —— 之後要加參數，加進 BODY_KEYS 就好，
+    // 打錯字才不會像 skippedIDs 那樣被靜靜當成「什麼都沒帶」。
+    bodyOf(ctx, BODY_KEYS.none)
     // 註：這裡曾經有一個 module 層的 `scanning` 旗標想擋併發掃描。
     // 那是死碼 —— scanDownloads 是同步的，中間沒有任何 await，
     // 同一個行程裡第二個請求根本沒機會在旗標為 true 時被處理（實測 4 個併發全部 200）。
@@ -1966,6 +2024,13 @@ function route(ctx: RouteCtx): boolean {
     if (action === 'dismiss') { send(200, withOutcomes(ctx.db, dismissPlan(ctx.db, id))); return true }
     // 放棄還沒開始的那份：計畫作廢、候選不動（RC4／RC8 的「放棄上次那份」）
     if (action === 'release') { send(200, withOutcomes(ctx.db, releasePlan(ctx.db, id))); return true }
+    // **跑過的計畫再 apply 是 no-op**（核心 R2-3：applied／partial／error 原樣回傳、一個檔都不碰）。
+    // 記帳要認得出來（第三輪 R3-2b）：面板斷線後的重試、擴充套件重送、使用者點歷史列，
+    // 以前每一次都走 recordOk，把一個一直壞著的套用錯標成「好了」。
+    // 核心之後會在回傳裡帶 `noop`；在那之前用「呼叫前的 status」判斷 —— 那就是它原樣回傳的條件。
+    const ranBefore = action === 'apply'
+      && ['applied', 'partial', 'error', 'restored', 'dismissed'].includes(
+        safe(() => (ctx.db.prepare('SELECT status FROM cleanup_plans WHERE id=?').get(id) as { status?: string } | undefined)?.status, undefined) ?? '')
     let r
     // 隔離區剛變了，孤兒對帳的快取不可以再用 —— **丟錯也一樣**：做到一半丟錯時已經搬了幾個
     try {
@@ -1975,8 +2040,8 @@ function route(ctx: RouteCtx): boolean {
         : undoPlan(ctx.db, id, restoreOptions(ctx))
     } finally { invalidateQuarantineCache() }
     // 失敗原因 applyPlan 自己會存（cleanup_item_errors），這裡不必再補（RC11）。
-    // 每一項都失敗記成錯、其他記成功（R2-10）
-    recordActionResult(ctx.db, action as 'apply' | 'undo', r)
+    // 每一項都失敗記成錯、其他記成功（R2-10）；no-op 兩邊都不記（R3-2b）
+    recordActionResult(ctx.db, action as 'apply' | 'undo', ranBefore ? { ...(r as object), noop: true } : r)
     send(200, withOutcomes(ctx.db, r))
     return true
   }

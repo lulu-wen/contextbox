@@ -3,5 +3,6 @@
   "message": "後端出了點狀況，先看一下 doctor。",
   "pendingCount": 2,
   "quarantinedCount": 1,
-  "undoable": true
+  "undoable": true,
+  "scanProblems": []
 }
