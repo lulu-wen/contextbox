@@ -182,8 +182,11 @@ export function admit(path: string, opts: AdmitOptions): Verdict {
   try { real = realpathSync(path) } catch { return no('realpath 失敗') }
 
   // 白名單：一定要在某個監看資料夾底下
-  if (!opts.roots.some(r => under(r, real))) return no('不在監看資料夾裡')
-  if (opts.exclude && opts.exclude.some(x => under(x, real) || fold(resolve(x)) === fold(real))) {
+  const canonical = (p: string): string => {
+    try { return realpathSync(p) } catch { return resolve(p) }
+  }
+  if (!opts.roots.some(r => under(canonical(r), real))) return no('不在監看資料夾裡')
+  if (opts.exclude && opts.exclude.some(x => under(canonical(x), real) || fold(canonical(x)) === fold(real))) {
     return no('在排除的資料夾裡')
   }
 

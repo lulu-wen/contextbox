@@ -152,6 +152,7 @@ const UI_PATH = new URL('./ui.html', import.meta.url)
 // 只提供明列的公開素材，不將 URL 拼成本機檔案路徑。
 const PET_ASSETS = new Map([
   ['/assets/quaso_v8.glb', ['assets/quaso_v8.glb', 'model/gltf-binary']],
+  ['/assets/quaso_v10.glb', ['assets/quaso_v10.glb', 'model/gltf-binary']],
   ['/assets/pet-viewer.js', ['assets/pet-viewer.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-demo.js', ['assets/cleanup-demo.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-demo-state.js', ['assets/cleanup-demo-state.js', 'text/javascript; charset=utf-8']],

@@ -153,7 +153,7 @@ describe('B 逐項結果要照實講', () => {
     const { scanDownloads } = await import('../core/cleanup-scanner.ts')
     const { open } = await import('../core/db.ts')
     const db = open(s.dbPath)
-    try { scanDownloads({ db, roots: [s.downloads], maxBytes: 20 * 1024 * 1024, minStableMs: 0 }) } finally { db.close() }
+    try { scanDownloads({ db, roots: [s.downloads], maxBytes: 20 * 1024 * 1024, minStableMs: 0, now: new Date(Date.now() + 1000) }) } finally { db.close() }
     const real = createReal(s.api)
     await real.load()
     assert.equal(real.candidates.length, 1, '前提：只有其中一份被提議')

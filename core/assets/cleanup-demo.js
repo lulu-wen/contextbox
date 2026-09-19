@@ -160,12 +160,12 @@ function updateAlert() {
     count > 0 && !worried
   )
 
-  const state =
-    worried ? 'worried'
-    : count > 0 ? 'found'
-    : 'idle'
-
-  setPetBaseState(state)
+  if (worried) {
+    clearPetTransientState()
+    setPetBaseState('worried')
+  } else {
+    setPetBaseState(count > 0 ? 'found' : 'idle')
+  }
 
 $('quaso-worried').hidden = !worried
   // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
@@ -358,8 +358,18 @@ $('cleanup-select-none').onclick = () => {
   request = null
   render()
 }
-$('cleanup-close').onclick = () => panel.close()
-panel.addEventListener('close', () => { if (!alertButton.hidden) alertButton.focus() })
+$('cleanup-close').onclick = () => {
+  panel.close()
+  
+}
+
+panel.addEventListener('close', () => {
+  clearPetTransientState() 
+  if (!alertButton.hidden) alertButton.focus() 
+})
+historyPanel.addEventListener('close', () => {
+  clearPetTransientState()
+})
 $('cleanup-dismiss').onclick = () => {
   if (busy) return
   panel.close()
@@ -469,7 +479,7 @@ async function operate(kind) {
 
       // ② 真的完成清理 / 復原才 happy
       if (completed) {
-        flashPetState('happy', 2000)
+        setPetTransientState('happy')
       } else {
         clearPetTransientState()
       }
@@ -544,7 +554,7 @@ async function operate(kind) {
       notice('整理好了！想改變心意，隨時可以復原這次清理。')
 
       // cleaning → happy
-      flashPetState('happy', 2000)
+      setPetTransientState('happy')
 
     } else {
       await demoHistoryApi('undo', {
@@ -562,7 +572,7 @@ async function operate(kind) {
       notice('都幫你放回來了！')
 
       // restoring → happy
-      flashPetState('happy', 2000)
+      setPetTransientState('happy')
     }
 
     updateAlert()
@@ -592,6 +602,7 @@ $('cleanup-apply').onclick = () => {
   if (session().canUndo) {
     updateAlert()
     panel.close()
+    
     notice('這次整理完成了，需要時可以勾選最近動作來復原。')
   }
   else return operate('apply')
@@ -769,7 +780,7 @@ $('cleanup-history-undo').onclick = async () => {
 
     // ② 復原 API 成功
     // restoring → happy → 2 秒後回 base state
-    flashPetState('happy', 2000)
+    setPetTransientState('happy')
 
   } catch (error) {
   // ③ 復原失敗
@@ -878,13 +889,17 @@ function toggleOffline() {
   history.replaceState(null, '', url)
   pollHealth()
 }
-// D / O 在 Windows、macOS 相同；輸入中、IME、長按與組合鍵不觸發。
+// D / O / S 在 Windows、macOS 相同；輸入中、IME、長按與組合鍵不觸發。
 document.addEventListener('keydown', event => {
   if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229
     || event.ctrlKey || event.metaKey || event.altKey) return
   const target = event.target
   if (target instanceof Element && (target.closest('input, textarea, select, [role="textbox"], [role="combobox"]') || target.isContentEditable)) return
   const key = event.key.toLowerCase()
+  if (key === 's') {
+    const debug = document.querySelector('#quaso .pet-state-debug')
+    if (debug) { event.preventDefault(); debug.hidden = !debug.hidden }
+  }
   if (key === 'd') { event.preventDefault(); toggleDemo() }
   if (key === 'o') { event.preventDefault(); toggleOffline() }
 })
