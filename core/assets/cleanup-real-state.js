@@ -629,3 +629,179 @@ export function createRealHistory(api) {
     throw new Error('本機模式不支援這個歷史操作：' + path)
   }
 }
+
+// ── 連拍截圖（P0 接線）──────────────────────────────────────
+//
+// 後端把「同一批連拍的截圖」分好組（`GET /cleanup/bursts`），這裡負責把它整成畫面要的樣子。
+// 這一區是寵物**主動**跳出來問的，使用者傾向照著按 —— 所以每一步都往保守的方向做：
+// 認不得的等級當 similar、留下的那張永遠不列成候選、similar 一律預設不勾。
+//
+// 成員本身就是候選清單上的檔（kind 是 screenshot-noise），所以勾選走的是**同一個** selected
+// 集合、同一條建計畫→套用→可復原的路。連拍區只是換一種看法（縮圖＋差異處），不是第二條清理路徑。
+
+/**
+ * 縮圖端點的相對路徑。後端給的 `thumb` 一律照這個樣子檢查過才用 ——
+ * 它會變成 fetch 的路徑，寫死成「只能長這樣」就不會被帶去別的地方（也擋掉帶查詢字串的寫法）。
+ */
+const THUMB_PATH = /^\/cleanup\/thumb\/[^/?#]+$/
+
+/** 一次最多畫幾組。每一組要拿 1＋N 張縮圖，不設上限的話打開面板會先卡在幾百個請求上。 */
+export const BURST_GROUPS_SHOWN = 20
+
+/** 面板要講的話。similar 那一句**不可以省**：除了預設不勾，還要叫人自己看一眼。 */
+export const BURST_SIMILAR_NOTE = '這一組有看得見的變化，自己看一眼再決定。'
+export const BURST_SAME_NOTE = '這一組看起來一模一樣。'
+export const burstNote = level => level === 'same' ? BURST_SAME_NOTE : BURST_SIMILAR_NOTE
+
+/**
+ * 一個 0–1 的相對座標框 → 夾進畫面裡。
+ * 超出右邊界／下邊界的切到邊上（不然框會畫到縮圖外面），夾完沒有面積的、看不懂的丟掉。
+ */
+function burstBox(raw) {
+  const unit = v => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null
+  }
+  // 切到邊上會帶出浮點屑（1 − 0.9 不是 0.1），收到小數點後六位 —— 畫出來只到 0.1%，夠了
+  const tidy = v => Math.round(v * 1e6) / 1e6
+  const x = unit(raw?.x), y = unit(raw?.y), w = unit(raw?.w), h = unit(raw?.h)
+  if (x === null || y === null || w === null || h === null) return null
+  const fitW = tidy(Math.min(w, 1 - x)), fitH = tidy(Math.min(h, 1 - y))
+  if (!(fitW > 0) || !(fitH > 0)) return null
+  return { x: tidy(x), y: tidy(y), w: fitW, h: fitH }
+}
+
+/** 一張（留下的那張或成員）。認不出 itemId 就當它不存在。 */
+function burstShot(raw, groupLevel) {
+  const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : null
+  if (!itemId) return null
+  const bytes = Number(raw?.bytes)
+  return {
+    itemId,
+    name: String(raw?.name ?? ''),
+    bytes: Number.isFinite(bytes) ? bytes : 0,
+    // 成員自己的等級為準（同一組裡可能有 same 也有 similar）；沒給就跟著整組
+    level: raw?.level === 'same' ? 'same' : raw?.level === 'similar' ? 'similar' : groupLevel,
+    thumb: typeof raw?.thumb === 'string' && THUMB_PATH.test(raw.thumb)
+      ? raw.thumb : '/cleanup/thumb/' + encodeURIComponent(itemId),
+    boxes: (Array.isArray(raw?.boxes) ? raw.boxes : []).map(burstBox).filter(Boolean),
+  }
+}
+
+/**
+ * `GET /cleanup/bursts` 的 `groups` → 畫面要的樣子。**後端回什麼都不可以讓面板壞掉**
+ * （舊版沒有這條、新版改了形狀），看不懂的一律當成「沒有這一組」。
+ *
+ * - 等級認不得 → 當 **similar**（偏保守：similar 不預設勾）
+ * - **留下的那張不可以同時出現在成員裡**（不變量 2：留下的那張永遠不會被提議清掉）
+ * - 扣掉之後沒有成員 → 不成組（只剩一張沒什麼好問的）
+ */
+export function normalizeBurstGroups(raw) {
+  const out = []
+  for (const g of Array.isArray(raw) ? raw : []) {
+    const level = g?.level === 'same' ? 'same' : 'similar'
+    const keep = burstShot(g?.keep, level)
+    if (!keep) continue
+    const members = (Array.isArray(g?.members) ? g.members : [])
+      .map(m => burstShot(m, level)).filter(m => m && m.itemId !== keep.itemId)
+    if (!members.length) continue
+    out.push({ id: String(g?.id ?? keep.itemId), level, keep, members })
+  }
+  return out
+}
+
+/** 一組一共幾張（留下的那張也算）。 */
+const burstShots = g => g.members.length + 1
+
+/** 寵物主動問的那一句。沒有組就回 null —— 不可以彈一句空的。 */
+export function burstAskMessage(groups) {
+  const list = Array.isArray(groups) ? groups : []
+  if (!list.length) return null
+  if (list.length === 1) return `這 ${burstShots(list[0])} 張截圖看起來是同一批，要留最新的就好嗎？`
+  const total = list.reduce((n, g) => n + burstShots(g), 0)
+  return `有 ${list.length} 組截圖看起來是同一批（一共 ${total} 張），要各留最新的那張就好嗎？`
+}
+
+/** 連拍區裡那一組的標題。檔名是不可信的輸入，一律 safeName。 */
+export function burstGroupLine(g) {
+  return `${burstShots(g)} 張看起來是同一批 · 會留著「${safeName(g.keep.name)}」（最新的那張）`
+}
+
+/**
+ * **similar 一律預設不勾**（不變量 1）。後端已經給 similar 信心 40（低於門檻，`defaultChecked`
+ * 是 false），這裡再擋一次 —— 這一區是主動跳出來問的，預設勾錯一格，使用者按下去就丟了一張
+ * 內容不一樣的截圖。
+ *
+ * **只往「不勾」的方向動**：same 的照後端的預設（該勾的還是勾著），這支永遠不會幫使用者勾起來。
+ * 回傳被取消掉的 itemId（測試與除錯用）。
+ */
+export function applyBurstDefaults(state, groups) {
+  const off = []
+  for (const g of Array.isArray(groups) ? groups : []) {
+    for (const m of g.members) {
+      if (m.level === 'same' || !state.selected.has(m.itemId)) continue
+      state.select(m.itemId, false)
+      if (!state.selected.has(m.itemId)) off.push(m.itemId)
+    }
+  }
+  return off
+}
+
+/**
+ * 連拍組與它們的縮圖。
+ *
+ * 縮圖端點要 token，而 `<img>` **不會**帶 header。做法是用帶 token 的 api 取回 blob，
+ * 再換成 `blob:` 網址給 `<img>` —— **token 不可以進網址**：網址會進 DOM、進歷史紀錄，
+ * 使用者截個圖就外流了。（頁面的 CSP 也只放行 `img-src data: blob:`。）
+ *
+ * `createUrl`／`revokeUrl` 可以換掉，測試才不用碰 globalThis。
+ */
+export function createBursts(api, { createUrl, revokeUrl } = {}) {
+  const makeUrl = createUrl ?? (b => URL.createObjectURL(b))
+  const dropUrl = revokeUrl ?? (u => URL.revokeObjectURL(u))
+  let groups = [], total = 0
+  let thumbs = new Map()
+
+  /** 把這一批的 blob: 網址還回去。不還的話開著面板一直重載會愈積愈多。 */
+  function revokeAll() {
+    for (const u of thumbs.values()) dropUrl(u)
+    thumbs = new Map()
+  }
+
+  /** 每一張的縮圖各拿一次。**一張讀不到只是那一張沒有圖**，不影響其他張，也不影響整個面板。 */
+  async function loadThumbs() {
+    const shots = groups.flatMap(g => [g.keep, ...g.members])
+    await Promise.all(shots.map(async s => {
+      if (thumbs.has(s.itemId)) return
+      try { thumbs.set(s.itemId, makeUrl(await api(s.thumb, { blob: true }))) }
+      catch { /* 那一張沒有圖，照樣列名字 */ }
+    }))
+  }
+
+  return {
+    get groups() { return groups },
+    /** 沒畫出來的還有幾組 */
+    get more() { return Math.max(0, total - groups.length) },
+    thumb: id => thumbs.get(id) ?? null,
+    /** 連拍區裡列出來的成員（留下的那張不算）—— 候選清單要把它們拿掉，不然同一個檔有兩個勾選框 */
+    memberIds: () => new Set(groups.flatMap(g => g.members.map(m => m.itemId))),
+
+    /**
+     * 重讀一批。**後端沒有這條（舊版回 501）、或讀不到，一律當成「沒有連拍組」** ——
+     * 連拍是附加的，不可以讓整個面板打不開。
+     */
+    async load() {
+      revokeAll()
+      let body = null
+      try { body = await api('/cleanup/bursts') }
+      catch { groups = []; total = 0; return groups }
+      const all = normalizeBurstGroups(body?.groups)
+      total = all.length
+      groups = all.slice(0, BURST_GROUPS_SHOWN)
+      await loadThumbs()
+      return groups
+    },
+
+    clear() { revokeAll(); groups = []; total = 0 },
+  }
+}

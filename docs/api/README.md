@@ -348,3 +348,54 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 `message` 是一句人話，`pendingCount`、`quarantinedCount`、`undoable` 是數字與旗標。
 `undoable` 是旗標不是 state —— 當 state 會卡住七天。`thinking`／`cleaning`／`happy` 是前端在等回應時
 自己播的動畫，後端不回。
+
+### `burst` —— 連拍截圖要不要**主動**問（P0）
+
+多一段 `burst: { groups, newGroups }`：`groups` 是現在一共幾組連拍，
+`newGroups` 是其中**還沒主動問過**的有幾組（後端把問過的組 id 記在 `meta` 的 `burst_asked`）。
+
+- **`newGroups > 0` 才主動彈。** 舊的組還列在連拍區裡，只是寵物不再跳出來問（Step 1 表「主動詢問的時機」）
+- 組 id ＝ 留下那張的 item id ＋ 成員 id 排序後的雜湊：**成員變了就是新的一組**，會再問一次
+- 第一方頁面另外自己守一層：`newGroups` **沒有比上一次大就不彈**。後端萬一沒把問過的記下來
+  （一直回同一個數字），不守的話寵物會每五秒問一次同一批
+- 舊版後端沒有這一段（`burst` 是 `undefined`）：頁面當成沒有新的組，不彈也不報錯
+
+## `GET /cleanup/bursts` —— 連拍組（要 token）
+
+```json
+{ "groups": [ { "id": "…", "level": "similar",
+  "keep":    { "itemId": "…", "name": "螢幕擷取 3.png", "bytes": 512000, "thumb": "/cleanup/thumb/…" },
+  "members": [ { "itemId": "…", "name": "螢幕擷取 1.png", "bytes": 511000, "level": "similar",
+                 "thumb": "/cleanup/thumb/…", "boxes": [ { "x": 0.25, "y": 0.5, "w": 0.1, "h": 0.2 } ] } ] } ] }
+```
+
+| 欄位 | 意思 |
+|---|---|
+| `id` | 這一組的 id（留下那張的 item id ＋ 成員 id 排序後的雜湊）。成員變了就是另一組 |
+| `level` | 整組的等級：`same`（逐位元組看不出差別）或 `similar`（有看得見的變化）。`different` 不成組 |
+| `keep` | **留下的那張**（mtime 最大；平手取 id 較大的）。它**永遠不會**是候選，也不會出現在 `members` 裡 |
+| `members[]` | 被提議清掉的那幾張。每一張有自己的 `level`：同一組裡可能有 `same` 也有 `similar` |
+| `members[].boxes` | 差異處的外框，**0–1 的相對座標**（`x`／`y` 是左上角，`w`／`h` 是寬高）。模組算出來的是原圖座標，接線層換算過。`same` 的是空陣列 |
+| `thumb` | 縮圖的相對路徑，一定是 `/cleanup/thumb/<itemId>`（不帶查詢字串）。頁面只認這個樣子，別的一律改回來 |
+
+- **沒有路徑、沒有原圖**：回給畫面的只有檔名、大小、縮圖與外框
+- 成員本身就是 `GET /cleanup/candidates` 上的檔（`kind` 是 `screenshot-noise`、`rule_version` 是 `burst-1`），
+  所以**清理走既有那條路**：勾好 → `POST /cleanup/plans` → `…/apply` → 可復原。
+  連拍區不是第二條清理路徑，只是換一種看法
+- 信心照等級：`same` 70（過門檻 50，**預設勾**）、`similar` 40（**預設不勾**）。
+  面板拿到 `similar` 的成員會**再取消勾一次**，就算後端的 `defaultChecked` 給成 `true` 也不勾 ——
+  這一區是寵物主動問的，寧可少勾一格
+- 組散掉（使用者把其中一張改掉，剩一張）→ 那一組不再出現，候選跟著作廢（`skipped`）
+- 舊版後端沒有這條（回 501 `NOT_IMPLEMENTED`）：面板當成沒有連拍組，候選清單照常列
+
+## `GET /cleanup/thumb/:itemId` —— 縮圖（要 token）
+
+灰階 PNG，長邊 ≤ 480。原圖不回（省記憶體，也不讓原圖外流）。
+
+- **只給現在還在連拍組裡的 item**，不是任意檔案的讀取端點。不在任何組裡 → 404 `NOT_FOUND`
+- 不帶 token → 401
+- **token 只能走 header。** `<img src="/cleanup/thumb/…">` 不會帶 header，
+  而把 token 放進網址等於把它寫進 DOM、歷史紀錄與使用者的截圖裡。
+  頁面的做法：用帶 token 的 `api(path, { blob: true })` 取回 Blob，
+  再 `URL.createObjectURL` 換成 `blob:` 網址給 `<img>`，換一批時 `revokeObjectURL` 還回去。
+  頁面的 CSP 也只放行 `img-src data: blob:`，直接指過去本來就會被擋

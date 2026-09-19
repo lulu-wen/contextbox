@@ -1,0 +1,146 @@
+/**
+ * 把真的 core/assets/cleanup-demo.js 掛到一個照 core/ui.html 建出來的假 DOM 上。
+ *
+ * 跟 test/audit-0919-ui.test.mjs 裡那一套是同一個做法（那一份是自己寫在檔案裡的）。
+ * 這裡抽出來給新的面板測試用：**id 只認 ui.html 裡真的有的**，
+ * 面板去 $('沒有的 id') 會在測試裡直接炸掉，不會靜靜地不動。
+ *
+ * 這支檔**不碰 server**，只要一個 window.api（與 demo 用的 fetch）就能跑。
+ */
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+export const UI_HTML = readFileSync(join(REPO, 'core/ui.html'), 'utf8')
+
+/** ui.html 裡真的那一支 window.api（連 token header、blob 那條分支都是真的）。 */
+export function uiApi(fetchImpl, token, doc = { documentElement: { dataset: {} } }) {
+  const src = /async function api\([\s\S]*?\n\}/.exec(UI_HTML)?.[0]
+  assert.ok(src, '找不到 ui.html 裡的 api()')
+  return new Function('document', 'HEAD', 'fetch', src + '\nreturn api')(
+    doc, { 'content-type': 'application/json', 'x-contextbox-token': token }, fetchImpl)
+}
+
+/** ui.html 裡每一個 id：標籤、預設 hidden、預設文字。 */
+export const HTML_IDS = new Map()
+for (const m of UI_HTML.matchAll(/<(\w+)\b([^>]*?)\sid="([^"]+)"([^>]*)>([^<]*)/g)) {
+  HTML_IDS.set(m[3], { tag: m[1], hidden: /\shidden\b/.test(m[2] + ' ' + m[4]), text: m[5].trim() })
+}
+
+export class FakeEl {
+  constructor(tag, id = '') {
+    this.tagName = tag.toUpperCase(); this.id = id
+    this._text = ''; this.children = []; this.parent = null
+    this.hidden = false; this.disabled = false; this.checked = false; this.type = ''
+    this.title = ''; this.className = ''; this.dataset = {}; this.attrs = {}; this.listeners = {}
+    this.open = false; this.offsetWidth = 0; this.onclick = null; this.onchange = null; this.isContentEditable = false
+    const set = new Set()
+    this.classList = {
+      add: c => set.add(c), remove: c => set.delete(c), contains: c => set.has(c),
+      toggle: (c, on) => ((on ?? !set.has(c)) ? set.add(c) : set.delete(c)),
+    }
+  }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join('') }
+  set textContent(v) { this._text = String(v); this.children = [] }
+  setAttribute(k, v) { this.attrs[k] = String(v) }
+  getAttribute(k) { return this.attrs[k] ?? null }
+  append(...kids) {
+    for (const k of kids) {
+      const n = typeof k === 'string' ? Object.assign(new FakeEl('#text'), { _text: k }) : k
+      n.parent = this
+      this.children.push(n)
+    }
+  }
+  replaceChildren(...kids) { this._text = ''; this.children = []; this.append(...kids) }
+  addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn) }
+  showModal() { this.open = true }
+  close() { if (!this.open) return; this.open = false; for (const f of this.listeners.close ?? []) f({ type: 'close' }) }
+  focus() {}
+  closest() { return null }
+  contains(x) { for (let n = x; n; n = n.parent) if (n === this) return true; return false }
+  /** 底下所有這個標籤的元素（照畫面順序） */
+  all(tag) {
+    const out = []
+    const walk = n => { for (const c of n.children) { if (c.tagName === tag.toUpperCase()) out.push(c); walk(c) } }
+    walk(this)
+    return out
+  }
+  /** 底下所有帶這個 class 的元素（照畫面順序） */
+  byClass(name) {
+    const out = []
+    const walk = n => { for (const c of n.children) { if (String(c.className).split(/\s+/).includes(name)) out.push(c); walk(c) } }
+    walk(this)
+    return out
+  }
+}
+
+let mounted = 0
+
+/**
+ * 掛一次面板。
+ * - `api`：window.api（沒給就用 ui.html 那一支，配 `fetch` 與 `token`）
+ * - `fetch`：頁面的 fetch（demo 讀 /assets/demo-candidates.json 用它）
+ * - `base`：假的 location.href 前綴
+ *
+ * 回傳 { $, click, key, idle, els }。**一個測試檔裡可以掛很多次**（每次都重新 import 一份模組），
+ * 但它們共用 globalThis.document —— 掛了新的，舊的那一份就別再碰了。
+ */
+export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token = 'panel-token', base = 'http://127.0.0.1:1' } = {}) {
+  const els = new Map()
+  for (const [id, spec] of HTML_IDS) {
+    const el = new FakeEl(spec.tag, id)
+    el.hidden = spec.hidden
+    el._text = spec.text
+    els.set(id, el)
+  }
+  const docListeners = {}
+  const doc = {
+    documentElement: new FakeEl('html'),
+    body: new FakeEl('body'),
+    getElementById: id => els.get(id) ?? null,
+    createElement: tag => new FakeEl(tag),
+    createTextNode: text => Object.assign(new FakeEl('#text'), { _text: String(text) }),
+    addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
+  }
+  const winListeners = {}
+  const pageFetch = fetchImpl ?? (() => { throw new TypeError('Failed to fetch') })
+  const pageApi = api ?? uiApi(pageFetch, token, doc)
+  const calls = []
+  const win = {
+    api: (path, init) => { calls.push({ path, method: init?.method ?? 'GET', init }); return pageApi(path, init) },
+    addEventListener: (type, fn) => (winListeners[type] ??= []).push(fn),
+  }
+  Object.assign(globalThis, {
+    document: doc, window: win, Element: FakeEl,
+    location: { href: base + '/', search: '' },
+    history: { state: null, replaceState() {} },
+    fetch: (url, init) => pageFetch(url, init),
+  })
+  await import(`../../core/assets/cleanup-demo.js?panel=${++mounted}`)
+  const $ = id => { const el = els.get(id); assert.ok(el, `ui.html 裡沒有 id="${id}"`); return el }
+  /** 等到面板與歷史面板都不在「正在…」 */
+  const idle = async () => {
+    for (let i = 0; i < 300; i++) {
+      await new Promise(r => setTimeout(r, 10))
+      const busy = [$('cleanup-result'), $('cleanup-history-result')].some(el => !el.hidden && el.textContent.startsWith('正在'))
+      const loading = /正在讀取/.test($('cleanup-list').textContent + $('cleanup-history-list').textContent)
+      if (!busy && !loading) return
+    }
+    throw new Error('UI 一直沒有結束')
+  }
+  const click = async id => { await $(id).onclick?.(); await idle() }
+  const key = async k => {
+    for (const f of docListeners.keydown ?? []) {
+      f({ key: k, target: doc.body, defaultPrevented: false, repeat: false, isComposing: false, preventDefault() {} })
+    }
+    await idle()
+  }
+  t.after(async () => {
+    await new Promise(r => setTimeout(r, 30))
+    for (const f of winListeners.pagehide ?? []) f({ type: 'pagehide' })
+  })
+  await idle()
+  return { $, click, key, idle, els, calls, doc }
+}

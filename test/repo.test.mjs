@@ -681,9 +681,11 @@ describe('README.md 的頁面說明照現況寫（第三波之二）', () => {
     assert.match(demoJs, /createRealHistory\(/)
     assert.doesNotMatch(md, /尚未串接真實清理 API/)
     assert.match(md, /本機模式[^\n]*真的清理 API/, '要講沒開 D 的時候接的是真的清理 API')
-    // 寵物的狀態：頁面看 /health 自己算，沒有讀 /pet/state —— README 不可以說頁面讀了它
-    assert.doesNotMatch(demoJs, /\/pet\/state/, '前提：頁面沒有讀 /pet/state')
-    assert.match(md, /`GET \/pet\/state`[^\n]*頁面沒有讀/, '要照實講頁面還沒讀後端的寵物狀態')
+    // 寵物的**狀態**還是頁面看 /health 自己算。P0 起頁面會讀 /pet/state，但只拿
+    // burst.newGroups（連拍有沒有新的一組要主動問）—— README 要照實講它拿來做什麼
+    assert.match(demoJs, /\/pet\/state/, '前提：頁面為了連拍主動詢問會讀 /pet/state')
+    assert.match(demoJs, /newGroups/, '前提：只拿它的 burst.newGroups')
+    assert.match(md, /`GET \/pet\/state`[^\n]*`burst\.newGroups`/, '要照實講頁面拿 /pet/state 做什麼')
   })
 })
 

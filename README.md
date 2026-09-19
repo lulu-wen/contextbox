@@ -106,7 +106,9 @@ Quaso 下方常駐兩個小圖示：垃圾桶中央顯示候選數量，有候�
 沒開 D 的時候是本機模式，清理面板與「復原最近動作」接的是真的清理 API：會把監看資料夾（`cleanup.roots`）裡
 勾選的檔搬進隔離區，七天內可以復原（CLI 的對應指令見 [docs/cli.md](docs/cli.md)）。
 頁面上可頌貓的狀態由頁面自己看 `/health`（候選數、監看有沒有在跑、連不連得上）決定；
-後端的 `GET /pet/state` 目前頁面沒有讀。
+後端的 `GET /pet/state` 頁面只讀它的 `burst.newGroups` —— 連拍截圖有**新的一組**時，
+可頌貓才主動問一句「這幾張看起來是同一批，要留最新的就好嗎？」（同一組問過就不再彈）。
+狀態本身仍然不讀它。
 前端 3D 顯示使用隨專案保存的 Three.js 0.180.0（MIT），是下述零外部依賴規則的例外；
 後端仍無外部依賴，仍不需 `npm install`，頁面不連外部 CDN。
 來源與授權見 [core/assets/vendor/README.md](core/assets/vendor/README.md)。

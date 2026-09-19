@@ -4,5 +4,9 @@
   "pendingCount": 2,
   "quarantinedCount": 1,
   "undoable": true,
-  "scanProblems": []
+  "scanProblems": [],
+  "burst": {
+    "groups": 0,
+    "newGroups": 0
+  }
 }

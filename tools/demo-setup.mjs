@@ -142,11 +142,13 @@ put('會議記錄草稿.tmp', Buffer.from('暫存'), 30);                   note
 put('空的.txt', Buffer.alloc(0), 21);                              note('空的.txt', 21, '空檔')
 put('下載到一半的影片.mp4.part', Buffer.alloc(3_200_000, 3), 18);   note('下載到一半的影片.mp4.part', 18, '下載到一半的檔')
 
-// 連拍截圖（P0 的主角）：同一個畫面，差別很小
+// 連拍截圖（P0 的主角）：同一個畫面，差別很小。
+// **差異要夠小才算同一批**：換掉一整行字在比對模組裡是「不一樣」（那是刻意的，寧可少問），
+// 所以這裡用游標與未讀數字這種小變化。
 put('Screenshot 2026-09-18 at 10.31.02.png', shot({ badge: 1 }), 2)
 put('Screenshot 2026-09-18 at 10.31.05.png', shot({ badge: 1, cursor: true }), 2)
-put('Screenshot 2026-09-18 at 10.31.09.png', shot({ badge: 1, extraLine: true }), 2)
-note('Screenshot …10.31.02／05／09.png', 2, '連拍三張：只差游標與多打一行')
+put('Screenshot 2026-09-18 at 10.31.09.png', shot({ badge: 2 }), 2)
+note('Screenshot …10.31.02／05／09.png', 2, '連拍三張：只差游標與未讀數字')
 // 對照：同一個版面但內容不同，不可以被當成連拍
 put('Screenshot 2026-09-18 at 14.02.44.png', shot({ lines: 9, badge: 3 }), 2)
 note('Screenshot …14.02.44.png', 2, '同版面但內容不同的截圖（不可以被當成連拍）')

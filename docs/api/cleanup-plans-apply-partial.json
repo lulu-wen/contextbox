@@ -1,19 +1,19 @@
 {
-  "id": "9e49b5b7-6632-4080-bbe0-869e795a4a12",
+  "id": "e19b24df-2922-4a59-b345-196fa7161637",
   "status": "partial",
   "itemCount": 2,
-  "createdAt": "2026-09-19T04:42:06.589Z",
-  "appliedAt": "2026-09-19T04:42:06.635Z",
+  "createdAt": "2026-09-19T06:17:20.189Z",
+  "appliedAt": "2026-09-19T06:17:20.225Z",
   "error": "檔案或資料夾不見了，請確認後重試。",
   "bytes": 29,
   "items": [
     {
-      "itemId": "2d73d466-6bf5-4033-a00d-c61287f7ad2a",
+      "itemId": "8b1059d1-128b-4fed-ada7-753adc8c274a",
       "name": "發票.zip",
       "bytes": 13,
-      "mtime": "2026-08-05T04:42:06.058Z",
+      "mtime": "2026-08-05T06:17:19.641Z",
       "candidateIds": [
-        "b6d8c8ec-f778-4996-a97e-f0eba61a7826"
+        "e509175c-de48-4a05-b17e-e185a963b1ec"
       ],
       "skipped": false,
       "reasons": [
@@ -28,12 +28,12 @@
       "why": null
     },
     {
-      "itemId": "23398cd8-bd68-4917-8914-4908e7006418",
+      "itemId": "d7957ee4-b568-43ff-b1f0-29895c578159",
       "name": "下載中.iso.crdownload",
       "bytes": 16,
-      "mtime": "2026-09-16T04:42:06.058Z",
+      "mtime": "2026-09-16T06:17:19.641Z",
       "candidateIds": [
-        "c113d473-c8ff-4dc7-913f-000d6e58f8ba"
+        "5248c04d-2747-43a5-b250-b00315ececb2"
       ],
       "skipped": false,
       "reasons": [

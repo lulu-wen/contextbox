@@ -200,6 +200,38 @@ CREATE TABLE IF NOT EXISTS cleanup_plan_releases (
   plan_id TEXT PRIMARY KEY REFERENCES cleanup_plans(id),
   at      TEXT NOT NULL
 );
+
+-- ── 連拍截圖 ─────────────────────────────────────────────────
+-- 長相指紋。**這是快取，不是事實**：算的時候的 size 與 mtime 一起存，
+-- 任一個跟現在的檔對不上就作廢重算（mtime 精度只到毫秒，同一秒內改內容而大小一樣時
+-- 只看 mtime 會漏掉）。掃描的對帳會把 file_items 已經不在的列一起清掉。
+CREATE TABLE IF NOT EXISTS cleanup_image_sigs (
+  item_id  TEXT PRIMARY KEY REFERENCES file_items(id),
+  width    INTEGER NOT NULL,
+  height   INTEGER NOT NULL,
+  size     INTEGER NOT NULL,     -- 算的時候的檔案大小
+  mtime    TEXT NOT NULL,        -- 算的時候的 mtime
+  hash     TEXT NOT NULL,        -- dHash
+  fine_w   INTEGER NOT NULL,
+  fine_h   INTEGER NOT NULL,
+  fine     BLOB NOT NULL,        -- 細比對縮圖
+  at       TEXT NOT NULL
+);
+
+-- 目前的連拍組。**每一次完整掃描重算**，不是歷史紀錄：組散掉時這裡的列就沒了
+-- （候選另外走 skipped）。留下的那張自己也有一列（keep_id = item_id），
+-- 它的 level 就是整組的等級，boxes 是空的 —— 縮圖端點只認得這張表，
+-- 「現在還在某一組裡」才給圖。boxes 存的是**換算過的 0–1 相對座標**（JSON），
+-- 面板照比例畫，後端不外流原圖尺寸以外的東西。
+CREATE TABLE IF NOT EXISTS cleanup_burst_members (
+  item_id  TEXT PRIMARY KEY REFERENCES file_items(id),
+  group_id TEXT NOT NULL,
+  keep_id  TEXT NOT NULL REFERENCES file_items(id),
+  level    TEXT NOT NULL CHECK (level IN ('same','similar')),
+  boxes    TEXT NOT NULL,
+  at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_burst_group ON cleanup_burst_members(group_id, item_id);
 `
 
 /**

@@ -15,7 +15,10 @@
  * CLI 與 HTTP route 都呼叫 `listCandidates()`。
  * **只有一個地方決定 defaultChecked**，不准有第二份。
  */
-import { readdirSync, existsSync, realpathSync, lstatSync } from 'node:fs'
+import {
+  closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync,
+  realpathSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -30,6 +33,9 @@ import { createPlan, getPlan, dismissPlan, releasePlan, validateIds } from './cl
 import { prepareEmptyQuarantine, emptyQuarantine } from './cleanup-quarantine.ts'
 import { CleanupError, execRefusesName, transaction } from './cleanup-journal.ts'
 import { keepersFirst } from './cleanup-scanner.ts'
+import { decodePngGray } from './png.ts'
+import { resizeGray } from './imagehash.ts'
+import { encodeGrayPng } from './png-write.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -1661,6 +1667,190 @@ function pruneEmptyRequests(db: DatabaseSync) {
 
 // ── HTTP ─────────────────────────────────────────────────────
 
+// ── 連拍截圖：組、縮圖、主動詢問 ─────────────────────────────
+
+/**
+ * 縮圖的長邊上限。**原圖不回**：4K 截圖一張 8 MB，面板要同時看好幾張；
+ * 而且原圖就是使用者的螢幕內容，沒有必要整張再走一次 HTTP。
+ */
+export const THUMB_MAX_SIDE = 480
+
+/** 縮圖端點願意讀多大的檔（超過的不給縮圖 —— 上游 png.ts 還有 4000 萬像素的上限）。 */
+const THUMB_MAX_BYTES = 64 * 1024 * 1024
+
+/** meta 裡記「已經主動彈過的組 id」。 */
+export const BURST_ASKED_KEY = 'burst_asked'
+/** burst_asked 只留最新這麼多組。 */
+export const BURST_ASKED_KEEP = 50
+
+export type BurstBox = { x: number; y: number; w: number; h: number }
+export type BurstMemberView = {
+  itemId: string
+  name: string
+  bytes: number
+  level: 'same' | 'similar'
+  thumb: string
+  boxes: BurstBox[]
+}
+export type BurstGroupView = {
+  id: string
+  level: 'same' | 'similar'
+  keep: { itemId: string; name: string; bytes: number; thumb: string }
+  members: BurstMemberView[]
+}
+
+type BurstRowView = {
+  item_id: string
+  group_id: string
+  keep_id: string
+  level: string
+  boxes: string
+  name: string
+  bytes: number
+  path: string
+  mtime: string
+}
+
+const thumbUrl = (itemId: string) => `/cleanup/thumb/${encodeURIComponent(itemId)}`
+
+function parseBoxes(raw: string): BurstBox[] {
+  let v: unknown
+  try { v = JSON.parse(raw) } catch { return [] }
+  if (!Array.isArray(v)) return []
+  const out: BurstBox[] = []
+  for (const b of v) {
+    if (!b || typeof b !== 'object') continue
+    const { x, y, w, h } = b as Record<string, unknown>
+    if (![x, y, w, h].every(n => typeof n === 'number' && Number.isFinite(n))) continue
+    out.push({ x: x as number, y: y as number, w: w as number, h: h as number })
+  }
+  return out
+}
+
+/**
+ * 目前的連拍組。**掃描算好的**（core/cleanup-scanner.ts 的 wireBursts），這裡只組畫面要的樣子：
+ * 檔名、大小、等級、縮圖網址、0–1 的外框。**沒有路徑**。
+ *
+ * 再過濾一次的理由跟 collect 一樣：
+ * - **只看現在清理範圍底下的**。設定改小之後，上一輪留下的組不該再出現在畫面上
+ *   （掃描端不去動範圍外的列，見 wireBursts 的 K5 註解）。
+ * - **檔案狀態要還在**：搬進隔離區、不見了、讀不到的不列；少到剩一張的整組不列。
+ */
+export function burstGroupsView(db: DatabaseSync, scope: string[] | CleanupScope): BurstGroupView[] {
+  const m = scopeMatcher(scopeOf(scope))
+  const rows = safe(() => db.prepare(
+    `SELECT b.item_id, b.group_id, b.keep_id, b.level, b.boxes, i.name, i.bytes, i.path, i.mtime
+       FROM cleanup_burst_members b JOIN file_items i ON i.id = b.item_id
+      WHERE i.status IN ('candidate','kept','restored') AND i.error IS NULL
+      ORDER BY b.group_id, i.mtime DESC, b.item_id`
+  ).all() as BurstRowView[], [] as BurstRowView[])
+
+  const byGroup = new Map<string, BurstRowView[]>()
+  for (const r of rows) {
+    if (!underAny(r.path, m.pre)) continue
+    // **檔案真的還在才列。** 整個資料夾被清空時，大量消失的保險絲會讓那些列維持 candidate
+    // （外接碟沒掛上的情況不可以亂標 missing），但那時候問使用者「要不要清掉這幾張」很荒謬，
+    // 縮圖也全部 404（P0 驗證員）。這裡的筆數很少（一組幾張、最多列 20 組），一次 lstat 不貴。
+    if (!safe(() => { lstatSync(r.path); return true }, false)) continue
+    const list = byGroup.get(r.group_id)
+    if (list) list.push(r)
+    else byGroup.set(r.group_id, [r])
+  }
+
+  const out: (BurstGroupView & { at: string })[] = []
+  for (const [id, list] of byGroup) {
+    const keep = list.find(r => r.item_id === r.keep_id)
+    const members = list.filter(r => r.item_id !== r.keep_id)
+    // 留下的那張不在了（被清掉、被改掉）就整組不列 —— 「會留著 X」不成立的話不可以再問
+    if (!keep || !members.length) continue
+    const level = keep.level === 'same' ? 'same' : 'similar'
+    out.push({
+      id,
+      level,
+      at: keep.mtime,
+      keep: { itemId: keep.item_id, name: keep.name, bytes: keep.bytes, thumb: thumbUrl(keep.item_id) },
+      members: members.map(r => ({
+        itemId: r.item_id,
+        name: r.name,
+        bytes: r.bytes,
+        level: r.level === 'same' ? 'same' as const : 'similar' as const,
+        thumb: thumbUrl(r.item_id),
+        boxes: parseBoxes(r.boxes),
+      })),
+    })
+  }
+  // 最近的一組排最前面；時間一樣時照組 id，每次都一樣
+  out.sort((a, b) => cmpDesc(a.at, b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return out.map(({ at, ...g }) => g)
+}
+
+/**
+ * 縮圖：灰階 PNG、長邊 ≤ THUMB_MAX_SIDE。**只給現在還在某一組裡的 item**，
+ * 其他一律 null（呼叫端回 404）—— 這不是「任意檔案的讀取端點」。
+ * 讀不到、不是 PNG、解不開的也回 null：那是一張看不到的縮圖，不是伺服器故障。
+ */
+export function burstThumbPng(db: DatabaseSync, scope: string[] | CleanupScope, itemId: string): Buffer | null {
+  if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
+  // 「在不在組裡」用跟 /cleanup/bursts 同一份判斷：畫面上看得到的才給得到圖
+  const inGroup = burstGroupsView(db, scope).some(g =>
+    g.keep.itemId === itemId || g.members.some(m => m.itemId === itemId))
+  if (!inGroup) return null
+  const row = safe(() => db.prepare(
+    'SELECT path, bytes, mtime FROM file_items WHERE id=?').get(itemId) as
+    { path: string; bytes: number; mtime: string } | undefined, undefined)
+  if (!row || Number(row.bytes) > THUMB_MAX_BYTES) return null
+
+  // 檔案可能在這中間被換掉（甚至換成捷徑）：O_NOFOLLOW 開，再核對大小與 mtime
+  let fd: number
+  try { fd = openSync(row.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)) }
+  catch { return null }
+  let buf: Buffer
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile() || st.size !== Number(row.bytes) || st.mtime.toISOString() !== row.mtime) return null
+    buf = readFileSync(fd)
+  } catch { return null }
+  finally { closeSync(fd) }
+
+  try {
+    const img = decodePngGray(buf)
+    const long = Math.max(img.width, img.height)
+    if (long <= THUMB_MAX_SIDE) return encodeGrayPng(img.width, img.height, img.gray)
+    const w = Math.max(1, Math.round(img.width * THUMB_MAX_SIDE / long))
+    const h = Math.max(1, Math.round(img.height * THUMB_MAX_SIDE / long))
+    return encodeGrayPng(w, h, resizeGray(img, w, h))
+  } catch { return null }
+}
+
+/**
+ * 寵物要不要主動開口：`groups` 是現在有幾組，`newGroups` 是**這次新出現、還沒彈過**的幾組。
+ *
+ * 「彈過」記在 meta 的 burst_asked（組 id，留最新 BURST_ASKED_KEEP 組）。組 id 是
+ * 「留下的那張 ＋ 成員」算出來的，所以**成員變了就是新的一組**，會再彈一次；
+ * 一模一樣的一組不會每次掃描都來煩人（預想表第 44 列）。
+ *
+ * **會寫 meta 的讀取端點**：問過就算問過，不然使用者沒理它、下一次輪詢又彈一次。
+ * 寫不進去（資料庫忙、唯讀）不算錯 —— 最壞是多問一次。
+ */
+export function burstAsk(db: DatabaseSync, scope: string[] | CleanupScope): { groups: number; newGroups: number } {
+  const ids = burstGroupsView(db, scope).map(g => g.id)
+  let asked: string[] = []
+  const raw = safe(() => getMeta(db, BURST_ASKED_KEY), null)
+  if (raw) {
+    try {
+      const v = JSON.parse(raw)
+      if (Array.isArray(v)) asked = v.filter((x: unknown): x is string => typeof x === 'string')
+    } catch { /* 壞掉的舊值當成沒問過 */ }
+  }
+  const seen = new Set(asked)
+  const fresh = ids.filter(id => !seen.has(id))
+  if (fresh.length || asked.length > BURST_ASKED_KEEP) {
+    const next = [...asked, ...fresh].slice(-BURST_ASKED_KEEP)
+    safe(() => setMeta(db, BURST_ASKED_KEY, JSON.stringify(next)), undefined)
+  }
+  return { groups: ids.length, newGroups: fresh.length }
+}
+
 export type RouteCtx = {
   db: DatabaseSync
   roots: string[] | (() => string[])
@@ -1682,11 +1872,20 @@ export type RouteCtx = {
   /** 第三個參數是額外的 response header（例如 BUSY 的 Retry-After、405 的 Allow）。 */
   send: (code: number, payload: unknown, headers?: Record<string, string>) => void
   /**
+   * 送二進位（現在只有連拍縮圖的灰階 PNG）。**沒給的呼叫端就沒有縮圖**：
+   * 那一條路徑會回 501，而不是假裝成功或把圖塞進 JSON 裡。server.ts 一定要給。
+   */
+  sendBytes?: (code: number, contentType: string, body: Uint8Array, headers?: Record<string, string>) => void
+  /**
    * 手動掃一次。由呼叫端注入，這一支不直接相依 scanner。
    * `onProblem` 要傳給 scanDownloads：保險絲、讀不到的檔、打不開的資料夾都從這裡報，
    * 回應的 `problems` 就是收到的這些（不傳的話那些話走 HTTP 永遠看不到）。
    */
-  scan: (onProblem: (msg: string) => void) => { scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean }
+  scan: (onProblem: (msg: string) => void) => {
+    scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean
+    /** 還有幾張圖的長相指紋沒算（一批有上限，見 scanner 的 MAX_IMAGE_BATCH）。 */
+    imagesPending?: number
+  }
 }
 
 /** POST /cleanup/scan 回應裡 problems 最多幾條。 */
@@ -1857,6 +2056,8 @@ const KNOWN: [RegExp, string[]][] = [
   [/^\/cleanup\/plans$/, ['GET', 'POST']],
   [/^\/cleanup\/plans\/[^/]+$/, ['GET']],
   [/^\/cleanup\/plans\/[^/]+\/(?:apply|undo|dismiss|release)$/, ['POST']],
+  [/^\/cleanup\/bursts$/, ['GET']],
+  [/^\/cleanup\/thumb\/[^/]+$/, ['GET']],
   [/^\/cleanup\/quarantine$/, ['GET']],
   [/^\/cleanup\/quarantine\/empty$/, ['POST']],
   [/^\/pet\/state$/, ['GET']],
@@ -1930,6 +2131,26 @@ function route(ctx: RouteCtx): boolean {
       return true
     }
     send(200, listCandidates(ctx.db, { ...scopeOfCtx(ctx), limit }))
+    return true
+  }
+
+  // 連拍組：畫面要的只有縮圖與外框，**沒有路徑**（見 burstGroupsView）
+  if (p === '/cleanup/bursts' && method === 'GET') {
+    send(200, { groups: burstGroupsView(ctx.db, scopeOfCtx(ctx)) })
+    return true
+  }
+
+  // 縮圖。**只給現在還在某一組裡的 item**，其他一律 404 —— 這不是任意檔案的讀取端點。
+  const thumb = /^\/cleanup\/thumb\/([^/]+)$/.exec(p)
+  if (thumb && method === 'GET') {
+    let itemId: string
+    try { itemId = decodeURIComponent(thumb[1]) }
+    catch { throw new CleanupError('BAD_BODY', '縮圖的 id 格式不正確。') }
+    if (!ctx.sendBytes) { fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED'); return true }
+    const png = burstThumbPng(ctx.db, scopeOfCtx(ctx), itemId)
+    // 不在組裡、讀不到、解不開都一樣回 404：不讓呼叫端從狀態碼問出「這個 id 存不存在」
+    if (!png) { fail(send, 404, '沒有這張縮圖。', 'NOT_FOUND'); return true }
+    ctx.sendBytes(200, 'image/png', png, { 'content-length': String(png.length) })
     return true
   }
 
@@ -2089,11 +2310,16 @@ function route(ctx: RouteCtx): boolean {
   if (p === '/pet/state' && method === 'GET') {
     // 這條要 token，所以拿完整版 —— 寵物要比 lastErrorAt 與 lastOkAt，瘦身版兩個都是 null
     const h = healthSnapshot(ctx.db, { ...scopeOfCtx(ctx), quarantine: ctx.quarantine, full: true })
-    send(200, petState(h, {
-      proposedPlans: safe(() => (ctx.db.prepare(
-        `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
-      activeQuarantine: h.quarantine.items,
-    }))
+    send(200, {
+      ...petState(h, {
+        proposedPlans: safe(() => (ctx.db.prepare(
+          `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
+        activeQuarantine: h.quarantine.items,
+      }),
+      // 連拍：現在有幾組、其中幾組是還沒主動彈過的。**畫面自己決定要不要開口**
+      // （petState 的 state 階梯不動 —— 那是「第一個成立的贏」，插隊會蓋掉待辦與錯誤）。
+      burst: safe(() => burstAsk(ctx.db, scopeOfCtx(ctx)), { groups: 0, newGroups: 0 }),
+    })
     return true
   }
 

@@ -235,6 +235,19 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   .cleanup-file p { margin: 6px 0 0 28px; font-size: 13px; line-height: 1.5; }
   .cleanup-file .evidence { color: #796c5b; }
+  #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
+  .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
+  .cleanup-shot { width: 150px; }
+  .cleanup-shot-frame { position: relative; border: 1px solid #e9dfce; border-radius: 8px;
+    overflow: hidden; background: #f6f1e7; min-height: 40px; }
+  .cleanup-shot-frame img { display: block; width: 100%; height: auto; }
+  /* 差異處的外框。位置是 0–1 的相對座標換成百分比，縮圖多大都對得上 */
+  .cleanup-shot-box { position: absolute; border: 2px solid #c0451b; border-radius: 3px;
+    box-shadow: 0 0 0 1px #fff9; pointer-events: none; }
+  .cleanup-shot label { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; overflow-wrap: anywhere; }
+  .cleanup-shot input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
+  #cleanup-panel .cleanup-shot p { margin: 4px 0 0; font-size: 13px; }
+  .cleanup-shot-keep { font-weight: 600; color: #4d6b3a; }
   #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
   #cleanup-summary { font-weight: 600; }
@@ -274,6 +287,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <p id="quaso-status" role="status">今天吃可頌了嗎？</p>
     </div>
     <button id="quaso-retry" type="button" hidden>重新載入</button>
+    <button id="quaso-burst-open" type="button" hidden>看看這幾張</button>
   </div>
     <div id="quaso-settings" hidden>
       <label for="quaso-animation">待機動畫</label>
@@ -323,6 +337,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
+  <!-- 連拍截圖（P0）。一組一列、縮圖並排，成員的縮圖上畫出差異處；沒有組的時候整區不顯示。
+       縮圖是 blob: 網址（面板用帶 token 的 api 取回來的），網址上不帶 token。 -->
+  <div id="cleanup-bursts" hidden></div>
   <div id="cleanup-list"></div>
   <div id="cleanup-needs-human" class="cleanup-note"></div>
   <p id="cleanup-summary" aria-live="polite"></p>
@@ -406,7 +423,13 @@ async function api(path, init = {}) {
   if (document.documentElement.dataset.mockBackend === 'offline') {
     throw new Error('目前模擬後端離線，請按 O 結束模擬後再試。')
   }
-  const r = await fetch(path, { ...init, headers: HEAD, cache: 'no-store' })
+  // blob: true ＝ 這條路徑回的是二進位（目前只有連拍縮圖），成功時回 Blob，不要當 JSON 解。
+  // 縮圖端點要 token，而 <img> 不會帶 header —— 所以一律先用這裡取回來，再換成 blob: 網址。
+  // **token 不可以放進 <img> 的網址**：那等於把它寫進 DOM、歷史紀錄與使用者的截圖裡。
+  // 失敗時照樣走下面那條（錯誤本體是 JSON）。
+  const { blob, ...rest } = init
+  const r = await fetch(path, { ...rest, headers: HEAD, cache: 'no-store' })
+  if (blob && r.ok) return r.blob()
   let data = {}
   try { data = await r.json() } catch (_) {}
   // server 的錯誤訊息本來就寫得像人話，原樣往上丟，不要自己重寫。

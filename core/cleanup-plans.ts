@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { CleanupFileItem } from './cleanup-scanner.ts'
 import { DEFAULT_CHECK_MIN } from './cleanup-routes.ts'
-import { CLEANUP_RULE_VERSION } from './cleanup-rules.ts'
+import { BURST_RULE_VERSION, PLANNABLE_RULE_VERSIONS } from './cleanup-rules.ts'
 import { CleanupError, initCleanup, transaction, withCleanupLock } from './cleanup-journal.ts'
 
 export type PlanSnapshot = CleanupFileItem & {
@@ -72,12 +72,15 @@ export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; re
         return getPlan(db, prior.plan_id)
       }
     }
+    // 一般規則與連拍（burst-1）都建得了計畫；**不帶 id 的預設清理只拿一般規則的**
+    // —— 連拍要看過縮圖再決定，不可以被「預設清理」掃進去。
     const candidates = db.prepare(`SELECT c.* FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
-      WHERE c.status='proposed' AND c.rule_version=? AND i.status IN ('candidate','kept','restored') AND i.error IS NULL
+      WHERE c.status='proposed' AND c.rule_version IN (${PLANNABLE_RULE_VERSIONS.map(() => '?').join(',')})
+        AND i.status IN ('candidate','kept','restored') AND i.error IS NULL
         AND trim(c.reason)<>'' AND trim(c.evidence)<>''
-      ORDER BY c.confidence DESC, c.id`).all(CLEANUP_RULE_VERSION) as any[]
+      ORDER BY c.confidence DESC, c.id`).all(...PLANNABLE_RULE_VERSIONS) as any[]
     const ids = opts.candidateIds === undefined
-      ? candidates.filter(c => c.confidence >= DEFAULT_CHECK_MIN).map(c => c.id)
+      ? candidates.filter(c => c.confidence >= DEFAULT_CHECK_MIN && c.rule_version !== BURST_RULE_VERSION).map(c => c.id)
       : [...new Set(opts.candidateIds)]
     const selected = new Set<string>()
     for (const id of ids) {

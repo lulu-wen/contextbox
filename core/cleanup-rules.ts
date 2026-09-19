@@ -200,6 +200,43 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
   return out
 }
 
+/**
+ * 連拍截圖的候選版本。**跟一般規則分開**（CLEANUP_RULE_VERSION）：
+ * 它不是看檔名與時間算出來的，是看長相算出來的（core/imagehash.ts），
+ * 兩者的 kind 都是 screenshot-noise，靠 rule_version 分得開，UNIQUE 也不會打架。
+ *
+ * **兩個版本都建得了計畫**（PLANNABLE_RULE_VERSIONS）：連拍區勾起來就要搬得動，
+ * 不然又是「列得出、勾得起、建不了計畫」那個坑。差別只在**誰把它列出來**：
+ * 一般規則走候選清單與徽章，連拍走 GET /cleanup/bursts 與寵物的主動詢問 ——
+ * 連拍不進清單是刻意的（它有自己的區塊、要看縮圖才決定），不是因為建不了計畫。
+ */
+export const BURST_RULE_VERSION = 'burst-1'
+
+/** 可以進清理計畫的候選版本。 */
+export const PLANNABLE_RULE_VERSIONS = [CLEANUP_RULE_VERSION, BURST_RULE_VERSION]
+
+/**
+ * 連拍候選的信心：**照等級**，不是一律 70。
+ * same（全解析度上幾乎沒有任何像素變化）70 ≥ DEFAULT_CHECK_MIN（50）→ 預設勾；
+ * similar（看得到的變化，面板會框出來）40 < 50 → 預設不勾。
+ */
+export const BURST_CONFIDENCE = { same: 70, similar: 40 } as const
+
+/**
+ * 連拍候選的理由與證據。`keepName` 是留下的那張的檔名、`gapSec` 是跟它相隔幾秒。
+ * **不帶路徑**（跟其他 draft 一樣，UI 只拿得到檔名）。
+ */
+export function burstDraft(level: 'same' | 'similar', keepName: string, gapSec: number): CleanupCandidateDraft {
+  return draft(
+    'screenshot-noise',
+    BURST_CONFIDENCE[level],
+    level === 'same'
+      ? `跟「${keepName}」幾乎一樣`
+      : `跟「${keepName}」差不多`,
+    `同一批連拍，相隔 ${gapSec} 秒，會留著「${keepName}」`,
+  )
+}
+
 export function duplicateDraft(count: number): CleanupCandidateDraft {
   return draft(
     'duplicate',

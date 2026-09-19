@@ -408,6 +408,17 @@ export function start(opts: {
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
+        // 連拍縮圖是灰階 PNG，走不了 JSON 的 send。跟素材同一套 header：
+        // 不快取、不嗅探、只准同源用（縮圖是使用者的螢幕內容）。
+        sendBytes: (code, contentType, payload, extra = {}) => {
+          res.writeHead(code, {
+            ...baseHeaders(),
+            'content-type': contentType,
+            'cross-origin-resource-policy': 'same-origin',
+            ...extra,
+          })
+          res.end(Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength))
+        },
         // onProblem 一定要傳：保險絲與讀不到的檔只經由它報，回應的 problems 就是這些
         scan: onProblem => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes, onProblem }),
       })) return

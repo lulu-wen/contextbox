@@ -1,7 +1,7 @@
 import { createDemo } from './cleanup-demo-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
-  folderPhrase,
+  folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -10,6 +10,10 @@ const alertButton = $('quaso-cleanup-alert')
 let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
 // 本機模式：接真的路由，會真的搬動監看資料夾（cleanup.roots）裡的檔案。介面跟 demo 一樣，渲染共用。
 let real = null
+// 連拍截圖（P0）：組與縮圖。示範模式不用它（那時畫面上是假的清單）。
+const bursts = createBursts((path, init) => window.api(path, init))
+// 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
+const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
 let healthChecked = false, healthBusy = false, stopped = false
 /**
@@ -49,8 +53,10 @@ const HISTORY_NOTE = {
   local: '每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。',
 }
 
-function notice(message) {
+/** 寵物說一句。burst 為 true 時多給一顆「看看這幾張」（點下去打開連拍區）。 */
+function notice(message, { burst = false } = {}) {
   $('quaso-status').textContent = message
+  $('quaso-burst-open').hidden = !burst
   $('quaso-dialog').hidden = false
   $('quaso-stage').setAttribute('aria-expanded', 'true')
 }
@@ -156,6 +162,85 @@ function modeNote() {
     ? '示範模式 · 以下為範例檔案，清理與復原不會動到你電腦上真的檔案。'
     : `本機模式 · 這些是你${folderPhrase(health?.watcher)}裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。`
 }
+/** 0–1 的相對座標 → 百分比（小數點後一位就夠，框不用畫得比這更準）。 */
+const pct = v => (Math.round(v * 1000) / 10) + '%'
+
+/**
+ * 連拍區裡的一張縮圖。
+ *
+ * - 縮圖是 `blob:` 網址（面板用帶 token 的 api 取回來的）。**token 不在網址上**，
+ *   所以不能寫成 `<img src="/cleanup/thumb/…">`（那條端點要 token，img 不會帶 header）。
+ * - 差異處的外框用**相對座標**（0–1）換成百分比疊在圖上，縮圖多大都對得上。
+ * - 留下的那張標「留著」、**沒有勾選框** —— 它永遠不會被提議清掉。
+ * - 檔名是不可信的輸入：一律 safeName，而且只進 textContent。
+ */
+function burstShotCell(shot, { keep = false, state = null } = {}) {
+  const cell = document.createElement('div')
+  cell.className = 'cleanup-shot'
+  const frame = document.createElement('div')
+  frame.className = 'cleanup-shot-frame'
+  const url = bursts.thumb(shot.itemId)
+  if (url) {
+    const img = document.createElement('img')
+    img.src = url
+    img.alt = safeName(shot.name)
+    frame.append(img)
+  } else {
+    frame.append(paragraph('（縮圖讀不到）', 'evidence'))
+  }
+  for (const b of shot.boxes) {
+    const mark = document.createElement('span')
+    mark.className = 'cleanup-shot-box'
+    mark.setAttribute('style', `left:${pct(b.x)};top:${pct(b.y)};width:${pct(b.w)};height:${pct(b.h)}`)
+    frame.append(mark)
+  }
+  cell.append(frame)
+  if (keep) {
+    cell.append(paragraph(`留著 · ${safeName(shot.name)}`, 'cleanup-shot-keep'))
+    return cell
+  }
+  const label = document.createElement('label')
+  const check = document.createElement('input')
+  check.type = 'checkbox'
+  // 成員本來就是候選清單上的檔，勾選走**同一個** selected 集合 —— 清理是同一條路。
+  // 萬一它不在清單上（後端兩邊不同步），給看但不給勾：勾了也送不出去。
+  const listed = state.candidates.some(c => c.itemId === shot.itemId)
+  check.checked = state.selected.has(shot.itemId)
+  check.disabled = busy || state.canUndo || Boolean(state.locked) || !listed
+  check.onchange = () => { state.select(shot.itemId, check.checked); request = null; summary() }
+  const name = document.createElement('strong')
+  name.textContent = safeName(shot.name)
+  label.append(check, name)
+  cell.append(label, paragraph(bytes(shot.bytes), 'evidence'))
+  return cell
+}
+
+/**
+ * 連拍區。**沒有組就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的連拍組只會讓人分不清在看什麼）。
+ */
+function renderBursts() {
+  const box = $('cleanup-bursts')
+  box.replaceChildren()
+  const groups = isDemo() ? [] : bursts.groups
+  box.hidden = groups.length === 0
+  if (!groups.length) return
+  const s = session()
+  box.append(paragraph('連拍截圖 · 同一批只留最新的那張', 'cleanup-note'))
+  for (const g of groups) {
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-burst'
+    row.append(paragraph(burstGroupLine(g)), paragraph(burstNote(g.level), 'evidence'))
+    const shots = document.createElement('div')
+    shots.className = 'cleanup-burst-shots'
+    shots.append(burstShotCell(g.keep, { keep: true }))
+    for (const m of g.members) shots.append(burstShotCell(m, { state: s }))
+    row.append(shots)
+    box.append(row)
+  }
+  if (bursts.more) box.append(paragraph(`另外還有 ${bursts.more} 組，處理完這幾組再打開面板就會看到。`, 'evidence'))
+}
+
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
@@ -164,8 +249,14 @@ function render() {
   $('cleanup-apply').hidden = false
   $('cleanup-reset').hidden = !isDemo()   // 「重新示範」只有 demo 有意義
   for (const id of ['cleanup-undo', 'cleanup-dismiss']) $(id).hidden = false
+  renderBursts()
+  // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個
+  const inBurst = isDemo() ? new Set() : bursts.memberIds()
+  let listed = 0
   $('cleanup-list').replaceChildren()
   for (const item of s.candidates) {
+    if (inBurst.has(item.itemId)) continue
+    listed++
     const card = document.createElement('article')
     card.className = 'cleanup-file'
     const label = document.createElement('label')
@@ -188,7 +279,9 @@ function render() {
     if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
     $('cleanup-list').append(card)
   }
-  if (!s.candidates.length) $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
+  if (!listed && !$('cleanup-bursts').children.length) {
+    $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
+  }
   $('cleanup-needs-human').replaceChildren()
   for (const item of (isDemo() ? data.needsHuman : s.needsHuman) ?? []) {
     $('cleanup-needs-human').append(paragraph(`需要你查看：${safeName(item.name)} — ${safeName(item.why)}（未列入清理）`))
@@ -221,6 +314,7 @@ async function toggleDemo() {
   historyPanel.close()
   $('quaso-dialog').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
+  bursts.clear()   // 連拍組是本機模式的東西；切模式時把 blob: 網址還回去
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -234,8 +328,9 @@ async function toggleDemo() {
     notice('範例暫時讀不到，請確認伺服器已啟動，再按 D 重試。')
   }
 }
-alertButton.onclick = async () => {
+async function openCleanupPanel() {
   $('quaso-dialog').hidden = true
+  $('quaso-burst-open').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   if (demo) {
     render()
@@ -246,7 +341,7 @@ alertButton.onclick = async () => {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
   $('cleanup-needs-human').replaceChildren()
@@ -259,10 +354,20 @@ alertButton.onclick = async () => {
     await real.load()
     // 有待處理的計畫就一打開先提示（R2-5）。查不到就照常，撞到 CONFLICT 仍是入口
     await real.checkPending()
+    // 連拍組（後端沒有這條就是空的，面板照常）。**similar 一律再取消勾一次**：
+    // 這一區是主動問的，寧可少勾一格，也不要讓人一按就丟掉一張內容不一樣的截圖。
+    await bursts.load()
+    applyBurstDefaults(real, bursts.groups)
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
     else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
   } catch { $('cleanup-list').replaceChildren(paragraph('讀取失敗，請確認伺服器已啟動，關閉面板後點垃圾桶重試。')) }
+}
+alertButton.onclick = openCleanupPanel
+// 寵物主動問完之後的那顆按鈕：點一下就是打開連拍區（面板一打開就在最上面）
+$('quaso-burst-open').onclick = () => {
+  $('quaso-burst-open').hidden = true
+  return openCleanupPanel()
 }
 $('cleanup-close').onclick = () => panel.close()
 panel.addEventListener('close', () => { if (!alertButton.hidden) alertButton.focus() })
@@ -329,6 +434,11 @@ async function operate(kind) {
       result(lines.join('\n'))
     } finally {
       busy = false
+      // 清完（或放回）之後組可能散了、也可能少了一張 —— 重讀一次再畫，不要留著舊的縮圖。
+      // **而且要再套一次預設**：重讀清單會把新冒出來的 similar 成員照後端的 defaultChecked 勾起來，
+      // 使用者再按一次「清理」就會搬走一張他從來沒看過、有看得見變化的截圖（P0 驗證員）。
+      await bursts.load()
+      applyBurstDefaults(real, bursts.groups)
       render()
     }
     pollHealth()   // 徽章數字馬上更新，不用等五秒（動作已經結束，這次輪詢的結果照常算數）
@@ -531,7 +641,37 @@ async function pollHealth() {
   retry.textContent = '重試連線'
   if (health) closeConnectionWarning()
   updateAlert()
+  if (health) await askAboutBursts()
   if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
+}
+
+/**
+ * 主動詢問（P0）。**有新的連拍組才彈** —— 舊的組還在連拍區裡，只是不再跳出來問。
+ *
+ * `/pet/state` 的 `burst.newGroups` 是「還沒問過的組數」（後端把問過的組 id 記在 meta）。
+ * 這裡再守一層：**只在它比上一次大的時候彈**。後端萬一沒把問過的記下來（一直回同一個數字），
+ * 不守的話寵物會每五秒跳出來問一次同一批。
+ *
+ * 忙的時候（面板開著、正在搬檔、示範模式）不彈，**也不把數字記起來** —— 下一輪再問，
+ * 不要蓋掉使用者正在看的結果。真的要彈之前先把組讀回來：讀不到就什麼都不做，
+ * 彈一句「有 N 張很像」卻打不開任何東西比不彈更糟。
+ */
+async function askAboutBursts() {
+  if (isDemo() || busy || historyBusy || panel.open || historyPanel.open) return
+  let state
+  try { state = await window.api('/pet/state') } catch { return }
+  const n = Number(state?.burst?.newGroups)
+  // 舊版後端沒有 burst 這一段（n 是 NaN）：當成沒有新的組
+  if (!Number.isFinite(n) || n <= 0) return
+  // **記住問過哪幾組，不是問過幾組。** 拿數量當高水位的話：問過 2 組之後那 2 組被清掉、
+  // 又出現 1 組新的（newGroups 從 2 掉到 1），1 ≤ 2 就再也不會問了（P0 驗證員）。
+  const groups = await bursts.load()
+  const fresh = groups.filter(g => g.id && !burstAsked.has(g.id))
+  if (!fresh.length) return
+  for (const g of fresh) burstAsked.add(g.id)
+  // 記太多沒有意義：留最近 200 組（一組一個短字串）
+  if (burstAsked.size > 200) for (const id of [...burstAsked].slice(0, burstAsked.size - 200)) burstAsked.delete(id)
+  notice(burstAskMessage(fresh), { burst: true })
 }
 $('quaso-connection-retry').onclick = pollHealth
 function closeConnectionWarning() {
@@ -571,5 +711,5 @@ document.addEventListener('keydown', event => {
   if (key === 'd') { event.preventDefault(); toggleDemo() }
   if (key === 'o') { event.preventDefault(); toggleOffline() }
 })
-window.addEventListener('pagehide', () => { stopped = true; clearTimeout(healthTimer) }, { once: true })
+window.addEventListener('pagehide', () => { stopped = true; clearTimeout(healthTimer); bursts.clear() }, { once: true })
 pollHealth()
