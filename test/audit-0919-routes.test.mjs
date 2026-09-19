@@ -752,7 +752,9 @@ function slowListPlans(db, { filter, offset = 0, limit = 20 } = {}) {
     if (filter === 'undoable' && !canUndo) continue
     if (filter === 'pending' && !items.length) continue
     const restored = db.prepare(`SELECT max(ts) ts FROM cleanup_journal WHERE plan_id=? AND op='restore' AND status='done'`).get(p.id)
-    rows.push({ id: p.id, status: p.status, createdAt: p.created_at, appliedAt: p.applied_at, restoredAt: restored.ts, canUndo,
+    // 已經開始復原（有任何 restore 紀錄）：再 apply 一定 409，面板要拿它決定給哪些出口
+    const restoring = Boolean(db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(p.id))
+    rows.push({ id: p.id, status: p.status, createdAt: p.created_at, appliedAt: p.applied_at, restoredAt: restored.ts, canUndo, restoring,
       itemCount: items.length, bytes: items.reduce((n, i) => n + i.bytes, 0), items })
   }
   const total = rows.length

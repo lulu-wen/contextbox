@@ -117,6 +117,13 @@ export function pendingPlanMessage(plan) {
       + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
       + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。' + others
   }
+  if (plan.restoring) {
+    // 這份已經開始復原了：後端的 apply 會回 409（RESTORE_STARTED），所以不給「繼續上次那份」
+    return `上次有一份復原做到一半中斷了：${names}（${plan.items.length} 個）。\n`
+      + '按「放回已經搬走的」會接著放回，放回去的不會再動。\n'
+      + '這份已經開始復原了，不能繼續清理，也不能放棄。'
+      + (plan.others > 0 ? `\n（另外還有 ${plan.others} 份沒做完的：處理完這一份，關掉面板再打開就會看到下一份。）` : '')
+  }
   const moved = plan.moved, unsure = plan.unsure ?? 0
   const halfway = `${unsure} 個搬到一半、說不準在原位還是在隔離區`
   const where = moved == null ? '其中有些可能已經在隔離區'
@@ -292,6 +299,8 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
       id: plan.id,
       items: plan.items.map(i => ({ itemId: i.itemId, name: i.name, bytes: i.bytes })),
       started: started ?? plan.items.some(i => i.outcome !== 'pending'),
+      // 復原到一半中斷：再 apply 一定 409，出口只剩「接著放回」（第二輪第二階段驗證員）
+      restoring: plan.restoring === true,
       moved: plan.items.filter(i => i.outcome === 'moved').length,
       unsure: plan.items.filter(i => i.outcome === 'unknown').length,
       inQuarantine: plan.items.filter(maybeInQuarantine),
@@ -304,9 +313,10 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
    */
   async function fromBlocking(b) {
     const started = b.started === true
-    if (!started) return { id: b.id, items: b.items ?? [], started }
-    try { return pendingFrom(await api(planUrl(b.id)), true) }
-    catch { return { id: b.id, items: b.items ?? [], started, moved: null, unsure: null } }
+    const restoring = b.restoring === true
+    if (!started) return { id: b.id, items: b.items ?? [], started, restoring }
+    try { return { ...pendingFrom(await api(planUrl(b.id)), true), restoring } }
+    catch { return { id: b.id, items: b.items ?? [], started, restoring, moved: null, unsure: null } }
   }
 
   // 勾選要鎖住的只有兩種情況：
@@ -353,6 +363,8 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
       // 使用者看過擋住的那份、按了「繼續上次那份」
       if (pendingPlan) {
         const plan = pendingPlan
+        // 已經開始復原的那份，後端的 apply 一定 409 —— 不要送，直接講出口
+        if (plan.restoring) throw new Error('這份已經開始復原了，不能繼續清理。請選「放回已經搬走的」。')
         try { return await applyPlanId(plan.id) }
         catch (e) {
           // 伺服器明確回了錯：它說了沒做成，解鎖，讓使用者改勾選或放棄（RC8）。

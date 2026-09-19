@@ -6,8 +6,8 @@
   },
   "watcher": {
     "ok": true,
-    "lastHeartbeatAt": "2026-09-19T01:44:21.985Z",
-    "pid": 3846186,
+    "lastHeartbeatAt": "2026-09-19T01:57:51.650Z",
+    "pid": 3856973,
     "rootsMissing": 0,
     "watchingCount": 1,
     "watching": [
@@ -18,22 +18,22 @@
   "quarantine": {
     "items": 1,
     "bytes": 13,
-    "oldestMtimeAt": "2026-08-05T01:44:21.180Z",
-    "canEmptyAt": "2026-09-18T01:44:21.980Z",
+    "oldestMtimeAt": "2026-08-05T01:57:50.867Z",
+    "canEmptyAt": "2026-09-18T01:57:51.646Z",
     "canEmptyNow": true,
     "orphans": 0,
     "truncated": false
   },
   "pendingCandidates": 2,
   "needsHumanCount": 2,
-  "lastError": "2026-09-19T01:44:21.839Z 只處理一般檔案，不處理捷徑或硬鏈結。",
-  "lastErrorAt": "2026-09-19T01:44:21.839Z",
-  "lastOkAt": "2026-09-19T01:44:21.923Z",
+  "lastError": "2026-09-19T01:57:51.512Z 只處理一般檔案，不處理捷徑或硬鏈結。",
+  "lastErrorAt": "2026-09-19T01:57:51.512Z",
+  "lastOkAt": "2026-09-19T01:57:51.592Z",
   "lastErrorKind": "apply",
   "lastOkByKind": {
-    "scan": "2026-09-19T01:44:21.524Z",
-    "apply": "2026-09-19T01:44:21.799Z",
-    "undo": "2026-09-19T01:44:21.923Z",
+    "scan": "2026-09-19T01:57:51.217Z",
+    "apply": "2026-09-19T01:57:51.479Z",
+    "undo": "2026-09-19T01:57:51.592Z",
     "empty": null
   },
   "scanProblems": [],

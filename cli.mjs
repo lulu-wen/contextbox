@@ -242,7 +242,22 @@ function noteError(e, kind) {
  * **鎖被別的行程拿著（BUSY）就安靜略過這一次**：那個行程正在搬，收尾等下一次；指令本身照跑，不可以因為它失敗。
  * 其他錯講一行，指令照跑 —— 收尾是幫忙，不是前提。
  */
+/**
+ * 有沒有東西要收尾？**先唯讀問一次，沒有就不要去拿清理鎖。**
+ * pet 每 30 分鐘重掃前都會收尾，無條件拿鎖的話，剛好在面板或 CLI 動作時會讓對方收到 BUSY
+ * （第二輪第二階段驗證員）。這兩個查詢都不寫任何東西。
+ */
+function needsSettling() {
+  try {
+    if (db.prepare(`SELECT 1 FROM cleanup_journal WHERE status='started' LIMIT 1`).get()) return true
+    const cutoff = new Date(Date.now() - STALE_PLAN_MS).toISOString()
+    return Boolean(db.prepare(`SELECT 1 FROM cleanup_plans p WHERE p.status='proposed' AND p.created_at < ?
+      AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id = p.id) LIMIT 1`).get(cutoff))
+  } catch { return false }   // 還沒有清理的表：沒有東西要收尾
+}
+
 function settleCleanupState() {
+  if (!needsSettling()) return
   const steps = [() => recoverInterrupted(db, execOpts()), () => releaseStalePlans(db, STALE_PLAN_MS)]
   for (const step of steps) {
     try { step() }
@@ -481,7 +496,20 @@ const planStarted = id => Boolean(db.prepare('SELECT 1 FROM cleanup_journal WHER
  * 只有出現新的理由（新的 kind、新的規則版本）才會再被提議。原位置被佔、改名成 .restored
  * 放回的那份是另一條路徑，資料庫裡是新的檔，照規則重新評估，所以要另外講。
  */
+/** 這份計畫開始復原了沒？有 restore 紀錄的話，再 apply 一定回 409（核心的 applyPlan 先擋）。 */
+function planRestoring(id) {
+  try {
+    return Boolean(db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(id))
+  } catch { return false }
+}
+
 function startedChoices(id) {
+  // 已經開始復原的那份：apply 一定 409，只剩一條路，不要叫人去撞（第二輪第二階段驗證員）
+  if (planRestoring(id)) {
+    say('\n它已經開始復原了，不能繼續清理，也不能放棄（release）。一條路：')
+    say(`  接著把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+    return
+  }
   say('\n它已經開始搬了，不能放棄（release）。兩個選擇：')
   say(`  把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
   say('    放回原位的檔之後不會再被自動提議（除非出現新的理由）；原位置被佔、改名放回的那份會當成新的檔重新評估。')
@@ -899,10 +927,17 @@ switch (cmd) {
           moved = o.filter(k => k === 'moved').length
           unknown = o.filter(k => k === 'unknown').length
         } catch { /* 數不出來就講 0 */ }
-        say(`          ${p.id}（${ago(p.created_at) ?? '不知道什麼時候'}建立）：${total} 個檔，${moved} 個已經在隔離區`
-          + (unknown ? `，${unknown} 個狀態不明` : ''))
-        say(`            把已經搬走的放回原位：node cli.mjs cleanup undo ${p.id}`)
-        say(`            把它做完：node cli.mjs cleanup apply ${p.id}`)
+        const where = moved || unknown
+          ? `${moved} 個已經在隔離區` + (unknown ? `，${unknown} 個狀態不明` : '')
+          : '一個檔都還沒搬走'
+        say(`          ${p.id}（${ago(p.created_at) ?? '不知道什麼時候'}建立）：${total} 個檔，${where}`)
+        if (planRestoring(p.id)) {
+          say(`            它開始復原了，只能接著放回：node cli.mjs cleanup undo ${p.id}`)
+        } else {
+          if (moved || unknown) say(`            把已經搬走的放回原位：node cli.mjs cleanup undo ${p.id}`)
+          say(`            把它做完：node cli.mjs cleanup apply ${p.id}`)
+          if (!moved && !unknown) say(`            或放棄它（不動任何檔）：node cli.mjs cleanup undo ${p.id}`)
+        }
       }
       if (cut.length > 5) say(`          …另外 ${cut.length - 5} 份`)
     }

@@ -283,7 +283,7 @@ UI 不能只畫成功的樣子。
 
 形狀刻意跟 demo 的 `/demo/cleanup/history` 一樣（`{ total, offset, limit, operations }`），
 歷史面板兩個模式共用同一段渲染。`operations[]` 每一份：
-`id`、`status`、`createdAt`、`appliedAt`、`restoredAt`、`canUndo`、`itemCount`、`bytes`、`items`
+`id`、`status`、`createdAt`、`appliedAt`、`restoredAt`、`canUndo`、`restoring`、`itemCount`、`bytes`、`items`
 （`items[]` 只有 `itemId`、`name`、`bytes`，**沒有** `outcome` —— 要逐項結果請打 `GET /cleanup/plans/:id`）。
 由新到舊排。
 
@@ -296,6 +296,8 @@ UI 不能只畫成功的樣子。
 
 `undoable=1` 與 `pending=1` 同時帶的話，以 `undoable` 為準。
 `canUndo` 在三種篩法裡的意思都一樣：這份計畫現在還有沒有檔可以放回去（在隔離區，或復原到一半中斷）。
+
+`restoring` 是「這份已經開始復原了」（有任何 restore 紀錄）。**它是 true 的時候，`apply` 一定回 409**，唯一的出口是繼續 `undo`。面板拿它決定要不要給「繼續上次那份」那顆按鈕；`GET /cleanup/plans/:id` 與 409 的 `blockingPlan` 也帶同一個欄位。
 
 ### 復原的檔不會回到**這次的**清理清單
 

@@ -1269,7 +1269,11 @@ export function blockingPlanFor(db: DatabaseSync, candidateIds: string[]) {
     .map(i => ({ itemId: i.id, name: i.name, bytes: i.bytes }))
   const started = tableExists(db, 'cleanup_journal')
     && Boolean(db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(p.id))
-  return { id: p.id, status: p.status, createdAt: p.created_at, started, items }
+  // **復原到一半中斷的那份，再 apply 一定 409**（applyPlan 看到 restore 紀錄就擋）。
+  // 不講的話面板會給「繼續上次那份」這顆一定失敗的按鈕（第二輪第二階段驗證員）。
+  const restoring = tableExists(db, 'cleanup_journal')
+    && Boolean(db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(p.id))
+  return { id: p.id, status: p.status, createdAt: p.created_at, started, restoring, items }
 }
 
 // ── 計畫的逐項結果 ───────────────────────────────────────────
@@ -1450,7 +1454,10 @@ export function recordItemErrors(db: DatabaseSync, planId: string): number {
 /** 把逐項結果掛到 B 的計畫 DTO 上。 */
 export function withOutcomes<T extends { id: string; items: { itemId: string }[] }>(db: DatabaseSync, dto: T): T {
   const o = planOutcomes(db, dto.id)
-  return { ...dto, items: dto.items.map(i => ({ ...i, ...(o.get(i.itemId) ?? { outcome: 'pending', why: null }) })) }
+  // restoring：這份已經開始復原（有 restore 紀錄）。**再 apply 一定 409**，呼叫端要拿它決定給哪些出口。
+  const restoring = tableExists(db, 'cleanup_journal') && Boolean(db.prepare(
+    `SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(dto.id))
+  return { ...dto, restoring, items: dto.items.map(i => ({ ...i, ...(o.get(i.itemId) ?? { outcome: 'pending', why: null }) })) }
 }
 
 /**
@@ -1521,9 +1528,12 @@ export function listPlans(db: DatabaseSync, opts: { filter?: 'undoable' | 'pendi
     const restored = db.prepare(
       `SELECT max(ts) ts FROM cleanup_journal WHERE plan_id=? AND op='restore' AND status='done'`
     ).get(p.id) as { ts: string | null }
+    // 有任何 restore 紀錄 → 這份已經開始復原了，再 apply 一定 409（跟 blockingPlanFor 同一個判斷）
+    const restoring = Boolean(db.prepare(
+      `SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(p.id))
     return {
       id: p.id, status: p.status, createdAt: p.created_at, appliedAt: p.applied_at,
-      restoredAt: restored.ts, canUndo,
+      restoredAt: restored.ts, canUndo, restoring,
       itemCount: items.length, bytes: items.reduce((n, i) => n + i.bytes, 0), items,
     }
   }
