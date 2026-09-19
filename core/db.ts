@@ -344,6 +344,27 @@ CREATE TABLE IF NOT EXISTS filings (
   undone_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_filings_item ON filings(item_id, at);
+
+-- ── 記住你改過的東西（P5） ───────────────────────────────────
+-- 「模型說 A、你改成 B」一列。**只從使用者真的做過的動作寫**（rename apply／file apply 帶的參數，
+-- 以及 undo），不從掃描、不從模型、不從猜測寫（core/learn.ts 的不變量 1）。
+--
+-- **這張表裡沒有路徑、沒有檔名以外的東西、沒有檔案內容**：course 與 file_kind 存的是課名與類型
+-- 這種資料夾名字，rejected 存的是「哪一個建議被退了」的摘要。學到的值**到不了檔案系統**，
+-- 除非再過一次 cleanCourse／kindFolder／suggestedFileName —— 學的是偏好，不是權限。
+--
+-- 註：下面 k 那一行的 '\\n' 在**原始碼裡要寫兩個反斜線**。SCHEMA 是樣板字串，
+-- 單一個 \\n 會變成真的換行 —— SQL 註解就斷在那裡，後面半句變成看不懂的語法。
+CREATE TABLE IF NOT EXISTS preferences (
+  id      TEXT PRIMARY KEY,
+  kind    TEXT NOT NULL CHECK (kind IN ('course','file_kind','rejected')),
+  k       TEXT NOT NULL,            -- 對應鍵（course：courseKey(模型的課名)；file_kind：courseKey(課名)+'\\n'+模型的 kind；rejected：itemId+'\\n'+建議摘要）
+  v       TEXT NOT NULL,            -- 使用者要的值（course：課名的寫法；file_kind：類型；rejected：''）
+  times   INTEGER NOT NULL DEFAULT 1,
+  at      TEXT NOT NULL,            -- 最後一次
+  UNIQUE (kind, k)
+);
+CREATE INDEX IF NOT EXISTS ix_preferences_kind ON preferences(kind, at);
 `
 
 /**

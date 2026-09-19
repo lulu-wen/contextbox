@@ -9,6 +9,7 @@
  *   node cli.mjs think               讓模型看一輪還沒看過的檔（要先設定 model 與金鑰）
  *   node cli.mjs rename              替沒取名的檔改名（列建議／--apply／--undo，改得回來）
  *   node cli.mjs file                把同一堂課的檔歸成資料夾（列建議／--apply／--undo，搬得回來）
+ *   node cli.mjs learned             它從你的修改學到什麼（--forget／--forget-all 忘得掉）
  *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
  *   node cli.mjs watch               常駐監看設定裡的資料夾
  *   node cli.mjs list [狀態]          看收件匣
@@ -45,6 +46,7 @@ import {
 import {
   applyFilings, FILING_BATCH_MAX, filingSuggestions, listFilings, recoverInterruptedFilings, undoFilings,
 } from './core/filing.ts'
+import { courseKey, forgetAllLearned, forgetLearned, listLearned } from './core/learn.ts'
 import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
 import { CleanupError } from './core/cleanup-journal.ts'
@@ -539,6 +541,53 @@ function resolveCodes(rows, codes, flag) {
     if (!out.includes(hits[0])) out.push(hits[0])
   }
   return { rows: out }
+}
+
+/**
+ * 「它學到的事」印成一行人話（P5）。**三種各講各的**：混成同一句的話，
+ * 「退過貨」那一種會看起來像「模型說 課程/OS/講義、你要（空白）」，使用者看不懂那是什麼。
+ */
+function learnedLine(r) {
+  if (r.kind === 'rejected') {
+    // **改名那一種不講名字**：那個摘要是真的檔名，而回給畫面的東西不可以有檔名（稽核 2026-09-20）。
+    // 歸檔那一種的摘要是 `課程/<課名>/<類型>`，沒有檔名，講出來使用者才知道是哪一個建議。
+    const which = r.about ? `「${r.about}」這個建議` : '一個改名建議'
+    return `退過貨　你上次退掉了${which}（清單還是會列，只是不預設勾）`
+  }
+  const times = `・用過 ${r.times} 次`
+  if (r.kind === 'file_kind') return `類型　${r.from} 的東西 ・ 你要「${r.to}」${times}`
+  // 又改回模型的說法時 from 與 to 會折成同一個（最後一次贏）—— 講清楚，不然看起來像沒意義的一列
+  const back = courseKey(r.from) === courseKey(r.to) ? '　（已經改回模型的說法了）' : ''
+  return `課名　模型說「${r.from}」 ・ 你要「${r.to}」${times}${back}`
+}
+
+/**
+ * `--apply`／`--undo`／`--forget` 後面到**下一個旗標為止**的那幾個編號。
+ *
+ * 不可以用 `filter(a => !a.startsWith('--'))`：`file --apply a1b2 --course OS` 裡的 `OS`
+ * 會被當成第二個編號，然後「清單上沒有編號 OS」—— 使用者完全看不懂發生什麼事。
+ */
+function codesAfter(list, at) {
+  const out = []
+  for (let i = at + 1; i < list.length; i++) {
+    if (list[i].startsWith('--')) break
+    out.push(list[i])
+  }
+  return out
+}
+
+/**
+ * `--course OS` 這種「旗標＋一個值」。沒給值（後面沒東西、或後面是另一個旗標）回 `{ error }`。
+ * 沒有這個旗標回 `{}`。
+ */
+function flagValue(list, name) {
+  const at = list.indexOf(name)
+  if (at < 0) return {}
+  const v = list[at + 1]
+  if (v === undefined || v.startsWith('--')) {
+    return { error: `${name} 後面要接一個值，例：node cli.mjs file --apply a1b2 ${name} OS` }
+  }
+  return { value: v }
 }
 
 /** `cleanup apply [計畫 id] [--skip 編號,...] [--also 編號,...]` */
@@ -1357,9 +1406,10 @@ switch (cmd) {
   /**
    * 替沒取名的檔改名（P3）。**沒有自動改名的路徑**：`rename` 只列，`--apply` 才動。
    *
-   *   node cli.mjs rename                     列出建議
-   *   node cli.mjs rename --apply [編號⋯]      改名（不給編號 ＝ 清單上全部）
-   *   node cli.mjs rename --undo [紀錄 id⋯]    復原（不給 id ＝ 最近那一次）
+   *   node cli.mjs rename                      列出建議
+   *   node cli.mjs rename --apply [編號⋯]       改名（不給編號 ＝ 清單上全部，退過貨的除外）
+   *   node cli.mjs rename --apply <編號> --to X 自己指名新名字（跟建議不一樣就會被記住，P5）
+   *   node cli.mjs rename --undo [紀錄 id⋯]     復原（不給 id ＝ 最近那一次）
    *
    * 離開碼照 docs/cli.md：0 成功（含「沒有東西要改」）、1 輸入錯、2 後端錯、3 部分失敗。
    */
@@ -1377,16 +1427,23 @@ switch (cmd) {
       process.exitCode = EXIT.badInput
       break
     }
-    const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo')
+    const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo' && a !== '--to')
     if (unknown) {
-      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>。`)
+      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>、--to <新名字>。`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const to = flagValue(args, '--to')
+    if (to.error) { warn(to.error); process.exitCode = EXIT.badInput; break }
+    if (to.value !== undefined && applyAt < 0) {
+      warn('--to 只有跟 --apply 一起用才有意義（它是「這一個檔要叫什麼」）。')
       process.exitCode = EXIT.badInput
       break
     }
 
     // ── 復原 ─────────────────────────────────────────────────
     if (undoAt >= 0) {
-      const ids = args.slice(undoAt + 1).filter(a => !a.startsWith('--'))
+      const ids = codesAfter(args, undoAt)
       // **跟下面列出來的那一批同一個數字**：印編號的集合與解析編號的集合不一樣大的話，
       // 印出來明明分得開的編號，解析時會說「對到不只一筆」。
       const done = listRenames(db, RENAME_LIST).filter(r => r.status === 'done')
@@ -1438,10 +1495,11 @@ switch (cmd) {
         say(`有 ${rows.length} 個檔可以改名（**這些是模型的意見，不是事實**）：\n`)
         for (const r of rows) {
           say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
-          say(`         → ${shown(r.suggested)}`)
+          say(`         → ${shown(r.suggested)}${r.learned ? '　（課名照你上次改的寫）' : ''}`)
           say(`         模型認為：${shown(r.course || '看不出來')}／${shown(r.topic || '看不出來')}`
             + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
           if (r.evidence) say(`         證據：${shown(r.evidence)}`)
+          if (r.rejectedBefore) say('         ⟲ 你上次退過這個建議 —— 不給編號的話不會做到它。')
         }
         say(`\n要改的話：node cli.mjs rename --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
         say('改完反悔：node cli.mjs rename --undo')
@@ -1456,15 +1514,29 @@ switch (cmd) {
     }
 
     // ── 真的改 ───────────────────────────────────────────────
-    const codes = args.slice(applyAt + 1).filter(a => !a.startsWith('--'))
+    const codes = codesAfter(args, applyAt)
     let chosen = rows
     if (codes.length) {
       const picked = resolveCodes(rows, codes, '--apply')
       if (picked.error) { warn(picked.error); process.exitCode = EXIT.badInput; break }
       chosen = picked.rows
+    } else {
+      // **退過貨的不預設做**（P5 預期行為 5）：不給編號是「清單上那些」，
+      // 而使用者上次已經把這幾個放回去了。要做還是做得到 —— 指名它的編號就好。
+      const back = rows.filter(r => r.rejectedBefore)
+      chosen = rows.filter(r => !r.rejectedBefore)
+      if (back.length) {
+        say(`（${back.length} 個你上次退過的沒有算進去；要做的話指名編號：`
+          + `${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')}）`)
+      }
     }
     if (!chosen.length) {
       say(`${rootsLabel()} 裡沒有可以改名的檔，這次什麼都沒做。`)
+      break
+    }
+    if (to.value !== undefined && chosen.length > 1) {
+      warn(`--to 一次只能指名一個檔（現在選到 ${chosen.length} 個）。先用 --apply <編號> 指定是哪一個。`)
+      process.exitCode = EXIT.badInput
       break
     }
     if (config.readonly) {
@@ -1473,7 +1545,10 @@ switch (cmd) {
       break
     }
     let r
-    try { r = applyRenames(db, chosen.map(c => ({ itemId: c.itemId, to: c.suggested })), scope) }
+    try {
+      r = applyRenames(db,
+        chosen.map(c => ({ itemId: c.itemId, to: to.value ?? c.suggested })), scope)
+    }
     catch (e) { fail(e, 'rename'); break }
     for (const o of r.results) {
       if (o.ok) say(`  ✔ ${shown(o.from)} → ${shown(o.to)}`)
@@ -1491,9 +1566,12 @@ switch (cmd) {
   /**
    * 把同一堂課的檔歸成結構化資料夾（P4）。**沒有自動歸檔的路徑**：`file` 只列，`--apply` 才搬。
    *
-   *   node cli.mjs file                       列出建議
-   *   node cli.mjs file --apply [編號⋯]        搬進「整理好的」資料夾（不給編號 ＝ 清單上全部）
-   *   node cli.mjs file --undo [紀錄 id⋯]      復原（不給 id ＝ 最近那一次）
+   *   node cli.mjs file                        列出建議
+   *   node cli.mjs file --apply [編號⋯]         搬進「整理好的」資料夾（不給編號 ＝ 清單上全部，
+   *                                            退過貨的除外）
+   *   node cli.mjs file --apply <編號> --course OS [--kind 講義]
+   *                                            自己指名課名／類型（跟建議不一樣就會被記住，P5）
+   *   node cli.mjs file --undo [紀錄 id⋯]       復原（不給 id ＝ 最近那一次）
    *
    * 離開碼照 docs/cli.md：0 成功（含「沒有東西要整理」）、1 輸入錯、2 後端錯、3 部分失敗。
    */
@@ -1514,16 +1592,26 @@ switch (cmd) {
       process.exitCode = EXIT.badInput
       break
     }
-    const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo')
+    const known = ['--apply', '--undo', '--course', '--kind']
+    const unknown = args.find(a => a.startsWith('--') && !known.includes(a))
     if (unknown) {
-      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>。`)
+      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>、--course <課名>、--kind <類型>。`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const course = flagValue(args, '--course')
+    const kind = flagValue(args, '--kind')
+    const badFlag = course.error ?? kind.error
+    if (badFlag) { warn(badFlag); process.exitCode = EXIT.badInput; break }
+    if ((course.value !== undefined || kind.value !== undefined) && applyAt < 0) {
+      warn('--course 與 --kind 只有跟 --apply 一起用才有意義（它們是「這幾個檔要歸到哪」）。')
       process.exitCode = EXIT.badInput
       break
     }
 
     // ── 復原 ─────────────────────────────────────────────────
     if (undoAt >= 0) {
-      const ids = args.slice(undoAt + 1).filter(a => !a.startsWith('--'))
+      const ids = codesAfter(args, undoAt)
       // **跟下面列出來的那一批同一個數字**（跟改名同一個理由：印編號與解析編號要用同一個集合）
       const done = listFilings(db, FILING_LIST).filter(r => r.status === 'done')
       let picked
@@ -1574,10 +1662,17 @@ switch (cmd) {
         say(`有 ${rows.length} 個檔可以整理（**這些是模型的意見，不是事實**）：\n`)
         for (const r of rows) {
           say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
-          say(`         → ${shown(r.toFolder)}/`)
-          say(`         模型認為：${shown(r.course)}／${shown(r.topic || '看不出來')}`
+          say(`         → ${shown(r.toFolder)}/${r.learned ? '　（照你上次改的寫）' : ''}`)
+          // **模型說的那一句一定用模型自己的課名**：套了偏好之後 course 是使用者的寫法，
+          // 印它就變成「把使用者自己的話說成模型講的」
+          say(`         模型認為：${shown(r.modelCourse || r.course)}／${shown(r.topic || '看不出來')}`
             + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
           if (r.evidence) say(`         證據：${shown(r.evidence)}`)
+          // 舊資料夾**沒有被搬走也沒有改名**，只是之後的檔不再進去（P5 預期行為 12）
+          if (r.alsoKnownAs) {
+            say(`         你之前把它叫「${shown(r.alsoKnownAs)}」，那個資料夾還在（沒有動它）。`)
+          }
+          if (r.rejectedBefore) say('         ⟲ 你上次退過這個建議 —— 不給編號的話不會做到它。')
         }
         say(`\n要整理的話：node cli.mjs file --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
         say(`整理好的東西會放在 ${shown(config.filed)}，之後不會再被清理提議。`)
@@ -1593,12 +1688,21 @@ switch (cmd) {
     }
 
     // ── 真的搬 ───────────────────────────────────────────────
-    const codes = args.slice(applyAt + 1).filter(a => !a.startsWith('--'))
+    const codes = codesAfter(args, applyAt)
     let chosen = rows
     if (codes.length) {
       const picked = resolveCodes(rows, codes, '--apply')
       if (picked.error) { warn(picked.error); process.exitCode = EXIT.badInput; break }
       chosen = picked.rows
+    } else {
+      // **退過貨的不預設做**（P5 預期行為 5）：不給編號是「清單上那些」，
+      // 而使用者上次已經把這幾個搬回去了。要做還是做得到 —— 指名它的編號就好。
+      const back = rows.filter(r => r.rejectedBefore)
+      chosen = rows.filter(r => !r.rejectedBefore)
+      if (back.length) {
+        say(`（${back.length} 個你上次退過的沒有算進去；要做的話指名編號：`
+          + `${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')}）`)
+      }
     }
     if (!chosen.length) {
       say(`${rootsLabel()} 裡沒有可以整理的檔，這次什麼都沒做。`)
@@ -1610,7 +1714,13 @@ switch (cmd) {
       break
     }
     let r
-    try { r = applyFilings(db, chosen.map(c => ({ itemId: c.itemId, course: c.course, kind: c.kind })), scope) }
+    try {
+      r = applyFilings(db, chosen.map(c => ({
+        itemId: c.itemId,
+        course: course.value ?? c.course,
+        kind: kind.value ?? c.kind,
+      })), scope)
+    }
     catch (e) { fail(e, 'file'); break }
     for (const o of r.results) {
       if (o.ok) say(`  ✔ ${shown(o.name)} → ${shown(o.toFolder)}/${o.to === o.name ? '' : shown(o.to)}`)
@@ -1622,6 +1732,94 @@ switch (cmd) {
     if (r.remaining) say(`一次最多整理 ${FILING_BATCH_MAX} 個，還有 ${r.remaining} 個，再跑一次就會做到它們。`)
     if (ok) say('反悔的話：node cli.mjs file --undo')
     if (bad) process.exitCode = EXIT.partial
+    break
+  }
+
+  /**
+   * 它學到的事（P5）。**看得到、忘得掉**（預想的不變量 3）。
+   *
+   *   node cli.mjs learned                  列出每一條
+   *   node cli.mjs learned --forget <編號⋯>  忘掉指名的那幾條
+   *   node cli.mjs learned --forget-all      全部忘掉
+   *
+   * 這個指令**不動任何檔案**，所以唯讀模式照樣列得出來；但 `--forget` 是寫，唯讀模式不做。
+   * 離開碼：列出來（含「什麼都沒學過」）是 0，編號打錯、旗標看不懂、唯讀模式要忘是 1。
+   */
+  case 'learned': {
+    const forgetAt = args.indexOf('--forget')
+    const all = args.includes('--forget-all')
+    if (forgetAt >= 0 && all) {
+      warn('--forget 與 --forget-all 不能一起用。')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const unknown = args.find(a => a.startsWith('--') && a !== '--forget' && a !== '--forget-all')
+    if (unknown) {
+      warn(`看不懂 ${shown(unknown)}。可以用：--forget <編號>、--forget-all。`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+    let learned
+    try { learned = listLearned(db) }
+    catch (e) { fail(e, 'learned'); break }
+    const rows = learned.items
+    const short = shortIds(rows.map(r => r.id))
+
+    // ── 忘掉 ─────────────────────────────────────────────────
+    if (forgetAt >= 0 || all) {
+      if (config.readonly) {
+        warn('目前是唯讀模式，不會改任何東西（包括忘掉學過的事）。')
+        process.exitCode = EXIT.badInput
+        break
+      }
+      if (all) {
+        const n = forgetAllLearned(db)
+        say(n ? `全部忘掉了（${n} 條）。之後的建議回到模型原本的說法。` : '本來就什麼都沒學過。')
+        break
+      }
+      const codes = codesAfter(args, forgetAt)
+      if (!codes.length) {
+        warn('--forget 後面要接編號，就是 learned 清單上 [ ] 裡的那幾碼。要全清的話用 --forget-all。')
+        process.exitCode = EXIT.badInput
+        break
+      }
+      const picked = []
+      let bad = false
+      for (const raw of codes) {
+        const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
+        if (code.length < 4) { warn(`--forget ${shown(raw)}：編號至少 4 碼，就是 learned 清單上 [ ] 裡的那幾碼。`); bad = true; break }
+        const hits = rows.filter(r => r.id.toLowerCase().startsWith(code))
+        if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一條。先跑 node cli.mjs learned 看清單。`); bad = true; break }
+        if (hits.length > 1) {
+          warn(`編號 ${shown(raw)} 對到不只一條，請多打幾碼：\n`
+            + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(learnedLine(r))}`).join('\n'))
+          bad = true
+          break
+        }
+        if (!picked.includes(hits[0].id)) picked.push(hits[0].id)
+      }
+      if (bad) { process.exitCode = EXIT.badInput; break }
+      const n = forgetLearned(db, picked)
+      say(`忘掉 ${n} 條了。那幾條不會再影響建議。`)
+      break
+    }
+
+    // ── 列清單 ───────────────────────────────────────────────
+    if (!rows.length) {
+      say('它還沒學到任何東西。')
+      say('（改名或整理的時候，你把建議改成別的寫法，它才會記下來 —— 照單全收不算。）')
+      break
+    }
+    say(`它學到 ${rows.length} 條（都是你自己改過的，**它不會自己動檔案**）：\n`)
+    for (const r of rows) {
+      say(`  [${short.get(r.id)}] ${shown(learnedLine(r))}`)
+    }
+    if (learned.evicted.count) {
+      say(`\n（記太多了，已經丟掉最舊、最少用的 ${learned.evicted.count} 條`
+        + `${learned.evicted.at ? `，最後一次 ${shown(learned.evicted.at)}` : ''}。）`)
+    }
+    say('\n忘掉一條：node cli.mjs learned --forget [編號]')
+    say('全部忘掉：node cli.mjs learned --forget-all')
     break
   }
 
@@ -2299,8 +2497,12 @@ switch (cmd) {
   node cli.mjs rename --undo [紀錄 id⋯]     復原改名（不給 id 就是最近那一次）
 
   node cli.mjs file                        看哪些檔可以歸到課程資料夾（模型的建議）
-  node cli.mjs file --apply [編號⋯]         整理（搬得回來）
+  node cli.mjs file --apply [編號⋯] [--course 課名] [--kind 類型]
+                                           整理（搬得回來；課名跟建議不一樣就會被記住）
   node cli.mjs file --undo [紀錄 id⋯]       復原整理（不給 id 就是最近那一次）
+  node cli.mjs learned                     它從你的修改學到什麼（不會自己動檔案）
+  node cli.mjs learned --forget [編號⋯]     忘掉那幾條
+  node cli.mjs learned --forget-all         全部忘掉
   node cli.mjs watch                       常駐監看
   node cli.mjs propose <檔案>...            手動收一個檔案
   node cli.mjs list [狀態]                  看收件匣

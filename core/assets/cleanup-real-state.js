@@ -858,9 +858,13 @@ export function renameLines(item) {
   return {
     seeded,
     head: `${name} → ${suggested}`,
-    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
+    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`
+      + (item.learned === true ? '　課名那一段照你上次改的寫。' : ''),
     note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
       + '這是模型的意見，不是事實 —— 你按了「改名」才會改，而且改得回來。',
+    // 你上次把這個建議退回去了（P5）。**照樣列**，但不預設勾、而且畫面上要講一句。
+    rejected: item.rejectedBefore === true,
+    back: item.rejectedBefore === true ? '⟲ 你上次退過這個建議，所以沒有預設勾起來。' : '',
   }
 }
 
@@ -973,16 +977,24 @@ export function filingLines(item) {
   const folder = safeName(String(item.toFolder ?? ''))
   if (!name || !folder) return null
   const seeded = item.seeded === true
-  const course = safeName(String(item.course ?? '').trim()) || '看不出來'
+  // **模型說的那一句一定用模型自己的課名**（P5）：套了學到的偏好之後 `course` 是使用者的寫法，
+  // 拿它來填「模型認為：⋯⋯」等於把使用者自己的話說成模型講的。舊的後端沒有這個欄位，退回 course。
+  const course = safeName(String(item.modelCourse ?? item.course ?? '').trim()) || '看不出來'
   const topic = safeName(String(item.topic ?? '').trim()) || '看不出來'
   const confidence = safeName(String(item.confidence ?? '').trim()) || '低'
   const evidence = safeName(String(item.evidence ?? '').trim())
+  const also = safeName(String(item.alsoKnownAs ?? '').trim())
   return {
     seeded,
     head: `${name} → ${folder}`,
-    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
+    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`
+      + (item.learned === true ? '　位置照你上次改的寫。' : ''),
     note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
-      + '這是模型的意見，不是事實 —— 你按了「整理」才會搬，而且搬得回來。',
+      + '這是模型的意見，不是事實 —— 你按了「整理」才會搬，而且搬得回來。'
+      // 舊資料夾**沒有被搬走、也沒有改名**（只搬不刪的延伸）：不講的話使用者會以為東西不見了
+      + (also ? `　你之前把它叫「${also}」，那個資料夾還在（沒有動它）。` : ''),
+    rejected: item.rejectedBefore === true,
+    back: item.rejectedBefore === true ? '⟲ 你上次退過這個建議，所以沒有預設勾起來。' : '',
   }
 }
 
@@ -1077,5 +1089,76 @@ export function createFilings(api) {
     },
 
     clear() { items = []; total = 0; selected = new Set(); undoable = false },
+  }
+}
+
+/** 面板一次畫幾條「它學到的事」（跟上面兩區同一個數字）。 */
+export const LEARNED_SHOWN = 50
+
+/**
+ * 一條「它學到的事」要印的字。認不得的就回 null（不畫）。
+ *
+ * **三種各講各的**：混成同一句的話，「退過貨」那一種會看起來像
+ * 「模型說 課程/OS/講義 ・ 你要（空白）」，使用者看不懂那是什麼。
+ * 來源全部是不可信的輸入（課名是模型讀使用者的檔讀出來的、也可能是使用者自己打的），一律 safeName。
+ */
+export function learnedLines(item) {
+  if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id) return null
+  const from = safeName(String(item.from ?? '').trim())
+  const to = safeName(String(item.to ?? '').trim())
+  const times = Number.isFinite(item.times) && item.times > 0 ? Math.floor(item.times) : 1
+  if (item.kind === 'rejected') {
+    // 歸檔的摘要（`課程/<課名>/<類型>`）講得出來；改名的摘要是真的檔名，後端就不回了（稽核 2026-09-20）
+    const about = safeName(String(item.about ?? '').trim())
+    const head = about ? `你退過「${about}」這個建議` : '你退過一個改名建議'
+    return { id: item.id, head, why: '清單還是會列它，只是不預設勾起來。' }
+  }
+  if (!from || !to) return null
+  if (item.kind === 'file_kind') {
+    return { id: item.id, head: `${from} 的東西 ・ 你要「${to}」`, why: `用過 ${times} 次` }
+  }
+  return { id: item.id, head: `模型說「${from}」 ・ 你要「${to}」`, why: `用過 ${times} 次` }
+}
+
+/**
+ * 面板的「它學到的事」那一區（P5）。
+ *
+ * **只讀與忘掉，按不出任何會動檔案的事**：這一區沒有「套用」。學到的東西只改建議，
+ * 使用者照樣要去上面那兩區勾、按。
+ *
+ * 後端沒有這一條（舊版回 404／501）或讀不到，一律當成「什麼都沒學過」—— 這一區是附加的，
+ * 不可以讓整個清理面板打不開。
+ */
+export function createLearned(api) {
+  let items = [], total = 0, evicted = 0
+
+  return {
+    get items() { return items },
+    /** 沒畫出來的還有幾條 */
+    get more() { return Math.max(0, total - items.length) },
+    /** 記太多、被丟掉的有幾條（後端會留紀錄） */
+    get evicted() { return evicted },
+
+    async load() {
+      let body = null
+      try { body = await api('/learned') } catch { items = []; total = 0; evicted = 0; return items }
+      const all = Array.isArray(body?.items) ? body.items.filter(i => i && typeof i.id === 'string') : []
+      total = all.length
+      items = all.slice(0, LEARNED_SHOWN)
+      const n = Number(body?.evicted?.count)
+      evicted = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+      return items
+    },
+
+    /** 忘掉一條。**只送使用者按的那一條** —— 這裡沒有「全清」的捷徑按鈕。 */
+    async forget(id) {
+      if (!items.some(i => i.id === id)) throw new Error('那一條已經不在清單上了。')
+      await api('/learned', { method: 'DELETE', body: JSON.stringify({ ids: [id] }) })
+      const message = '忘掉了。之後的建議不會再用那個寫法。'
+      try { await this.load() } catch { /* 重載失敗不可以蓋掉結果：那一條真的刪掉了 */ }
+      return { message }
+    },
+
+    clear() { items = []; total = 0; evicted = 0 },
   }
 }

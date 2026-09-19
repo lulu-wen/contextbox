@@ -1475,8 +1475,11 @@ describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理�
     assert.ok(INTERNAL_MESSAGE.includes('`node cli.mjs open`'), INTERNAL_MESSAGE)
   })
 
-  test('README：7391 的網址一律帶 k；不叫人重新整理頁面', () => {
-    const md = readFileSync(join(REPO, 'README.md'), 'utf8')
+  test('面板說明：7391 的網址一律帶 k；不叫人重新整理頁面', () => {
+    // 2026-09-20：README 改寫成作品說明，面板那一整段搬到 docs/面板.md（見 repo.test.mjs 同一批）。
+    // 守的是**內容**不是檔名，所以兩份一起看：哪一份提到那個網址，就要帶 k。
+    const md = readFileSync(join(REPO, 'docs', '面板.md'), 'utf8')
+      + '\n' + readFileSync(join(REPO, 'README.md'), 'utf8')
     const urls = md.match(/http:\/\/127\.0\.0\.1:7391[^\s`）)]*/g) ?? []
     assert.ok(urls.length >= 1, '前提：README 有講網址')
     assert.deepEqual(urls.filter(u => !/[?&]k=/.test(u)), [], '沒帶 k 的網址打開是 401')

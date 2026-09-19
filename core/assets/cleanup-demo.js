@@ -3,6 +3,7 @@ import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
   modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
+  createLearned, learnedLines,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -19,6 +20,9 @@ const renames = createRenames((path, init) => window.api(path, init))
 // 歸檔建議（P4）：模型看得出是哪一堂課的檔。示範模式不用它（同上）。
 // **一個都不預設勾**：搬家比改名更容易讓人找不到檔，只有 filings 那一份紀錄救得回來。
 const filings = createFilings((path, init) => window.api(path, init))
+// 它學到的事（P5）：使用者改過的課名與類型。示範模式不用它（同上）。
+// **這一區按不出任何會動檔案的事** —— 只看得到與「忘掉」。
+const learned = createLearned((path, init) => window.api(path, init))
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
@@ -281,10 +285,12 @@ function renderRenames() {
     const lines = renameLines(item)
     if (!lines) continue
     const row = document.createElement('article')
-    row.className = 'cleanup-file cleanup-rename-row'
+    row.className = 'cleanup-file cleanup-rename-row' + (lines.rejected ? ' cleanup-rejected' : '')
     const label = document.createElement('label')
     const check = document.createElement('input')
     check.type = 'checkbox'
+    // **退過貨的一樣不預設勾** —— 這一區本來就一個都不勾，所以這裡不用特例；
+    // 真正要做的是**講出來**（下面那一行），不然使用者不知道為什麼它還在清單上。
     check.checked = renames.selected.has(item.itemId)
     check.disabled = busy
     check.onchange = () => { renames.select(item.itemId, check.checked); summary() }
@@ -292,6 +298,7 @@ function renderRenames() {
     head.textContent = lines.head
     label.append(check, head)
     row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     box.append(row)
   }
   if (renames.more) box.append(paragraph(`另外還有 ${renames.more} 個，改完這幾個再打開面板就會看到。`, 'evidence'))
@@ -316,10 +323,11 @@ function renderFilings() {
     const lines = filingLines(item)
     if (!lines) continue
     const row = document.createElement('article')
-    row.className = 'cleanup-file cleanup-filing-row'
+    row.className = 'cleanup-file cleanup-filing-row' + (lines.rejected ? ' cleanup-rejected' : '')
     const label = document.createElement('label')
     const check = document.createElement('input')
     check.type = 'checkbox'
+    // 同上：一個都不預設勾，退過貨的**另外講一句**
     check.checked = filings.selected.has(item.itemId)
     check.disabled = busy
     check.onchange = () => { filings.select(item.itemId, check.checked); summary() }
@@ -327,9 +335,64 @@ function renderFilings() {
     head.textContent = lines.head
     label.append(check, head)
     row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     box.append(row)
   }
   if (filings.more) box.append(paragraph(`另外還有 ${filings.more} 個，整理完這幾個再打開面板就會看到。`, 'evidence'))
+}
+
+/**
+ * 它學到的事（P5）。**什麼都沒學過就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的「忘掉」按鈕會讓人以為示範會改到自己的設定）。
+ *
+ * 這一區**只有「忘掉」一顆按鈕**，按不出任何會動檔案的事。
+ */
+function renderLearned() {
+  const box = $('cleanup-learned')
+  box.replaceChildren()
+  const items = isDemo() ? [] : learned.items
+  box.hidden = items.length === 0
+  if (!items.length) return
+  box.append(paragraph('它學到的事 · 這些都是你自己改過的。它只會照這個出建議，**不會自己動檔案**。', 'cleanup-note'))
+  for (const item of items) {
+    const lines = learnedLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-learned-row'
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    const drop = document.createElement('button')
+    drop.type = 'button'
+    drop.textContent = '忘掉'
+    drop.disabled = busy
+    drop.onclick = () => forgetLearned(lines.id)
+    row.append(head, paragraph(lines.why, 'evidence'), drop)
+    box.append(row)
+  }
+  if (learned.more) box.append(paragraph(`另外還有 ${learned.more} 條。`, 'evidence'))
+  if (learned.evicted) {
+    box.append(paragraph(`記太多了，已經丟掉最舊、最少用的 ${learned.evicted} 條。`, 'evidence'))
+  }
+}
+
+/** 忘掉一條。忘完要重畫上面兩區 —— 建議會跟著變回模型原本的說法。 */
+async function forgetLearned(id) {
+  if (busy) return
+  busy = true
+  render()
+  result('正在忘掉……')
+  try {
+    const out = await tracked(() => learned.forget(id))
+    // 建議是算出來的，忘掉一條之後整份都要重讀，不然畫面還停在舊的寫法
+    try { await renames.load() } catch { /* 那一區讀不到就維持原樣 */ }
+    try { await filings.load() } catch { /* 同上 */ }
+    result(out.message)
+  } catch (error) {
+    result(safeName(error?.message ?? '忘不掉，請再試一次。'))
+  } finally {
+    busy = false
+    render()
+  }
 }
 
 function render() {
@@ -343,6 +406,7 @@ function render() {
   renderBursts()
   renderRenames()
   renderFilings()
+  renderLearned()
   // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個
   const inBurst = isDemo() ? new Set() : bursts.memberIds()
   let listed = 0
@@ -413,6 +477,7 @@ async function toggleDemo() {
   bursts.clear()   // 連拍組是本機模式的東西；切模式時把 blob: 網址還回去
   renames.clear()  // 建議的名字也是本機模式的東西
   filings.clear()  // 歸檔建議也是
+  learned.clear()  // 「它學到的事」也是（示範模式沒有這一區）
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -439,7 +504,7 @@ async function openCleanupPanel() {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo', 'cleanup-learned']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
   $('cleanup-needs-human').replaceChildren()
@@ -460,6 +525,8 @@ async function openCleanupPanel() {
     await renames.load()
     // 歸檔建議（P4）。後端沒有這幾條就是空的，面板照常
     await filings.load()
+    // 它學到的事（P5）。後端沒有這一條就是空的，面板照常
+    await learned.load()
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
     else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')

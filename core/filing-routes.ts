@@ -31,8 +31,14 @@ const BODY_KEYS = {
 
 const INTERNAL = '整理的時候出錯了。檔案沒有被刪掉，紀錄還在，請重試。'
 
-/** 顯示用的過濾：控制字元與方向字元換成「·」（跟 rename-routes 同一組）。 */
-function shown(s: string): string {
+/**
+ * 顯示用的過濾：控制字元與方向字元換成「·」（跟 rename-routes 同一組）。
+ *
+ * 匯出給 learn-routes.ts 用（P5）：**同一條規矩只留一份**。
+ * 這裡刻意用碼位比大小、不用正規表示式 —— 那些字元寫進 regex 字面量裡，
+ * 原始檔就會帶著真的控制字元（git 會把整支檔當二進位，見 test/repo.test.mjs）。
+ */
+export function shown(s: string): string {
   let out = ''
   for (const ch of s) {
     const c = ch.codePointAt(0) ?? 0

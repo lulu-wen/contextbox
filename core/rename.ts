@@ -35,6 +35,9 @@ import {
 import { checkedPath, SETTLE_MS } from './cleanup-exec.ts'
 import { classifyName, UntitledError } from './untitled.ts'
 import { modelViewForItem, opinionOf, type ModelOpinion } from './model-store.ts'
+import {
+  courseKey, forgetRejected, learnCourse, loadLearned, rememberRejected, renameSummary, type Learned,
+} from './learn.ts'
 
 /** 一次最多改幾個。超過的不做，呼叫端要講「還有幾個」（預期行為 10）。 */
 export const RENAME_BATCH_MAX = 100
@@ -131,6 +134,34 @@ export function cleanName(suggested: unknown, ext = ''): string {
   return s
 }
 
+/** 課名的上限，**用碼位算**（預想 Step 1）。比檔名短：它是資料夾名字，長了很難用。 */
+export const COURSE_MAX_CODEPOINTS = 40
+/** 模型說不出是哪一堂課時回的那四個字。這種不提議、也不學。 */
+export const UNKNOWN_COURSE = '看不出來'
+
+/**
+ * 模型（或使用者）給的課名 → 一個安全的**資料夾名**。用不了回空字串 ＝ 不提議。
+ *
+ * **住在這裡而不是 filing.ts**：歸檔（P4）與改名（P5 學課名寫法）兩條線都要用同一支，
+ * 而 filing.ts 本來就 import 這一支檔 —— 放那邊會繞成一個環（稽核 2026-09-20）。
+ *
+ * 就是上面那支 cleanName（去掉路徑分隔符號、控制字元與方向字元、Windows 不合法的字元
+ * 與保留名稱、前後的空白與點）—— 模型回 `../../etc` 只會變成 `etc`，跳不出 filed 那棵樹。
+ * 洗完再截到 40 個碼位，**截完重洗一次**：剛好截在一串點上的話，結尾的點要去掉
+ * （Windows 會安靜地吃掉結尾的點，資料夾名字就跟我們記的對不上）。
+ * 只有超過 40 碼位的名字才會進到截斷，所以「剛好截成 CON」其實到不了 —— 重洗留著是為了那個點。
+ */
+export function cleanCourse(raw: unknown): string {
+  const once = cleanName(raw)
+  if (!once) return ''
+  const capped = [...once].slice(0, COURSE_MAX_CODEPOINTS).join('')
+  const twice = cleanName(capped)
+  if (!twice) return ''
+  // 「看不出來」不是一堂課。折過再比：`看不出來 ` 也算。
+  if (courseKey(twice) === courseKey(UNKNOWN_COURSE)) return ''
+  return twice
+}
+
 /**
  * 模型的建議 → 完整的新檔名（含原本的副檔名）。提不出來回空字串。
  * `未命名文件 (3).txt` ＋ 模型說 `作業系統_死結` → `作業系統_死結.txt`。
@@ -168,6 +199,52 @@ export type RenameSuggestion = {
   evidence: string
   /** true ＝ demo 預先塞的示範答案，畫面要標示 */
   seeded: boolean
+  /** true ＝ 建議裡的課名那一段換成你以前改過的寫法了（P5） */
+  learned: boolean
+  /** true ＝ 你上次把這個建議退回去了（P5）。照樣列，但**不預設勾**。 */
+  rejectedBefore: boolean
+}
+
+/**
+ * 模型的建議名字 ＋ 學到的課名寫法 → **這一刻我們建議的檔名**。
+ *
+ * **只換課名那一段**（預想 Step 1）：建議的名字以模型講的課名開頭時，把那一段換成使用者的寫法，
+ * `作業系統_排程.txt` → `OS_排程.txt`。整個檔名學下來套不到別的檔，所以不學整串。
+ * 名字裡沒有課名那一段的**完全不受影響**。
+ *
+ * 學到的值**用之前再洗一次**（learn.ts 不變量 2）：換完整個名字重跑一次 suggestedFileName ——
+ * 跟模型自己給的建議走同一條清洗與截斷，學到的東西不會放寬任何一關。
+ *
+ * **列清單與真的改名共用這一支**：兩邊算出來不一樣的話，使用者照單全收按下去會被當成「他改了」。
+ */
+export function offeredRename(learned: Learned, currentName: string, modelCourse: unknown, modelName: string): {
+  suggested: string; course: string; learnedCourse: boolean
+} {
+  const model = cleanName(modelCourse)
+  const pref = cleanName(learned.course(modelCourse))
+  if (!modelName || !model || !pref || courseKey(pref) === courseKey(model)) {
+    return { suggested: modelName, course: model, learnedCourse: false }
+  }
+  if (!modelName.startsWith(model)) return { suggested: modelName, course: model, learnedCourse: false }
+  const swapped = suggestedFileName(currentName, pref + modelName.slice(model.length))
+  if (!swapped) return { suggested: modelName, course: model, learnedCourse: false }
+  return { suggested: swapped, course: pref, learnedCourse: true }
+}
+
+/**
+ * 從「我們建議 X、使用者送 Y」裡挖出**課名那一段**的新寫法。挖不出來回空字串（＝這次不學）。
+ *
+ * 建議的名字長成 `<課名><其餘>`；使用者只改了課名的話，`<其餘>` 會原封不動留在尾巴。
+ * 尾巴對得上才算數 —— 對不上表示他改的是主題或整串，那**不是**「這堂課怎麼稱呼」的資訊。
+ */
+function userCourseIn(offeredCourse: string, offeredName: string, asked: string): string {
+  if (!offeredCourse || !offeredName || !asked) return ''
+  if (!offeredName.startsWith(offeredCourse)) return ''
+  const tail = offeredName.slice(offeredCourse.length)
+  // 尾巴是空的（建議就只有課名）時，使用者改的是什麼完全看不出來，不猜
+  if (!tail || !asked.endsWith(tail) || asked.length <= tail.length) return ''
+  const head = asked.slice(0, asked.length - tail.length)
+  return head && courseKey(head) !== courseKey(offeredCourse) ? head : ''
 }
 
 export type RenameScope = {
@@ -314,6 +391,8 @@ export function renameSuggestions(db: DatabaseSync, scope: RenameScope, opts: { 
     ).all(...RENAMABLE_STATUSES) as ItemRow[]
   } catch { rows = [] }
 
+  // 學到的偏好一次載完（整張表有上限）。一列一列去查會變成跟檔案數成正比的查詢次數。
+  const learned = loadLearned(db)
   const items: RenameSuggestion[] = []
   for (const row of rows) {
     if (items.length >= limit) break
@@ -321,7 +400,8 @@ export function renameSuggestions(db: DatabaseSync, scope: RenameScope, opts: { 
     try { opinion = opinionOf(modelViewForItem(db, row.id)) } catch { opinion = null }
     if (!opinion) continue
     if (!confidentEnough(opinion.confidence)) continue
-    const suggested = suggestedFileName(row.name, opinion.suggestedName)
+    const offer = offeredRename(learned, row.name, opinion.course, suggestedFileName(row.name, opinion.suggestedName))
+    const suggested = offer.suggested
     if (!suggested) continue
     // 名字一樣就沒有東西可以建議（改成自己沒有意義）
     if (suggested === row.name) continue
@@ -335,6 +415,8 @@ export function renameSuggestions(db: DatabaseSync, scope: RenameScope, opts: { 
       confidence: opinion.confidence,
       evidence: opinion.evidence,
       seeded: opinion.seeded,
+      learned: offer.learnedCourse,
+      rejectedBefore: learned.rejected(row.id, renameSummary(suggested)),
     })
   }
   return { items }
@@ -531,11 +613,14 @@ function renameOne(
   const blocked = whyNotRenamable(db, item, scope)
   if (blocked) return no(blocked)
 
-  // 呼叫端指名的名字（面板送模型的建議、使用者也可以自己打）一樣要洗過
+  // 呼叫端指名的名字（面板送清單上顯示的那一個、使用者也可以自己打）一樣要洗過
   const opinion = (() => { try { return opinionOf(modelViewForItem(db, itemId)) } catch { return null } })()
   const modelName = opinion && confidentEnough(opinion.confidence)
     ? suggestedFileName(from, opinion.suggestedName) : ''
-  const asked = req.to === undefined ? modelName : suggestedFileName(from, req.to)
+  // **每一項各讀一次學到的東西**（P5）：同一批裡第一個檔學到的寫法，第二個檔就要算數，
+  // 而且使用者送回那個寫法不算「他又改了一次」（不然計數會灌水）。
+  const offer = offeredRename(loadLearned(db), from, opinion?.course, modelName)
+  const asked = req.to === undefined ? offer.suggested : suggestedFileName(from, req.to)
   if (!asked) {
     return no(req.to === undefined
       ? '沒有可以用的建議名字（模型沒有看法、信心太低，或建議洗完是空的）。'
@@ -579,6 +664,21 @@ function renameOne(
     followFile(db, itemId, dir, to)
     db.prepare(`UPDATE renames SET status='done' WHERE id=?`).run(id)
   })
+  // ── 學（P5）────────────────────────────────────────────────
+  // **只在這裡學**：檔案真的改好了才算「使用者做過這個動作」（learn.ts 不變量 1），
+  // 而且只學「跟我們建議的不一樣」的那一下。學的只有**課名那一段**的寫法。
+  if (asked !== offer.suggested) {
+    const head = userCourseIn(offer.course, offer.suggested, asked)
+    // **存之前過 cleanCourse**（跟歸檔那條線同一支，稽核 2026-09-20）：
+    // head 只過了檔名那一層的清洗，沒有 40 碼位上限、沒有「看不出來」與保留名稱那兩關。
+    // 不洗的話同一條偏好在兩條線上會變成兩個不同的寫法（改名用 60 個 Z、歸檔用 40 個 Z），
+    // 而洗完是空的那種（`CON`）會佔著額度卻永遠不生效。
+    if (head) learnCourse(db, opinion?.course, head, cleanCourse(head), at, scope)
+  }
+  // 同一個建議重新做一次成功 → 「你上次退過」的標記要消失（預期行為 5）。
+  // 用真正落地的名字：undo 記的也是它（同名加了序號的那種對不上，那就維持沒標 ——
+  // 沒標等於回到 P3 的行為，只會少一個提示，不會多勾任何東西）。
+  forgetRejected(db, itemId, renameSummary(to), scope)
   return { itemId, ok: true, from, to, why: '改好了。反悔的話可以復原。', id }
 }
 
@@ -707,11 +807,16 @@ function undoOne(db: DatabaseSync, row: RenameRow, scope: RenameScope): UndoOutc
     db.prepare('UPDATE renames SET error=? WHERE id=?').run(why.slice(0, 200), row.id)
     return no(why)
   }
+  let nowItem = row.item_id
   transaction(db, () => {
-    followFile(db, row.item_id, dir, back)
+    nowItem = followFile(db, row.item_id, dir, back)
     db.prepare(`UPDATE renames SET status='reverted', undone_at=? WHERE id=?`)
       .run(new Date().toISOString(), row.id)
   })
+  // ── 學（P5）：undo ＝ 這個建議被退貨了 ──────────────────────
+  // 記在**檔現在那一列**上（掃描可能已經在原名那裡收了另一列，followFile 會改道）。
+  // 清單照樣列它，只是**不預設勾**，並標一句「你上次退過」（預期行為 5）。
+  rememberRejected(db, nowItem, renameSummary(row.to_name), new Date().toISOString(), scope)
   const restoredAs = back === row.from_name ? null : back
   return {
     ...base, ok: true, to: back, restoredAs,

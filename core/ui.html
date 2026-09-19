@@ -239,6 +239,12 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
      示範答案再加一層虛線框，evaluator 不會把預先塞的答案當成真的問過的。 */
   .cleanup-model { color: #4a5b7a; font-style: italic; margin: 6px 0 0; }
   .cleanup-model-seeded { border-left: 3px dashed #9aa7bd; padding-left: 8px; }
+  /* 你上次退過的那一個建議（P5）：看得出來跟別的不一樣，但**不要像錯誤**——
+     退貨不是壞掉，只是這一次不預設勾。 */
+  .cleanup-rejected { border-style: dashed; background: #fbf7ef; }
+  /* 「它學到的事」那一區的每一列：沒有勾選框，只有一句話與「忘掉」。 */
+  .cleanup-learned-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+  .cleanup-learned-row p { margin: 0; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
   .cleanup-shot { width: 150px; }
@@ -351,6 +357,10 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
        勾起來按「整理」才會真的搬檔，旁邊永遠有「復原整理」。沒有建議的時候整區不顯示。
        只給相對於「整理好的」資料夾的那一段 —— 絕對路徑永遠不離開後端。 -->
   <div id="cleanup-filings" hidden></div>
+  <!-- 它學到的事（P5）。**看得到、忘得掉**：每一列「模型說 A ・ 你要 B ・ 用過 N 次」＋一個「忘掉」。
+       這一區裡**沒有路徑、沒有檔名以外的東西**（後端的 preferences 表本來就只存課名、類型與
+       「哪一個建議」的摘要）。什麼都沒學過的時候整區不顯示。 -->
+  <div id="cleanup-learned" hidden></div>
   <div id="cleanup-list"></div>
   <div id="cleanup-needs-human" class="cleanup-note"></div>
   <p id="cleanup-summary" aria-live="polite"></p>

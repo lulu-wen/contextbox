@@ -33,19 +33,27 @@ import { checkedPath } from './cleanup-exec.ts'
 import { VIEW_KINDS } from './model.ts'
 import { modelViewForItem, opinionOf, type ModelOpinion } from './model-store.ts'
 import {
-  checkFile, cleanName, confidentEnough, followFile, freeName, itemById, namesTaken, originalExt,
-  underSomeRoot, whyNotTouchable, RENAMABLE_STATUSES, SUFFIX_MAX,
+  checkFile, cleanCourse, confidentEnough, followFile, freeName, itemById, namesTaken, originalExt,
+  underSomeRoot, whyNotTouchable, COURSE_MAX_CODEPOINTS, RENAMABLE_STATUSES, SUFFIX_MAX, UNKNOWN_COURSE,
   type ItemRow, type MoveWords, type RenameScope,
 } from './rename.ts'
+import {
+  courseKey, filingSummary, forgetRejected, learnCourse, learnKind, loadLearned, rememberRejected,
+  type Learned,
+} from './learn.ts'
+
+/**
+ * 課名的**比對鍵**（P5 之後住在 core/learn.ts —— 改名那條線也要用同一個折法，
+ * 而 filing.ts 匯入 rename.ts，放這裡會繞回來）。這裡 re-export，呼叫端不用改。
+ */
+export { courseKey } from './learn.ts'
 
 /** 一次最多搬幾個。超過的不做，呼叫端要講「還有幾個」（預期行為 10）。跟改名一樣是 100。 */
 export const FILING_BATCH_MAX = 100
-/** 課名的上限，**用碼位算**（預想 Step 1）。比檔名短：它是資料夾名字，長了很難用。 */
-export const COURSE_MAX_CODEPOINTS = 40
+/** 課名的洗法與上限住在 core/rename.ts（cleanName 就在那裡），這裡 re-export，呼叫端不用改。 */
+export { cleanCourse, COURSE_MAX_CODEPOINTS, UNKNOWN_COURSE }
 /** 歸檔樹的第一層。`<filed>/課程/<課名>/<類型>/` */
 export const COURSES_DIR = '課程'
-/** 模型說不出是哪一堂課時回的那四個字。這種不提議。 */
-export const UNKNOWN_COURSE = '看不出來'
 /** `kind` 不在固定選項裡時用哪一個資料夾（P2 的 VIEW_KINDS 最後一個就是它）。 */
 export const OTHER_KIND = '其他'
 
@@ -54,36 +62,6 @@ const FILE_WORDS: MoveWords = { act: '歸檔', it: '不搬它' }
 
 // ── 課名與類型 ──────────────────────────────────────────────
 
-/**
- * 課名的**比對鍵**：NFKC ＋ 去掉所有空白 ＋ 小寫。
- *
- * `作業系統` 與 `作業系統 `、`OS` 與 `ＯＳ` 是同一堂課（預想 Step 1）——
- * 不折的話同一堂課會長出兩個資料夾，而使用者只會覺得「它把我的檔散開了」。
- * **只用來比對**；真的建資料夾用第一次出現的寫法。
- */
-export function courseKey(name: unknown): string {
-  return String(name ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase()
-}
-
-/**
- * 模型（或使用者）給的課名 → 一個安全的**資料夾名**。用不了回空字串 ＝ 不提議。
- *
- * **過 P3 的 cleanName**（同一支函式：去掉路徑分隔符號、控制字元與方向字元、Windows 不合法的字元
- * 與保留名稱、前後的空白與點）—— 模型回 `../../etc` 只會變成 `etc`，跳不出 filed 那棵樹。
- * 洗完再截到 40 個碼位，**截完重洗一次**：剛好截在一串點上的話，結尾的點要去掉
- * （Windows 會安靜地吃掉結尾的點，資料夾名字就跟我們記的對不上）。
- * 只有超過 40 碼位的名字才會進到截斷，所以「剛好截成 CON」其實到不了 —— 重洗留著是為了那個點。
- */
-export function cleanCourse(raw: unknown): string {
-  const once = cleanName(raw)
-  if (!once) return ''
-  const capped = [...once].slice(0, COURSE_MAX_CODEPOINTS).join('')
-  const twice = cleanName(capped)
-  if (!twice) return ''
-  // 「看不出來」不是一堂課（不變量 6）。折過再比：`看不出來 ` 也算。
-  if (courseKey(twice) === courseKey(UNKNOWN_COURSE)) return ''
-  return twice
-}
 
 /** 類型資料夾。**只收 P2 的固定選項**，別的一律進「其他」—— 不讓模型自己發明資料夾名。 */
 export function kindFolder(kind: unknown): string {
@@ -136,7 +114,15 @@ export type FilingSuggestion = {
   itemId: string
   /** 現在叫什麼（只有檔名，沒有資料夾） */
   name: string
+  /** 會用的課名寫法（學到偏好之後就是**你的**寫法，按下去就是搬到這個資料夾） */
   course: string
+  /**
+   * **模型自己說的課名**（洗過）。跟 `course` 不一樣時，`course` 是你上次改的寫法。
+   *
+   * 為什麼要分開回：畫面上寫著「模型認為：⋯⋯」。只回一個欄位的話，
+   * 學到 `作業系統`→`OS` 之後畫面會變成「模型認為：OS」—— 那是**把使用者自己的話說成模型講的**。
+   */
+  modelCourse: string
   kind: string
   topic: string
   confidence: string
@@ -145,6 +131,17 @@ export type FilingSuggestion = {
   seeded: boolean
   /** 會搬去哪，**相對於 filed**（例如 `課程/作業系統/講義`）。沒有絕對路徑。 */
   toFolder: string
+  /** true ＝ 這一項套用了你以前改過的寫法（P5）。畫面要標「照你上次改的」。 */
+  learned: boolean
+  /** true ＝ 你上次把這個建議退回去了（P5）。照樣列，但**不預設勾**。 */
+  rejectedBefore: boolean
+  /**
+   * 學到新寫法之前，這堂課的資料夾叫什麼（磁碟上還在的那一個）。沒有就是空字串。
+   *
+   * **既有的資料夾不會被搬動或改名**（只搬不刪的延伸，預期行為 12）：新的檔進新資料夾，
+   * 舊的留在原地。清單上要講這一句，不然使用者會以為東西不見了。
+   */
+  alsoKnownAs: string
 }
 
 /** 這個檔現在有沒有一筆還沒收尾的歸檔（started）。有的話先不提議，等收尾。 */
@@ -199,6 +196,8 @@ export function filingSuggestions(db: DatabaseSync, scope: FilingScope, opts: { 
 
   // 一次就好：整份清單共用同一張「已經有哪些課」的表（不碰磁碟的話會建出第二個同名資料夾）
   const known = existingCourses(join(resolve(scope.filed ?? '.'), COURSES_DIR))
+  // 學到的偏好也是一次就好（整張表有上限，全部載進來是固定成本；一列一列去查會變成 N 次查詢）
+  const learned = loadLearned(db)
   const items: FilingSuggestion[] = []
   for (const row of rows) {
     if (items.length >= limit) break
@@ -209,21 +208,73 @@ export function filingSuggestions(db: DatabaseSync, scope: FilingScope, opts: { 
     const course = cleanCourse(opinion.course)
     if (!course) continue
     if (whyNotFilable(db, row, scope)) continue
-    const kind = kindFolder(opinion.kind)
-    const shown = known.get(courseKey(course)) ?? course
+    const offer = offeredFiling(learned, opinion.course, opinion.kind, known)
+    const toFolder = [COURSES_DIR, offer.course, offer.kind].join('/')
     items.push({
       itemId: row.id,
       name: row.name,
-      course: shown,
-      kind,
+      course: offer.course,
+      modelCourse: course,
+      kind: offer.kind,
       topic: opinion.topic,
       confidence: opinion.confidence,
       evidence: opinion.evidence,
       seeded: opinion.seeded,
-      toFolder: [COURSES_DIR, shown, kind].join('/'),
+      toFolder,
+      learned: offer.learnedCourse || offer.learnedKind,
+      rejectedBefore: learned.rejected(row.id, filingSummary(toFolder)),
+      alsoKnownAs: offer.alsoKnownAs,
     })
   }
   return { items }
+}
+
+/** 「我們現在會建議什麼」。`learnedCourse`／`learnedKind` ＝ 這一段是學來的，不是模型講的。 */
+export type FilingOffer = {
+  course: string; kind: string; learnedCourse: boolean; learnedKind: boolean; alsoKnownAs: string
+}
+
+/**
+ * 模型的看法 ＋ 學到的偏好 → **這一刻我們建議的課名與類型**。
+ *
+ * **列清單與真的搬共用這一支**（不准有第二份判斷）。為什麼非共用不可：
+ * 面板與 CLI 送回來的 `course` 就是清單上顯示的那一個，真的搬那邊要拿它跟「我們建議的」比，
+ * 才知道使用者到底有沒有改。兩邊算出來不一樣的話，**照單全收會被當成使用者改過**，
+ * 計數就被灌水了（預想 Step 1 第一格）。
+ *
+ * 學到的值**用之前再洗一次**（不變量 2）：cleanCourse／kindFolder 跟存進去時是同一支。
+ * 有人直接改資料庫塞了 `../../etc`，洗完是 `etc`，跳不出 filed 那棵樹；洗成空的就當沒學過。
+ */
+export function offeredFiling(
+  learned: Learned, modelCourse: unknown, modelKind: unknown, known?: Map<string, string>,
+): FilingOffer {
+  const model = cleanCourse(modelCourse)
+  const modelKind0 = kindFolder(modelKind)
+  // **模型自己講不出是哪一堂課的話，學到的偏好不可以替它頂上**（稽核 2026-09-20）。
+  // 清單那邊的門檻是 cleanCourse(opinion.course) 非空，這裡少一道的話會變成：
+  // 清單不列（因為看不出來），直接打 POST /file/apply 卻搬得成 —— 兩邊判斷不一樣。
+  // 偏好是「這一堂課你怎麼寫」，沒有那一堂課就沒有東西可以套。
+  if (!model) {
+    return { course: '', kind: modelKind0, learnedCourse: false, learnedKind: false, alsoKnownAs: '' }
+  }
+  const pref = cleanCourse(learned.course(modelCourse))
+  const learnedCourse = Boolean(pref) && courseKey(pref) !== courseKey(model)
+  const want = learnedCourse ? pref : model
+  // 既有資料夾的寫法蓋過去：畫面上講的位置要跟按下去之後真的落地的位置一樣（targetDir 也這樣挑）
+  const course = known?.get(courseKey(want)) ?? want
+  const modelK = modelKind0
+  const rawK = learned.kind(modelCourse, modelK)
+  const prefK = rawK ? kindFolder(rawK) : ''
+  const learnedKind = Boolean(prefK) && prefK !== modelK
+  // 舊的資料夾**不搬、不改名**，只在清單上講一句（預期行為 12）
+  const old = learnedCourse ? (known?.get(courseKey(model)) ?? '') : ''
+  return {
+    course,
+    kind: learnedKind ? prefK : modelK,
+    learnedCourse,
+    learnedKind,
+    alsoKnownAs: old && courseKey(old) !== courseKey(course) ? old : '',
+  }
 }
 
 // ── 真的搬 ──────────────────────────────────────────────────
@@ -430,14 +481,21 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
 
   const opinion = (() => { try { return opinionOf(modelViewForItem(db, itemId)) } catch { return null } })()
   const usable = opinion && confidentEnough(opinion.confidence) ? opinion : null
-  // 呼叫端指名的課名（面板送模型的建議、使用者也可以自己打）一樣要洗過
-  const course = cleanCourse(req.course === undefined ? usable?.course : req.course)
+  // **每一項各讀一次學到的東西**（P5）：同一批裡第一個檔學到 `作業系統`→`OS` 之後，
+  // 第二個檔就該直接用 `OS`，而且使用者送 `OS` 不算「他又改了一次」（不然計數會灌水）。
+  // 整張表有 PREF_MAX 的上限，重讀一次是固定成本。
+  const offer = offeredFiling(loadLearned(db), usable?.course, usable?.kind)
+  // 呼叫端指名的課名（面板送清單上顯示的那一個、使用者也可以自己打）一樣要洗過
+  const course = cleanCourse(req.course === undefined ? offer.course : req.course)
   if (!course) {
     return no(req.course === undefined
       ? '沒有可以用的課程名稱（模型沒有看法、信心太低，或看不出來是哪一堂課）。'
       : '這個課程名稱洗完是空的（只剩路徑符號、控制字元或保留名稱），不能用。')
   }
-  const kind = kindFolder(req.kind === undefined ? usable?.kind : req.kind)
+  const kind = kindFolder(req.kind === undefined ? offer.kind : req.kind)
+  // 打錯字的類型（`講議`）會被 kindFolder 收斂成「其他」。**那一次照舊進「其他」，但不可以學** ——
+  // 學了的話這一堂課之後每一個「筆記」都變「其他」，打錯一個字的代價從一個檔變成整堂課（稽核 2026-09-20）。
+  const kindTyped = req.kind === undefined ? true : VIEW_KINDS.includes(String(req.kind).trim())
   // 主題不進路徑（太細會變成一堆只有一個檔的資料夾），但記在紀錄裡 —— 那是「模型認為的主題」，
   // 就算呼叫端自己指名了課名也照記。
   const topic = String(usable?.topic ?? '').slice(0, 200)
@@ -480,6 +538,16 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
     followFiled(db, itemId, dest.dir, to)
     db.prepare(`UPDATE filings SET status='done' WHERE id=?`).run(id)
   })
+  // ── 學（P5）────────────────────────────────────────────────
+  // **只在這裡學**：檔案真的搬成功了才算「使用者做過這個動作」（不變量 1）。
+  // 而且只學「跟我們建議的不一樣」的那一下 —— 照單全收不是新資訊。
+  // 學習本身絕對不可以讓這一項失敗：learn.ts 每一個 db 呼叫都自己包著，不往上丟。
+  if (courseKey(course) !== courseKey(offer.course)) {
+    learnCourse(db, usable?.course, req.course, course, at, scope)
+  }
+  if (kind !== offer.kind && kindTyped) learnKind(db, usable?.course, kindFolder(usable?.kind), kind, at, scope)
+  // 同一個建議重新做一次成功 → 「你上次退過」的標記要消失（預期行為 5）
+  forgetRejected(db, itemId, filingSummary(dest.folder), scope)
   return {
     itemId, ok: true, name, toFolder: dest.folder, to, id,
     why: to === name
@@ -620,13 +688,19 @@ function undoOne(db: DatabaseSync, row: FilingRow, scope: FilingScope): FilingUn
     db.prepare('UPDATE filings SET error=? WHERE id=?').run(why.slice(0, 200), row.id)
     return no(why)
   }
+  let nowItem = row.item_id
   transaction(db, () => {
     // 收尾那邊同一段：掃描已經先在原位收了一列的話，跟著那一列走，紀錄也要指過去
     const nowId = followFiled(db, row.item_id, backDir, back)
     if (nowId !== row.item_id) db.prepare('UPDATE filings SET item_id=? WHERE id=?').run(nowId, row.id)
+    nowItem = nowId
     db.prepare(`UPDATE filings SET status='reverted', undone_at=? WHERE id=?`)
       .run(new Date().toISOString(), row.id)
   })
+  // ── 學（P5）：undo ＝ 這個建議被退貨了 ──────────────────────
+  // 記在**檔現在那一列**上（跟著 followFiled 改過道的 id 走），不然下一次列清單找不到這個標記。
+  // 只記「哪一個建議」，清單照樣列它，只是**不預設勾**（預期行為 5）。
+  rememberRejected(db, nowItem, filingSummary(folderOf(row.to_dir)), new Date().toISOString(), scope)
   const restoredAs = back === row.name ? null : back
   return {
     ...base, ok: true, name: back, restoredAs,

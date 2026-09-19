@@ -32,6 +32,7 @@ import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { renameRoutes } from './rename-routes.ts'
 import { filingRoutes } from './filing-routes.ts'
+import { learnRoutes } from './learn-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
@@ -279,7 +280,7 @@ export function start(opts: {
       if (origin && allowed) {
         h['access-control-allow-origin'] = origin
         h['access-control-allow-headers'] = 'content-type, x-contextbox-token'
-        h['access-control-allow-methods'] = 'GET, POST, OPTIONS'
+        h['access-control-allow-methods'] = 'GET, POST, DELETE, OPTIONS'
       }
       return h
     }
@@ -389,8 +390,10 @@ export function start(opts: {
     // 上一版解析失敗就給 {}，而 POST /cleanup/plans 的 {} 是「清單上打 ✔ 的全部」——
     // 使用者只勾一個，client 送出的 JSON 多一個逗號，就變成全部清掉。
     // 空的 body 才是「什麼都沒帶」。body 必須是物件（null、陣列、字串都是看不懂）。
+    // DELETE 也讀：`DELETE /learned` 的 `{ ids }`／`{ all: true }` 是 body（P5）。
+    // 不讀的話它永遠收到空的 body —— 「忘掉這一條」會變成「看不懂送來的資料」。
     let body: any = {}
-    if (req.method === 'POST') {
+    if (req.method === 'POST' || req.method === 'DELETE') {
       let got
       try { got = await readBody(req) }
       catch { return }   // 連線自己斷了，沒有人在等回應
@@ -426,6 +429,14 @@ export function start(opts: {
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('歸檔不掃描') },
+      })) return
+      // 它學到的事（P5）。只認 `/learned`，跟上面兩個一樣認不得就回 false。
+      // 不需要 roots／filed —— 它只讀寫 preferences 那張表，永遠不碰檔案。
+      if (learnRoutes({
+        db: F.db, roots, quarantine: QUARANTINE,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('學到的事不掃描') },
       })) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
