@@ -5,5 +5,8 @@
   "errors": 0,
   "truncated": false,
   "imagesPending": 0,
-  "problems": []
+  "textsPending": 0,
+  "problems": [
+    "有 2 個檔看不懂，這次沒有讀到它們的內容。"
+  ]
 }

@@ -125,10 +125,16 @@ CREATE TABLE IF NOT EXISTS file_items (
   last_seen_at  TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN
                   ('new','candidate','kept','quarantined','restored','missing','error')),
-  error         TEXT
+  error         TEXT,
+  -- 檔名有沒有取名（core/untitled.ts 的三級）。**只是標記**，改名是 P3 的事。
+  -- 既有的資料庫靠 migrate() 補這兩欄，所以這裡不可以是 NOT NULL。
+  naming        TEXT CHECK (naming IN ('untitled','generic','named')),
+  naming_why    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_file_items_sha    ON file_items(sha256) WHERE sha256 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_file_items_status ON file_items(status, last_seen_at);
+-- **naming 故意不建索引。** 實測（300 個檔的資料夾，一個檔一次 insert、WAL 每次都要落地）
+-- 多一個索引就多 12% 的掃描時間；而「列出沒取名的檔」一次最多也就掃幾千列。
 
 CREATE TABLE IF NOT EXISTS cleanup_candidates (
   id           TEXT PRIMARY KEY,
@@ -232,6 +238,29 @@ CREATE TABLE IF NOT EXISTS cleanup_burst_members (
   at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_burst_group ON cleanup_burst_members(group_id, item_id);
+
+-- ── 文件的內容 ───────────────────────────────────────────────
+-- 掃描時讀出來的文字（.txt／.md／.csv／Word／PowerPoint／PDF 的文字層），給 P2 的模型與之後的改名用。
+-- **這是快取，不是事實**（跟 cleanup_image_sigs 同一個規矩）：讀的時候的 size 與 mtime 一起存，
+-- 任一個跟現在的檔對不上就重讀。讀不懂的檔也留一列（text 是 NULL、reason 寫原因），
+-- 這樣 size／mtime 沒變就不會每一輪都再試一次。
+-- **裡面是使用者檔案的內容**（講義、履歷、對帳單…）：這個資料庫的權限要跟家目錄一樣，
+-- db.ts 的 lockDown 已經把資料夾 0700、檔案 0600 設好了。
+CREATE TABLE IF NOT EXISTS file_texts (
+  item_id   TEXT PRIMARY KEY REFERENCES file_items(id),
+  kind      TEXT NOT NULL CHECK (kind IN ('text','docx','pptx','pdf')),
+  text      TEXT,                 -- 讀得懂才有；最多 4000 字（見 read-text.ts 的 STORE_MAX_CHARS）
+  chars     INTEGER NOT NULL,     -- 原本讀到幾個字（截斷前）
+  truncated INTEGER NOT NULL,     -- 0／1
+  has_text  INTEGER NOT NULL,     -- 有沒有文字層（掃描版 PDF 是 0）
+  pages     INTEGER,              -- PDF 才有
+  unmapped  REAL,                 -- PDF 解不出來的字形比例，P2 拿來決定要不要改用模型看圖
+  reason    TEXT,                 -- 讀不懂的原因（看不懂／太大／逾時／記憶體不足）
+  size      INTEGER NOT NULL,     -- 讀的時候的檔案大小
+  mtime     TEXT NOT NULL,        -- 讀的時候的 mtime
+  at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_file_texts_at ON file_texts(at);
 `
 
 /**
@@ -246,6 +275,31 @@ function lockDown(path: string, createdDir: string | undefined) {
   if (createdDir) { try { chmodSync(createdDir, 0o700) } catch { /* Windows 上沒作用 */ } }
   for (const p of [path, path + '-wal', path + '-shm']) {
     try { chmodSync(p, 0o600) } catch { /* 還沒建出來就算了 */ }
+  }
+}
+
+/**
+ * 既有資料庫要補的欄位。`CREATE TABLE IF NOT EXISTS` 對已經存在的表什麼都不做，
+ * 所以**新欄位一定要在這裡再寫一次**，不然舊的資料庫升級之後會在第一次寫入時炸掉。
+ * 每一筆是 [表, 欄位, ADD COLUMN 的完整寫法]；欄位不可以是 NOT NULL（舊的列沒有值）。
+ */
+const ADDED_COLUMNS: [string, string, string][] = [
+  ['file_items', 'naming', `naming TEXT CHECK (naming IN ('untitled','generic','named'))`],
+  ['file_items', 'naming_why', 'naming_why TEXT'],
+]
+
+/**
+ * 補欄位。**同一瞬間可能有很多個行程在做同一件事**（右鍵一次選 8 個檔就是 8 個行程），
+ * 所以「已經有這一欄」不算錯 —— 檢查跟 ALTER 之間別人加好了，接住那個訊息就好。
+ */
+function migrate(db: DatabaseSync): void {
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+    if (cols.some(c => c.name === column)) continue
+    try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`) }
+    catch (e: any) {
+      if (!/duplicate column/i.test(String(e?.message ?? e))) throw e
+    }
   }
 }
 
@@ -267,6 +321,7 @@ export function open(path: string = DEFAULT_DB): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
+  migrate(db)
   if (path !== ':memory:') lockDown(path, created)
   return db
 }

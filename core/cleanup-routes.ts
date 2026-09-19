@@ -1885,6 +1885,8 @@ export type RouteCtx = {
     scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean
     /** 還有幾張圖的長相指紋沒算（一批有上限，見 scanner 的 MAX_IMAGE_BATCH）。 */
     imagesPending?: number
+    /** 還有幾個文件檔沒讀內容（一批有上限，見 scanner 的 MAX_TEXT_BATCH）。 */
+    textsPending?: number
   }
 }
 

@@ -174,7 +174,11 @@ describe('S1 哪些檔要算指紋：看內容，不看副檔名', () => {
     const s = sandbox(t)
     for (let i = 0; i < 5; i++) put(s.downloads, `文件${i}.pdf`, Buffer.from(`%PDF-1.4 ${i}`))
     s.scan()
-    assert.deepEqual(s.problems, [], '一般（不是 PNG）的檔不可以各報一條問題 —— 寵物會永遠在擔心')
+    // P1 之後這些假 .pdf 會被拿去讀內容、讀不懂，那件事只報**一條總結**
+    // （預想的不變量第 6 條）。這一條守的是「圖的那條路不可以逐檔各報一條」。
+    assert.deepEqual(s.problems.filter(m => !/^有 \d+ 個檔看不懂/.test(m)), [],
+      '一般（不是 PNG）的檔不可以各報一條問題 —— 寵物會永遠在擔心')
+    assert.ok(s.problems.length <= 1, `最多一條總結：${JSON.stringify(s.problems)}`)
   })
 })
 
@@ -824,6 +828,8 @@ describe('沒有 PNG 的資料夾，掃描不可以因此變慢很多', () => {
     assert.equal(r.scanned, 40)
     assert.equal(r.imagesPending, 0)
     assert.equal(sigRows(s.db).length, 0)
-    assert.deepEqual(s.problems, [])
+    // 這 40 個假 .pdf 讀不懂，P1 會報一條總結（不是 40 條）。圖的那條路一條都不報。
+    assert.deepEqual(s.problems.filter(m => !/^有 \d+ 個檔看不懂/.test(m)), [])
+    assert.ok(s.problems.length <= 1, `最多一條總結：${JSON.stringify(s.problems)}`)
   })
 })

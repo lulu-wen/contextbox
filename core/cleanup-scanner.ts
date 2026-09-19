@@ -26,6 +26,9 @@ import {
   type CleanupCandidateDraft,
 } from './cleanup-rules.ts'
 import { decodePngGray } from './png.ts'
+import { fileTextFresh, putFileText, sweepFileTexts } from './file-texts.ts'
+import { TEXT_REASON, kindOfExt, textReader, type TextReader } from './read-text.ts'
+import { UntitledError, classifyName } from './untitled.ts'
 import {
   DEFAULT_MAX_GAP_MS,
   burstGroups,
@@ -77,6 +80,12 @@ export type CleanupScanOptions = {
   maxFiles?: number
   paths?: string[]
   onProblem?: (msg: string) => void
+  /**
+   * 讀文件內容的 worker。**只有測試會換掉** —— 要重現逾時、worker 連續死掉，
+   * 得有一個故意壞掉的 worker（見 core/read-text.ts 的 createTextReader）。
+   * 沒給的話，第一次真的要讀的時候才會開整個行程共用的那一個。
+   */
+  textReader?: TextReader
 }
 
 export type CleanupScanResult = {
@@ -90,6 +99,11 @@ export type CleanupScanResult = {
    * 0 表示都算完了；> 0 的話下一輪掃描會接著算，呼叫端可以照這個數字決定要不要早一點再掃一次。
    */
   imagesPending: number
+  /**
+   * 這一輪還沒讀內容的文件檔還有幾個（一批最多 MAX_TEXT_BATCH 個，見那個常數）。
+   * 跟 imagesPending 同一個意思：0 表示都讀完了，> 0 的話下一輪接著讀。
+   */
+  textsPending: number
 }
 
 type FileIdentity = {
@@ -294,11 +308,30 @@ function sha256Of(path: string, expect: FileIdentity): { sha256: string; png: Bu
   }
 }
 
+/**
+ * 檔名有沒有取名（untitled／generic／named）＋理由，見 core/untitled.ts。
+ *
+ * **只標記，不改名**（預想表倒數第三列）：改名是 P3 的事，而且要可復原。
+ * 檔名是不可信的輸入 —— untitled.ts 對不是字串、超長的輸入會丟錯，
+ * 接住當成「拿不準」（generic），不要讓一個怪檔名讓整輪掃描失敗。
+ */
+function namingOf(name: string): { state: string; why: string } {
+  try {
+    const c = classifyName(name)
+    return { state: c.state, why: c.reason }
+  } catch (e) {
+    const why = e instanceof UntitledError ? '檔名不像正常的檔名，拿不準' : '判斷檔名時出錯，拿不準'
+    return { state: 'generic', why }
+  }
+}
+
 function upsertFile(db: DatabaseSync, f: InspectedFile, sha256: string | null, status: CleanupFileStatus, error: string | null, nowIso: string): CleanupFileItem {
   const id = randomUUID()
+  // 取名的判斷跟著 name 一起寫進去：它只看檔名，不多一次寫入（掃 1000 個檔就是省 1000 次）
+  const nm = namingOf(f.name)
   waitForDb(() => db.prepare(
-    `INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status,error)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status,error,naming,naming_why)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(path) DO UPDATE SET
        name=excluded.name,
        ext=excluded.ext,
@@ -310,8 +343,10 @@ function upsertFile(db: DatabaseSync, f: InspectedFile, sha256: string | null, s
          WHEN file_items.status IN ('quarantined') THEN file_items.status
          ELSE excluded.status
        END,
-       error=excluded.error`
-  ).run(id, f.real, f.name, f.ext, f.bytes, sha256, f.mtime.toISOString(), nowIso, nowIso, status, error))
+       error=excluded.error,
+       naming=excluded.naming,
+       naming_why=excluded.naming_why`
+  ).run(id, f.real, f.name, f.ext, f.bytes, sha256, f.mtime.toISOString(), nowIso, nowIso, status, error, nm.state, nm.why))
   return db.prepare(`SELECT * FROM file_items WHERE path=?`).get(f.real) as CleanupFileItem
 }
 
@@ -679,6 +714,132 @@ function sweepImageSigs(db: DatabaseSync) {
   })
 }
 
+// ── 文件的內容：讀出來存進 file_texts ────────────────────────
+
+/**
+ * 一批最多讀幾個沒讀過的檔。
+ *
+ * 每個檔在 worker 裡最多 5 秒（讀得懂的講義是幾毫秒到幾十毫秒），60 個是一個
+ * 「正常情況下幾秒、最壞情況下不會沒完沒了」的數字。剩下的留到下一輪：讀過的有快取，
+ * 下一輪自然接著讀沒讀到的那些，而 `scanDownloads` 的回傳會講還剩幾個（`textsPending`）。
+ */
+export const MAX_TEXT_BATCH = 60
+
+/**
+ * worker 連續死幾次就放棄這一輪。
+ *
+ * 一次死掉是「這個檔有問題」，連續三次比較像是「這台機器現在開不了 worker」
+ * （記憶體吃緊、thread 開不出來）。再硬試下去只是每個檔各賠 5 秒。
+ */
+export const MAX_WORKER_DEATHS = 3
+
+type TextBatch = {
+  /** 這一輪已經處理幾個沒讀過的檔 */
+  read: number
+  /** 還剩幾個沒處理 */
+  pending: number
+  /** worker 連續死幾次 */
+  deaths: number
+  /** 已經放棄這一輪了 */
+  off: boolean
+  /** 這一輪有幾個檔讀不懂（含太大、逾時）—— 只用來報一條總結，不逐檔洗版 */
+  unreadable: number
+  reader: TextReader | null
+}
+
+/**
+ * 讀一個檔的文字，存進 `file_texts`。
+ *
+ * - **副檔名決定要不要試**（.txt／.md／.csv／.docx／.pptx／.pdf），不在清單裡的完全不碰，
+ *   連查資料庫都不查 —— 沒有文件類檔案的資料夾，掃描時間不可以因為這個功能變慢。
+ * - **快取先看**：讀的時候的 size 與 mtime 跟現在的檔都一樣就什麼都不做。
+ *   讀不懂的檔也記在同一張表，所以 size／mtime 沒變就不會每一輪再試一次。
+ * - **讀之前先看大小**：超過 maxBytes 不讀（reason「太大」）。worker 的 heap 上限管不到
+ *   heap 外的記憶體，而 PDF 的輸入本身約佔檔案大小 ×2（見 pdf-text.ts 的檔頭）。
+ * - **worker 死掉不是掃描失敗**：那個檔記成看不懂（reason「逾時」），掃描照常完成；
+ *   連續 MAX_WORKER_DEATHS 次就這一輪不再讀內容，並記一條 problem。
+ */
+function ensureFileText(
+  opts: CleanupScanOptions, itemId: string, f: InspectedFile, nowIso: string, batch: TextBatch,
+): void {
+  const kind = kindOfExt(f.ext)
+  if (kind === null) return
+  const db = opts.db
+  const mtime = f.mtime.toISOString()
+  if (fileTextFresh(db, itemId, f.bytes, mtime)) return
+  if (batch.off || batch.read >= MAX_TEXT_BATCH) { batch.pending++; return }
+  batch.read++
+
+  const put = (row: {
+    text: string | null; chars: number; truncated: boolean; hasText: boolean
+    pages: number | null; unmapped: number | null; reason: string | null
+  }) => waitForDb(() => putFileText(db, {
+    item_id: itemId,
+    kind,
+    text: row.text,
+    chars: row.chars,
+    truncated: row.truncated ? 1 : 0,
+    has_text: row.hasText ? 1 : 0,
+    pages: row.pages,
+    unmapped: row.unmapped,
+    reason: row.reason,
+    size: f.bytes,
+    mtime,
+    at: nowIso,
+  }))
+
+  if (f.bytes > opts.maxBytes) {
+    put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: TEXT_REASON.tooLarge })
+    batch.unreadable++
+    return
+  }
+  if (f.bytes === 0) {
+    // 空檔不是錯：就是沒有文字層
+    put({ text: '', chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: null })
+    return
+  }
+
+  if (!batch.reader) batch.reader = opts.textReader ?? textReader()
+  const got = batch.reader.read({
+    path: f.real, kind, dev: f.dev, ino: f.ino, size: f.size, mtimeMs: f.mtimeMs,
+  })
+  if (got.status === 'dead') {
+    batch.deaths++
+    // 這個檔把 worker 弄死了（卡住、吃爆記憶體）→ 記在它身上，下一輪不用再試。
+    // **開不起來（blame env）不記**：那是環境的事，記下去會把幾個好檔永久標成讀不到（P1 驗證員）。
+    if (got.blame !== 'env') {
+      put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: got.reason })
+    }
+    batch.unreadable++
+    if (batch.deaths >= MAX_WORKER_DEATHS) {
+      batch.off = true
+      // 只講次數，不講檔名也不講資料夾
+      problem(opts, `讀檔案內容的背景工作連續失敗 ${MAX_WORKER_DEATHS} 次，這次掃描先不讀內容了。`)
+    }
+    return
+  }
+  batch.deaths = 0
+  if (got.status === 'changed') {
+    // 掃描到現在檔案被換掉了：這一輪什麼都不記（下一輪會看到新的 size／mtime）
+    batch.read--
+    return
+  }
+  if (got.status === 'unreadable') {
+    put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: got.reason })
+    batch.unreadable++
+    return
+  }
+  put({
+    text: got.text,
+    chars: got.chars,
+    truncated: got.truncated,
+    hasText: got.hasText,
+    pages: got.pages,
+    unmapped: got.unmapped,
+    reason: null,
+  })
+}
+
 const isTooMuchWork = (e: any): boolean => e?.code === 'TOO_MUCH_WORK'
 
 /**
@@ -943,10 +1104,12 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   const now = opts.now ?? new Date()
   const nowIso = now.toISOString()
   const result: CleanupScanResult = {
-    scanned: 0, candidates: 0, skipped: 0, errors: 0, truncated: false, imagesPending: 0,
+    scanned: 0, candidates: 0, skipped: 0, errors: 0, truncated: false, imagesPending: 0, textsPending: 0,
   }
   // 這一輪算了幾張長相指紋、還剩幾張沒算（一批最多 MAX_IMAGE_BATCH 張）
   const batch: ImageBatch = { hashed: 0, pending: 0 }
+  // 讀文件內容的額度（一批最多 MAX_TEXT_BATCH 個）。reader 要到真的有文件類的檔才會開 worker
+  const texts: TextBatch = { read: 0, pending: 0, deaths: 0, off: false, unreadable: 0, reader: null }
   // 舊版留下的錯誤作廢要在 upsert 之前改回 skipped，這一輪條件還成立的才會回到 proposed
   repairLegacyDismissed(opts.db)
   const { files, truncated } = fileList(opts)
@@ -992,6 +1155,12 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
     if (png !== null) ensureImageSig(opts, item.id, inspected, png, nowIso, batch)
     png = null
 
+    // 文件的內容（P2 的模型要用）。status error 的檔在掃描中被換掉了，這一輪不讀。
+    // **watcher 的單檔模式不讀**（跟連拍分組一樣）：那條路跑在 pet 的主執行緒上，
+    // 一個惡意檔就會讓面板卡 5 秒，而且「一批 60 個」「連死 3 次就放棄」兩道閘每次呼叫都重來（P1 驗證員）。
+    // 新檔的內容等下一次完整掃描（背景子行程）再讀，最多晚 30 分鐘。
+    if (status !== 'error' && !opts.paths) ensureFileText(opts, item.id, inspected, nowIso, texts)
+
     if (status === 'error' || inspected.recent) {
       skipStaleCandidates(opts.db, item.id, [])
       continue
@@ -1029,9 +1198,15 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   // 面板按掃描、CLI）會接手。指紋本身在上面逐檔算過了，所以那時候只剩分組。
   if (!opts.paths) {
     sweepImageSigs(opts.db)
+    waitForDb(() => sweepFileTexts(opts.db))
     wireBursts(opts, nowIso)
   }
   result.imagesPending = batch.pending
+  result.textsPending = texts.pending
+  // 讀不懂不是錯（預想的不變量第 6 條）：**只講幾個，不逐檔洗版**
+  if (texts.unreadable > 0) {
+    problem(opts, `有 ${texts.unreadable} 個檔看不懂，這次沒有讀到它們的內容。`)
+  }
 
   // 只算清單上真的會出現的：候選在 missing 的檔上會留在 proposed（見 markMissing），
   // 不過濾的話刪掉的檔還會算進這個數字。

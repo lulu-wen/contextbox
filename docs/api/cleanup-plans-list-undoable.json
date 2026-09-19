@@ -4,10 +4,10 @@
   "limit": 20,
   "operations": [
     {
-      "id": "e19b24df-2922-4a59-b345-196fa7161637",
+      "id": "cb92143b-6f38-439a-93ca-a47845e0d725",
       "status": "partial",
-      "createdAt": "2026-09-19T06:17:20.189Z",
-      "appliedAt": "2026-09-19T06:17:20.225Z",
+      "createdAt": "2026-09-19T08:19:51.958Z",
+      "appliedAt": "2026-09-19T08:19:51.996Z",
       "restoredAt": null,
       "canUndo": true,
       "restoring": false,
@@ -15,7 +15,7 @@
       "bytes": 13,
       "items": [
         {
-          "itemId": "8b1059d1-128b-4fed-ada7-753adc8c274a",
+          "itemId": "64857976-6c5f-4f8e-8dcb-a07a5924cf7b",
           "name": "發票.zip",
           "bytes": 13
         }
