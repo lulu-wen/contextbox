@@ -7,6 +7,7 @@
  *   node cli.mjs open                打開寵物與清理面板（pet 要先在跑）
  *   node cli.mjs cleanup ...         清理：scan、list、apply、undo、release、quarantine
  *   node cli.mjs think               讓模型看一輪還沒看過的檔（要先設定 model 與金鑰）
+ *   node cli.mjs rename              替沒取名的檔改名（列建議／--apply／--undo，改得回來）
  *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
  *   node cli.mjs watch               常駐監看設定裡的資料夾
  *   node cli.mjs list [狀態]          看收件匣
@@ -37,6 +38,9 @@ import {
 } from './core/cleanup-routes.ts'
 import * as routes from './core/cleanup-routes.ts'
 import { applyPlan, undoPlan, checkedPath, recoverInterrupted } from './core/cleanup-exec.ts'
+import {
+  applyRenames, listRenames, recoverInterruptedRenames, RENAME_BATCH_MAX, renameSuggestions, undoRenames,
+} from './core/rename.ts'
 import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
 import { CleanupError } from './core/cleanup-journal.ts'
@@ -85,6 +89,8 @@ const STALE_PLAN_MS = 60 * 60_000
 const SKIP_PLAN_MARGIN_MS = 5 * 60_000
 /** 放棄了的計畫是誰放棄的：人，或收尾（STALE_PLAN_MS）。CLI 分不出來，兩種都講 */
 const DISMISSED_WHO = '有人放棄了它，或建立之後超過一小時沒有套用、自動放棄'
+/** `rename` 印幾筆「最近改過的」，也是 `--undo <編號>` 認得的範圍（兩邊一定要一樣）。 */
+const RENAME_LIST = 20
 const DEFAULT_PORT = 7391
 /** 這支檔案自己。pet 的全量掃描開子行程跑的就是它（C2）。 */
 const CLI_FILE = fileURLToPath(import.meta.url)
@@ -328,8 +334,11 @@ function needsSettling() {
       if (memo[row.seq] !== journalRowShape(row)) return true
     }
     const cutoff = new Date(Date.now() - STALE_PLAN_MS).toISOString()
-    return Boolean(db.prepare(`SELECT 1 FROM cleanup_plans p WHERE p.status='proposed' AND p.created_at < ?
-      AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id = p.id) LIMIT 1`).get(cutoff))
+    if (db.prepare(`SELECT 1 FROM cleanup_plans p WHERE p.status='proposed' AND p.created_at < ?
+      AND NOT EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id = p.id) LIMIT 1`).get(cutoff)) return true
+    // 改名也要收尾（P3）：以前只有 rename 指令會收，pet 與 doctor 都不收 ——
+    // 改名被砍之後只要先掃一次，那一筆就再也收不了尾、也復原不回來（P3 驗證員）
+    return Boolean(db.prepare(`SELECT 1 FROM renames WHERE status='started' LIMIT 1`).get())
   } catch { return false }   // 還沒有清理的表：沒有東西要收尾
 }
 
@@ -361,6 +370,7 @@ function settleCleanupState({ skipPlanId = null } = {}) {
   const steps = [
     () => { recoverInterrupted(db, execOpts()); rememberStuckJournal() },
     () => releaseStalePlans(db, staleCutoffMs(skipPlanId), { skipPlanId: skipPlanId ?? undefined }),
+    () => recoverInterruptedRenames(db),
   ]
   for (const step of steps) {
     try { step() }
@@ -1334,6 +1344,140 @@ switch (cmd) {
     break
   }
 
+  /**
+   * 替沒取名的檔改名（P3）。**沒有自動改名的路徑**：`rename` 只列，`--apply` 才動。
+   *
+   *   node cli.mjs rename                     列出建議
+   *   node cli.mjs rename --apply [編號⋯]      改名（不給編號 ＝ 清單上全部）
+   *   node cli.mjs rename --undo [紀錄 id⋯]    復原（不給 id ＝ 最近那一次）
+   *
+   * 離開碼照 docs/cli.md：0 成功（含「沒有東西要改」）、1 輸入錯、2 後端錯、3 部分失敗。
+   */
+  case 'rename': {
+    showProblems()
+    const scope = { roots: CLEAN_ROOTS, quarantine: QUARANTINE, readonly: config.readonly }
+    // 每一次都先收尾上一次被砍在中間的改名（看檔案實際在哪決定那一列是 done 還是 reverted）
+    try { recoverInterruptedRenames(db) }
+    catch (e) { warn(`⚠ 收尾上次中斷的改名時出錯（${why(e?.message ?? e)}），這次先略過。`) }
+
+    const undoAt = args.indexOf('--undo')
+    const applyAt = args.indexOf('--apply')
+    if (undoAt >= 0 && applyAt >= 0) {
+      warn('--apply 與 --undo 不能一起用。')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo')
+    if (unknown) {
+      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>。`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+
+    // ── 復原 ─────────────────────────────────────────────────
+    if (undoAt >= 0) {
+      const ids = args.slice(undoAt + 1).filter(a => !a.startsWith('--'))
+      // **跟下面列出來的那一批同一個數字**：印編號的集合與解析編號的集合不一樣大的話，
+      // 印出來明明分得開的編號，解析時會說「對到不只一筆」。
+      const done = listRenames(db, RENAME_LIST).filter(r => r.status === 'done')
+      let picked
+      if (ids.length) {
+        const short = shortIds(done.map(r => r.id))
+        picked = []
+        for (const raw of ids) {
+          const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
+          const hits = done.filter(r => r.id.toLowerCase().startsWith(code))
+          if (code.length < 4) { warn(`--undo ${shown(raw)}：紀錄 id 至少 4 碼，就是 rename 清單上 [ ] 裡的那幾碼。`); picked = null; break }
+          if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一筆可以復原。先跑 node cli.mjs rename 看紀錄。`); picked = null; break }
+          if (hits.length > 1) {
+            warn(`編號 ${shown(raw)} 對到不只一筆，請多打幾碼：\n`
+              + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(r.to)}`).join('\n'))
+            picked = null
+            break
+          }
+          if (!picked.includes(hits[0].id)) picked.push(hits[0].id)
+        }
+        if (!picked) { process.exitCode = EXIT.badInput; break }
+      }
+      let r
+      try { r = undoRenames(db, picked ? { ids: picked } : { last: true }, scope) }
+      catch (e) { fail(e, 'undo'); break }
+      for (const o of r.results) {
+        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.to)}　（原本的名字被佔走了，放回來的這一份叫這個，沒有覆蓋任何檔）`)
+        else if (o.ok) say(`  ↩ ${shown(o.to)}`)
+        else say(`  ✘ 沒有放回　—— ${shown(o.why)}`)
+      }
+      const bad = r.results.filter(o => !o.ok).length
+      say(`\n復原了 ${r.results.length - bad} 個${bad ? `，${bad} 個沒有放回` : ''}。`)
+      if (bad) process.exitCode = EXIT.partial
+      break
+    }
+
+    // ── 列建議 ───────────────────────────────────────────────
+    let list
+    try { list = renameSuggestions(db, scope) }
+    catch (e) { fail(e, 'rename'); break }
+    const rows = list.items
+    const short = shortIds(rows.map(r => r.itemId))
+
+    if (applyAt < 0) {
+      if (!rows.length) {
+        say(`${rootsLabel()} 裡沒有可以改名的檔。`)
+        say('（只會提議「沒取名」而且模型看得出內容的檔；模型還沒看過的先跑 node cli.mjs think。）')
+      } else {
+        say(`有 ${rows.length} 個檔可以改名（**這些是模型的意見，不是事實**）：\n`)
+        for (const r of rows) {
+          say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
+          say(`         → ${shown(r.suggested)}`)
+          say(`         模型認為：${shown(r.course || '看不出來')}／${shown(r.topic || '看不出來')}`
+            + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
+          if (r.evidence) say(`         證據：${shown(r.evidence)}`)
+        }
+        say(`\n要改的話：node cli.mjs rename --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
+        say('改完反悔：node cli.mjs rename --undo')
+      }
+      const recent = listRenames(db, RENAME_LIST).filter(r => r.status === 'done')
+      if (recent.length) {
+        say('\n最近改過的（都還可以復原）：')
+        const rs = shortIds(recent.map(r => r.id))
+        for (const r of recent) say(`  [${rs.get(r.id)}] ${shown(r.from)} → ${shown(r.to)}`)
+      }
+      break
+    }
+
+    // ── 真的改 ───────────────────────────────────────────────
+    const codes = args.slice(applyAt + 1).filter(a => !a.startsWith('--'))
+    let chosen = rows
+    if (codes.length) {
+      const picked = resolveCodes(rows, codes, '--apply')
+      if (picked.error) { warn(picked.error); process.exitCode = EXIT.badInput; break }
+      chosen = picked.rows
+    }
+    if (!chosen.length) {
+      say(`${rootsLabel()} 裡沒有可以改名的檔，這次什麼都沒做。`)
+      break
+    }
+    if (config.readonly) {
+      warn('目前是唯讀模式，不會改任何檔案的名字。')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    let r
+    try { r = applyRenames(db, chosen.map(c => ({ itemId: c.itemId, to: c.suggested })), scope) }
+    catch (e) { fail(e, 'rename'); break }
+    for (const o of r.results) {
+      if (o.ok) say(`  ✔ ${shown(o.from)} → ${shown(o.to)}`)
+      else say(`  ✘ ${shown(o.from || '這個檔')}　—— ${shown(o.why)}`)
+    }
+    const ok = r.results.filter(o => o.ok).length
+    const bad = r.results.length - ok
+    say(`\n改好 ${ok} 個${bad ? `，${bad} 個沒有改` : ''}。`)
+    if (r.remaining) say(`一次最多改 ${RENAME_BATCH_MAX} 個，還有 ${r.remaining} 個，再跑一次就會做到它們。`)
+    if (ok) say('反悔的話：node cli.mjs rename --undo')
+    if (bad) process.exitCode = EXIT.partial
+    break
+  }
+
   case 'watch': {
     showProblems()
     if (!config.watch.length) { warn('設定裡沒有任何監看資料夾。'); process.exit(1) }
@@ -2000,6 +2144,9 @@ switch (cmd) {
   node cli.mjs cleanup release <計畫 id>    放棄一份還沒套用的計畫（不動檔案）
   node cli.mjs cleanup quarantine [--empty] 看隔離區／清空（要滿七天、要二次確認）
   node cli.mjs think                       讓模型看一輪還沒看過的檔（沒設定模型就不做事）
+  node cli.mjs rename                      看有哪些沒取名的檔可以改名（模型的建議）
+  node cli.mjs rename --apply [編號⋯]       改名（改得回來）
+  node cli.mjs rename --undo [紀錄 id⋯]     復原改名（不給 id 就是最近那一次）
   node cli.mjs watch                       常駐監看
   node cli.mjs propose <檔案>...            手動收一個檔案
   node cli.mjs list [狀態]                  看收件匣

@@ -293,6 +293,30 @@ CREATE INDEX IF NOT EXISTS ix_model_calls_at ON model_calls(at);
 CREATE TABLE IF NOT EXISTS model_skips (
   item_id TEXT PRIMARY KEY, why TEXT NOT NULL, at TEXT NOT NULL
 );
+
+-- ── 改名（P3） ───────────────────────────────────────────────
+-- 每一次改名一列。**這是唯一一份「原本叫什麼」的紀錄**：清理有隔離區，改名沒有 ——
+-- 沒有這張表，改壞了就只剩使用者自己記得。所以先寫 started 再動檔案，改完才寫 done；
+-- 當機之後靠「檔案實際在哪」收尾（core/rename.ts 的 recoverInterruptedRenames）。
+--
+-- **為什麼不共用 cleanup_journal**：那張表的 op CHECK 只有 quarantine／restore／skip，
+-- 動它要遷移，而且改名不是清理（沒有計畫、沒有候選、不搬家）。
+--
+-- dir 是**真路徑**，只在本機用來組出要動的檔；**不可以回給畫面**（不變量 9）。
+-- from_name／to_name 只有檔名，不含資料夾 —— 改名永遠在同一個資料夾裡（不變量 3）。
+CREATE TABLE IF NOT EXISTS renames (
+  id        TEXT PRIMARY KEY,          -- uuid
+  item_id   TEXT NOT NULL REFERENCES file_items(id),
+  from_name TEXT NOT NULL,             -- 只有檔名，不含資料夾
+  to_name   TEXT NOT NULL,
+  dir       TEXT NOT NULL,             -- 所在資料夾（真路徑；只在本機用，不回給畫面）
+  source    TEXT NOT NULL,             -- model／manual
+  status    TEXT NOT NULL CHECK (status IN ('started','done','reverted','failed')),
+  error     TEXT,
+  at        TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_renames_item ON renames(item_id, at);
 `
 
 /**

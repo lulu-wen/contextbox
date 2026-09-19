@@ -2,7 +2,7 @@ import { createDemo } from './cleanup-demo-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
-  modelOpinionLines,
+  modelOpinionLines, createRenames, renameLines,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -13,6 +13,9 @@ let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
 let real = null
 // 連拍截圖（P0）：組與縮圖。示範模式不用它（那時畫面上是假的清單）。
 const bursts = createBursts((path, init) => window.api(path, init))
+// 建議的名字（P3）：模型看得出內容、但檔名沒取名的檔。示範模式不用它（同上）。
+// **一個都不預設勾**：改名只有 renames 那一份紀錄救得回來，不像清理還有隔離區。
+const renames = createRenames((path, init) => window.api(path, init))
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
@@ -256,6 +259,41 @@ function renderBursts() {
   if (bursts.more) box.append(paragraph(`另外還有 ${bursts.more} 組，處理完這幾組再打開面板就會看到。`, 'evidence'))
 }
 
+/**
+ * 建議的名字（P3）。**沒有建議就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的改名按鈕會讓人以為示範會動到自己的檔）。
+ *
+ * 每一列都寫著「模型認為⋯⋯」與證據，**一個勾選框都不預設勾起來**。
+ */
+function renderRenames() {
+  const box = $('cleanup-renames')
+  box.replaceChildren()
+  const items = isDemo() ? [] : renames.items
+  box.hidden = items.length === 0
+  $('cleanup-rename').hidden = items.length === 0
+  $('cleanup-rename-undo').hidden = isDemo() || !renames.canUndo
+  if (!items.length) return
+  box.append(paragraph('建議的名字 · 這些是模型的意見，不是事實。勾起來按「改名」才會改，而且改得回來。', 'cleanup-note'))
+  for (const item of items) {
+    const lines = renameLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-rename-row'
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = renames.selected.has(item.itemId)
+    check.disabled = busy
+    check.onchange = () => { renames.select(item.itemId, check.checked); summary() }
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    label.append(check, head)
+    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    box.append(row)
+  }
+  if (renames.more) box.append(paragraph(`另外還有 ${renames.more} 個，改完這幾個再打開面板就會看到。`, 'evidence'))
+}
+
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
@@ -265,6 +303,7 @@ function render() {
   $('cleanup-reset').hidden = !isDemo()   // 「重新示範」只有 demo 有意義
   for (const id of ['cleanup-undo', 'cleanup-dismiss']) $(id).hidden = false
   renderBursts()
+  renderRenames()
   // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個
   const inBurst = isDemo() ? new Set() : bursts.memberIds()
   let listed = 0
@@ -296,7 +335,7 @@ function render() {
     if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
     $('cleanup-list').append(card)
   }
-  if (!listed && !$('cleanup-bursts').children.length) {
+  if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length) {
     $('cleanup-list').append(paragraph(isDemo() ? '這批候選檔案已全部處理。' : '目前沒有待清檔案。'))
   }
   $('cleanup-needs-human').replaceChildren()
@@ -332,6 +371,7 @@ async function toggleDemo() {
   $('quaso-dialog').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   bursts.clear()   // 連拍組是本機模式的東西；切模式時把 blob: 網址還回去
+  renames.clear()  // 建議的名字也是本機模式的東西
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -358,7 +398,7 @@ async function openCleanupPanel() {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo']) $(id).hidden = true
   $('cleanup-result').hidden = true
   $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
   $('cleanup-needs-human').replaceChildren()
@@ -375,6 +415,8 @@ async function openCleanupPanel() {
     // 這一區是主動問的，寧可少勾一格，也不要讓人一按就丟掉一張內容不一樣的截圖。
     await bursts.load()
     applyBurstDefaults(real, bursts.groups)
+    // 建議的名字（P3）。後端沒有這幾條就是空的，面板照常
+    await renames.load()
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
     else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
@@ -431,6 +473,29 @@ async function operateReal(kind) {
     result(m.text)
     notice(m.notice)
   }
+}
+
+/**
+ * 改名與復原改名。跟清理走同一套忙碌旗標（兩邊都會動同一批檔，後端也是同一把鎖）。
+ * **訊息一律照後端的逐項結果講**，不用勾選數推算。
+ */
+async function renameOperate(kind) {
+  if (busy || isDemo()) return
+  busy = true
+  render()
+  result(kind === 'apply' ? '正在改名……' : '正在把名字改回去……')
+  try {
+    const r = await tracked(() => (kind === 'apply' ? renames.apply() : renames.undo()))
+    result(r.message)
+  } catch (error) {
+    result(safeName(error.message))
+  } finally {
+    busy = false
+    // 改完名字，清理清單上的檔名也變了 —— 重讀一次再畫
+    try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
+    render()
+  }
+  pollHealth()
 }
 
 async function operate(kind) {
@@ -499,6 +564,8 @@ $('cleanup-apply').onclick = () => {
   else return operate('apply')
 }
 $('cleanup-undo').onclick = () => operate('undo')
+$('cleanup-rename').onclick = () => renameOperate('apply')
+$('cleanup-rename-undo').onclick = () => renameOperate('undo')
 $('cleanup-release').onclick = () => operate('release')
 $('cleanup-putback').onclick = () => operate('putback')
 $('cleanup-reset').onclick = () => {

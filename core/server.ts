@@ -30,6 +30,7 @@ import { open, DEFAULT_DB } from './db.ts'
 import { Facts } from './facts.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
+import { renameRoutes } from './rename-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
@@ -396,6 +397,15 @@ export function start(opts: {
 
     try {
       if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
+      // 改名（P3）。**在清理之前問**：它只認 `/rename/`，認不得就回 false。
+      // 跟清理共用 RouteCtx，但不需要 scan／sendBytes（改名不掃描、不送圖）。
+      if (renameRoutes({
+        db: F.db, roots, quarantine: QUARANTINE,
+        maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('改名不掃描') },
+      })) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
         // **這些都要是 thunk。** 上一版 `maxBytes: cfg().maxBytes` 是每個請求

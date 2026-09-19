@@ -122,6 +122,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `POST /cleanup/plans/:id/apply` | `skippedIds` |
 | `POST /cleanup/plans/:id/undo`、`…/dismiss`、`…/release` | 不收任何欄位（空的 body 或 `{}`） |
 | `POST /cleanup/quarantine/empty` | `token`、`confirmed` |
+| `POST /rename/apply` | `items`（`[{ itemId, to }]`） |
+| `POST /rename/undo` | `ids`、`last` |
 
 ## 檔案清單
 
@@ -402,3 +404,44 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
   頁面的做法：用帶 token 的 `api(path, { blob: true })` 取回 Blob，
   再 `URL.createObjectURL` 換成 `blob:` 網址給 `<img>`，換一批時 `revokeObjectURL` 還回去。
   頁面的 CSP 也只放行 `img-src data: blob:`，直接指過去本來就會被擋
+
+## 改名（P3，三條都要 token）
+
+**檔名是使用者的東西，而建議的名字是模型給的。** 所以：只提議、不自動改，每一次都有紀錄，
+`undo` 改得回去。回應裡**只有檔名，沒有路徑**（資料夾只留在後端的 `renames` 表裡）。
+
+### `GET /rename/suggestions`
+
+```json
+{ "items": [{ "itemId": "…", "name": "未命名文件 (3).txt", "suggested": "作業系統_死結.txt",
+              "course": "作業系統", "topic": "死結", "confidence": "高",
+              "evidence": "作業系統 第 6 章 死結 …", "seeded": false }] }
+```
+
+- 只列 `naming` 是 `untitled`／`generic` 的檔（`named` 是使用者自己取的名字，不碰）
+- 模型信心「低」的不列（那通常是「看不出來」）
+- `suggested` 是**洗過**的名字：去掉路徑分隔符號、控制字元與方向字元、前後的空白與點、
+  Windows 保留名稱（CON、PRN⋯⋯），上限 80 個碼位，**副檔名一律沿用原本的**。洗完是空的就不列
+- 狀態不能動的不列：`new`（十分鐘內還在變動）、在隔離區、在一份還沒套用的清理計畫裡、受保護的檔名
+- `seeded` 是 demo 預先塞的示範答案，畫面要標示
+- `?limit=` 是 1～1000，不合法回 400 `BAD_BODY`
+
+### `POST /rename/apply`
+
+`{ "items": [{ "itemId": "…", "to": "作業系統_死結" }] }` → `{ "results": […], "remaining": 0 }`
+
+- **只接明確指名的**，沒有「全部」這種捷徑：沒帶 `items`、帶空陣列、帶 `null` 一律 400 `BAD_BODY`
+- `to` 可以不給（用模型的建議）；給了也一樣走那一層清理
+- 一次最多 100 個，多的不做，數字回在 `remaining`
+- 逐項結果 `{ itemId, ok, from, to, why, id }`。一個檔失敗不影響其他檔，整個請求仍然 200
+- 目標名字被佔走（**含只差大小寫**）→ 自動加 `-2`⋯`-99`，**不覆蓋任何檔**
+- 唯讀模式 403 `READ_ONLY`；清理正在跑 503 `BUSY`（帶 `Retry-After`）
+
+### `POST /rename/undo`
+
+`{ "ids": ["…"] }` 或 `{ "last": true }` → `{ "results": […] }`
+
+- `last` 是**最近那一次**（同一批 apply 一起回去）
+- 逐項結果 `{ id, itemId, ok, to, restoredAs, why }`。原本的名字被別的檔佔走時，
+  放回來的那一份會加序號，`restoredAs` 就是它真正的名字 —— **一定要講出來**，不然使用者找不到
+- 找不到那幾筆 404 `NOT_FOUND`；兩個欄位都沒帶 400 `BAD_BODY`

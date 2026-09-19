@@ -833,3 +833,127 @@ export function createBursts(api, { createUrl, revokeUrl } = {}) {
     clear() { revokeAll(); groups = []; total = 0 },
   }
 }
+
+// ── 建議的名字（P3）──────────────────────────────────────────
+
+/** 面板上一次最多列幾個建議。再多就叫人去跑 CLI（面板不是批次工具）。 */
+export const RENAME_SHOWN = 50
+
+/**
+ * 一列建議要印的字：`原名 → 建議名`、模型說了什麼、證據。
+ *
+ * **永遠標明是模型的意見**（不變量：模型會自信地說錯，而這一按就會動使用者的檔）。
+ * 名字與證據都是不可信的輸入（檔名由別人決定，證據是模型讀使用者的檔讀出來的），一律 safeName。
+ */
+export function renameLines(item) {
+  if (!item || typeof item !== 'object') return null
+  const name = safeName(String(item.name ?? ''))
+  const suggested = safeName(String(item.suggested ?? ''))
+  if (!name || !suggested) return null
+  const seeded = item.seeded === true
+  const course = safeName(String(item.course ?? '').trim()) || '看不出來'
+  const topic = safeName(String(item.topic ?? '').trim()) || '看不出來'
+  const confidence = safeName(String(item.confidence ?? '').trim()) || '低'
+  const evidence = safeName(String(item.evidence ?? '').trim())
+  return {
+    seeded,
+    head: `${name} → ${suggested}`,
+    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
+    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
+      + '這是模型的意見，不是事實 —— 你按了「改名」才會改，而且改得回來。',
+  }
+}
+
+/** 改名的結果講成一句話。**逐項都要講**：一個沒改成不可以被「改好 3 個」蓋過去。 */
+export function renameApplyMessage(r) {
+  const results = Array.isArray(r?.results) ? r.results : []
+  const ok = results.filter(x => x.ok)
+  const bad = results.filter(x => !x.ok)
+  const lines = [`改好 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有改` : ''}。`]
+  for (const o of ok) lines.push(`・${safeName(o.from)} → ${safeName(o.to)}`)
+  for (const o of bad) lines.push(`・${safeName(o.from) || '這個檔'}：${why(o.why)}`)
+  if (r?.remaining) lines.push(`還有 ${r.remaining} 個沒做，再按一次就會做到它們。`)
+  if (ok.length) lines.push('反悔的話按「復原改名」，名字會改回去。')
+  return lines.join('\n')
+}
+
+/** 復原的結果。原名被佔走時**一定要講放回來的叫什麼**（不然使用者找不到那個檔）。 */
+export function renameUndoMessage(r) {
+  const results = Array.isArray(r?.results) ? r.results : []
+  const ok = results.filter(x => x.ok)
+  const bad = results.filter(x => !x.ok)
+  const lines = [`改回去 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有放回` : ''}。`]
+  for (const o of ok) {
+    lines.push(o.restoredAs
+      ? `・原本的名字已經被別的檔佔走，放回來的這一份叫「${safeName(o.restoredAs)}」（沒有覆蓋任何檔）。`
+      : `・${safeName(o.to)}`)
+  }
+  for (const o of bad) lines.push(`・沒有放回：${why(o.why)}`)
+  return lines.join('\n')
+}
+
+/**
+ * 面板的「建議的名字」那一區。
+ *
+ * **一個勾選框都不預設勾起來**：清理至少有隔離區救得回來，改名只有這一份紀錄；
+ * 而且這些名字是模型給的。使用者自己勾，自己按。
+ *
+ * 後端沒有這幾條（舊版回 404／501）或讀不到，一律當成「沒有建議」—— 改名是附加的，
+ * 不可以讓整個清理面板打不開。
+ */
+export function createRenames(api) {
+  let items = [], total = 0, selected = new Set(), undoable = false
+
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) })
+
+  return {
+    get items() { return items },
+    get selected() { return selected },
+    /** 沒畫出來的還有幾個 */
+    get more() { return Math.max(0, total - items.length) },
+    /** 剛改過、可以復原 */
+    get canUndo() { return undoable },
+
+    select(id, checked) {
+      if (!items.some(i => i.itemId === id)) return
+      if (checked) selected.add(id)
+      else selected.delete(id)
+    },
+
+    async load() {
+      let body = null
+      try { body = await api('/rename/suggestions') }
+      catch { items = []; total = 0; selected = new Set(); return items }
+      const all = Array.isArray(body?.items) ? body.items.filter(i => i && typeof i.itemId === 'string') : []
+      total = all.length
+      items = all.slice(0, RENAME_SHOWN)
+      // 還在清單上的保留使用者的勾選，不在的丟掉
+      const keep = new Set(items.map(i => i.itemId))
+      selected = new Set([...selected].filter(id => keep.has(id)))
+      return items
+    },
+
+    /** 改名。**只送勾起來的那幾個，而且連建議的名字一起送** —— 後端不會自己猜。 */
+    async apply() {
+      const chosen = items.filter(i => selected.has(i.itemId))
+      if (!chosen.length) throw new Error('請先勾選要改名的檔。')
+      const r = await post('/rename/apply', { items: chosen.map(i => ({ itemId: i.itemId, to: i.suggested })) })
+      undoable = Array.isArray(r?.results) && r.results.some(x => x.ok)
+      selected = new Set()
+      const message = renameApplyMessage(r)
+      try { await this.load() } catch { /* 重載失敗不可以蓋掉結果：檔案已經改了 */ }
+      return { message, result: r }
+    },
+
+    /** 復原最近那一次改名（同一批一起回去）。 */
+    async undo() {
+      const r = await post('/rename/undo', { last: true })
+      undoable = false
+      const message = renameUndoMessage(r)
+      try { await this.load() } catch { /* 同上 */ }
+      return { message, result: r }
+    },
+
+    clear() { items = []; total = 0; selected = new Set(); undoable = false },
+  }
+}
