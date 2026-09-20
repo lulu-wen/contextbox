@@ -453,6 +453,9 @@ export function start(opts: {
         db: F.db, roots, quarantine: QUARANTINE,
         // 復原用放回的範圍（R2-4）；截圖資料夾只收截圖類（R2-8）
         restoreRoots: () => restoreRootList, screenshotsDir: () => screenshotsDir,
+        // 「整理好的」資料夾（P6）。清理那條線自己不搬到那裡去 —— 它只拿來算
+        // 「面板看得到哪些檔」（歸檔建議那一區），預覽與縮圖的可見範圍要跟面板一樣寬。
+        filed: () => filedDir,
         // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,

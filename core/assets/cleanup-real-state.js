@@ -1162,3 +1162,154 @@ export function createLearned(api) {
     clear() { items = []; total = 0; evicted = 0 },
   }
 }
+
+// -- 看內容（P6）---------------------------------------------
+//
+// 「建議刪除的檔要能點進去看內容，不然我不記得那個檔存了什麼。」
+//
+// 後端的 `GET /cleanup/preview/:itemId` 只回**已經抽好的**東西（file_texts 的文字、
+// 既有縮圖的相對路徑）與後設資料，沒有路徑、也沒有原圖。這一區負責：
+//   · 點了才抓，同一個檔只抓一次（成功的記在記憶體裡）
+//   · 內容是**不可信的輸入**：再洗一次控制字元與方向字元，而且只進 textContent
+//   · 圖跟連拍那一區一樣走 blob:（縮圖端點要 token，<img> 不會帶 header）
+
+/**
+ * 顯示用的**檔案內容**：控制字元與方向字元換成「·」，**但換行與 tab 留著** ——
+ * 內容本來就有行，全部換掉的話一份講義會擠成一長條，使用者根本認不出那是什麼。
+ * CRLF 與單獨的 CR 先收成 LF，不然 Windows 上存的檔每一行尾巴都會多一個「·」。
+ *
+ * 跟後端的 safePreviewText 是同一組字元（後端已經洗過一次，這裡是第二道）。
+ * 留著換行是安全的：這段字只進 `textContent`，而且自己一個框 —— 面板講的話在別的地方，
+ * 沒有東西可以偽造。
+ *
+ * **不用正規表示式一次換掉**（跟 core/filing-routes.ts 的 shown 同一個理由）：
+ * 要從字元集裡挖掉換行與 tab，regex 會又長又容易寫錯一格；逐字比碼位看得懂也改得動。
+ */
+export function safeText(s) {
+  let out = ''
+  for (const ch of String(s ?? '').replace(/\r\n?/g, '\n')) {
+    if (ch === '\n' || ch === '\t') { out += ch; continue }
+    const c = ch.codePointAt(0) ?? 0
+    // 跟 safeName 同一組：C0／C1、U+061C、U+200E／200F、U+2028-202E、U+2066-2069
+    const bad = c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x61c
+      || (c >= 0x200e && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)
+    out += bad ? '·' : ch
+  }
+  return out
+}
+
+/**
+ * 會去抽文字的副檔名。**正本是 core/read-text.ts 的 `EXT_KIND`**（它匯出的 `TEXT_EXTS`），
+ * test/preview-panel.test.mjs 拿那一份來比，兩邊不一樣就紅。
+ *
+ * 為什麼面板要知道：後端的 `kind: 'none'` 有兩種意思 ——「這種檔本來就沒有文字可以看」
+ * （`.exe`、`.zip`）與「這個檔還沒被讀到」（剛掃到、P1 還沒排到它）。對使用者是兩件事，
+ * 而預覽**不會現場觸發讀取**（讀取有 worker 與逾時，那是背景的事），所以要講清楚是哪一種。
+ */
+export const PREVIEW_TEXT_EXTS = ['.txt', '.md', '.csv', '.docx', '.pptx', '.pdf']
+
+/** ISO 時間 → 本地寫法。看不懂的就原樣（照樣 safeName），不猜。 */
+function localTime(iso) {
+  const t = Date.parse(iso)
+  return Number.isFinite(t) ? new Date(t).toLocaleString('zh-TW') : safeName(String(iso ?? ''))
+}
+
+/**
+ * 預覽要印的幾段字。後端回什麼都不可以讓面板壞掉（舊版沒有這條、新版改了形狀），
+ * 看不懂的一律回 null（畫面上就是一句「讀不到這個檔的內容」）。
+ */
+export function previewLines(view) {
+  if (!view || typeof view !== 'object') return null
+  const name = safeName(String(view.name ?? ''))
+  const ext = safeName(String(view.ext ?? '')).toLowerCase()
+  const size = Number(view.bytes)
+  const parts = [formatBytes(Number.isFinite(size) && size >= 0 ? size : 0), '最後修改 ' + localTime(view.mtime)]
+  if (ext) parts.push(ext)
+  const text = typeof view.text === 'string' && view.text !== '' ? safeText(view.text) : null
+  const image = typeof view.image === 'string' && THUMB_PATH.test(view.image) ? view.image : null
+  return {
+    name,
+    meta: parts.join(' · '),
+    // 「為什麼會被列出來」就是使用者要的判斷材料。後端沒給就照實說，不要編一個理由
+    why: '為什麼列出來：' + (safeName(String(view.why ?? '').trim()) || '（後端沒有說）'),
+    text,
+    image,
+    truncated: text !== null && view.truncated === true,
+    more: '只顯示前面一段，這個檔還有更多。',
+    // 沒有文字也沒有圖的時候，要講清楚是哪一種「沒有」
+    empty: text !== null || image !== null ? null
+      : PREVIEW_TEXT_EXTS.includes(ext) ? '還沒讀到這個檔的內容。'
+      : '這個檔沒有可以顯示的內容。大小與最後修改在上面，要不要留請自己決定。',
+  }
+}
+
+/**
+ * 面板的「看內容」。
+ *
+ * **點了才抓**（清單可能有 200 個檔，一開就全抓等於 200 個請求），而且
+ * **同一個檔只抓一次** —— 成功的記在記憶體裡，第二次點開用記住的。
+ * 失敗的**不記**：那多半是一時的（server 正忙、網路斷），記下來會讓它永遠讀不到。
+ * 同一個檔連點的時候共用同一個還沒回來的請求，不會送兩次。
+ *
+ * 圖走 `blob:`：縮圖端點要 token，而 `<img>` 不會帶 header，**token 也不可以進網址**
+ * （網址會進 DOM、進歷史紀錄、進使用者的截圖）。`createUrl`／`revokeUrl` 可以換掉，測試才不用碰 globalThis。
+ */
+export function createPreviews(api, { createUrl, revokeUrl } = {}) {
+  const makeUrl = createUrl ?? (b => URL.createObjectURL(b))
+  const dropUrl = revokeUrl ?? (u => URL.revokeObjectURL(u))
+  let cache = new Map()      // itemId → { ok: true, view }。**只記成功的**
+  // 上一次沒讀到的（itemId → { ok: false, message }）。**畫得出來，但不算記住** ——
+  // 不畫的話那一列會永遠停在「正在讀……」，記住的話一時的失敗會變成永遠讀不到。
+  let failed = new Map()
+  let images = new Map()     // itemId → blob: 網址
+  const inflight = new Map()
+
+  /** 拿回一張縮圖。**拿不到只是那一張沒有圖**，不影響文字與後設資料。 */
+  async function loadImage(id, path) {
+    if (images.has(id)) return
+    try { images.set(id, makeUrl(await api(path, { blob: true }))) }
+    catch { /* 那一張沒有圖，其他照樣顯示 */ }
+  }
+
+  return {
+    /** 已經拿到的（或上一次拿不到的）。還沒問過、正在問是 null —— 畫面上就是「正在讀」 */
+    get: id => cache.get(id) ?? failed.get(id) ?? null,
+    image: id => images.get(id) ?? null,
+
+    async load(id) {
+      const had = cache.get(id)
+      if (had) return had
+      const running = inflight.get(id)
+      if (running) return running
+      const job = (async () => {
+        const bad = message => {
+          // **不進 cache**：下次點開會再問一次。只放進 failed，讓畫面講得出為什麼
+          const out = { ok: false, message }
+          failed.set(id, out)
+          return out
+        }
+        let got
+        try { got = await api('/cleanup/preview/' + encodeURIComponent(id)) }
+        catch (e) { return bad(e?.message ?? '讀不到這個檔的內容。') }
+        const view = got && typeof got === 'object' ? got : null
+        if (!view) return bad('讀不到這個檔的內容。')
+        const out = { ok: true, view }
+        failed.delete(id)
+        cache.set(id, out)
+        if (typeof view.image === 'string' && THUMB_PATH.test(view.image)) await loadImage(id, view.image)
+        return out
+      })().finally(() => inflight.delete(id))
+      inflight.set(id, job)
+      return job
+    },
+
+    /** 面板關掉、換模式時把 blob: 網址還回去，不然一直開著會愈積愈多。 */
+    clear() {
+      for (const u of images.values()) dropUrl(u)
+      images = new Map()
+      cache = new Map()
+      failed = new Map()
+      inflight.clear()
+    },
+  }
+}

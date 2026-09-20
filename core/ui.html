@@ -62,6 +62,17 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,"Roboto Mono",monospace
 .nav a:hover{color:var(--ink); border-color:var(--accent)}
 .nav a span{font-variant-numeric:tabular-nums; color:var(--faint); margin-left:5px}
 
+/* ── 兩塊（P6）。同一頁兩個分頁，不是兩個網址 —— 換網址要把鑰匙再帶一次。 ── */
+.tabs{display:flex; gap:8px; margin-top:11px; flex-wrap:wrap}
+.tabs .tab{
+  text-decoration:none; color:var(--dim); font-size:14px; font-weight:600; white-space:nowrap;
+  border:1px solid var(--line2); border-radius:99px; padding:6px 16px; background:var(--card);
+}
+.tabs .tab:hover{color:var(--ink); border-color:var(--accent)}
+.tabs .tab[aria-current="page"]{color:var(--card); background:var(--accent); border-color:var(--accent)}
+.pane[hidden], #facts-meta[hidden]{display:none !important}
+.filesbtns{display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 2px}
+
 /* ── 內容 ───────────────────────────────────────────────────── */
 main{max-width:940px; margin:0 auto; padding:20px 20px 120px}
 .intro{
@@ -258,6 +269,18 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-shot input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   #cleanup-panel .cleanup-shot p { margin: 4px 0 0; font-size: 13px; }
   .cleanup-shot-keep { font-weight: 600; color: #4d6b3a; }
+  /* 看內容（P6）。內容是**不可信的輸入**：一律 textContent，這裡只管它長什麼樣。 */
+  .cleanup-peek { margin-top: 8px; font-size: 13px; }
+  .cleanup-preview { margin-top: 10px; border: 1px solid #e9dfce; border-radius: 10px;
+    padding: 10px 12px; background: #fffdf8; }
+  .cleanup-preview img { display: block; max-width: 100%; height: auto;
+    border: 1px solid #e9dfce; border-radius: 8px; }
+  .cleanup-preview-text { margin: 8px 0 0; max-height: 260px; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #514637; background: white; border: 1px solid #efe6d7; border-radius: 8px; }
+  /* 連拍那一區的格子只有 150px 寬，展開的內容要比格子寬才看得到 */
+  .cleanup-shot .cleanup-preview { width: min(420px, 56vw); }
   #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
   #cleanup-summary { font-weight: 600; }
@@ -274,20 +297,56 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <h1>ContextBox</h1>
       <span class="sub" id="ver"></span>
     </div>
-    <p class="count" id="count">正在讀你的資料……</p>
-    <div class="bar"><i id="bar"></i></div>
-    <nav class="nav" id="nav"></nav>
+    <nav class="tabs" id="tabs" aria-label="兩塊：檔案管理與基本資料">
+      <a class="tab" id="tab-files" href="#files" aria-current="page">檔案管理</a>
+      <a class="tab" id="tab-facts" href="#facts" aria-current="false">基本資料</a>
+    </nav>
+    <div id="facts-meta" hidden>
+      <p class="count" id="count">正在讀你的資料……</p>
+      <div class="bar"><i id="bar"></i></div>
+      <nav class="nav" id="nav"></nav>
+    </div>
   </div>
 </header>
 
 <main>
   <div id="banner"></div>
-  <div class="intro">
-    這一頁跑在<b>你自己的電腦上</b>（http://127.0.0.1），填的東西只會進 <code>~/.contextbox/data.db</code>，不會傳去任何地方。
-    每一格<b>填完跳開就自己存</b>，存進去的是正規化過的值（民國年轉西元、電話轉 +886），所以存完你會看到格子裡的字被改寫成標準寫法。
-    空著不填沒關係，之後隨時可以回來補。
-  </div>
-  <div id="groups"></div>
+
+  <!-- 檔案管理（預設這一塊）。清理、改名、歸檔、復原都在可頌貓那兩個面板裡，
+       這裡是入口與現況 —— 以前使用者得先捲過 75 個欄位才找得到那隻貓。 -->
+  <section id="pane-files" class="pane">
+    <div class="intro">
+      這一塊管的是<b>你電腦上的檔案</b>：哪些可以清掉、哪些建議改個名字或歸到課程資料夾、剛剛清掉的怎麼放回來。
+      每一列都有<b>「看內容」</b> —— 不記得那個檔存了什麼就點開看一眼，再決定要不要清。
+    </div>
+    <section class="grp">
+      <div class="grphead">
+        <h2>
+          <span>可以清的檔案</span>
+          <span class="n" id="files-candidate-count">正在看……</span>
+        </h2>
+        <p id="files-where">正在問後端在看哪些資料夾……</p>
+      </div>
+      <div class="grpbody">
+        <div class="filesbtns">
+          <button id="files-open-cleanup" class="add" type="button">打開清理面板</button>
+          <button id="files-open-history" class="add" type="button">復原最近動作</button>
+        </div>
+        <div class="hint">右下角那隻可頌貓底下的垃圾桶與返回箭頭，打開的就是這兩個面板。</div>
+      </div>
+    </section>
+  </section>
+
+  <!-- 基本資料（另外半邊）。原本整頁就是這一塊。 -->
+  <section id="pane-facts" class="pane" hidden>
+    <div class="intro">
+      這一頁跑在<b>你自己的電腦上</b>（http://127.0.0.1），填的東西只會進 <code>~/.contextbox/data.db</code>，不會傳去任何地方。
+      每一格<b>填完跳開就自己存</b>，存進去的是正規化過的值（民國年轉西元、電話轉 +886），所以存完你會看到格子裡的字被改寫成標準寫法。
+      空著不填沒關係，之後隨時可以回來補。
+    </div>
+    <div id="groups"></div>
+  </section>
+
   <p class="foot">ContextBox —— 一個認識你的本機 agent</p>
 </main>
 
@@ -441,6 +500,75 @@ function keepKeyOutOfAddressBar(token, loc = location, hist = history, doc = doc
   })
 }
 keepKeyOutOfAddressBar(TOKEN)
+
+/* ── 兩塊：檔案管理與基本資料（P6）─────────────────────────────
+   使用者第一眼看到的原本是一大片基本資料表單，找不到清理在哪裡。所以同一頁分兩塊，
+   用網址上的 #（`#files`／`#facts`）切換：
+
+   · **不是兩個真的網址。** 真的換頁要把鑰匙再帶一次（`?k=`），而鑰匙在網址上是既有的
+     痛點（RC16），不要放大它。切塊**不重新載入頁面、不重新要鑰匙、不送任何請求**。
+   · **預設開在檔案管理**：這個作品的主軸是檔案，基本資料是另外半邊。
+   · 上次在哪一塊記在 localStorage。讀不到（私密視窗、使用者清掉網站資料、
+     瀏覽器擋 storage）就用預設 —— 每一個存取都包 try/catch，記不住只是少一點方便。
+   · **# 不是 files／facts 的時候不換塊**：基本資料那一塊的分區導覽是 `#g3` 這種錨點，
+     點它只是捲到那一區，不可以把使用者踢回檔案管理。
+   ──────────────────────────────────────────────────────────── */
+const TABS = ['files', 'facts']
+const TAB_DEFAULT = 'files'
+const TAB_KEY = 'contextbox.tab'
+
+/** localStorage 可能整個存取不到（私密視窗、擋第三方資料），拿不到就當作沒有。 */
+function tabStore() {
+  try { return localStorage } catch (_) { return null }
+}
+
+/**
+ * 現在該顯示哪一塊：網址上的 # 說了算，其次是**現在正在看的那一塊**，再其次是記住的，最後才是預設。
+ *
+ * `now` 那一層是稽核 2026-09-20 補的：`#` 不是 files／facts 的時候（基本資料那一塊左上角的
+ * 分區導覽就是 `#g0`、`#g3`⋯⋯），以前會退回「記住的」——
+ * 而另一個面板視窗切過塊之後，localStorage 已經被覆寫成 files，於是**點一下分區導覽，
+ * 整片表單就消失、跳回檔案管理**。私密視窗（讀不到 localStorage）沒有第二個視窗也會中。
+ * 正在看哪一塊，本來就比「上一次記下來的」更接近使用者的意思。
+ */
+function tabFrom(loc, store, now) {
+  const hash = String(loc.hash || '').replace(/^#/, '')
+  if (TABS.includes(hash)) return hash
+  if (TABS.includes(now)) return now
+  try {
+    const saved = store && store.getItem(TAB_KEY)
+    if (TABS.includes(saved)) return saved
+  } catch (_) {}
+  return TAB_DEFAULT
+}
+
+/** 掛好兩塊，回傳 show(tab)。參數都可以換掉，測試才不用碰真的 document／localStorage。 */
+function setupTabs(doc, loc, store) {
+  const show = tab => {
+    const want = TABS.includes(tab) ? tab : TAB_DEFAULT
+    for (const t of TABS) {
+      const pane = doc.getElementById('pane-' + t)
+      if (pane) pane.hidden = t !== want
+      const link = doc.getElementById('tab-' + t)
+      // aria-current 用設值不用刪屬性：兩邊都看得出來現在在哪一塊
+      if (link) link.setAttribute('aria-current', t === want ? 'page' : 'false')
+    }
+    // 欄位進度條與分區導覽只跟基本資料那一塊有關，換塊時一起收起來
+    const meta = doc.getElementById('facts-meta')
+    if (meta) meta.hidden = want !== 'facts'
+    if (doc.body) doc.body.dataset.tab = want
+    try { if (store) store.setItem(TAB_KEY, want) } catch (_) {}
+    return want
+  }
+  let current = show(tabFrom(loc, store, null))
+  // 換塊的入口只有這一個：# 變了就跟上，並且記住現在在哪一塊（下一次 tabFrom 的 `now`）
+  const follow = () => { current = show(tabFrom(loc, store, current)) }
+  return Object.assign(tab => { current = show(tab); return current }, { follow })
+}
+const showTab = setupTabs(document, location, tabStore())
+// <a href="#files"> 本來就只改 #，不會重新載入頁面；這裡只負責把畫面跟上。
+// **這一行沒有它分頁就完全不會動**（稽核：以前沒有任何測試守著它）。
+addEventListener('hashchange', showTab.follow)
 
 const HEAD = { 'content-type': 'application/json', 'x-contextbox-token': TOKEN }
 

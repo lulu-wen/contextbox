@@ -37,6 +37,11 @@ import { decodePngGray } from './png.ts'
 import { resizeGray } from './imagehash.ts'
 import { encodeGrayPng } from './png-write.ts'
 import { opinionsFor, type ModelOpinion } from './model-store.ts'
+import { fileTextOf } from './file-texts.ts'
+// 預覽的可見範圍要跟面板一模一樣，所以這裡直接問那兩區的正本（P6 的 panelReason）。
+// **不會成環**：rename.ts／filing.ts 都不 import 這一支。
+import { renameSuggestions } from './rename.ts'
+import { filingSuggestions } from './filing.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -1817,20 +1822,28 @@ export function burstGroupsView(
 }
 
 /**
- * 縮圖：灰階 PNG、長邊 ≤ THUMB_MAX_SIDE。**只給現在還在某一組裡的 item**，
+ * 縮圖：灰階 PNG、長邊 ≤ THUMB_MAX_SIDE。**只給面板看得到的那些 item**，
  * 其他一律 null（呼叫端回 404）—— 這不是「任意檔案的讀取端點」。
  * 讀不到、不是 PNG、解不開的也回 null：那是一張看不到的縮圖，不是伺服器故障。
+ *
+ * **可見範圍問 panelReason，跟預覽同一支**（P6）。以前這裡只認「還在某一組連拍裡」，
+ * 比面板窄：面板上一個普通的候選截圖點「看內容」就拿不到圖。放寬之後兩條端點寬窄永遠一致 ——
+ * **不可以在這裡另外寫一份判斷**，分岔出來的那一條就是一個任意檔案讀取端點。
  */
-export function burstThumbPng(db: DatabaseSync, scope: string[] | CleanupScope, itemId: string): Buffer | null {
+export function burstThumbPng(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): Buffer | null {
   if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
-  // 「在不在組裡」用跟 /cleanup/bursts 同一份判斷：畫面上看得到的才給得到圖
-  const inGroup = burstGroupsView(db, scope, { models: false }).some(g =>
-    g.keep.itemId === itemId || g.members.some(m => m.itemId === itemId))
-  if (!inGroup) return null
   const row = safe(() => db.prepare(
-    'SELECT path, bytes, mtime FROM file_items WHERE id=?').get(itemId) as
-    { path: string; bytes: number; mtime: string } | undefined, undefined)
+    'SELECT id, path, bytes, mtime FROM file_items WHERE id=?').get(itemId) as
+    { id: string; path: string; bytes: number; mtime: string } | undefined, undefined)
   if (!row || Number(row.bytes) > THUMB_MAX_BYTES) return null
+  // **先看它到底是不是一張解得開的圖**（稽核 2026-09-20）。兩個理由，都是 P6 放寬可見範圍之後才有的：
+  //   1. 省錢：這一關是一行 SQL；panelReason 要把所有候選算一遍（8000 個候選 30 ms），
+  //      而面板一打開就會連打好幾次縮圖。
+  //   2. 更要緊的是記憶體：放寬之後「面板看得到的檔」包含 zip、exe、影片 ——
+  //      以前它們連可見範圍那一關都過不了，現在會被 readFileSync 整個讀進來（上限 64 MB）
+  //      才在 decodePngGray 失敗。掃描時算過長相指紋的才有這一列，那就是「解得開的 PNG」。
+  if (!hasThumb(db, row)) return null
+  if (panelReason(db, scope, itemId) === null) return null
 
   // 檔案可能在這中間被換掉（甚至換成捷徑）：O_NOFOLLOW 開，再核對大小與 mtime
   let fd: number
@@ -1882,6 +1895,192 @@ export function burstAsk(db: DatabaseSync, scope: string[] | CleanupScope): { gr
   }
   return { groups: ids.length, newGroups: fresh.length }
 }
+
+// ── 看得到檔案內容（P6）──────────────────────────────────────
+//
+// 使用者的話：「建議刪除的檔要能點進去看內容，不然我不記得那個檔存了什麼。」
+//
+// **這是第一條把檔案內容送到瀏覽器的路**，所以兩條不變量刻在這一段裡：
+//   1. **不新增任何「照路徑讀檔」的介面。** 內容只來自兩份**已經存在**的資料 ——
+//      `file_texts.text`（掃描時抽好的，最多 4000 字）與 `/cleanup/thumb/:itemId`（P0 的縮圖）。
+//      這一段一行 `readFileSync`／`openSync` 都沒有，端點收的也只有 itemId，不收路徑。
+//   2. **看得到的範圍就是面板本來列得出來的那些**，判斷只有 panelReason 一支，
+//      預覽與縮圖共用（見那一支的檔頭）。不在範圍內一律 404，訊息跟「不存在」一模一樣。
+
+/**
+ * 預覽最多給幾個字（以 code point 計）。
+ * `file_texts` 本來就只留 4000 個字（read-text.ts 的 STORE_MAX_CHARS）；面板一次看得完的比那更少，
+ * 截斷的時候要講「還有更多」，不可以安靜地少給。
+ */
+export const PREVIEW_MAX_CHARS = 2000
+
+/**
+ * 檔案內容是**不可信的輸入**（任何人都能讓你下載一個檔）。控制字元與方向字元換成「·」——
+ * 跟檔名的 UNSAFE_DISPLAY 同一組字元，**只留下換行與 tab**：內容本來就有行，
+ * 把換行也換掉的話一份講義會擠成一長條，使用者根本認不出那是什麼。
+ *
+ * `\r\n` 與單獨的 `\r` 先收成 `\n`：不收的話 Windows 上存的檔每一行尾巴都會多一個「·」。
+ * 換行留著是安全的 —— 這段字只進 `textContent`（不是 innerHTML），而且它自己一個框，
+ * 不會跟面板講的話混在一起（結果框那種「偽造一行」的招數在這裡沒有東西可以偽造）。
+ */
+export function safePreviewText(raw: string): string {
+  let out = ''
+  for (const ch of String(raw ?? '').replace(/\r\n?/g, '\n')) {
+    if (ch === '\n' || ch === '\t') { out += ch; continue }
+    const c = ch.codePointAt(0) ?? 0
+    const bad = c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x61c
+      || (c >= 0x200e && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)
+    out += bad ? '·' : ch
+  }
+  return out
+}
+
+/** 前 n 個 code point（不會切在代理對中間），順便說有沒有切到。 */
+function headChars(s: string, n: number): { text: string; cut: boolean } {
+  const cps = [...s]
+  if (cps.length <= n) return { text: s, cut: false }
+  return { text: cps.slice(0, n).join(''), cut: true }
+}
+
+/**
+ * 預覽與縮圖要的範圍。`CleanupScope` 再加兩個可選的：
+ * - `quarantine`：改名／歸檔那兩區判斷「這個檔是不是在隔離區裡」要用（跟它們的 route 同一個值）
+ * - `filed`：「整理好的」資料夾。沒設定的話面板本來就沒有歸檔建議那一區，這裡也不去查
+ */
+export type PanelScope = CleanupScope & {
+  quarantine?: string
+  filed?: string | null
+}
+
+const panelScopeOf = (s: string[] | PanelScope): PanelScope => Array.isArray(s) ? { roots: s } : s
+
+/**
+ * 這個 itemId **面板看得到嗎**？看得到回「它為什麼會出現在面板上」那一句，看不到回 `null`。
+ *
+ * **預覽（`GET /cleanup/preview/:itemId`）與縮圖（`GET /cleanup/thumb/:itemId`）共用這一支，
+ * 不准有第二份。** 兩邊的可見範圍一旦分岔，比較寬的那一條就變成「任意檔案的讀取端點」——
+ * 而這正是 P6 最大的風險。縮圖以前只認「還在某一組連拍裡」，範圍比面板窄；
+ * 現在兩邊都問這一支，寬窄永遠一致。
+ *
+ * 範圍＝面板本來就列得出來的那些：
+ *   1. 清理候選（`collect` 的 rows —— 跟 `/cleanup/candidates` 同一份篩選）
+ *   2. 需要你查看（`collect` 的 needsHuman）
+ *   3. 連拍組：留下的那張與成員
+ *   4. 隔離區裡的（「復原最近動作」列得出來的）—— 使用者正要決定要不要放回來
+ *   5. 改名建議（P3）
+ *   6. 歸檔建議（P4；沒設定 `filed` 就沒有這一區，也不查）
+ *
+ * **由便宜排到貴，第一個命中就回**：面板一打開就會打好幾次縮圖，不可以每一次都把
+ * 改名與歸檔的建議整份算一遍。任何一段查詢炸掉都當成「這一段沒有命中」（safe），
+ * 不可以讓一張讀不到的縮圖變成 500。
+ */
+export function panelReason(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): string | null {
+  // id 是呼叫端給的字串。太長的、空的直接回絕 —— 不用拿它去查任何一張表
+  if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
+  const s = panelScopeOf(scope)
+  const listed = safe(() => collect(db, s), { rows: [], needsHuman: [] } as Collected)
+  for (const g of listed.rows) {
+    if (g.item.id !== itemId) continue
+    // 信心最高的那一條理由就是清單上印的那一句
+    return safeWhy(g.cands[0]?.reason) ?? '在清理清單上。'
+  }
+  for (const n of listed.needsHuman) if (n.item.id === itemId) return n.why
+  for (const g of safe(() => burstGroupsView(db, s, { models: false }), [] as BurstGroupView[])) {
+    if (g.keep.itemId === itemId) return '同一批連拍截圖裡要留著的那一張。'
+    if (g.members.some(m => m.itemId === itemId)) return '跟同一批連拍的其他截圖很像，被提議清掉。'
+  }
+  for (const q of safe(() => quarantineItems(db), [] as { itemId: string }[])) {
+    if (q.itemId === itemId) return '已經搬進隔離區了，還可以放回原位。'
+  }
+  const moveScope = { roots: s.roots, quarantine: s.quarantine }
+  for (const r of safe(() => renameSuggestions(db, moveScope).items, [])) {
+    if (r.itemId === itemId) return '模型建議換一個名字，還沒改。'
+  }
+  if (s.filed) {
+    for (const f of safe(() => filingSuggestions(db, { ...moveScope, filed: s.filed as string }).items, [])) {
+      if (f.itemId === itemId) return '模型建議把它歸到課程資料夾，還沒搬。'
+    }
+  }
+  return null
+}
+
+/**
+ * 一個檔的預覽。**回應裡沒有路徑**（只有檔名、副檔名、大小、時間），
+ * 面板看不到的檔回 null（呼叫端回 404，訊息不分「不存在」與「不給看」）。
+ */
+export type PreviewView = {
+  name: string
+  ext: string
+  bytes: number
+  mtime: string
+  /** `text` ＝ 抽到文字；`image` ＝ 有縮圖；`none` ＝ 兩者都沒有（只給後設資料） */
+  kind: 'text' | 'image' | 'none'
+  /** 洗過、最多 PREVIEW_MAX_CHARS 個字；沒有內容是 null */
+  text: string | null
+  /** 還有更多沒顯示（這一次截斷的，或當初存進 file_texts 時就截斷過的） */
+  truncated: boolean
+  /** `/cleanup/thumb/<id>` 或 null。**不是原圖**，而且那條端點一樣要 token */
+  image: string | null
+  /** 它為什麼會出現在面板上（panelReason 給的那一句） */
+  why: string
+}
+
+type PreviewItemRow = { id: string; name: string; ext: string; bytes: number; mtime: string }
+
+/**
+ * 有沒有可以拿來當預覽圖的縮圖。
+ *
+ * **不去讀檔**：看的是掃描時算長相指紋留下的那一列（`cleanup_image_sigs`）——
+ * 有那一列就代表掃描器真的把它解成了 PNG，`/cleanup/thumb/` 走得通。
+ * 那一列跟 `file_texts` 一樣是快取：大小或 mtime 跟現在對不上就當成沒有
+ * （檔換過了，舊指紋算出來的縮圖不是現在這個檔）。
+ */
+function hasThumb(db: DatabaseSync, item: { id: string; bytes: number; mtime: string }): boolean {
+  const row = safe(() => db.prepare(
+    'SELECT size, mtime FROM cleanup_image_sigs WHERE item_id=?').get(item.id) as
+    { size: number; mtime: string } | undefined, undefined)
+  return Boolean(row && Number(row.size) === Number(item.bytes) && row.mtime === item.mtime)
+}
+
+/**
+ * 預覽一個檔。**內容只從已經抽好的那兩份來**，這一支不開任何檔案。
+ *
+ * - 文字：`file_texts.text`。那張表是**快取**（file-texts.ts 的檔頭），所以這裡照它的規矩
+ *   核對 size 與 mtime —— 對不上代表檔案在抽完之後改過，那段字已經不是這個檔的內容了，
+ *   寧可說「還沒讀到」也不可以拿舊的內容騙人。
+ * - 圖：既有的縮圖端點（長邊 ≤ THUMB_MAX_SIDE 的灰階 PNG），**不送原圖**。
+ * - 兩者都沒有：照樣回 200，用大小、最後修改與 `why` 讓使用者自己判斷要不要留。
+ */
+export function previewOf(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): PreviewView | null {
+  const why = panelReason(db, scope, itemId)
+  if (why === null) return null
+  const item = safe(() => db.prepare(
+    'SELECT id, name, ext, bytes, mtime FROM file_items WHERE id=?').get(itemId) as PreviewItemRow | undefined, undefined)
+  // 看得到卻查不到那一列（中間被刪掉）—— 跟看不到走同一個出口
+  if (!item) return null
+
+  const stored = safe(() => fileTextOf(db, itemId), null)
+  const fresh = Boolean(stored && Number(stored.size) === Number(item.bytes) && stored.mtime === item.mtime)
+  const raw = fresh && typeof stored!.text === 'string' ? safePreviewText(stored!.text) : ''
+  // 空白字串（空檔、只有空白的檔）不算有內容：畫面上一個空框比「沒有內容」更讓人困惑
+  const cut = /\S/.test(raw) ? headChars(raw, PREVIEW_MAX_CHARS) : null
+  const image = hasThumb(db, item) ? thumbUrl(item.id) : null
+  return {
+    name: item.name,
+    ext: item.ext,
+    bytes: Number(item.bytes),
+    mtime: item.mtime,
+    kind: cut ? 'text' : image ? 'image' : 'none',
+    text: cut ? cut.text : null,
+    // 當初存進 file_texts 的時候就截斷過的（原檔超過 4000 字）也要講
+    truncated: Boolean(cut && (cut.cut || (fresh && stored!.truncated === 1))),
+    image,
+    why,
+  }
+}
+
+/** 看不到與不存在**講同一句話**：不讓呼叫端從訊息或狀態碼問出「這個 id 存不存在」。 */
+const PREVIEW_NOT_FOUND = '沒有這個檔可以看。'
 
 export type RouteCtx = {
   db: DatabaseSync
@@ -2100,6 +2299,7 @@ const KNOWN: [RegExp, string[]][] = [
   [/^\/cleanup\/plans\/[^/]+\/(?:apply|undo|dismiss|release)$/, ['POST']],
   [/^\/cleanup\/bursts$/, ['GET']],
   [/^\/cleanup\/thumb\/[^/]+$/, ['GET']],
+  [/^\/cleanup\/preview\/[^/]+$/, ['GET']],
   [/^\/cleanup\/quarantine$/, ['GET']],
   [/^\/cleanup\/quarantine\/empty$/, ['POST']],
   [/^\/pet\/state$/, ['GET']],
@@ -2139,7 +2339,14 @@ const BODY_KEYS = {
 const rootsOf = (ctx: RouteCtx) => typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
 const shotsOf = (ctx: RouteCtx) =>
   typeof ctx.screenshotsDir === 'function' ? ctx.screenshotsDir() : (ctx.screenshotsDir ?? null)
-const scopeOfCtx = (ctx: RouteCtx): CleanupScope => ({ roots: rootsOf(ctx), screenshotsDir: shotsOf(ctx) })
+const filedOf = (ctx: RouteCtx) => typeof ctx.filed === 'function' ? ctx.filed() : (ctx.filed ?? null)
+/**
+ * 這一次請求的範圍。**帶上 quarantine 與 filed**（P6）：預覽與縮圖的可見範圍要跟面板一樣寬，
+ * 而面板的改名／歸檔那兩區看得到什麼，就是靠這兩個值算的。其他路徑不讀這兩個欄位，行為不變。
+ */
+const scopeOfCtx = (ctx: RouteCtx): PanelScope => ({
+  roots: rootsOf(ctx), screenshotsDir: shotsOf(ctx), quarantine: ctx.quarantine, filed: filedOf(ctx),
+})
 
 /**
  * 這個請求是哪一種動作（記錯的時候用，R2-10）。建計畫算「套用」—— 那是清理的第一步。
@@ -2193,6 +2400,19 @@ function route(ctx: RouteCtx): boolean {
     // 不在組裡、讀不到、解不開都一樣回 404：不讓呼叫端從狀態碼問出「這個 id 存不存在」
     if (!png) { fail(send, 404, '沒有這張縮圖。', 'NOT_FOUND'); return true }
     ctx.sendBytes(200, 'image/png', png, { 'content-length': String(png.length) })
+    return true
+  }
+
+  // 看內容（P6）。**只吃 itemId，不收路徑，也不開任何檔** —— 內容來自 file_texts（掃描時抽好的）
+  // 與既有的縮圖端點。面板看不到的一律 404，訊息跟「不存在」一模一樣。
+  const peek = /^\/cleanup\/preview\/([^/]+)$/.exec(p)
+  if (peek && method === 'GET') {
+    let itemId: string
+    try { itemId = decodeURIComponent(peek[1]) }
+    catch { throw new CleanupError('BAD_BODY', '要看的檔 id 格式不正確。') }
+    const view = previewOf(ctx.db, scopeOfCtx(ctx), itemId)
+    if (!view) { fail(send, 404, PREVIEW_NOT_FOUND, 'NOT_FOUND'); return true }
+    send(200, view)
     return true
   }
 

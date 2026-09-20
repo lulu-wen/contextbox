@@ -4,6 +4,7 @@ import {
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
   modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
   createLearned, learnedLines,
+  createPreviews, previewLines,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -130,6 +131,13 @@ function updateAlert() {
     $('quaso-stage').classList.add('found-hop')
   }
   previousCount = count ?? 0
+  // 檔案管理那一塊（P6）：同一份資料，只是換一個使用者找得到的位置
+  $('files-candidate-count').textContent = count == null ? '正在看……' : `${count} 個`
+  $('files-where').textContent = demo
+    ? '示範模式 · 下面兩個面板開的是範例清單，不會動到你電腦上真的檔案。'
+    : offline ? '現在連不上本機服務。啟動 server 之後這裡會自己更新。'
+    : health?.watcher?.ok ? `在看${folderPhrase(health.watcher)}。`
+    : '還沒開始監看。'
 }
 function announce() {
   updateAlert()
@@ -179,6 +187,82 @@ function appendModelOpinion(node, model) {
   const head = paragraph(lines.head, lines.seeded ? 'cleanup-model cleanup-model-seeded' : 'cleanup-model')
   node.append(head, paragraph(lines.note, 'evidence'))
 }
+// -- 看內容（P6）---------------------------------------------
+//
+// 每一列多一顆「看內容」，點開在**同一列底下**展開（不是彈窗：彈窗會蓋住勾選框，
+// 而使用者正是為了決定要不要勾才點開的），再點一次收起。
+//
+// **點了才抓**、同一個檔只抓一次（createPreviews 負責）。示範模式沒有這顆按鈕 ——
+// 那時候畫面上是假的清單，後端根本沒有那幾個檔，點下去只會拿到 404。
+const previews = createPreviews((path, init) => window.api(path, init))
+const previewOpen = new Set()
+
+async function togglePreview(itemId) {
+  // 復原面板那幾列也有「看內容」，而它是另一份畫面 —— 兩邊都要重畫，
+  // 不然在復原面板點了會沒反應（稽核 2026-09-20）。沒開的那一份 render 本來就很便宜。
+  const redraw = () => { render(); if (historyData) renderHistory() }
+  if (previewOpen.has(itemId)) { previewOpen.delete(itemId); redraw(); return }
+  previewOpen.add(itemId)
+  redraw()                       // 先畫「正在讀」，不要讓使用者以為按了沒反應
+  await previews.load(itemId)
+  // 讀回來之前使用者可能已經又收起來了
+  if (previewOpen.has(itemId)) redraw()
+}
+
+/**
+ * 展開的那一塊：後設資料、為什麼被列出來、內容（文字或縮圖）。
+ *
+ * **內容一律 textContent**，一個會解析 HTML 的寫法都不准用 —— 這是檔案裡的字，
+ * 由誰寫的我們不知道。圖用 `blob:`（帶 token 的 api 取回來的），token 不進網址。
+ */
+function previewBox(itemId) {
+  const box = document.createElement('div')
+  box.className = 'cleanup-preview'
+  const got = previews.get(itemId)
+  if (!got) { box.append(paragraph('正在讀這個檔的內容……', 'evidence')); return box }
+  if (!got.ok) { box.append(paragraph(safeName(got.message), 'evidence')); return box }
+  const lines = previewLines(got.view)
+  if (!lines) { box.append(paragraph('讀不到這個檔的內容。', 'evidence')); return box }
+  box.append(paragraph(lines.meta, 'evidence'), paragraph(lines.why, 'evidence'))
+  const url = previews.image(itemId)
+  if (url) {
+    const img = document.createElement('img')
+    img.src = url
+    img.alt = lines.name
+    box.append(img)
+  } else if (lines.image !== null) {
+    // 後端說有圖，但縮圖抓不回來（掃完之後檔被刪掉、或檔換過使磁碟核對失敗）。
+    // **不可以什麼都不說**（稽核 2026-09-20）—— 那會變成一個空框，使用者以為壞掉了。
+    box.append(paragraph('這張圖現在看不到（檔案可能已經被刪掉或換過了）。', 'evidence'))
+  }
+  if (lines.text !== null) {
+    const pre = document.createElement('pre')
+    pre.className = 'cleanup-preview-text'
+    pre.textContent = lines.text
+    box.append(pre)
+    // 截斷了就要講「還有更多」，不可以安靜地少給
+    if (lines.truncated) box.append(paragraph(lines.more, 'evidence'))
+  } else if (lines.empty) {
+    box.append(paragraph(lines.empty, 'evidence'))
+  }
+  return box
+}
+
+/** 在一列底下掛「看內容」，展開時把內容接在同一列裡。 */
+function attachPreview(host, itemId) {
+  if (isDemo() || typeof itemId !== 'string' || !itemId) return
+  const open = previewOpen.has(itemId)
+  const peek = document.createElement('button')
+  peek.type = 'button'
+  peek.className = 'cleanup-peek'
+  peek.textContent = open ? '收起' : '看內容'
+  peek.setAttribute('aria-expanded', String(open))
+  // **忙的時候照樣可以看**：看內容不動任何檔案，而正在搬檔的時候更需要看得到自己在清什麼
+  peek.onclick = () => togglePreview(itemId)
+  host.append(peek)
+  if (open) host.append(previewBox(itemId))
+}
+
 /** 面板最上面那一句。本機模式講真的資料夾名（U4），拿不到就講「監看資料夾」。 */
 function modeNote() {
   $('cleanup-mode-note').textContent = isDemo()
@@ -221,6 +305,7 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   if (keep) {
     cell.append(paragraph(`留著 · ${safeName(shot.name)}`, 'cleanup-shot-keep'))
     appendModelOpinion(cell, shot.model)
+    attachPreview(cell, shot.itemId)
     return cell
   }
   const label = document.createElement('label')
@@ -237,6 +322,7 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   label.append(check, name)
   cell.append(label, paragraph(bytes(shot.bytes), 'evidence'))
   appendModelOpinion(cell, shot.model)
+  attachPreview(cell, shot.itemId)
   return cell
 }
 
@@ -299,6 +385,7 @@ function renderRenames() {
     label.append(check, head)
     row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    attachPreview(row, item.itemId)
     box.append(row)
   }
   if (renames.more) box.append(paragraph(`另外還有 ${renames.more} 個，改完這幾個再打開面板就會看到。`, 'evidence'))
@@ -336,6 +423,7 @@ function renderFilings() {
     label.append(check, head)
     row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    attachPreview(row, item.itemId)
     box.append(row)
   }
   if (filings.more) box.append(paragraph(`另外還有 ${filings.more} 個，整理完這幾個再打開面板就會看到。`, 'evidence'))
@@ -436,6 +524,8 @@ function render() {
     // 模型對這個檔的看法（P2）。示範模式沒有這一段（那時畫面上是假的清單）
     if (!isDemo()) appendModelOpinion(card, item.model)
     if (item.vetoed) card.append(paragraph('⚠ ' + safeName(item.vetoed), 'evidence'))
+    // 「不記得這個檔存了什麼」就點開看一眼（P6）
+    attachPreview(card, item.itemId)
     $('cleanup-list').append(card)
   }
   if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length
@@ -444,7 +534,12 @@ function render() {
   }
   $('cleanup-needs-human').replaceChildren()
   for (const item of (isDemo() ? data.needsHuman : s.needsHuman) ?? []) {
-    $('cleanup-needs-human').append(paragraph(`需要你查看：${safeName(item.name)} — ${safeName(item.why)}（未列入清理）`))
+    // 這一區最需要「看內容」：太大、讀不到的檔，使用者更不記得它是什麼
+    const row = document.createElement('div')
+    row.className = 'cleanup-human-row'
+    row.append(paragraph(`需要你查看：${safeName(item.name)} — ${safeName(item.why)}（未列入清理）`))
+    attachPreview(row, item.itemId)
+    $('cleanup-needs-human').append(row)
   }
   summary()
 }
@@ -478,6 +573,8 @@ async function toggleDemo() {
   renames.clear()  // 建議的名字也是本機模式的東西
   filings.clear()  // 歸檔建議也是
   learned.clear()  // 「它學到的事」也是（示範模式沒有這一區）
+  previews.clear() // 展開的內容也是；blob: 網址要還回去
+  previewOpen.clear()
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -533,6 +630,8 @@ async function openCleanupPanel() {
   } catch { $('cleanup-list').replaceChildren(paragraph('讀取失敗，請確認伺服器已啟動，關閉面板後點垃圾桶重試。')) }
 }
 alertButton.onclick = openCleanupPanel
+// 檔案管理那一塊的入口（P6）：跟可頌貓底下的垃圾桶開的是同一個面板
+$('files-open-cleanup').onclick = openCleanupPanel
 // 寵物主動問完之後的那顆按鈕：點一下就是打開連拍區（面板一打開就在最上面）
 $('quaso-burst-open').onclick = () => {
   $('quaso-burst-open').hidden = true
@@ -601,6 +700,9 @@ async function renameOperate(kind) {
     result(safeName(error.message))
   } finally {
     busy = false
+    // 改完名字，記住的預覽裡那個檔名就是舊的了
+    previews.clear()
+    previewOpen.clear()
     // 改完名字，清理清單上的檔名也變了 —— 重讀一次再畫
     try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
     render()
@@ -624,6 +726,9 @@ async function filingOperate(kind) {
     result(safeName(error.message))
   } finally {
     busy = false
+    // 搬走的檔已經不在原本的資料夾，記住的預覽跟著作廢
+    previews.clear()
+    previewOpen.clear()
     // 搬走的檔不在清理範圍裡了 —— 清單要重讀一次再畫
     try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
     render()
@@ -654,6 +759,9 @@ async function operate(kind) {
       // 使用者再按一次「清理」就會搬走一張他從來沒看過、有看得見變化的截圖（P0 驗證員）。
       await bursts.load()
       applyBurstDefaults(real, bursts.groups)
+      // 清過之後那些檔的樣子（甚至還在不在）都變了，記住的預覽不可以再用
+      previews.clear()
+      previewOpen.clear()
       render()
     }
     pollHealth()   // 徽章數字馬上更新，不用等五秒（動作已經結束，這次輪詢的結果照常算數）
@@ -743,8 +851,17 @@ function renderHistory() {
       historyControls()
     }
     label.append(check, document.createTextNode(`${new Date(operation.createdAt).toLocaleString('zh-TW')} · 清理 ${operation.itemCount} 個檔案 · ${bytes(operation.bytes)}`))
-    card.append(label, paragraph(operation.items.map(i => safeName(i.name)).join('、')),
-      paragraph(operation.canUndo ? '可復原' : `已復原 · ${new Date(operation.restoredAt).toLocaleString('zh-TW')}`, 'evidence'))
+    card.append(label)
+    // **隔離區裡的檔也要看得到內容**（稽核 2026-09-20）：使用者在這裡正要決定「要不要放回來」，
+    // 而清完之後它已經不在清理清單上了 —— 這是唯一列得到它的地方。一個檔一行，各自有「看內容」。
+    for (const item of operation.items) {
+      const line = document.createElement('div')
+      line.className = 'cleanup-history-item'
+      line.append(paragraph(safeName(item.name)))
+      attachPreview(line, item.itemId)
+      card.append(line)
+    }
+    card.append(paragraph(operation.canUndo ? '可復原' : `已復原 · ${new Date(operation.restoredAt).toLocaleString('zh-TW')}`, 'evidence'))
     list.append(card)
   }
   if (!operations.length) list.append(paragraph('目前沒有可復原的動作。'))
@@ -780,6 +897,7 @@ async function openHistory() {
   await refreshHistory()
 }
 $('quaso-history-open').onclick = openHistory
+$('files-open-history').onclick = openHistory
 $('cleanup-history-close').onclick = () => historyPanel.close()
 $('cleanup-history-refresh').onclick = () => {
   $('cleanup-history-result').hidden = true
@@ -930,5 +1048,10 @@ document.addEventListener('keydown', event => {
   if (key === 'd') { event.preventDefault(); toggleDemo() }
   if (key === 'o') { event.preventDefault(); toggleOffline() }
 })
-window.addEventListener('pagehide', () => { stopped = true; clearTimeout(healthTimer); bursts.clear() }, { once: true })
+window.addEventListener('pagehide', () => {
+  stopped = true
+  clearTimeout(healthTimer)
+  bursts.clear()
+  previews.clear()
+}, { once: true })
 pollHealth()
