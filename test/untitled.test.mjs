@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { performance } from 'node:perf_hooks'
 import { classifyName, isTempName, UntitledError, MAX_NAME_INPUT_LENGTH } from '../core/untitled.ts'
 
-// 預想表（/home/lulumi/contextbox-預想-20260919-內容整理P0P1.md 的 untitled.ts 一節）。
+// 期望值抄自實作前寫死的預想表（untitled.ts 那一節），不是從實作抄回來的。
 // 名字與答案都是寫死的期望值，不可以改。
 // 第三欄是理由裡一定要出現的關鍵字（表上「理由」欄有寫的才檢查）。
 const TABLE = [

@@ -123,9 +123,12 @@ has an answer.**
 
 ## Why it's safe to point at your real files
 
-**Nothing is deleted.** Cleanup means "moved to quarantine," reversible for seven days. There is exactly one
-delete call in the whole `core/` tree — emptying quarantine, which requires the items to be seven days old
-and two confirmations — and a test fails the build if a second one ever appears.
+**Nothing is deleted.** Cleanup means "moved to quarantine," reversible for seven days. The whole `core/` tree
+contains exactly two delete calls, and a test fails the build the moment a third one appears. One empties
+quarantine, and only after the items are seven days old and you confirm twice. The other removes a zero-byte
+placeholder that the restore path created microseconds earlier, and only when the device, inode, mtime, link
+count and size all still match what it just wrote — without it, a failed restore leaves an empty file wearing
+your real file's name.
 
 **The journal is written before the file is touched.** If the process is killed mid-move, the next run looks
 at where the file actually is and settles the record from that. It doesn't guess.

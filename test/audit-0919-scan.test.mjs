@@ -2,7 +2,7 @@ import './helpers/isolate-home.mjs'
 /**
  * 2026-09-19 稽核的釘子測試（S）：RC1、RC2（watcher 那半）、RC3、RC4（1 的受保護副檔名、2）、RC25、RC26。
  *
- * 期望值都是稽核紀錄 /home/lulumi/contextbox-稽核-20260919.md 裡寫死的「預期行為」，
+ * 期望值都是稽核紀錄裡寫死的「預期行為」（2026-09-19 那一輪），
  * 實作之前就寫好。紀錄沒寫、但修法直接推得出來的，註解裡會標「（推論）」。
  */
 import { describe, test } from 'node:test'

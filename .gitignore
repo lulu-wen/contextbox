@@ -3,6 +3,17 @@ node_modules/
 .data/
 .env.local
 *.db
+# SQLite 的 WAL 與共享記憶體：跟 .db 同一份資料，漏擋等於把整個資料庫送出去
+*.db-wal
+*.db-shm
+*.db-journal
+
+# 本機 server 的鑰匙、模型金鑰、demo 沙盒的鑰匙檔 —— 一個都不可以進 git
+token
+.contextbox/
+.env
+.env.*
+!.env.example
 
 # Claude Code 的暫時工作目錄
 .claude/worktrees/

@@ -32,7 +32,9 @@ import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan, undoPlan } from '../core/cleanup-exec.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SRC_DIRS = ['core', 'schema', 'extension', 'test']
+// tools/ 也要看（稽核 2026-09-20）：這條檢查宣稱守整個專案，但漏掉 tools/ ——
+// 而全專案唯一一處**遞迴**刪除就在 tools/demo-setup.mjs。
+const SRC_DIRS = ['core', 'schema', 'extension', 'test', 'tools']
 const SRC_EXT = new Set(['.ts', '.mjs', '.js'])
 
 function sources() {
@@ -72,8 +74,8 @@ describe('只搬不刪', () => {
       if (p.includes('/test/')) continue
       const src = readFileSync(p, 'utf8')
       src.split('\n').forEach((line, i) => {
-        // 四人分工 §9 B: the sole exception is the guarded quarantine purge.
-        // Behavioral boundary tests live in cleanup-undo.test.mjs.
+        // 唯一的例外：有守門的「清空隔離區」（要滿七天、二次確認）。
+        // 行為邊界測試在 test/cleanup-undo.test.mjs。
         if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(path)') return
         // 稽核第三輪 R3-5 的第二個（也是唯一另一個）例外：dropReservation。
         // 為什麼安全：它刪的**不是使用者的資料**，而是 putBack 幾微秒前自己用 'wx' 建的 0 byte
@@ -84,6 +86,17 @@ describe('只搬不刪', () => {
         // 大小 0（lstat 一次、O_NOFOLLOW 開起來 fstat 再驗一次），任何一項對不上就什麼都不做。
         // 邊界測試在 test/audit-0919-r3exec.test.mjs 的「R3-5」那一段。
         if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(reservation)') return
+        // tools/demo-setup.mjs 的 --reset：**它刪的是 demo 沙盒自己的紀錄**，不是使用者的檔。
+        // 三道守門：要有這支程式自己寫的記號檔（真的安裝沒有）、dir 解過 symlink、
+        // 不可以在真的家目錄或 ~/.contextbox 底下。行為邊界測試在 test/demo-setup.test.mjs。
+        if (p === join(REPO, 'tools', 'demo-setup.mjs')
+          && (line.trim() === 'if (existsSync(p)) rmSync(p)'
+            || line.trim() === "if (existsSync(q)) rmSync(q, { recursive: true })")) return
+        // tools/gen-api-examples.mjs 只在**它自己 mkdtemp 出來的那個暫存家目錄**裡動手
+        // （產 docs/api 範例用的假沙盒，跑完就整個丟掉）。兩行都在那棵樹底下。
+        if (p === join(REPO, 'tools', 'gen-api-examples.mjs')
+          && (line.includes('rmSync(T, { recursive: true, force: true })')
+            || line.trim() === "rmSync(join(DL, '下載中.iso.crdownload'))")) return
         if (forbidden.test(line)) offenders.push(`${p.replace(REPO + '/', '')}:${i + 1} ${line.trim()}`)
       })
     }
