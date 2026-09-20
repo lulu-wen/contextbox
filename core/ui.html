@@ -285,21 +285,18 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   /* 「它學到的事」那一區的每一列：沒有勾選框，只有一句話與「忘掉」。 */
   .cleanup-learned-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
   .cleanup-learned-row p { margin: 0; }
-  /* 面板裡的小標籤。一次只顯示一區，空的那幾區標籤變灰（點不下去）。 */
-  .cleanup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
-  .cleanup-tabs button {
-    border: 1px solid #e0d6c4; background: #fbf7ef; border-radius: 999px;
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
+  /* 一次選擇一區，數量隨資料更新。 */
+  .cleanup-section-select {
+    margin: 12px 0 4px; max-width: 100%;
+    border: 1px solid #e0d6c4; background: #fbf7ef; color: #514637; border-radius: 10px;
+    padding: 8px 14px; font-size: 13px; cursor: pointer;
   }
-  .cleanup-tabs button[aria-selected="true"] { background: #4a3f2f; color: #fdfaf4; border-color: #4a3f2f; }
-  .cleanup-tabs button:disabled { opacity: .45; cursor: default; }
   /* 一列一顆的「Clean up」：看得出來是主要動作，但不要搶走整個面板的主按鈕 */
   /* 「正在讀…」那一行：看得出來是進行中，但不要搶戲 */
   .reading { color: #6b5d48; font-size: 13px; }
   .reading::before { content: '⋯ '; }
   .cleanup-one { border: 1px solid #b9a888; background: #f3e9d6; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
   .cleanup-one:disabled { opacity: .45; cursor: default; }
-  .cleanup-tabs button .cleanup-tab-n { opacity: .7; margin-left: 6px; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
   .cleanup-shot { width: 150px; }
@@ -410,6 +407,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <p id="quaso-status" role="status"></p>
     </div>
     <button id="quaso-retry" type="button" hidden>Reload</button>
+    <button id="quaso-problem-ack" type="button" aria-label="Acknowledge this message" hidden>OK</button>
     <button id="quaso-burst-open" type="button" hidden>Look at these</button>
     <button id="quaso-dialog-collapse" type="button" aria-label="Collapse this message" hidden>-</button>
     </div>
@@ -500,10 +498,8 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
-  <!-- 面板裡的小標籤（P6 之二）。五區各自一個標籤，一次只顯示一區 ——
-       以前全部疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議。
-       標籤是動態產生的（數量會變），示範模式整條不顯示（那時只有清理那一區）。 -->
-  <div id="cleanup-tabs" class="cleanup-tabs" role="tablist" hidden></div>
+  <!-- 示範模式只有清理區，不顯示 section 選單。 -->
+  <select id="cleanup-tabs" class="cleanup-section-select" aria-label="Section" hidden></select>
   <!-- 連拍截圖（P0）。一組一列、縮圖並排，成員的縮圖上畫出差異處；沒有組的時候整區不顯示。
        縮圖是 blob: 網址（面板用帶 token 的 api 取回來的），網址上不帶 token。 -->
   <div class="cleanup-section" id="cleanup-sec-bursts" data-section="bursts">
@@ -541,7 +537,6 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <span id="cleanup-page" aria-live="polite"></span>
       <button id="cleanup-next" type="button">Next</button>
     </div>
-    <div id="cleanup-needs-human" class="cleanup-note"></div>
     <p id="cleanup-summary" aria-live="polite"></p>
     <p id="cleanup-space-note" class="cleanup-note">Cleanup simulates moving files into a quarantine you can undo. That is not the same as freeing disk space.</p>
   </div>
@@ -584,14 +579,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   function renderPetMessage() {
     const status = document.getElementById('quaso-status')
     const state = getPetState()
-    // 狀態一變就換回「狀態算出來的那一句」；狀態沒變的期間，
-    // notice()（連拍的主動詢問這一類）指定的話比它優先，不要每五秒被輪詢洗掉。
-    if (status.dataset.petState !== state) {
-      status.dataset.petState = state
-      status.dataset.notice = ''
-    }
-    if (status.dataset.notice === '1') return
-    status.textContent = getPetMessage(state, getPetMessageData())
+    const data = getPetMessageData()
+    status.textContent = getPetMessage(state, data)
+    document.getElementById('quaso-problem-ack').hidden = state !== 'worried' || !data.canAcknowledge
   }
   document.addEventListener('quaso:statechange', renderPetMessage)
   document.addEventListener('quaso:messagechange', renderPetMessage)

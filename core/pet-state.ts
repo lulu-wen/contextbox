@@ -12,13 +12,15 @@ export type PetStateListener = (state: PetState) => void
 export function getPetMessage(state: string, data: {
   candidates?: { reason?: string; kind?: string; reasons?: { kind?: string }[] }[];
   candidateCount?: number;
+  errorSeverity?: 'warning' | 'error' | null;
+  sectionCounts?: Partial<Record<'clean' | 'bursts' | 'renames' | 'filings' | 'learned', number>>;
   lastAction?: string | null; freedBytes?: number; restoredCount?: number; errorMessage?: string;
   /** 這一次有幾個**沒有**回到原位（放不回去的＋結果不明的）。>0 就不可以說「完成」。 */
   leftBehind?: number;
 } = {}) {
   const {
-    candidates = [], candidateCount = candidates.length, lastAction = null, freedBytes = 0,
-    restoredCount = 0, errorMessage = '', leftBehind = 0,
+    candidates = [], sectionCounts = {}, lastAction = null, freedBytes = 0,
+    restoredCount = 0, errorMessage = '', leftBehind = 0, errorSeverity = null,
   } = data
   function formatBytes(bytes: number) {
     const units = ['B', 'KB', 'MB', 'GB']
@@ -31,28 +33,11 @@ export function getPetMessage(state: string, data: {
     case 'idle': return 'I keep an eye on your download folders for files worth clearing out.'
     case 'thinking': return 'Looking through the files. One moment…'
     case 'found': {
-      if (!candidates.length) return `Found ${count(candidateCount, 'file')} that can probably be cleaned up. Have a look.`
-      const labels: Record<string, [string, string]> = {
-        duplicate: ['duplicate', 'duplicates'],
-        partial: ['half-finished download', 'half-finished downloads'],
-        empty: ['empty file', 'empty files'],
-        installer: ['installer', 'installers'],
-        archive: ['archive', 'archives'],
-        'old-download': ['download nobody has touched in a long time', 'downloads nobody has touched in a long time'],
-        'screenshot-noise': ['screenshot you probably do not need', 'screenshots you probably do not need'],
-      }
-      const counts: Record<string, number> = {}
-      for (const item of candidates) {
-        const kind = [item.reason, item.kind, ...(item.reasons ?? []).map(r => r.kind)].find(k => k && Object.hasOwn(labels, k))
-        if (kind) counts[kind] = (counts[kind] ?? 0) + 1
-      }
-      const parts = Object.keys(labels).filter(k => counts[k])
-        .map(k => `${counts[k]} ${counts[k] === 1 ? labels[k][0] : labels[k][1]}`)
-      const total = candidateCount || candidates.length
-      const batchCount = candidates.length
-      const includes = parts.length ? ` That includes ${parts.join(', ')}.` : ''
-      if (total > batchCount) return `Starting with ${batchCount} of them.${includes}`
-      return `Found ${count(total, 'file')} that can probably be cleaned up.${includes}`
+      const labels = { clean: 'Cleanup', bursts: 'Bursts', renames: 'Suggested names', filings: 'Filing', learned: 'Learned' }
+      const parts = (Object.keys(labels) as (keyof typeof labels)[])
+        .filter(key => Number.isFinite(sectionCounts[key]) && (sectionCounts[key] ?? 0) > 0)
+        .map(key => `${labels[key]} (${sectionCounts[key]})`)
+      return parts.length ? `Ready to review: ${parts.join(', ')}. Have a look.` : 'Nothing to review right now.'
     }
     case 'cleaning': return candidates.length ? `Tidying up ${count(candidates.length, 'file')}…` : 'Tidying up your files…'
     case 'restoring': return 'Putting your files back…'
@@ -69,7 +54,9 @@ export function getPetMessage(state: string, data: {
         return restoredCount > 0 ? `Undo done. Put ${count(restoredCount, 'file')} back ✨` : 'Undo done ✨'
       }
       return 'All done ✨'
-    case 'worried': return errorMessage ? `Something is not right: ${errorMessage}` : 'Something is not right. Try again in a moment.'
+    case 'worried':
+      if (errorSeverity === 'warning') return errorMessage ? `Warning: ${errorMessage}` : 'Some files need your attention.'
+      return errorMessage ? `Something is not right: ${errorMessage}` : 'Something is not right. Try again in a moment.'
     default: return ''
   }
 }

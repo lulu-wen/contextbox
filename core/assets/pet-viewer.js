@@ -13,7 +13,7 @@ let mode = 'hidden', dismissed = false
 // 只有「找到 N 個」那一句收得起來（收合之後剩三個點）。
 // 主動詢問、剛做完的結果那些話一律維持展開 —— 收起來就等於沒講。
 const collapsible = () => pet.dataset.petState === 'found'
-  && /^(Found \d+ files? that can probably be cleaned up\.|Starting with \d+ of them\.)/u.test(status.textContent.trim())
+  && /^(Ready to review:|Found \d+ files? that can probably be cleaned up\.|Starting with \d+ of them\.)/u.test(status.textContent.trim())
 function setDialogMode(next) {
   mode = next === 'collapsed' && !collapsible() ? 'expanded' : next
   dialog.dataset.mode = mode
