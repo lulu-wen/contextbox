@@ -48,7 +48,14 @@ export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
  * 上一版讀到 '' 就照用，而 '' 跟「沒帶 header」比對起來是相等的 ——
  * 同機任何行程不帶 token 就能搬檔、刪檔、拿到手填頁面（稽核第一波驗證）。
  */
+export const TOKEN_MIN = 16
+
 export function loadToken(path = TOKEN_PATH): string {
+  // **環境變數優先**（跟模型金鑰同一個習慣）：自己指定一把的話，沙盒與真實環境可以共用，
+  // 換一台機器也不用重新拿網址。太短的不收 —— `CONTEXTBOX_TOKEN=1` 等於沒有鎖，
+  // 而這一把鑰匙開的是「搬你的檔案」那道門。空白、太短都當成沒設定，退回檔案那條路。
+  const fromEnv = String(process.env.CONTEXTBOX_TOKEN ?? '').trim()
+  if (fromEnv.length >= TOKEN_MIN) return fromEnv
   const existing = existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
   if (existing) return existing
   mkdirSync(dirname(path), { recursive: true })

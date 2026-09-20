@@ -641,6 +641,31 @@ describe('k 空 token 不可以跑起來', () => {
     assert.equal(readFileSync(kept, 'utf8'), 'abc-123\n')
   })
 
+  test('CONTEXTBOX_TOKEN：環境變數優先，太短的不算（2026-09-20）', t => {
+    // 使用者想自己指定一把（沙盒與真實環境共用、換機器不用重拿網址）。
+    // 但這一把鑰匙開的是「搬你的檔案」那道門，所以短到沒有意義的一律不收。
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-env-')))
+    t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.CONTEXTBOX_TOKEN })
+    const p = join(dir, 'token')
+    writeFileSync(p, 'from-the-file-1234567890')
+
+    process.env.CONTEXTBOX_TOKEN = 'a-token-from-the-environment'
+    assert.equal(server.loadToken(p), 'a-token-from-the-environment', '環境變數優先')
+    assert.equal(readFileSync(p, 'utf8'), 'from-the-file-1234567890', '不可以去動 token 檔')
+
+    process.env.CONTEXTBOX_TOKEN = '  spaces-around-a-long-enough-token  '
+    assert.equal(server.loadToken(p), 'spaces-around-a-long-enough-token', '前後空白要去掉')
+
+    for (const tooShort of ['', '   ', '1', 'short', 'x'.repeat(server.TOKEN_MIN - 1)]) {
+      process.env.CONTEXTBOX_TOKEN = tooShort
+      assert.equal(server.loadToken(p), 'from-the-file-1234567890',
+        `太短的要退回檔案那條路：${JSON.stringify(tooShort)}`)
+    }
+    // 剛好到門檻的收
+    process.env.CONTEXTBOX_TOKEN = 'y'.repeat(server.TOKEN_MIN)
+    assert.equal(server.loadToken(p), 'y'.repeat(server.TOKEN_MIN))
+  })
+
   test('server 啟動時 token 檔是空的 → 用新產生的那把；不帶 header 的請求一律 401', async t => {
     mkdirSync(join(FAKE_HOME, '.contextbox'), { recursive: true })
     writeFileSync(server.TOKEN_PATH, '')

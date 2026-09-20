@@ -204,6 +204,7 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 | `CONTEXTBOX_DB` | 資料庫路徑（預設 `~/.contextbox/data.db`） |
 | `CONTEXTBOX_QUARANTINE` | 隔離區路徑（預設 `~/.contextbox/quarantine`） |
 | `CONTEXTBOX_TOKEN_PATH` | 鑰匙檔路徑（預設 `~/.contextbox/token`） |
+| `CONTEXTBOX_TOKEN` | **直接指定面板的鑰匙**（優先於鑰匙檔）。至少 16 個字元，太短的當成沒設定。自己指定的話，沙盒與真實環境可以共用同一把，網址也就固定下來、加得了書籤 |
 | `CONTEXTBOX_READONLY=1` | 唯讀模式：只說會做什麼，不建計畫、不搬、不刪，**也不自動收尾**（第三輪 R3-9） |
 | `CONTEXTBOX_PORT` | `pet`／`open` 的 port（預設 7391；`0` ＝ 讓系統挑一個空的，`pet` 會把實際的 port 記下來給 `open` 用） |
 | `CONTEXTBOX_RESCAN_MS` | `pet` 全部重掃一次的間隔，毫秒（預設 30 分鐘；最小 100） |

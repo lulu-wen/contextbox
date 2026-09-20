@@ -22,7 +22,9 @@ import { join } from 'node:path'
 export const FAKE_HOME = realpathSync(mkdtempSync(join(tmpdir(), 'cb-home-')))
 process.env.HOME = FAKE_HOME
 process.env.USERPROFILE = FAKE_HOME
-for (const k of ['CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE', 'CONTEXTBOX_TOKEN_PATH']) {
+// CONTEXTBOX_TOKEN 也要清掉：開發者自己設了一把的話，測試會全部共用它，
+// 「每個測試各自一把鑰匙」那條線就不成立了。
+for (const k of ['CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE', 'CONTEXTBOX_TOKEN_PATH', 'CONTEXTBOX_TOKEN']) {
   delete process.env[k]
 }
 
