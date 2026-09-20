@@ -302,7 +302,7 @@ const ABILITY: FactKeyDef[] = [
     aliases: ['語言檢定', '檢定名稱', '英文檢定'],
     note: '多益成績兩年後失效，走 explicit' },
   { key: 'language[].score', label: '檢定分數', type: 'string', repeatable: true,
-    sensitivity: 'public', expiry: 'explicit', aliases: ['分數', '成績', '級數'] },
+    sensitivity: 'public', expiry: 'explicit', aliases: ['分數', '語言成績', '級數'] },
 
   { key: 'cert[].name', label: '證照名稱', type: 'string', repeatable: true,
     sensitivity: 'public', expiry: 'never', aliases: ['證照名稱', '證照', '專業證照', '技術士證'] },

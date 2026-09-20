@@ -6,7 +6,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync, utimesSync } from 'node:fs'
+import { statSync, existsSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -714,17 +714,37 @@ describe('剛動過的檔不搬 —— 但要說實話', () => {
     const f = fixture(t, {})
     writeFileSync(join(f.downloads, '報告.pdf'), 'SMOKE 報告')
     writeFileSync(join(f.downloads, '報告 (1).pdf'), 'SMOKE 報告')
-    // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
-    // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
-    scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
+
+    // 掃描時刻明確放到檔案 mtime 之後，避免檔案系統的次毫秒 mtime
+    // 比 Date.now() 稍晚，造成 minStableMs: 0 仍被誤判為 recent。
+    scanDownloads({
+      db: f.db,
+      ...f.opts,
+      minStableMs: 0,
+      now: new Date(Date.now() + 1000),
+    })
+
     const p = createPlan(f.db)
     const r = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {})
 
     assert.equal(r.code, 200, '逐項失敗不是路由錯誤')
     assert.equal(r.body.quarantinedCount, 0)
-    const why = f.db.prepare('SELECT error FROM file_items WHERE error IS NOT NULL').get().error
-    assert.doesNotMatch(why, /quarantined file changed/, `什麼都沒改卻說已變更：${why}`)
-    assert.match(why, /ten minutes|later/, `要說得出真正的原因與該怎麼辦：${why}`)
+    // 同一條性質，斷言改吃英文訊息（訊息已英文化）
+    const why = f.db
+      .prepare('SELECT error FROM file_items WHERE error IS NOT NULL')
+      .get().error
+
+    assert.doesNotMatch(
+      why,
+      /quarantined file changed/,
+      `什麼都沒改卻說已變更：${why}`
+    )
+
+    assert.match(
+      why,
+      /ten minutes|later/,
+      `要說得出真正的原因與該怎麼辦：${why}`
+    )
   })
 
   test('撥回兩小時之後就搬得動 —— 確認擋的只是「太新」', t => {

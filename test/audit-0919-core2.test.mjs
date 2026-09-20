@@ -755,7 +755,7 @@ describe('m 失敗原因在 applyPlan 裡面記（不經過 route）', () => {
     writeFileSync(join(f.downloads, 'r (1).pdf'), 'same')
     // 稽核第二輪 R2-2 之後，正常掃描不會把還在十分鐘內的重複檔提升成候選；
     // 用 minStableMs: 0 掃，做出「計畫裡有一個還在十分鐘內的檔」
-    scanner.scanDownloads({ db: f.db, ...f.opts, minStableMs: 0 })
+    scanner.scanDownloads({ db: f.db, ...f.opts, minStableMs: 0, now: new Date(Date.now() + 1000) })
     const p = plans.createPlan(f.db)
     const r = routes.withOutcomes(f.db, exec.applyPlan(f.db, p.id, f.opts))
     const failed = r.items.filter(i => i.outcome === 'failed')

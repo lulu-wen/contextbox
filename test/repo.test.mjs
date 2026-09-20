@@ -1296,7 +1296,7 @@ describe('test/smoke-cleanup.md 全程在沙盒裡（RC18）', () => {
     for (const v of ['CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE', 'CONTEXTBOX_TOKEN_PATH', 'HOME']) {
       assert.match(setup.body, new RegExp(`export ${v}="\\$SANDBOX/`), `沙盒區塊沒有把 ${v} 指到 $SANDBOX`)
     }
-    assert.match(setup.body, /export SANDBOX="\$\(mktemp -d\)"/, '沙盒要是一個新的暫存資料夾')
+    assert.match(setup.body, /export SANDBOX="\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/contextbox-smoke\.XXXXXXXXXX"\)"/, '沙盒要是一個新的暫存資料夾')
     // 設定檔的清理範圍（cleanup.roots）與截圖：下面「第 0 步真的用 bash 跑一次」看寫出來的檔
     const firstUse = shell.find(b => b !== setup && touches.test(b.body))
     assert.ok(firstUse && firstUse.at > setup.at, '有指令在沙盒設好之前就動了資料')

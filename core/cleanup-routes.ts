@@ -239,37 +239,78 @@ type CandRow = {
 const MAX_SUBDIR_SEGMENTS = 2
 
 export function displayPath(path: string, roots: string[]): { folder: string; subdir: string } {
-  // **取最長的命中，不是第一個。**
-  // roots 同時有 /home/alice 與 /home/alice/Downloads 時（設定裡把家目錄
-  // 也加進去，normalize 只會警告不會移除），取第一個會讓 folder 變成
-  // 「alice」—— 使用者名稱就這樣出現在一個不需要 token 的端點上。
-  const hit = roots
-    .map(root => ({ root, rel: relative(root, path) }))
-    .filter(h => {
-      // 冒號檢查只看**開頭**（Windows 磁碟機字母）。套在整條相對路徑上的話，
-      // `log-2026-09-15T10:30:00.zip` 這種合法的 POSIX 檔名會被誤殺。
-      const outside = h.rel === '..' || h.rel.startsWith('..' + sep)
-      return h.rel && !outside && !/^[A-Za-z]:/.test(h.rel)
-    })
-    .sort((a, b) => b.root.length - a.root.length)[0]
+  const rawPath = resolve(path)
 
-  // 比不到 root（設定改過、檔案被搬走）—— 只給檔名，寧可少講也不要洩漏
+  const hit = roots
+    .flatMap(root => {
+      const rawRoot = resolve(root)
+      const pairs: { root: string; rel: string; rootLen: number }[] = []
+
+      // 原始路徑版本：
+      // 支援尚未真的存在的 path，例如 displayPath 單元測試。
+      pairs.push({
+        root,
+        rel: relative(rawRoot, rawPath),
+        rootLen: rawRoot.length,
+      })
+
+      // realpath 版本：
+      // scanner 存進 DB 的 path 可能是 /private/var/...，
+      // 但設定 root 仍然是 /var/...。
+      try {
+        const realRoot = realpathSync(root)
+
+        let normalizedPath: string
+        try {
+          normalizedPath = realpathSync(path)
+        } catch {
+          const rawRel = relative(rawRoot, rawPath)
+          normalizedPath = resolve(realRoot, rawRel)
+        }
+
+        pairs.push({
+          root,
+          rel: relative(realRoot, normalizedPath),
+          rootLen: realRoot.length,
+        })
+      } catch {
+        // root 無法 realpath 時，仍可使用上面的 raw pair。
+      }
+
+      return pairs
+    })
+    .filter(h => {
+      const outside =
+        h.rel === '..' ||
+        h.rel.startsWith('..' + sep)
+
+      return Boolean(h.rel) &&
+        !outside &&
+        !/^[A-Za-z]:[\\/]/.test(h.rel)
+    })
+    .sort((a, b) => b.rootLen - a.rootLen)[0]
+
+  // 不屬於任何 cleanup root：不提供位置資訊。
   if (!hit) return { folder: '', subdir: '' }
 
   const dir = dirname(hit.rel)
   let subdir = dir === '.' ? '' : dir
-  // **出口硬上限。** watch 設成 `/` 的時候（normalize 只警告不移除），
-  // relative('/', '/home/alice/Downloads/x.zip') 就是完整路徑少一個斜線，
-  // 整條會變成 subdir。防線要在資料離開後端的那一行，不在設定驗證那一行。
+
+  // 最多暴露兩層相對子目錄。
   const segs = subdir.split(/[\\/]+/).filter(Boolean)
-  if (segs.length > MAX_SUBDIR_SEGMENTS) subdir = '…/' + segs.slice(-2).join('/')
+  if (segs.length > MAX_SUBDIR_SEGMENTS) {
+    subdir = '…/' + segs.slice(-2).join('/')
+  }
 
-  // folder 是家目錄名字的話等於洩漏使用者名稱，不如不給
   const folder = basename(hit.root)
-  // 比整條路徑，不要比 basename —— /mnt/backup/alice 跟家目錄沒關係
-  return { folder: resolve(hit.root) === resolve(homedir()) ? '' : folder, subdir }
-}
 
+  // cleanup root 本身若是家目錄，不暴露使用者名稱。
+  // 比整條路徑，不要比 basename —— /mnt/backup/alice 跟家目錄沒關係。
+  return {
+    folder: resolve(hit.root) === resolve(homedir()) ? '' : folder,
+    subdir,
+  }
+}
 /**
  * duplicate 的 evidence 要**指名留著的是哪一份**。
  *

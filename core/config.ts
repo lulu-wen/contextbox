@@ -21,7 +21,15 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
-import { join, resolve, isAbsolute, posix, win32 } from 'node:path'
+import {
+  join,
+  resolve,
+  relative,
+  sep,
+  isAbsolute,
+  posix,
+  win32,
+} from 'node:path'
 import { under, DENY_DIRS } from './guard.ts'
 
 export type ModelConfig = {
@@ -291,14 +299,27 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
 
   let watch = Array.isArray(o.watch)
-    ? o.watch.filter(x => typeof x === 'string' && x.trim()).map(x => realOrAbs(x as string))
+    ? o.watch
+        .filter(x => typeof x === 'string' && x.trim())
+        .map(x => expand(x as string))
     : []
+
   if (!watch.length) {
-    if (o.watch !== undefined) problems.push("The watch setting could not be read, so this machine's default folders are used.")
-    watch = d.watch.map(realOrAbs)
+    if (o.watch !== undefined) {
+      problems.push("The watch setting could not be read, so this machine's default folders are used.")
+    }
+    watch = d.watch.map(expand)
   }
-  // 去重：同一個資料夾寫兩次會讓 watcher 送兩份一樣的事件
-  watch = [...new Set(watch)]
+
+  // config.watch 保留使用者看到的絕對路徑寫法；
+  // realpath 只用來判斷兩條路徑實際上是不是同一個地方。
+  const seenWatch = new Set<string>()
+  watch = watch.filter(w => {
+    const real = realOrAbs(w)
+    if (seenWatch.has(real)) return false
+    seenWatch.add(real)
+    return true
+  })
   // watch 也要套同一套檢查。以前只有 filed 擋家目錄與根目錄，
   // normalize({ watch: ['/'] }) 是原封不動收下、零警告的。
   for (const w of watch) {
@@ -314,11 +335,38 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
   // 以前這裡把整個 watch root 移除，結果設 filed=~/Downloads/Filed（很自然的設法）
   // 就會讓 ~/Downloads 整個不看了，而訊息說的是另一回事。
   // admit() 本來就有 exclude，重掃迴圈本來就擋住了。
-  if (watch.some(w => filed === w || under(w, filed))) {
+  const realWatch = watch.map(w => ({
+    display: w,
+    real: realOrAbs(w),
+  }))
+
+  // filed 本身可能還不存在。
+  // 若它位於某個 watch 底下，就用該 watch 的 realpath + 相對路徑組出
+  // 同一套表示法，避免 macOS /var 與 /private/var 混用。
+  let realFiled = realOrAbs(filed)
+
+  for (const { display, real } of realWatch) {
+    const rel = relative(resolve(display), resolve(filed))
+    const inside =
+      rel === '' ||
+      (rel !== '..' &&
+        !rel.startsWith('..' + sep) &&
+        !isAbsolute(rel))
+
+    if (inside) {
+      realFiled = resolve(real, rel)
+      break
+    }
+  }
+
+  if (realWatch.some(({ real }) => realFiled === real || under(real, realFiled))) {
     problems.push(`The filed folder ${filed} sits inside a watched folder. It was excluded automatically, so files moved there are not picked up again.`)
   }
+
   // 反過來：watch 落在 filed 底下 —— 那個 root 會被 exclude 整個吃掉，等於白看
-  const swallowed = watch.filter(w => under(filed, w) || w === filed)
+  const swallowed = realWatch
+    .filter(({ real }) => real === realFiled || under(realFiled, real))
+    .map(({ display }) => display)
   if (swallowed.length) {
     problems.push(`Watched folders ${swallowed.join(', ')} sit inside the filed folder, so they get excluded entirely and nothing is watched. Keep them apart.`)
   }

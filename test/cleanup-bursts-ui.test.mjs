@@ -444,7 +444,7 @@ describe('B 主動詢問：有新的組才彈', () => {
     ui.$('quaso-status').textContent = '（沒有人講話）'
     ui.$('quaso-dialog').hidden = true
     ui.$('quaso-burst-open').hidden = true
-    await ui.click('quaso-connection-retry')
+    await ui.poll()
     assert.equal(ui.$('quaso-dialog').hidden, true, 'one burst不可以再彈一次')
     assert.equal(ui.$('quaso-burst-open').hidden, true)
     // 舊的組還在：打開面板照樣看得到
@@ -465,7 +465,7 @@ describe('B 主動詢問：有新的組才彈', () => {
       members: [shot('m9', 'z1.png', { level: 'same' })],
     }]
     f.pet.burst = { groups: 1, newGroups: 1 }
-    await ui.click('quaso-connection-retry')
+    await ui.poll()
     assert.equal(ui.$('quaso-dialog').hidden, false, '新的一組沒有被問到（數量比上次少就不問是錯的）')
     assert.match(ui.$('quaso-status').textContent, /one burst/)
   })
@@ -481,7 +481,7 @@ describe('B 主動詢問：有新的組才彈', () => {
       members: [shot('n1', 'b1.png', { level: 'same' })],
     })
     f.pet.burst = { groups: 2, newGroups: 2 }
-    await ui.click('quaso-connection-retry')
+    await ui.poll()
     assert.equal(ui.$('quaso-dialog').hidden, false)
     // **只講新的那一組**：問過的那一組不再重提（面板端記的是「問過哪幾組」，不是「問過幾組」）。
     // 拿數量當高水位會安靜地漏問：問過 2 組、那 2 組被清掉、又冒出 1 組時 1 ≤ 2 就再也不問了。
@@ -519,11 +519,11 @@ describe('B 主動詢問：有新的組才彈', () => {
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-panel').open, true, '前提：面板開著')
     f.pet.burst = { groups: 2, newGroups: 2 }
-    await ui.click('quaso-connection-retry')
+    await ui.poll()
     assert.equal(ui.$('quaso-dialog').hidden, true, '面板開著的時候不可以彈泡泡')
     // 關掉面板之後照樣會問（沒有被吃掉）
     await ui.click('cleanup-close')
-    await ui.click('quaso-connection-retry')
+    await ui.poll()
     assert.equal(ui.$('quaso-dialog').hidden, false)
   })
 })

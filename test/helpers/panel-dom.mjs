@@ -103,6 +103,11 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
     createElement: tag => new FakeEl(tag),
     createTextNode: text => Object.assign(new FakeEl('#text'), { _text: String(text) }),
     addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
+    // pet-state.js 會發 quaso:statechange／quaso:messagechange
+    dispatchEvent: event => {
+      for (const fn of docListeners[event.type] ?? []) fn(event)
+      return true
+    },
   }
   const winListeners = {}
   const pageFetch = fetchImpl ?? (() => { throw new TypeError('Failed to fetch') })
@@ -118,7 +123,15 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
     history: { state: null, replaceState() {} },
     fetch: (url, init) => pageFetch(url, init),
   })
-  await import(`../../core/assets/cleanup-demo.js?panel=${++mounted}`)
+  // 每一次掛載都要一份自己的 pet-state（模組層有狀態），面板那一份也要指到同一個實例。
+  // 順便把 pollHealth 匯出來：以前測試是點「重試連線」逼一次輪詢，那顆按鈕已經沒有了。
+  const caseId = ++mounted
+  const stateUrl = new URL(`../../core/assets/pet-state.js?panel=${caseId}`, import.meta.url).href
+  const source = readFileSync(join(REPO, 'core/assets/cleanup-demo.js'), 'utf8')
+    .replace(/from '(\.\/[^']+)'/g, (_, path) =>
+      `from '${path === './pet-state.js' ? stateUrl : new URL('../../core/assets/' + path.slice(2), import.meta.url).href}'`)
+  const { pollHealth } = await import('data:text/javascript;base64,'
+    + Buffer.from(source + `\nexport { pollHealth };\n// panel=${caseId}`).toString('base64'))
   const $ = id => { const el = els.get(id); assert.ok(el, `ui.html 裡沒有 id="${id}"`); return el }
   /** 等到面板與歷史面板都不在「正在…」 */
   const idle = async () => {
@@ -142,5 +155,5 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
     for (const f of winListeners.pagehide ?? []) f({ type: 'pagehide' })
   })
   await idle()
-  return { $, click, key, idle, els, calls, doc }
+  return { $, click, key, idle, poll: async () => { await pollHealth(); await idle() }, els, calls, doc }
 }

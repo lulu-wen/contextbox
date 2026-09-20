@@ -46,7 +46,7 @@ zsh 會把整段讀完才開始執行，同一次貼上的行尾註解還是不�
 
 ```bash
 export REPO="$PWD"
-export SANDBOX="$(mktemp -d)"
+export SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/contextbox-smoke.XXXXXXXXXX")"
 export HOME="$SANDBOX/home"                 # 從這一行開始，~ 指的是沙盒，不是你的家目錄
 export USERPROFILE="$HOME"                  # Windows 版的 node 看這一個找家目錄（Git Bash）；macOS／Linux 用不到
 mkdir -p "$HOME/Downloads"

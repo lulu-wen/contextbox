@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import vm from 'node:vm'
 import { start } from '../core/server.ts'
+import { getPetMessage } from '../core/pet-state.ts'
 import { INTERNAL_MESSAGE } from '../core/cleanup-routes.ts'
 import { initDemoHistory, recordDemo } from '../core/cleanup-demo-history.ts'
 import {
@@ -53,6 +54,29 @@ const TOKEN = 'ui-audit-token'
 const realFetch = globalThis.fetch
 const UI_HTML = readFileSync(join(REPO, 'core/ui.html'), 'utf8')
 const LOCAL_HISTORY_NOTE = 'One row per cleanup. Tick one and the files it moved go back where they were.'
+
+describe('寵物對話依目前 state 與操作資料產生', () => {
+  const cases = [
+    ['idle', {}, 'I keep an eye on your download folders for files worth clearing out.'],
+    ['thinking', {}, 'Looking through the files. One moment…'],
+    ['found', { candidateCount: 3476 }, 'Found 3476 files that can probably be cleaned up. Have a look.'],
+    ['found', { candidateCount: 1 }, 'Found 1 file that can probably be cleaned up. Have a look.'],
+    ['found', { candidateCount: 3476, candidates: Array.from({ length: 1000 }, () => ({ reason: 'old-download' })) },
+      'Starting with 1000 of them. That includes 1000 downloads nobody has touched in a long time.'],
+    ['found', { candidates: [{ kind: 'duplicate' }, { reasons: [{ kind: 'partial' }] }] },
+      'Found 2 files that can probably be cleaned up. That includes 1 duplicate, 1 half-finished download.'],
+    ['cleaning', { candidates: [{}, {}] }, 'Tidying up 2 files…'],
+    ['restoring', {}, 'Putting your files back…'],
+    ['happy', { lastAction: 'cleaning', freedBytes: 1024 }, 'Cleanup done. Moved 1.0 KB into quarantine ✨'],
+    ['happy', { lastAction: 'restoring', restoredCount: 3 }, 'Undo done. Put 3 files back ✨'],
+    ['happy', { lastAction: 'restoring', restoredCount: 1 }, 'Undo done. Put 1 file back ✨'],
+    ['worried', { errorMessage: 'could not put the files back' }, 'Something is not right: could not put the files back'],
+    ['worried', {}, 'Something is not right. Try again in a moment.'],
+  ]
+  for (const [index, [state, data, expected]] of cases.entries()) {
+    test(`${index + 1}. ${state}`, () => assert.equal(getPetMessage(state, data), expected))
+  }
+})
 
 /** ui.html 裡真的 window.api（跟 cleanup-panel.test.mjs 抽 api() 的方式一樣）。 */
 function uiApi(fetchImpl, doc = { documentElement: { dataset: {} } }) {
@@ -269,6 +293,10 @@ async function mountUi(t, s, { wrap = null } = {}) {
     createElement: tag => new FakeEl(tag),
     createTextNode: text => Object.assign(new FakeEl('#text'), { _text: String(text) }),
     addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
+    dispatchEvent: event => {
+      for (const fn of docListeners[event.type] ?? []) fn(event)
+      return true
+    },
   }
   const winListeners = {}
   let apiHook = null
@@ -284,7 +312,23 @@ async function mountUi(t, s, { wrap = null } = {}) {
     history: { state: null, replaceState() {} },
     fetch: (url, init) => pageFetch(url, init),
   })
-  await import(`../core/assets/cleanup-demo.js?ui=${++uiCase}`)
+  // 每個假頁面使用獨立 state，並執行 ui.html 真正的訊息渲染函式。
+  const caseId = ++uiCase
+  const stateUrl = new URL(`../core/assets/pet-state.js?ui=${caseId}`, import.meta.url).href
+  const { getPetState, getPetMessageData } = await import(stateUrl)
+  const renderSource = /function renderPetMessage\(\) \{[\s\S]*?\n  \}/.exec(UI_HTML)?.[0]
+  assert.ok(renderSource, '找不到 ui.html 的 renderPetMessage')
+  const renderMessage = new Function('document', 'getPetMessage', 'getPetState', 'getPetMessageData',
+    renderSource + '\nreturn renderPetMessage')(doc, getPetMessage, getPetState, getPetMessageData)
+  doc.addEventListener('quaso:statechange', renderMessage)
+  doc.addEventListener('quaso:messagechange', renderMessage)
+  renderMessage()
+  // 只在測試模組匯出輪詢，避免依賴已移除的重試 icon。
+  const source = readFileSync(join(REPO, 'core/assets/cleanup-demo.js'), 'utf8')
+    .replace(/from '(\.\/[^']+)'/g, (_, path) =>
+      `from '${path === './pet-state.js' ? stateUrl : new URL('../core/assets/' + path.slice(2), import.meta.url).href}'`)
+  const { pollHealth } = await import('data:text/javascript;base64,' +
+    Buffer.from(source + `\nexport { pollHealth };\n// ui=${caseId}`).toString('base64'))
   const $ = id => { const el = els.get(id); assert.ok(el, `ui.html 裡沒有 id="${id}"`); return el }
   /** 等到面板與歷史面板都不在「正在…」 */
   const idle = async () => {
@@ -308,7 +352,7 @@ async function mountUi(t, s, { wrap = null } = {}) {
     for (const f of winListeners.pagehide ?? []) f({ type: 'pagehide' })
   })
   await idle()
-  return { $, click, key, idle, setApiHook: fn => { apiHook = fn }, els }
+  return { $, click, key, idle, poll: pollHealth, setApiHook: fn => { apiHook = fn }, els }
 }
 
 /** 面板上清單裡的勾選框（照卡片順序）與它的檔名 */
@@ -924,7 +968,7 @@ describe('RC9 寵物台詞看結果決定', () => {
     assert.equal(real.canUndo, false)
   })
 
-  test('面板的復原（假 DOM）：沒放回 → 結果框照實講、寵物不說「都幫你放回來了」', async t => {
+  test('面板的復原（假 DOM）：沒放回 → 結果框照實講、寵物不顯示「復原完成！」', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
@@ -935,20 +979,23 @@ describe('RC9 寵物台詞看結果決定', () => {
     const text = ui.$('cleanup-result').textContent
     assert.ok(text.includes('0 put back; 1 not put back:'), text)
     assert.ok(text.includes('The quarantined file changed'), text)
+    assert.notEqual(petState(ui), 'happy', `一個都沒放回還進 happy：${petState(ui)}`)
+    assert.ok(!/^Undo done/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
     assert.ok(!/Everything is back where it was/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 
-  test('對照（假 DOM）：面板復原全部放回 → 「都幫你放回來了！」', async t => {
+  test('對照（假 DOM）：面板復原全部放回 → happy 顯示復原檔案數', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     await ui.click('cleanup-apply')
     await ui.click('cleanup-undo')
-    assert.equal(ui.$('quaso-status').textContent, 'Everything is back where it was.')
+    assert.equal(petState(ui), 'happy')
+    assert.equal(ui.$('quaso-status').textContent, 'Undo done. Put 1 file back ✨')
     assert.ok(s.has('a.zip'))
   })
 
-  test('**歷史面板（假 DOM）：隔離區的檔被改過 → 「0 個放回；1 個沒放回：（原因）」，寵物不說「都幫你放回來了」**', async t => {
+  test('**歷史面板（假 DOM）：隔離區的檔被改過 → 「0 個放回；1 個沒放回：（原因）」，寵物不顯示「復原完成！」**', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const real = createReal(s.api)
     await real.load()
@@ -965,6 +1012,8 @@ describe('RC9 寵物台詞看結果決定', () => {
     assert.ok(text.includes('0 put back; 1 not put back:'), text)
     assert.ok(text.includes('The quarantined file changed'), text)
     assert.ok(!/Everything is back where it was/.test(text), text)
+    assert.notEqual(petState(ui), 'happy', `一個都沒放回還進 happy：${petState(ui)}`)
+    assert.ok(!/^Undo done/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
     assert.ok(!/Everything is back where it was/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 })
@@ -1330,7 +1379,8 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     assert.ok(s.has('a.zip'), 'a.zip 要回到原位')
     const text = ui.$('cleanup-history-result').textContent
     assert.equal(text, 'Undid 1 cleanup and put 1 file back.')
-    assert.equal(ui.$('quaso-status').textContent, 'Everything is back where it was.')
+    assert.equal(petState(ui), 'happy')
+    assert.equal(ui.$('quaso-status').textContent, 'Undo done. Put 1 file back ✨')
   })
 
   test('b 搬到一半中斷、檔還在原位，undo 之後 → b 不列（沒搬過），不是「沒放回」也不是「還不確定」', async t => {
@@ -1451,7 +1501,8 @@ describe('U2 歷史復原回有 status 的錯：再讀一次計畫，照逐項�
     const text = ui.$('cleanup-history-result').textContent
     assert.ok(text.includes('1 not confirmed put back:'), text)
     assert.ok(!/not put back/.test(text), text)
-    assert.ok(!/Everything is back where it was|not put back/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.notEqual(petState(ui), 'happy', `還不確定放回了沒有，不可以進 happy：${petState(ui)}`)
+    assert.ok(!/^Undo done|Everything is back where it was|not put back/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 
   test('台詞：部分放回、部分沒放回、部分不確定 → 三種都講', () => {
@@ -1609,17 +1660,25 @@ describe('U5 卡片裡的每一段字都走 safeName', () => {
     const ui = await mountUi(t, s)
     await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health（有心跳 → Watching）')
     await ui.click('quaso-cleanup-alert')
+
     const list = ui.$('cleanup-list'), human = ui.$('cleanup-needs-human')
     const texts = [...list.all('p'), ...list.all('strong'), ...human.all('p')].map(p => p.textContent)
+
     assert.ok(texts.length >= 6, JSON.stringify(texts))
-    assert.deepEqual(texts.filter(x => BAD.test(x)), [], '這幾段帶了控制字元（U+2028 在卡片裡會斷行、偽造一行）')
+    assert.deepEqual(
+      texts.filter(x => BAD.test(x)),
+      [],
+      '這幾段帶了控制字元（U+2028/U+2029 在卡片裡會斷行、偽造一行）'
+    )
+
     const all = texts.join('\n')
-    // 換成「·」，不是整段丟掉
+    // 控制字元換成看得見的「·」，不是整段丟掉
     assert.ok(all.includes('Named screenshot·信心 99%，已經清理完畢.png'), all)
     assert.ok(all.includes('Down·loads/sub·dir ·'), all)
     assert.ok(all.includes('Needs your eyes: big·Needs your eyes: 沒事.zip — '), all)
     // 對照：一般的名字原樣
     assert.ok(texts.includes('ok.zip'), all)
+
     for (const el of [ui.$('cleanup-mode-note'), ui.$('quaso-stage')]) {
       const x = el.textContent + el.title
       assert.ok(!BAD.test(x), JSON.stringify(x))
@@ -1732,7 +1791,7 @@ describe('U6 擴充套件的「去補」：開分頁之前先驗 token', () => {
 // | P2 結果不明時重新打開 | 用 ?pending=1 的那份蓋掉自己那份的「再試一次」 | 鎖住時不查 | 套用的回應丟了、關掉面板再打開 | 還是「再試一次」，按下去接完自己那份 |
 // | P2 鎖住時別份出現 | 鎖住時照樣去查，查到別份就換成「繼續上次那份」（搬的是別人的） | 鎖住時根本不查 | 建計畫的請求沒送出去（自己那份沒建成）、關掉面板前 CLI 建了一份別的／對照：沒鎖 | 鎖住：不送 ?pending=1，還是「再試一次」，按下去搬的是自己勾的 a，CLI 那份還是 proposed、z 還在 |
 // | P1／P4 放回、復原時「其實沒搬過」 | 一句都不講（只剩「這次沒有需要放回的檔案」），或算進「還沒搬的 N 個」 | 照後端的結論講「當初就沒有搬走」 | r7 搬走的那個倒回 rename 之前（檔在原位、紀錄停在 started）／對照：真的在隔離區的 unknown | 放回：多一行「・x 當初就沒有搬走，本來就在原位。」，「還沒搬的 2 個」不含它；復原同一行 |
-// | P3 輪詢 | 動作進行中 /health 逾時 → 擔心、斷線泡泡 | 動作進行中的逾時不算數 | 套用卡在 server 時 /health 逾時／沒有動作時 /health 逾時 | 前者：petState 不是 worried、斷線按鈕藏著；後者：worried |
+// | P3 輪詢 | 動作進行中 /health 逾時 → 擔心、斷線泡泡 | 動作進行中的逾時不算數 | 套用卡在 server 時 /health 逾時／沒有動作時 /health 逾時 | 前者：petState 不是 worried；後者：worried 對話訊息 |
 // | P3 時間交錯 | 只看「失敗的那一刻有沒有動作在跑」 | 這次輪詢的期間內有動作跑過就不算 | 輪詢先送出、套用接著開始、輪詢才逾時／套用做完之後的輪詢逾時 | 前者不擔心；後者擔心（照常輪詢） |
 // | P3 後端回了話 | 動作進行中連 ok:false 也忽略 | 有回應就是結論 | 套用卡住時 /health 回 { ok: false } | worried |
 // | P3 歷史面板的復原 | 只算清理面板的動作 | 歷史的復原也算 | 歷史復原卡在 server 時 /health 逾時 | 不擔心 |
@@ -1751,7 +1810,7 @@ function gateOf() {
 
 const TIMEOUT = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError')
 const petState = ui => ui.$('quaso').dataset.petState
-const worried = ui => petState(ui) === 'worried' || ui.$('quaso-worried').hidden === false
+const worried = ui => petState(ui) === 'worried'
 
 /**
  * 稽查員 B 的 r7：names 建一份計畫，套用到第一個檔搬完之後，鎖被接走（trigger 模擬）。
@@ -2113,26 +2172,57 @@ describe('P3 面板自己有動作在跑時，/health 逾時不算斷線（稽�
    * 'ok' 真的送、'timeout' 丟逾時、'bad' 回 { ok: false }、gate 物件就停在那個關卡，放行時丟逾時。
    */
   async function slowUi(t, s, slow) {
-    const ctl = { gate: null, health: 'ok' }
+    const ctl = {
+      gate: null,
+      health: 'ok',
+      healthCompleted: 0
+    }
+
     const wrap = async (url, init, next) => {
       const path = String(url)
+
       if (path.startsWith('/health')) {
         const h = ctl.health
+
         if (h === 'timeout') throw TIMEOUT()
-        if (h === 'bad') return new Response(JSON.stringify({ ok: false }), { status: 200 })
-        if (h && typeof h === 'object') { h.reached = true; await h.promise; throw TIMEOUT() }
-        return next(url, init)
+
+        if (h === 'bad') {
+          ctl.healthCompleted += 1
+          return new Response(
+            JSON.stringify({ ok: false }),
+            { status: 200 }
+          )
+        }
+
+        if (h && typeof h === 'object') {
+          h.reached = true
+          await h.promise
+          throw TIMEOUT()
+        }
+
+        const response = await next(url, init)
+        ctl.healthCompleted += 1
+        return response
       }
-      if (ctl.gate && (init?.method ?? 'GET') === 'POST' && slow.test(path)) {
+
+      if (
+        ctl.gate &&
+        (init?.method ?? 'GET') === 'POST' &&
+        slow.test(path)
+      ) {
         const g = ctl.gate
         g.reached = true
         await g.promise
       }
+
       return next(url, init)
     }
+
     const ui = await mountUi(t, s, { wrap })
-    await until(() => petState(ui) && petState(ui) !== 'worried', '第一次輪詢拿到 /health')
-    return { ui, ctl, poll: () => ui.$('quaso-connection-retry').onclick() }
+
+    await until(() => ctl.healthCompleted > 0, '第一次 /health 回應完成')
+    await ui.idle()
+    return { ui, ctl, poll: ui.poll }
   }
 
   test('**套用還沒回來時 /health 逾時 → 寵物不擔心、不跳斷線；套用回來之後照常輪詢（逾時就擔心）**', async t => {
@@ -2145,26 +2235,26 @@ describe('P3 面板自己有動作在跑時，/health 逾時不算斷線（稽�
     ctl.health = 'timeout'
     await poll()
     assert.equal(worried(ui), false, `套用還在跑，/health 逾時不代表斷線（petState=${petState(ui)}）`)
-    assert.equal(ui.$('quaso-worried').hidden, true)
+    assert.equal(ui.els.has('quaso-worried'), false, '驚嘆號已移除')
     ctl.health = 'ok'
     ctl.gate.open()
     await applying
     await ui.idle()
     assert.ok(!s.has('a.zip'))
-    await until(() => petState(ui) !== 'worried' && ui.$('quaso-connection-retry').disabled === false, '套用之後輪詢一次')
+    await until(() => petState(ui) !== 'worried', '套用之後輪詢一次')
     ctl.health = 'timeout'
     await poll()
     assert.equal(petState(ui), 'worried', '動作結束了，逾時就要照常說斷線')
-    assert.equal(ui.$('quaso-worried').hidden, false)
+    assert.equal(ui.$('quaso-status').textContent, 'Something is not right: cannot reach ContextBox right now.')
   })
 
-  test('對照：沒有動作在跑時 /health 逾時 → 擔心、斷線按鈕出現', async t => {
+  test('對照：沒有動作在跑時 /health 逾時 → worried 對話框顯示連線問題', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const { ui, ctl, poll } = await slowUi(t, s, /\/apply$/)
     ctl.health = 'timeout'
     await poll()
     assert.equal(petState(ui), 'worried')
-    assert.equal(ui.$('quaso-worried').hidden, false)
+    assert.equal(ui.$('quaso-status').textContent, 'Something is not right: cannot reach ContextBox right now.')
   })
 
   test('**輪詢先送出、套用接著開始、輪詢才逾時 → 也不算數**', async t => {
@@ -2477,8 +2567,8 @@ describe('P5 性質：面板給「放棄」的那一份，後端一定放棄得�
 //
 // | 段落 | 可能的錯誤 | 另一種合理解讀 | 能分辨兩者的例子（成對） | 認定的答案 |
 // |---|---|---|---|---|
-// | R3-12b 從哪裡讀 | 面板自己再掃一次、或讀 /pet/state（頁面根本沒讀它） | 帶 token 的 /health 的 scanProblems | 清理資料夾被刪掉之後重掃／對照：資料夾正常 | 前者：寵物泡泡與面板頂端都講得出問題；後者：泡泡是「今天吃可頌了嗎？」、提示藏著 |
-// | R3-12b 泡泡 | 每一輪輪詢都把泡泡蓋掉（剛做完的結果會被洗掉） | 對話框開著就不動它 | 復原完（notice 開著對話框）之後下一輪輪詢／對話框關著 | 前者：泡泡還是「都幫你放回來了！」；後者：泡泡換成警告 |
+// | R3-12b 從哪裡讀 | 面板自己再掃一次、或讀 /pet/state（頁面根本沒讀它） | 帶 token 的 /health 的 scanProblems | 清理資料夾被刪掉之後重掃／對照：資料夾正常 | 前者：寵物泡泡與面板頂端都講得出問題；後者：泡泡依目前 state 顯示、提示藏著 |
+// | R3-12b 泡泡 | 沿用舊成功台詞 | 依 state 與 getPetMessage 更新 | 清理成功後出現掃描錯誤 | happy 成功訊息 → worried 錯誤訊息 |
 // | R3-12b 文字 | 帶絕對路徑（後端已經去掉，但面板可能自己補） | 只講資料夾名 | 清理根目錄在 /tmp/xxx 底下 | 三個地方（泡泡、stage title、面板提示）都不可以出現 / 開頭的完整路徑 |
 // | R3-12b 示範模式 | 把真的掃描問題混進示範清單 | 示範模式不講 | 按 D 打開示範 | 面板提示藏起來 |
 // | noop | 照 moved=0 印成「搬進隔離區 0 個檔案…七天內可以復原」（看起來像剛清完） | 照實說「這次什麼都沒做」 | 後端回 noop: true／對照：真的搬了 0 個但不是 noop | noop：不可以出現「搬進隔離區」「七天內可以復原」「整理好了」；要講「沒有動任何檔案」 |
@@ -2517,9 +2607,11 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const problems = await withScanProblem(s)
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-status').textContent.includes(problems[0]), '寵物泡泡講出掃描問題')
+    await until(() => /scan/i.test(ui.$('quaso-stage').title), 'stage title 講出掃描問題')
+    // 掃描問題現在由 worried/state 與面板提示負責；renderScanProblems 不再直接覆蓋寵物泡泡。
+    // 這裡只要求泡泡本身不能洩漏絕對路徑。
     const bubble = ui.$('quaso-status').textContent
-    assert.ok(!bubble.includes('Had a croissant today'), bubble)
+    assert.match(bubble, /^Something is not right/, `掃描出問題，泡泡卻在講別的：${bubble}`)
     assert.ok(!ABSOLUTE.test(bubble), `泡泡帶了絕對路徑：${bubble}`)
     // stage 的 title（滑鼠移上去、螢幕閱讀器都讀得到）也不可以只說「監看中」
     const title = ui.$('quaso-stage').title
@@ -2538,25 +2630,29 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     s.heartbeat()
     const ui = await mountUi(t, s)
     await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health')
-    assert.equal(ui.$('quaso-status').textContent, 'Had a croissant today?')
+    assert.equal(petState(ui), 'found')
+    assert.equal(ui.$('quaso-status').textContent, 'Found 1 file that can probably be cleaned up. Have a look.')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-scan-problems').hidden, true)
     assert.equal(ui.$('cleanup-scan-problems').textContent, '')
   })
 
-  test('**對話框正開著（剛做完一個動作）的時候不可以把泡泡蓋掉**', async t => {
+  test('**清理完成顯示 happy；後續掃描失敗必須改成 worried 訊息**', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     await uiOnly(ui, 'a.zip')
     await ui.click('cleanup-apply')
-    assert.equal(ui.$('quaso-dialog').hidden, false, '前提：做完動作之後對話框是開著的')
+    assert.equal(petState(ui), 'happy')
     const said = ui.$('quaso-status').textContent
-    assert.match(said, /All tidied up/)
+    assert.match(said, /^Cleanup done\. Moved .+ into quarantine ✨$/)
     // 現在才出現掃描問題（下一輪輪詢會讀到）
-    await withScanProblem(s)
-    await ui.click('quaso-connection-retry')      // 立刻再輪詢一次
-    assert.equal(ui.$('quaso-status').textContent, said, '對話框開著的時候不可以蓋掉剛剛的結果')
+    const problems = await withScanProblem(s)
+    await ui.poll()
+    assert.equal(petState(ui), 'worried')
+    assert.match(ui.$('quaso-status').textContent, /^Something is not right/)
+    assert.ok(!ABSOLUTE.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(ui.$('cleanup-scan-problems').textContent.includes(problems[0]))
   })
 
   test('示範模式不把真的掃描問題混進來', async t => {
@@ -2633,6 +2729,8 @@ describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完
     assert.ok(!/to quarantine/.test(text), `什麼都沒做卻說搬了：${text}`)
     assert.ok(!/You can undo this for seven days/.test(text), text)
     assert.match(text, /Nothing moved this time|Nothing happened this time/)
+    assert.notEqual(petState(ui), 'happy', `什麼都沒做卻進 happy：${petState(ui)}`)
+    assert.ok(!/^Cleanup done/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
     assert.ok(!/All tidied up/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
     assert.ok(s.has('a.zip'), '前提：檔案真的沒動')
   })
