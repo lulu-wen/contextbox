@@ -126,12 +126,19 @@ async function open(t, opts = {}) {
   return ui
 }
 
-const tabs = ui => ui.$('cleanup-tabs').all('BUTTON')
+async function selectSection(ui, label) {
+  const select = ui.$('cleanup-tabs')
+  const option = tabNamed(ui, label)
+  assert.ok(option && !option.disabled, `Section unavailable: ${label}`)
+  select.value = option.value
+  await select.onchange()
+}
+const tabs = ui => ui.$('cleanup-tabs').all('OPTION')
 const tabNamed = (ui, text) => tabs(ui).find(b => b.textContent.startsWith(text))
 
 async function openSettings(t, opts = {}) {
   const ui = await open(t, opts)
-  await tabNamed(ui, 'Settings').onclick()
+  await selectSection(ui, 'Settings')
   return ui
 }
 
@@ -189,12 +196,12 @@ describe('「設定」那個標籤', () => {
     const ui = await openSettings(t, { candidates: [candidate()] })
     assert.equal(ui.$('cleanup-sec-settings').hidden, false)
     assert.equal(ui.$('cleanup-sec-clean').hidden, true)
-    assert.equal(tabNamed(ui, 'Settings').getAttribute('aria-selected'), 'true')
+    assert.equal(ui.$('cleanup-tabs').value, tabNamed(ui, 'Settings').value)
   })
 
   test('全部都空的時候不會被彈到設定頁（要留在「可以清理」聽它說沒事）', async t => {
     const ui = await open(t)
-    assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
+    assert.equal(ui.$('cleanup-tabs').value, tabNamed(ui, 'Cleanup').value)
     assert.equal(ui.$('cleanup-sec-clean').hidden, false)
   })
 
@@ -202,7 +209,7 @@ describe('「設定」那個標籤', () => {
     const ui = await openSettings(t, { candidates: [candidate()] })
     assert.equal(ui.$('cleanup-settings-save').hidden, false)
     assert.equal(ui.$('cleanup-apply').hidden, true, '清理那顆不屬於設定這一區')
-    await tabNamed(ui, 'Cleanup').onclick()
+    await selectSection(ui, 'Cleanup')
     assert.equal(ui.$('cleanup-settings-save').hidden, true)
     assert.equal(ui.$('cleanup-apply').hidden, false)
   })
