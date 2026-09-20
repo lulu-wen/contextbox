@@ -42,8 +42,14 @@ const filingItem = (over = {}) => ({
   toFolder: 'Courses/資料結構/Exam', learned: false, rejectedBefore: false, alsoKnownAs: '', ...over,
 })
 
-function fakeApi({ candidates = [], renames = [], filings = [], learned = [], calls = [] } = {}) {
+function fakeApi(opts = {}) {
+  // **每一次請求都重讀 opts**：測試要能在中途換掉後端的回答（背景問完模型那一刻），
+  // 解構一次的話那份陣列就定住了。
+  const { calls = [] } = opts
+  const list = k => opts[k] ?? []
   return async (path, init = {}) => {
+    const candidates = list('candidates'), renames = list('renames')
+    const filings = list('filings'), learned = list('learned')
     calls.push({ path, method: init?.method ?? 'GET' })
     if (path === '/health') {
       return {
@@ -131,5 +137,53 @@ describe('面板裡的小標籤', () => {
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-tabs').hidden, true, '示範模式只有清理那一區是真的')
     assert.equal(ui.$('cleanup-sec-clean').hidden, false)
+  })
+})
+
+// ═══ 面板開著的時候自己跟上（2026-09-20）═══════════════════════
+
+describe('背景問完模型之後，面板自己抓回來', () => {
+  test('新的改名建議會自己出現，不用關掉重開', async t => {
+    // pet 在背景每十分鐘問一輪模型。面板只在打開的那一刻抓資料的話，
+    // 使用者會盯著一個空的「Suggested names」，得關掉重開才看得到。
+    const back = { candidates: [candidate()], renames: [] }
+    const ui = await mountPanel(t, { api: fakeApi(back), fetch: demoFetch })
+    await ui.click('quaso-cleanup-alert')
+    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names0', '前提：一開始沒有建議')
+
+    back.renames = [renameItem()]   // 背景那一輪問完了，後端現在有建議
+    await ui.poll()                 // 輪詢跑一次
+
+    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names1',
+      '面板要自己跟上，不可以等使用者關掉重開')
+  })
+
+  test('使用者已經勾的不可以被重抓洗掉', async t => {
+    const ui = await mountPanel(t, {
+      api: fakeApi({ candidates: [candidate()], renames: [renameItem(), renameItem({ itemId: 'r-2' })] }),
+      fetch: demoFetch,
+    })
+    await ui.click('quaso-cleanup-alert')
+    await tabNamed(ui, 'Suggested names').onclick()
+    const boxes = ui.$('cleanup-renames').all('INPUT')
+    assert.ok(boxes.length >= 1, ui.$('cleanup-renames').textContent)
+    boxes[0].checked = true
+    boxes[0].onchange()
+
+    await ui.poll()                 // 內容沒變的一次重抓
+
+    const after = ui.$('cleanup-renames').all('INPUT')
+    assert.equal(after[0].checked, true, '重抓不可以把使用者勾的洗掉')
+  })
+
+  test('面板沒開的時候不要一直打後端', async t => {
+    const calls = []
+    const ui = await mountPanel(t, {
+      api: fakeApi({ candidates: [candidate()], renames: [renameItem()], calls }), fetch: demoFetch,
+    })
+    calls.length = 0
+    await ui.poll()
+    assert.deepEqual(calls.filter(c => c.path.startsWith('/rename/suggestions')), [],
+      '面板關著就不用抓建議')
   })
 })

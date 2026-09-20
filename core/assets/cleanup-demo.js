@@ -1433,6 +1433,8 @@ async function pollHealth() {
   // 復原徽章跟著輪詢更新就夠了。掛在 updateAlert 上的話，每勾一個勾選框都會多送一次請求。
   void refreshHistoryBadge()
   if (health) await askAboutBursts()
+  // 背景那一輪問完模型之後，面板要自己跟上（不用關掉重開）
+  if (health) await refreshSuggestions()
   if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
 }
 
@@ -1447,6 +1449,39 @@ async function pollHealth() {
  * 不要蓋掉使用者正在看的結果。真的要彈之前先把組讀回來：讀不到就什麼都不做，
  * 彈一句「有 N 張很像」卻打不開任何東西比不彈更糟。
  */
+/**
+ * 面板開著的時候，把「模型產生的那幾區」重新抓一次（連拍、建議的名字、歸檔、學到的）。
+ *
+ * **為什麼要有**：`pet` 在背景每十分鐘問一輪模型，但面板只在打開的那一刻抓資料 ——
+ * 背景問完之後，使用者盯著一個空的「Suggested names」，得關掉重開才看得到。
+ * 使用者第一句話就是「這些應該直接整合在 UI」。
+ *
+ * **三條安全規矩**：
+ *   1. **不重新套預設勾選**（不呼叫 applyBurstDefaults）—— 那會把使用者自己勾的洗掉。
+ *      load() 本身已經保留「還在清單上的那幾個勾」。
+ *   2. 忙的時候不做：正在搬檔、示範模式、復原面板開著，一律跳過。
+ *   3. **沒變就不重畫** —— 每五秒重畫一次會把使用者正在點的東西抽掉。
+ */
+async function refreshSuggestions() {
+  if (isDemo() || busy || historyBusy || actionsInFlight > 0 || !panel.open) return
+  const before = suggestionSignature()
+  try {
+    await bursts.load()          // **不套預設**：那是打開面板那一刻的事
+    await renames.load()
+    await filings.load()
+    await learned.load()
+  } catch { return }             // 讀不到就維持畫面上的樣子
+  if (suggestionSignature() !== before) render()
+}
+
+/** 那四區現在的內容（換了才重畫）。 */
+const suggestionSignature = () => JSON.stringify([
+  bursts.groups.map(g => g.id),
+  renames.items.map(i => i.itemId + i.suggested),
+  filings.items.map(i => i.itemId + i.toFolder),
+  learned.items.map(i => i.id),
+])
+
 async function askAboutBursts() {
   if (isDemo() || busy || historyBusy || panel.open || historyPanel.open) return
   let state
