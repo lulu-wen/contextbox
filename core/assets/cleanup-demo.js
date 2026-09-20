@@ -48,6 +48,7 @@ let currentOperation = null, request = null, health = null, previousCount = 0, h
 /** 後端說的「正在讀嗎、還剩幾個」（/pet/state 的 reading）。舊版後端沒有這一段就是全 0。 */
 let reading = { running: false, pending: 0 }
 let healthChecked = false, healthBusy = false, stopped = false
+let candidatesAcknowledged = false
 /**
  * 面板自己送出、還沒回來的動作（清理、復原、放回、放棄、歷史面板的復原）。
  * 套用與復原在 server 的主執行緒上同步跑：一次搬幾百個檔，那段時間 /health 也等不到回應。
@@ -291,8 +292,13 @@ function updateAlert() {
     // `thinking` 以前是死狀態（宣告了、有台詞、但全樹沒有任何地方會設它）。
     // 模型一個檔十幾秒、幾百個檔要幾小時 —— 使用者最需要知道的就是「它到底有沒有在動」。
     setPetBaseState('thinking')
+  } else if ((count ?? 0) === 0) {
+    candidatesAcknowledged = false
+    setPetBaseState('idle')
+  } else if (!candidatesAcknowledged) {
+    setPetBaseState('found')
   } else {
-    setPetBaseState(count > 0 ? 'found' : 'idle')
+    setPetBaseState('idle')
   }
 
   // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
@@ -937,6 +943,8 @@ async function openCleanupPanel() {
   $('quaso-dialog').hidden = true
   $('quaso-burst-open').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
+  candidatesAcknowledged = true
+  if (!systemHealthProblem()) setPetBaseState(reading.running ? 'thinking' : 'idle')
   if (demo) {
     render()
     if (!panel.open) panel.showModal()
@@ -1574,14 +1582,12 @@ async function askAboutBursts(state) {
   if (burstAsked.size > 200) for (const id of [...burstAsked].slice(0, burstAsked.size - 200)) burstAsked.delete(id)
   notice(burstAskMessage(fresh), { burst: true })
 }
-/** 「Pet state: …」那一行（隊友加的）。齒輪與 S 鍵是同一件事。 */
+/** S 鍵切換「Pet state: …」；齒輪由設定面板負責。 */
 function togglePetStateLine() {
   const line = $('pet-state-debug')
   if (!line) return
   line.hidden = !line.hidden
-  $('quaso-settings-toggle').setAttribute('aria-expanded', String(!line.hidden))
 }
-$('quaso-settings-toggle').onclick = togglePetStateLine
 function toggleOffline() {
   if (healthBusy || busy || historyBusy) return
   mockOffline = !mockOffline

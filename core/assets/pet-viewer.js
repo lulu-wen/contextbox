@@ -148,6 +148,17 @@ async function init() {
   const mixer = new THREE.AnimationMixer(model)
   const clips = new Map(gltf.animations.map(clip => [clip.name.toLowerCase(), clip]))
   const findClip = name => clips.get(name) || gltf.animations.find(clip => clip.name.toLowerCase().includes(name))
+  for (const side of ['left', 'right']) {
+    const name = `move_${side}_eye`
+    const eye = model.getObjectByName(`eye_${side}`)
+    if (!findClip(name) && eye) {
+      const angle = eye.rotation.z
+      clips.set(name, new THREE.AnimationClip(name, 0.8, [
+        new THREE.NumberKeyframeTrack(`${eye.uuid}.rotation[z]`, [0, 0.4, 0.8],
+          [angle, angle + (side === 'left' ? 0.12 : -0.12), angle]),
+      ]))
+    }
+  }
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   let activeMode = 'idle'
   let displayedState = null, protectedRun = false, pendingState = null, transitionTimer = null, playVersion = 0
@@ -159,6 +170,35 @@ async function init() {
   let walkDuration = 0, walkHeading = 0, walkStartHeading = 0
   let foundPhase = 'out', foundFinished = null, foundTimer = null
   let jumpStartScreenY = 0
+  const idlePauseDuration = 3
+  let idlePhase = '', idleDuration = 0
+  let idlePaused = false
+  function playIdlePhase(phase) {
+    // Keep the clamped idle action active while both eye animations play.
+    if (phase !== 'eyes') mixer.stopAllAction()
+    idlePaused = false
+    idlePhase = phase
+    elapsed = 0
+    const names = phase === 'eyes' ? ['move_left_eye', 'move_right_eye']
+      : ['idle']
+    const phaseClips = names.map(findClip).filter(Boolean)
+    idleDuration = Math.max(0.1, ...phaseClips.map(clip => clip.duration))
+    activeMode = names[0]
+    for (const clip of phaseClips) {
+      const action = mixer.clipAction(clip).reset().setLoop(THREE.LoopOnce, 1)
+      action.clampWhenFinished = true
+      action.play()
+    }
+  }
+  function advanceIdle() {
+    if (idlePhase === 'rest') {
+      playIdlePhase('eyes')
+      return
+    }
+    // Keep idle and both eyes clamped at their final frames during the pause.
+    idlePaused = true
+    elapsed = 0
+  }
   function iconPosition(id) {
     const rect = stage.getBoundingClientRect()
     const icon = document.getElementById(id).getBoundingClientRect()
@@ -186,7 +226,9 @@ async function init() {
     const action = mixer.clipAction(clip).reset()
     action.setLoop(THREE.LoopRepeat, Infinity)
     action.clampWhenFinished = false
-    if (state === 'found') {
+    if (state === 'idle') {
+      playIdlePhase('rest')
+    } else if (state === 'found') {
       const origin = iconPosition('quaso-history-open')
       const destination = iconPosition('quaso-cleanup-alert')
       const dx = destination.x - origin.x, dy = destination.y - origin.y
@@ -240,7 +282,7 @@ async function init() {
         }
       })
     }
-    if (state !== 'found') action.play()
+    if (state !== 'found' && state !== 'idle') action.play()
     if (!protectedRun && queue.length) request(queue.shift())
   }
 
@@ -337,7 +379,17 @@ async function init() {
     if (document.hidden) return
     if (!reducedMotion && !transitionTimer) {
       elapsed += delta
-      if (activeMode === 'spin') pivot.rotation.y = (elapsed * Math.PI / 3) % (Math.PI * 2)
+      if (displayedState === 'idle') {
+        if (idlePaused) {
+          if (elapsed >= idlePauseDuration) {
+            playIdlePhase('eyes')
+          }
+        } else {
+          mixer.update(delta)
+          if (elapsed >= idleDuration) advanceIdle()
+        }
+      }
+      else if (activeMode === 'spin') pivot.rotation.y = (elapsed * Math.PI / 3) % (Math.PI * 2)
       else if (findClip(activeMode)) {
         if (displayedState === 'found' && activeMode === 'walk') {
           const progress = Math.min(elapsed / walkDuration, 1)
