@@ -45,7 +45,7 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
   if (unknown.length) {
     const shown = unknown.slice(0, 3)
       .map(k => k.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, '·').slice(0, 40))
-      .join('、')
+      .join(', ')
     throw new CleanupError('BAD_BODY',
       `Could not make sense of the body: unknown field ${shown}. This route only takes ${allowed.join(', ')}.`)
   }

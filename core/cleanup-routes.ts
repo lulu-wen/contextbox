@@ -2368,7 +2368,7 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
     // key 是呼叫端給的字串：控制字元換掉、只講前幾個
-    const shown = unknown.slice(0, 3).map(k => k.replace(UNSAFE_DISPLAY, '·').slice(0, 40)).join('、')
+    const shown = unknown.slice(0, 3).map(k => k.replace(UNSAFE_DISPLAY, '·').slice(0, 40)).join(', ')
     throw new CleanupError('BAD_BODY', `Could not make sense of the body: unknown field ${shown}.`
       + (allowed.length ? ` This route only takes ${allowed.join(', ')}.` : ' This route takes no fields.'))
   }

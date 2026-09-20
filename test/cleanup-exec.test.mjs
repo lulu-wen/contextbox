@@ -176,3 +176,34 @@ test('protected database/key files and hardlinks never move even when A proposes
   assert.ok(existsSync(join(f.downloads, 'private.db')))
   assert.ok(existsSync(join(f.downloads, 'private.pem')))
 })
+
+test('someone else grabs the destination after the reservation — nothing is overwritten', t => {
+  // 稽核 2026-09-20：這是整條管線最後一道防覆蓋的閘門，而它一條測試都沒有 ——
+  // 把那個 if 改成 if (false)，全套 2696 條照樣全綠。
+  //
+  // 情境：我們用 'wx' 在隔離區佔了一個 0 byte 的空位（'wx' 保證那一刻沒有別人），
+  // 但在真的 rename 之前，那個位置被換成**別的檔**。rename 不管目的地存不存在，
+  // 直接搬過去就把別人的檔蓋掉了。所以動手前要再確認一次：那裡還是我剛剛佔的那一個 inode、
+  // 還是 0 byte、mtime 還是那一個。
+  const f = fixture(t, { 'a.zip': 'abc' })
+  const p = f.plan()
+  const realOpen = fs.openSync
+  t.mock.method(fs, 'openSync', (path, flags, mode) => {
+    const fd = realOpen(path, flags, mode)
+    // 佔位檔剛建好的那一刻，把它換成別人的檔（新的 inode、有內容）
+    if (flags === 'wx' && String(path).includes('quarantine')) {
+      fs.closeSync(fd)
+      fs.unlinkSync(path)
+      writeFileSync(path, 'someone else was here')
+      return realOpen(path, 'r')
+    }
+    return fd
+  })
+  syncBuiltinESMExports()
+  let r
+  try { r = applyPlan(f.db, p.id, f.opts) }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+
+  assert.equal(r.status, 'error', '佔位檔被換掉就不可以搬')
+  assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'abc', '原檔要留在原位')
+})

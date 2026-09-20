@@ -984,6 +984,24 @@ describe('RC9 寵物台詞看結果決定', () => {
     assert.ok(!/Everything is back where it was/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 
+  test('**部分放回（假 DOM）：放回 1 個、另 1 個沒回去 → 不可以說「Undo done」**', async t => {
+    // 稽核 2026-09-20（合併隊友的寵物狀態機時被放鬆掉的那一條）：
+    // 以前只要「有放回任何一個」就算完成，於是兩個檔放回一個時，泡泡說
+    // 「Undo done. Put 1 file back ✨」—— 而另一個還卡在隔離區裡，沒有任何一個字提到它。
+    const s = await serve(t, { 'a.zip': { days: 60 }, 'b.zip': { days: 60 } })
+    const ui = await mountUi(t, s)
+    await ui.click('quaso-cleanup-alert')
+    await ui.click('cleanup-apply')
+    assert.match(ui.$('cleanup-result').textContent, /Moved 2 files/)
+    s.tamper('b.zip')                       // 隔離區裡的那一份被動過 → 放不回去
+    await ui.click('cleanup-undo')
+
+    const bubble = ui.$('quaso-status').textContent
+    assert.notEqual(petState(ui), 'happy', `還有檔沒放回卻進 happy：${bubble}`)
+    assert.ok(!/^Undo done/.test(bubble), `不可以說完成：${bubble}`)
+    assert.match(ui.$('cleanup-result').textContent, /1 put back; 1 not put back/)
+  })
+
   test('對照（假 DOM）：面板復原全部放回 → happy 顯示復原檔案數', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     const ui = await mountUi(t, s)

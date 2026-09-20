@@ -40,7 +40,7 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
   }
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
-    const bad = unknown.slice(0, 3).map(k => shown(k).slice(0, 40)).join('、')
+    const bad = unknown.slice(0, 3).map(k => shown(k).slice(0, 40)).join(', ')
     throw new CleanupError('BAD_BODY',
       `Could not make sense of the body: unknown field ${bad}. This route only takes ${allowed.join(', ')}.`)
   }

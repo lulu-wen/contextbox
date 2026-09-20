@@ -323,3 +323,34 @@ describe('暫時性的拒絕要分得出來', () => {
     }
   })
 })
+
+// ═══ 稽核補的（2026-09-20，合併隊友的修正之後）═══════════════
+
+describe('白名單／排除清單本身是捷徑', () => {
+  /**
+   * 使用者的設定裡寫的是捷徑（macOS 的 /tmp → /private/tmp、家目錄搬到別顆碟之後留的連結、
+   * OneDrive 的資料夾連結）。比對用的是檔案的**真路徑**，所以清單那一側也要先攤開，
+   * 不然「在監看資料夾裡」永遠不成立 —— 一個檔都收不進來，而且不會有任何錯誤訊息。
+   */
+  test('roots 寫的是捷徑、檔案在它的真身底下 → 照樣收得進來', () => {
+    const real = join(root, 'real-downloads')
+    mkdirSync(real, { recursive: true })
+    const link = join(root, 'linked-downloads')
+    try { symlinkSync(real, link) } catch { return }    // 沒有權限建捷徑的平台就跳過
+    const v = admit(put(real, 'a.png'), { ...opts, roots: [link] })
+    assert.equal(v.ok, true, `設定寫捷徑就收不到檔：${v.why}`)
+  })
+
+  test('exclude 寫的是捷徑 → 底下的檔照樣要被排除', () => {
+    const real = join(root, 'real-filed')
+    mkdirSync(real, { recursive: true })
+    const link = join(root, 'linked-filed')
+    try { symlinkSync(real, link) } catch { return }
+    const p = put(real, 'b.png')
+    // 前提：它在監看範圍裡（不然這條測的就不是 exclude）
+    assert.equal(admit(p, { ...opts, roots: [root], exclude: [] }).ok, true)
+    const v = admit(p, { ...opts, roots: [root], exclude: [link] })
+    assert.equal(v.ok, false, '排除清單寫捷徑就擋不住')
+    assert.match(v.why, /excluded/)
+  })
+})

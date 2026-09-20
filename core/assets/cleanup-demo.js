@@ -1031,12 +1031,12 @@ async function operateReal(kind) {
     result('Putting back what already moved…')
     const restored = await real.putBack()
     const restoredCount = restored.restored ?? 0
-    setPetMessageData({ restoredCount })
+    setPetMessageData({ restoredCount, leftBehind: leftBehind(restored) })
     const m = undoMessage(restored)
     result(m.text)
     notice(m.notice)
-    // 真的有檔案回到原位才算做完
-    return restoredCount > 0
+    // **全部回到原位才算做完**：有放不回去的就不可以說「完成」（見 leftBehind）
+    return restoredCount > 0 && leftBehind(restored) === 0
   }
 
   result('Putting files back…')
@@ -1045,12 +1045,13 @@ async function operateReal(kind) {
   // 原位置被佔時放回來的那份會改名，重掃後以重複檔的身分被預設勾起來。
   // 寵物的話也看結果：全部放回、部分放回、一個都沒放回，三種不同的話（RC9）。
   const restoredCount = r.restored ?? 0
-  setPetMessageData({ restoredCount })
+  setPetMessageData({ restoredCount, leftBehind: leftBehind(r) })
   const m = undoMessage(r)
   result(m.text)
   notice(m.notice)
-  // 一個都沒放回的時候不可以說「復原完成」
-  return restoredCount > 0
+  // **全部回到原位才算做完。** 部分放回也不算 —— 不然寵物會說「Undo done ✨」，
+  // 而使用者還有一個檔卡在隔離區裡沒人講（稽核 2026-09-20，合併時這條被放鬆了）。
+  return restoredCount > 0 && leftBehind(r) === 0
 }
 
 /**
@@ -1116,6 +1117,14 @@ function seriousOperationError(error) {
   if (error.status >= 500) return true
   return false
 }
+/**
+ * 這一次復原有幾個**沒有**回到原位（放不回去的＋結果不明的）。
+ *
+ * 「做完了嗎」不可以只看「有沒有放回任何一個」：兩個檔放回一個，那一個還在隔離區裡，
+ * 而寵物會說「Undo done ✨」—— 那是在騙人。這個專案的第一條原則是講實話。
+ */
+const leftBehind = r => (r?.notRestored?.length ?? 0) + (r?.unconfirmed?.length ?? 0)
+
 async function operate(kind) {
   if (busy) return
   busy = true
