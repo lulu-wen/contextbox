@@ -42,3 +42,7 @@ Reference, for anything talking to the local server or reading the code:
 
 [github.com/lulu-wen/contextbox](https://github.com/lulu-wen/contextbox) — Apache 2.0. The backend has no
 third-party code at all; the 3D pet in the browser uses a vendored copy of Three.js 0.180.0 (MIT).
+
+---
+
+Maintaining this site: [Publishing the site](PUBLISHING.html).
