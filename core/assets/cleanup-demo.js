@@ -113,6 +113,33 @@ async function cleanOne(s, item) {
   }
 }
 
+/**
+ * 只改這一個名字／只歸檔這一個檔。
+ *
+ * 跟 cleanOne 同一個形狀，理由也一樣：清單上有五十列的時候，為了處理一個檔
+ * 而滑到最底下按總按鈕是很糟的體驗（使用者自己講的，2026-09-20）。
+ *
+ * **不是另一條路**：把勾選換成「只有它」，走跟總按鈕一模一樣的 operate('apply') ——
+ * 送的還是後端那條 `/rename/apply`／`/file/apply`，逐項結果、可復原，一個環節都不跳過。
+ *
+ * 做不成的話（那一列還在）把使用者原本的勾選放回去：他可能勾了一堆，只是想先處理這一個。
+ * 注意 store 的 apply() 自己會把 selected 清空並重載，所以這裡是**重新勾回去**，不是還原。
+ */
+async function oneOf(store, operate, item) {
+  if (busy || isDemo()) return
+  const before = new Set(store.selected)
+  for (const id of before) store.select(id, false)
+  store.select(item.itemId, true)
+  render()
+  await operate('apply')
+  // 還在清單上 ＝ 沒做成。做成了的話那一列已經不見了，勾選也不用還
+  if (store.items.some(i => i.itemId === item.itemId)) {
+    store.select(item.itemId, false)
+    for (const id of before) store.select(id, true)
+    render()
+  }
+}
+
 function skipItem(s, item) {
   if (busy || s.canUndo || s.locked) return
   let op = proposalSkips().find(op => op.pending && op.owner === s)
@@ -587,7 +614,16 @@ function renderRenames() {
     const head = document.createElement('strong')
     head.textContent = lines.head
     label.append(check, head)
-    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    // 一列一顆：不用滑到最底下按總按鈕（使用者自己講的，2026-09-20）
+    const one = document.createElement('button')
+    one.type = 'button'
+    one.className = 'cleanup-one cleanup-one-rename'
+    one.textContent = 'Rename'
+    one.disabled = busy
+    one.onclick = () => oneOf(renames, renameOperate, item)
+    // one 掛在 row 上、**不可以掛進 label**：真瀏覽器裡點 label 底下的按鈕
+    // 會連帶把那個勾選框切掉，按一下「Rename」順便偷偷取消勾選。
+    row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     attachPreview(row, item.itemId)
     box.append(row)
@@ -625,7 +661,15 @@ function renderFilings() {
     const head = document.createElement('strong')
     head.textContent = lines.head
     label.append(check, head)
-    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    // 一列一顆：不用滑到最底下按總按鈕（使用者自己講的，2026-09-20）
+    const one = document.createElement('button')
+    one.type = 'button'
+    one.className = 'cleanup-one cleanup-one-file'
+    one.textContent = 'File'
+    one.disabled = busy
+    one.onclick = () => oneOf(filings, filingOperate, item)
+    // 同上：掛在 row 上，不可以掛進 label
+    row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     attachPreview(row, item.itemId)
     box.append(row)

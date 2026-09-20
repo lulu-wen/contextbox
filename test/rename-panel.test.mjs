@@ -261,3 +261,74 @@ describe('面板的「建議的名字」區', () => {
     assert.equal(ui.$('cleanup-rename-undo').hidden, true)
   })
 })
+
+// ═══ 一列一顆「Rename」（2026-09-20，使用者：不用滑到最下面）═══
+
+const oneButtons = ui => rows(ui).map(r => r.all('BUTTON').find(b => b.textContent === 'Rename'))
+
+describe('每一列自己的「Rename」', () => {
+  const two = () => [
+    suggestion(),
+    suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', suggested: '資料結構_期中考範圍.txt' }),
+  ]
+
+  test('每一列都有一顆，而且不在 <label> 裡（點它不可以順便切掉勾選框）', async t => {
+    const ui = await open(t, { suggestions: two() })
+    assert.equal(oneButtons(ui).filter(Boolean).length, 2)
+    for (const row of rows(ui)) {
+      const label = row.all('LABEL')[0]
+      assert.ok(!label.all('BUTTON').some(b => b.textContent === 'Rename'),
+        '按鈕放進 label 裡，真瀏覽器點下去會連帶取消那一列的勾選')
+    }
+  })
+
+  test('**只送那一列**，別的都不送 —— 走的是同一條 /rename/apply', async t => {
+    const applied = []
+    const ui = await open(t, {
+      suggestions: two(),
+      onApply: body => {
+        applied.push(body)
+        return { results: body.items.map(i => ({ itemId: i.itemId, ok: true, from: 'IMG_2041.txt', to: i.to, why: '改好了。' })), remaining: 0 }
+      },
+    })
+    await oneButtons(ui)[1].onclick()
+    assert.deepEqual(applied, [{ items: [{ itemId: 'it-2', to: '資料結構_期中考範圍.txt' }] }])
+    assert.match(ui.$('cleanup-result').textContent, /Renamed 1/)
+  })
+
+  test('原本勾了別的：那幾個**不會被一起改掉**', async t => {
+    const applied = []
+    const ui = await open(t, {
+      suggestions: two(),
+      onApply: body => {
+        applied.push(body)
+        return { results: body.items.map(i => ({ itemId: i.itemId, ok: true, from: 'x', to: i.to, why: '改好了。' })), remaining: 0 }
+      },
+    })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await oneButtons(ui)[1].onclick()
+    assert.deepEqual(applied.flatMap(b => b.items.map(i => i.itemId)), ['it-2'],
+      '按第二列的按鈕，第一列勾著的檔不可以被一起改名')
+  })
+
+  test('沒改成（那一列還在）→ 原本的勾選放回去', async t => {
+    // 使用者可能勾了一堆，只是想先處理其中一個。失敗了不可以把他的勾選吃掉。
+    let round = 0
+    const ui = await open(t, {
+      suggestions: two(),
+      onApply: body => {
+        round++
+        return { results: body.items.map(i => ({ itemId: i.itemId, ok: false, why: '那個名字已經有人用了。' })), remaining: 0 }
+      },
+    })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await oneButtons(ui)[1].onclick()
+    assert.equal(round, 1)
+    assert.deepEqual(boxes(ui).map(b => b.checked), [true, false],
+      '第一列的勾要還回去，第二列（剛剛失敗那個）不要自己勾著')
+  })
+})
