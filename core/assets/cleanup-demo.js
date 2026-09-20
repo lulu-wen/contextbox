@@ -8,7 +8,7 @@ import {
 } from './pet-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
-  folderPhrase, createBursts, applyBurstDefaults, burstGroupLine, burstNote,
+  folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
   modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
   createLearned, learnedLines,
   createSettings, settingLabel,
@@ -32,7 +32,6 @@ const alertButton = $('quaso-cleanup-alert')
 let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
 // 本機模式：接真的路由，會真的搬動監看資料夾（cleanup.roots）裡的檔案。介面跟 demo 一樣，渲染共用。
 let real = null
-let backgroundProposal = null
 // 連拍截圖（P0）：組與縮圖。示範模式不用它（那時畫面上是假的清單）。
 const bursts = createBursts((path, init) => window.api(path, init))
 // 建議的名字（P3）：模型看得出內容、但檔名沒取名的檔。示範模式不用它（同上）。
@@ -212,6 +211,26 @@ const bytes = formatBytes
 const HISTORY_NOTE = {
   demo: 'Simulated action log · one row per cleanup. Tick one and every file from that cleanup comes back. No real file is touched.',
   local: 'One row per cleanup. Tick one and the files it moved go back where they were.',
+}
+
+/**
+ * 連拍的主動詢問（P0）：寵物主動說一句，並且給一顆「Look at these」直接打開連拍區。
+ *
+ * **為什麼不能只靠寵物狀態**：泡泡平常寫的是狀態算出來的那一句（getPetMessage）。
+ * 「這 3 張看起來是同一組」是狀態算不出來的 —— 狀態只有 found，算不出是哪幾張、
+ * 也開不了連拍區。PR #8 把這一段換成「候選數變了就進 found」，結果是泡泡改講
+ * 「Ready to review: Bursts (1)」、那顆按鈕永遠藏著，使用者被告知有東西卻點不進去。
+ *
+ * dataset.ask 讓渲染那一支（ui.html 的 renderPetMessage）在狀態沒變的期間不要把它蓋掉；
+ * 狀態一變就換回去。名字刻意不沿用舊那支泛用泡泡 —— 它的工作已經被 reportOperationProblem
+ * 接走，test/pet-state.test.mjs 會擋住那個名字回來，這裡只負責連拍這一種問句。
+ */
+function burstAsk(message) {
+  $('quaso-status').dataset.ask = '1'
+  $('quaso-status').textContent = message
+  $('quaso-burst-open').hidden = false
+  $('quaso-dialog').hidden = false
+  $('quaso-stage').setAttribute('aria-expanded', 'true')
 }
 
 // ── 掃描問題（稽核第三輪 R3-12b）────────────────────────────────
@@ -994,7 +1013,7 @@ const SECTION_BUTTONS = {
 
 /** 每一區現在有幾筆。空的（0）那一區的標籤會變灰（always 的那幾區不看這個數字）。 */
 function sectionCounts() {
-  const s = session() ?? backgroundProposal
+  const s = session()
   if (isDemo()) return { clean: s ? proposalItems(s).length : 0, bursts: 0, renames: 0, filings: 0, learned: 0, settings: 0 }
   const inBurst = bursts.memberIds()
   return {
@@ -1138,11 +1157,22 @@ function render() {
     // 模型對這個檔的看法（P2）。示範模式沒有這一段（那時畫面上是假的清單）
     if (!isDemo()) appendModelOpinion(card, item.model)
     if (item.vetoed) card.append(paragraph('⚠ ' + uiSafeName(item.vetoed), 'evidence'))
+    // 「不記得這個檔存了什麼」就點開看一眼（P6）
+    attachPreview(card, item.itemId)
     $('cleanup-list').append(card)
   }
   if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length
     && !$('cleanup-filings').children.length) {
     $('cleanup-list').append(paragraph(isDemo() ? 'Every sample file has been dealt with.' : 'Nothing to clean up right now.'))
+  }
+  $('cleanup-needs-human').replaceChildren()
+  for (const item of (isDemo() ? data.needsHuman : s.needsHuman) ?? []) {
+    // 這一區最需要「看內容」：太大、讀不到的檔，使用者更不記得它是什麼
+    const row = document.createElement('div')
+    row.className = 'cleanup-human-row'
+    row.append(paragraph(`Needs your eyes: ${uiSafeName(item.name)} — ${uiSafeName(item.why)} (not included in the cleanup)`))
+    attachPreview(row, item.itemId)
+    $('cleanup-needs-human').append(row)
   }
   summary()
   // **一定要在 summary() 之後**：summary 會依狀態決定每顆按鈕的 hidden，
@@ -1221,6 +1251,7 @@ async function openCleanupPanel() {
   $('cleanup-result').hidden = true
   $('cleanup-settings').replaceChildren()
   $('cleanup-list').replaceChildren(paragraph('Loading candidate files…'))
+  $('cleanup-needs-human').replaceChildren()
   $('cleanup-summary').textContent = ''
   if (!panel.open) panel.showModal()
   // 每次打開都是新的一輪 —— **除非上一輪結果還不明**。那時候丟掉就會撞上
@@ -1790,21 +1821,19 @@ async function pollHealth() {
  *   3. **沒變就不重畫** —— 每五秒重畫一次會把使用者正在點的東西抽掉。
  */
 async function refreshSuggestions() {
-  if (isDemo() || busy || historyBusy || actionsInFlight > 0 || historyPanel.open) return
+  // **面板沒開就不抓**：這四條是四個請求，關著的面板每五秒打一輪只是白花後端的力氣
+  // （test/panel-sections.test.mjs「面板沒開的時候不要一直打後端」）。連拍那一條更糟 ——
+  // 關著先抓一次、打開再抓一次，同一張縮圖會被下載兩次。
+  if (isDemo() || busy || historyBusy || actionsInFlight > 0 || !panel.open) return
   const before = suggestionSignature()
   try {
-    if (!session()) {
-      const snapshot = createReal((path, init) => window.api(path, init))
-      await snapshot.load()
-      backgroundProposal = snapshot
-    }
     await bursts.load()          // **不套預設**：那是打開面板那一刻的事
     await renames.load()
     await filings.load()
     await learned.load()
   } catch { return }             // 讀不到就維持畫面上的樣子
   // Background refresh must preserve unsaved settings edits.
-  if (suggestionSignature() !== before && panel.open) {
+  if (suggestionSignature() !== before) {
     pollRedraw = true
     try { render() } finally { pollRedraw = false }
   }
@@ -1851,7 +1880,9 @@ async function askAboutBursts(state) {
   // 記太多沒有意義：留最近 200 組（一組一個短字串）
   if (burstAsked.size > 200) for (const id of [...burstAsked].slice(0, burstAsked.size - 200)) burstAsked.delete(id)
   candidatesAcknowledged = false
+  // 先讓狀態落定（updateAlert 會換狀態 → 清掉 dataset.ask），再寫這一句，否則會被自己洗掉。
   updateAlert()
+  burstAsk(burstAskMessage(fresh))
 }
 /** S 鍵切換「Pet state: …」；齒輪由設定面板負責。 */
 function togglePetStateLine() {

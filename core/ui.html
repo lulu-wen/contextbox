@@ -561,6 +561,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <span id="cleanup-page" aria-live="polite"></span>
       <button id="cleanup-next" type="button">Next</button>
     </div>
+    <!-- 「需要你查看」（太大、讀不到的檔）。不列進清理提案，但一定要讓人看得到 ——
+         少了這一區，這些檔會安靜地消失在畫面上，使用者以為自己全部處理完了。 -->
+    <div id="cleanup-needs-human" class="cleanup-note"></div>
     <p id="cleanup-summary" aria-live="polite"></p>
     <p id="cleanup-space-note" class="cleanup-note">Cleanup simulates moving files into a quarantine you can undo. That is not the same as freeing disk space.</p>
   </div>
@@ -612,8 +615,16 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     const status = document.getElementById('quaso-status')
     const state = getPetState()
     const data = getPetMessageData()
-    status.textContent = getPetMessage(state, data)
     document.getElementById('quaso-problem-ack').hidden = state !== 'worried' || !data.canAcknowledge
+    // 連拍的主動詢問（askAboutBursts）講的是狀態算不出來的事：「這 3 張看起來是同一組」。
+    // 沒有這道閘，每五秒一次的輪詢（updateAlert → messagechange）就會在使用者還沒看完之前
+    // 把它換成狀態那一句，那顆「Look at these」也就變成一顆沒有上下文的孤兒按鈕。
+    // 狀態一變（開始清理、出問題）就作廢，換回狀態算出來的話。
+    if (status.dataset.petState !== state) {
+      status.dataset.petState = state
+      status.dataset.ask = ''
+    } else if (status.dataset.ask === '1') return
+    status.textContent = getPetMessage(state, data)
   }
   document.addEventListener('quaso:statechange', renderPetMessage)
   document.addEventListener('quaso:messagechange', renderPetMessage)

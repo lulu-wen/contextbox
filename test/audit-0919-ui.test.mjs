@@ -59,12 +59,17 @@ describe('寵物對話依目前 state 與操作資料產生', () => {
   const cases = [
     ['idle', {}, 'I keep an eye on your download folders for files worth clearing out.'],
     ['thinking', {}, 'Looking through the files. One moment…'],
-    ['found', { candidateCount: 3476 }, 'Found 3476 files that can probably be cleaned up. Have a look.'],
-    ['found', { candidateCount: 1 }, 'Found 1 file that can probably be cleaned up. Have a look.'],
-    ['found', { candidateCount: 3476, candidates: Array.from({ length: 1000 }, () => ({ reason: 'old-download' })) },
-      'Starting with 1000 of them. That includes 1000 downloads nobody has touched in a long time.'],
-    ['found', { candidates: [{ kind: 'duplicate' }, { reasons: [{ kind: 'partial' }] }] },
-      'Found 2 files that can probably be cleaned up. That includes 1 duplicate, 1 half-finished download.'],
+    // found 這一句在 PR #8 改成「列出每一區的數字」（規格在 test/pet-state.test.mjs）。
+    // 為什麼舊的那一句留不住：寵物現在**不是只有待清檔案才進 found** —— 建議的名字、
+    // 歸檔、連拍、學到的，任何一區有東西都算。只有一筆改名建議的時候，舊的那一句會說
+    // 「Found 0 files that can probably be cleaned up」，指著一個空的清理區。
+    // 代價是「That includes 3 duplicates」那一段分類不見了（PR #8 的取捨，這裡照它記下來）。
+    ['found', { sectionCounts: { clean: 3476 } }, 'Ready to review: Cleanup (3476). Have a look.'],
+    ['found', { sectionCounts: { clean: 1 } }, 'Ready to review: Cleanup (1). Have a look.'],
+    ['found', { sectionCounts: { clean: 3476, renames: 2 }, candidates: Array.from({ length: 1000 }, () => ({ reason: 'old-download' })) },
+      'Ready to review: Cleanup (3476), Suggested names (2). Have a look.'],
+    ['found', { sectionCounts: { bursts: 1, learned: 4 }, candidates: [{ kind: 'duplicate' }, { reasons: [{ kind: 'partial' }] }] },
+      'Ready to review: Bursts (1), Learned (4). Have a look.'],
     ['cleaning', { candidates: [{}, {}] }, 'Tidying up 2 files…'],
     ['restoring', {}, 'Putting your files back…'],
     ['happy', { lastAction: 'cleaning', freedBytes: 1024 }, 'Cleanup done. Moved 1.0 KB into quarantine ✨'],
@@ -1840,7 +1845,7 @@ describe('候選檔案提醒只持續到使用者打開清理面板', () => {
     await ui.click('quaso-cleanup-alert')
 
     assert.equal(petState(ui), 'idle')
-    assert.equal(ui.$('quaso-status').textContent, '我會幫你留意 Downloads 裡有沒有可以整理的檔案！')
+    assert.equal(ui.$('quaso-status').textContent, 'I keep an eye on your download folders for files worth clearing out.')
     await ui.poll()
     assert.equal(petState(ui), 'idle', 'health 輪詢不應再次提醒已查看的同批候選')
   })
@@ -2676,7 +2681,7 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     const ui = await mountUi(t, s)
     await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health')
     assert.equal(petState(ui), 'found')
-    assert.equal(ui.$('quaso-status').textContent, 'Found 1 file that can probably be cleaned up. Have a look.')
+    assert.equal(ui.$('quaso-status').textContent, 'Ready to review: Cleanup (1). Have a look.')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-scan-problems').hidden, true)
     assert.equal(ui.$('cleanup-scan-problems').textContent, '')
