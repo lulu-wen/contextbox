@@ -192,10 +192,15 @@ export function suggestedFileName(currentName: string, suggested: unknown): stri
 export const RENAMABLE_STATUSES = ['candidate', 'kept', 'restored'] as const
 
 /**
- * 信心「低」的不提議（不變量 7）。**只有「高」與「中」算數** ——
+ * 信心「低」的不提議（不變量 7）。**只有 high 與 medium 算數** ——
  * 空的、看不懂的一律當成不夠有把握：這個方向錯了只是少提議一個，反過來是拿模型的胡說去改檔名。
+ *
+ * **舊資料庫裡是中文的**（英文化之前存的高／中／低）。不認的話，一個已經跑了幾百個檔的人
+ * 升級之後會發現所有建議整個消失，而畫面上完全看不出為什麼（實際發生了，2026-09-20）。
+ * 那幾筆遲早會被新的提示詞重問一次覆蓋掉，在那之前照樣算數。
  */
-export const confidentEnough = (c: unknown): boolean => c === 'high' || c === 'medium'
+export const confidentEnough = (c: unknown): boolean =>
+  c === 'high' || c === 'medium' || c === '高' || c === '中'
 
 export type RenameSuggestion = {
   itemId: string

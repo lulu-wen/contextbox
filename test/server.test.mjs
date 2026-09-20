@@ -260,3 +260,46 @@ test('**跑完不可以在家目錄留下任何東西**', async () => {
   assert.ok(!existsSync(join(FAKE_HOME, '.contextbox')),
     '測試在家目錄建了 .contextbox —— 有路徑去讀了使用者的設定檔')
 })
+
+// ── 重新整理不要 401（2026-09-20）──────────────────────────────
+//
+// 頁面載入之後會把網址上的 ?k= 拿掉（鑰匙不該留在網址列與截圖裡），
+// 所以按一下重新整理就變成「這個網址沒有鑰匙」。帶鑰匙進來的那一次發一個 session cookie，
+// 之後這個瀏覽器重新整理就進得來 —— 但那個 cookie **只開得了頁面，開不了 API**。
+
+/** 一次 GET，cookie 自己帶。 */
+const page = (path, { cookie = '', dest = 'document' } = {}) =>
+  fetch(base + path, { headers: { ...(cookie ? { cookie } : {}), 'sec-fetch-dest': dest }, redirect: 'manual' })
+
+test('帶鑰匙進來 → 發 cookie；之後不帶鑰匙也開得了（那就是重新整理）', async () => {
+  const first = await page(`/?k=${encodeURIComponent(TOKEN)}`)
+  assert.equal(first.status, 200)
+  const setCookie = first.headers.get('set-cookie') ?? ''
+  assert.match(setCookie, /cb_session=/)
+  assert.match(setCookie, /HttpOnly/i, '頁面自己的 JS 不可以讀得到它')
+  assert.match(setCookie, /SameSite=Strict/i, '別的網站連過來不可以帶上它')
+
+  const id = /cb_session=([^;]+)/.exec(setCookie)[1]
+  const again = await page('/', { cookie: `cb_session=${id}` })
+  assert.equal(again.status, 200, '重新整理要進得來')
+  assert.match(await again.text(), /<html/i)
+})
+
+test('沒有 cookie、也沒有鑰匙 → 照舊 401', async () => {
+  assert.equal((await page('/')).status, 401)
+  assert.equal((await page('/', { cookie: 'cb_session=made-up' })).status, 401)
+})
+
+test('**cookie 只開得了頁面，開不了 API**', async () => {
+  const first = await page(`/?k=${encodeURIComponent(TOKEN)}`)
+  const id = /cb_session=([^;]+)/.exec(first.headers.get('set-cookie'))[1]
+  // 會動檔案的那幾條照樣要 header 裡的 token —— 不然這個 cookie 就變成 CSRF 的入口
+  const r = await fetch(base + '/cleanup/candidates', { headers: { cookie: `cb_session=${id}` } })
+  assert.equal(r.status, 401)
+})
+
+test('cookie 不是拿來 iframe 的：sec-fetch-dest 不是 document 一律擋', async () => {
+  const first = await page(`/?k=${encodeURIComponent(TOKEN)}`)
+  const id = /cb_session=([^;]+)/.exec(first.headers.get('set-cookie'))[1]
+  assert.equal((await page('/', { cookie: `cb_session=${id}`, dest: 'iframe' })).status, 403)
+})

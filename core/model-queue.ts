@@ -114,18 +114,27 @@ export type PendingItem = { id: string; name: string; source: ModelSource }
  * - 已經記過跳過的，**除非那之後內容被重讀過**（file_texts.at 比跳過的時間新 ＝ 檔改過了）
  * - 不在清理範圍底下、狀態不在的、讀不到的
  */
+/**
+ * 還沒問過的檔。
+ *
+ * **「問過」是指用現在這一版提示詞問過**（`prompt_version`）—— 快取鍵本來就含提示詞版本，
+ * 但這裡以前只看「有沒有任何一筆看法」。結果換提示詞之後（v1 → v2-en）：舊答案佔著
+ * 「已經讀過」的位置永遠不會被重問，而它們的欄位是舊格式的（中文的信心值），
+ * 於是所有建議整個消失而且沒有人會去修它（實際發生了，2026-09-20）。
+ */
 export function pendingItems(db: DatabaseSync, roots: readonly string[], limit: number = ROUND_MAX_ITEMS): PendingItem[] {
   const rows = db.prepare(
     `SELECT i.id, i.path, i.name, i.ext, i.bytes, i.sha256, i.mtime
        FROM file_items i
       WHERE ${LIVE_ITEM}
         AND NOT EXISTS (SELECT 1 FROM model_skips s WHERE s.item_id = i.id AND s.at >= ${SKIP_CONTENT_AT})
-        AND NOT EXISTS (SELECT 1 FROM model_views v WHERE v.item_id = i.id AND v.at >= ${CONTENT_AT})
+        AND NOT EXISTS (SELECT 1 FROM model_views v WHERE v.item_id = i.id AND v.at >= ${CONTENT_AT}
+                           AND v.prompt_version = ?)
         AND NOT EXISTS (SELECT 1 FROM model_views v JOIN file_items j ON j.id = v.item_id
                          WHERE j.id <> i.id AND i.sha256 IS NOT NULL AND j.sha256 = i.sha256
-                           AND v.at >= ${SIB_CONTENT_AT})
+                           AND v.at >= ${SIB_CONTENT_AT} AND v.prompt_version = ?)
       ORDER BY i.last_seen_at DESC, i.id`
-  ).all() as ItemRow[]
+  ).all(PROMPT_VERSION, PROMPT_VERSION) as ItemRow[]
 
   const out: PendingItem[] = []
   for (const r of rows) {

@@ -35,7 +35,10 @@ The model is drawn by `core/assets/pet-viewer.js`; after you update the server, 
 page from the address the server prints (or `node cli.mjs open`).
 ## Getting back in
 
-The page removes the key from the address bar once it has loaded, so pressing reload gives you 401.
+The page removes the key from the address bar once it has loaded. **Reloading still works**: the visit that
+carried the key also set a session cookie (`HttpOnly`, `SameSite=Strict`, this browser only, gone when the
+server restarts). That cookie opens the page and nothing else — every route that touches a file still wants
+the token in a header, so it is not a way in for another site.
 
 To open it in another browser, or to bookmark it, use the full address `node cli.mjs open` prints —
 the key itself is stable (it lives in `~/.contextbox/token` and is generated once), so that address keeps

@@ -184,6 +184,50 @@ function uiHtml(token: string): string {
     .replaceAll('__TOKEN__', JSON.stringify(token).replace(/</g, '\\u003c'))
 }
 
+/**
+ * **重新整理不要 401。**
+ *
+ * 頁面載入之後會把網址上的 `?k=` 拿掉（不然鑰匙會留在網址列、歷史紀錄與截圖裡），
+ * 於是按一下重新整理就變成「這個網址沒有鑰匙」—— 使用者完全不知道自己做錯了什麼。
+ *
+ * 做法：**帶著對的 `?k=` 進來的那一次，順手發一個 session cookie**，之後這個瀏覽器
+ * 重新整理就進得來。安全上的取捨：
+ *   · `HttpOnly`：頁面自己的 JavaScript 讀不到它（就算頁面被注入也偷不走）
+ *   · `SameSite=Strict`：別的網站連過來不會帶上它 —— 惡意網頁開不了這一頁，
+ *     也就拿不到印在頁面裡的 token
+ *   · **只開得了頁面，開不了 API**：每一條會動檔案的 route 照樣要 header 裡的 token，
+ *     cookie 一律不算數。所以這個 cookie 不會變成 CSRF 的入口
+ *   · 存在記憶體裡：server 重開就全部失效（那時候本來就會印一個新網址）
+ */
+const SESSION_COOKIE = 'cb_session'
+/** 最多記幾個瀏覽器（同一台機器開很多分頁也只是幾個）。滿了丟最舊的。 */
+const MAX_SESSIONS = 16
+/** 一個 session 活多久（毫秒）。過了就要重新用帶鑰匙的網址進來一次。 */
+const SESSION_MS = 12 * 60 * 60_000
+
+function newSession(live: Map<string, number>): string {
+  const id = randomBytes(32).toString('base64url')
+  live.set(id, Date.now() + SESSION_MS)
+  // 丟掉過期的，再丟最舊的（Map 照插入順序）
+  for (const [k, until] of live) if (until <= Date.now()) live.delete(k)
+  while (live.size > MAX_SESSIONS) live.delete(live.keys().next().value as string)
+  return id
+}
+
+function sessionOk(live: Map<string, number>, cookieHeader: unknown): boolean {
+  const raw = typeof cookieHeader === 'string' ? cookieHeader : ''
+  for (const part of raw.split(';')) {
+    const [k, ...rest] = part.trim().split('=')
+    if (k !== SESSION_COOKIE) continue
+    const id = rest.join('=')
+    const until = live.get(id)
+    if (until === undefined) return false
+    if (until <= Date.now()) { live.delete(id); return false }
+    return true
+  }
+  return false
+}
+
 export function start(opts: {
   port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string
   /**
@@ -239,6 +283,9 @@ export function start(opts: {
   // 猜一個家目錄底下的位置等於在沒人講過的地方搬使用者的檔。那時 /file/* 回 BAD_CONFIG
   // （空字串會被 filing-routes 的 scopeOf 擋下來），這正是文件寫的那一條 500。
   const filedDir = opts.filed ?? (loaded ? cfg().filed : '')
+
+  /** 這一次 server 活著期間，哪些瀏覽器用對的鑰匙進來過（重開就全部失效）。 */
+  const sessions = new Map<string, number>()
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -332,8 +379,10 @@ export function start(opts: {
         return send(403, { error: 'This page can only be opened directly in a browser' })
       }
       // **沒帶對的 k 不給頁面** —— 頁面裡印著 token，而本機任何行程都能不帶 Origin 來拿（RC16）。
+      // 例外只有一個：**這個瀏覽器已經用對的鑰匙進來過**（sessions，見上面那一段）。
       // 回純文字：這是給人在瀏覽器分頁裡看的。
-      if (!sameToken(url.searchParams.get('k') ?? '', token)) {
+      const withKey = sameToken(url.searchParams.get('k') ?? '', token)
+      if (!withKey && !sessionOk(sessions, req.headers.cookie)) {
         res.writeHead(401, { ...baseHeaders(), 'content-type': 'text/plain; charset=utf-8' })
         return res.end('This address is missing its key. Open it with `node cli.mjs open`, or with the address the server printed at startup.\n')
       }
@@ -343,6 +392,8 @@ export function start(opts: {
       res.writeHead(200, {
         ...baseHeaders(),
         'content-type': 'text/html; charset=utf-8',
+        // 帶鑰匙進來的那一次才發：之後重新整理就不用鑰匙（HttpOnly，頁面自己也讀不到）
+        ...(withKey ? { 'set-cookie': `${SESSION_COOKIE}=${newSession(sessions)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_MS / 1000)}` } : {}),
         // 這一頁只准跟自己講話：token 印在裡面，連 img 都不准往外連
         'content-security-policy':
           "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "

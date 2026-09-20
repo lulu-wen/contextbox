@@ -1418,7 +1418,9 @@ switch (cmd) {
         onError: w => noteError(new Error(w), 'model'),
         onProgress: p => say(thinkLine(p)),
       })
-      rounds++
+      // **空轉的那一輪不算**：`--all` 的最後一圈一定是「沒東西了」，
+      // 把它算進去的話一個檔會被報成「2 rounds」。
+      if (r.total) rounds++
       for (const k of ['total', 'asked', 'cached', 'skipped', 'failed']) sum[k] += r[k]
       sum.cancelled = sum.cancelled || r.cancelled
       sum.stopped = sum.stopped ?? r.stopped
@@ -2083,8 +2085,11 @@ switch (cmd) {
       }
     }
     if (modelEnabled(config)) {
-      say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the background, one at a time.`)
+      say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the`
+        + ` background, ${THINK_LANES > 1 ? `${THINK_LANES} at a time` : 'one at a time'}.`)
       say('  (What the model says is an opinion and the panel labels it as such; nothing is renamed or moved because of it.)')
+      // 幾百個檔的時候「每十分鐘二十個」要跑一整天。講一次怎麼現在就做完。
+      say('  In a hurry? In another window: CONTEXTBOX_THINK_CONCURRENCY=4 node cli.mjs think --all')
       // 開機先讓掃描與面板站穩再問（模型一個檔要 7～10 秒）
       setTimeout(() => { void thinkOnce() }, Math.min(3000, thinkMs)).unref()
       thinkTimer = setInterval(() => { void thinkOnce() }, thinkMs)

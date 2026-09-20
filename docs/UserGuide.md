@@ -686,9 +686,10 @@ that ships in this repo. The page loads nothing from a CDN.
   batch — keep just the newest?", and it only asks once per group.
 
 <div markdown="span" class="alert alert-info">:information_source: **Note:** the page strips the key out of
-the address bar once it has loaded, so pressing reload gives you 401. To open the panel again — in another
-browser, or from a bookmark — use the full address from `node cli.mjs open`. The key itself is stable: it
-lives in `~/.contextbox/token` and is generated once.</div>
+the address bar once it has loaded, so it does not end up in your history or a screenshot. Reloading still
+works — the visit that carried the key also set a session cookie for this browser. To open the panel in a
+*different* browser, or after restarting the server, use the full address from `node cli.mjs open`. The key
+itself is stable: it lives in `~/.contextbox/token` and is generated once.</div>
 
 Two keys work for demonstrating without real files: **D** swaps in a fixture list of candidates, and **O**
 simulates the backend being offline. Press the same key again to turn it off. Neither key fires while you are
@@ -783,10 +784,13 @@ substituted. In `cmd.exe` use `set NAME=value` with no quotes. There is a Start 
 `os\windows\install.ps1` that does not need administrator rights. Full details in
 [INSTALL.md](https://github.com/lulu-wen/contextbox/blob/main/INSTALL.md).
 
-**Q**: Why does reloading the panel give me 401?<br>
-**A**: Because the page removes the key from the address bar as soon as it loads, so the address you would be
-reloading no longer has one. That is the point — the address with the key in it should not end up in your
-browser history or in a bookmark by accident. Run `node cli.mjs open` to get a working address again.
+**Q**: Why did reloading the panel used to give me 401, and what changed?<br>
+**A**: The page removes the key from the address bar as soon as it loads, so the address with the key in it
+does not end up in your history or in a screenshot. That used to mean a reload had no key. Now the visit that
+carried the key also sets a session cookie — `HttpOnly`, `SameSite=Strict`, this browser only, and gone when
+the server restarts — so reloading works. That cookie opens the page and nothing else: every route that
+touches a file still requires the token in a header. In a different browser, or after restarting the server,
+run `node cli.mjs open` for a fresh address.
 
 **Q**: Why can't it file to another drive?<br>
 **A**: Because moving a file across devices means copying it and then deleting the original, and deleting is
@@ -816,7 +820,8 @@ Scanning and every list still work, and the two halves behave slightly different
 
 ## Known issues
 
-1. **Reloading the panel gives 401.** By design, but it surprises people every time. Use `node cli.mjs open`.
+1. **A different browser needs a fresh address.** The session cookie belongs to the browser you opened it in,
+   and it does not survive a server restart. `node cli.mjs open` prints a working address.
 1. **Cross-device moves are not supported**, for cleanup or for filing. Items on a different drive from
    quarantine or from `Filed` fail one by one with a reason. There is no plan to add copy-then-delete.
 1. **OneDrive Files On-Demand is untested.** If your Downloads folder is full of online-only placeholders, a

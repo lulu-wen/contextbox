@@ -879,3 +879,30 @@ describe('這一期不做的事', () => {
     assert.deepEqual(fake.requests, [])
   })
 })
+
+describe('稽核 ・ 換了提示詞之後（2026-09-20）', () => {
+  test('**舊提示詞問到的答案不算「讀過」**：換版本之後要重問', t => {
+    const s = sandbox(t, { 'a.txt': 'Operating Systems, chapter 6: deadlock. The four necessary conditions are mutual exclusion, hold and wait, no preemption and circular wait.' })
+    const id = s.idOf('a.txt')
+    assert.equal(pendingItems(s.db, [s.downloads]).length, 1, '前提：還沒問過')
+
+    // 用**舊的**提示詞版本存一筆（英文化之前就是這樣）
+    putModelView(s.db, {
+      key: 'old-key', item_id: id, source: 'text',
+      course: '作業系統', topic: '死結', kind: '筆記', suggested_name: 'x',
+      evidence: 'e', confidence: '高', model: 'm', prompt_version: 'v1',
+      at: new Date().toISOString(), seeded: 0,
+    })
+    assert.equal(pendingItems(s.db, [s.downloads]).length, 1,
+      '舊版本的答案不可以佔住「已經讀過」—— 不然換提示詞之後那個檔永遠不會被重問')
+
+    // 現在這一版問過了才算
+    putModelView(s.db, {
+      key: 'new-key', item_id: id, source: 'text',
+      course: 'Operating Systems', topic: 'Deadlock', kind: 'Notes', suggested_name: 'x',
+      evidence: 'e', confidence: 'high', model: 'm', prompt_version: PROMPT_VERSION,
+      at: new Date().toISOString(), seeded: 0,
+    })
+    assert.equal(pendingItems(s.db, [s.downloads]).length, 0)
+  })
+})
