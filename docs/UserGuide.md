@@ -30,14 +30,32 @@ never in scope.
    cd contextbox
    ```
 
+1. Point it at a model. Put your endpoint in `~/.contextbox/config.json` and your key in the environment:
+
+   ```json
+   { "model": { "baseUrl": "http://127.0.0.1:11434/v1", "name": "your-model", "keyEnv": "CONTEXTBOX_MODEL_KEY" } }
+   ```
+
+   ```bash
+   export CONTEXTBOX_MODEL_KEY="..."     # local models usually need no key
+   ```
+
+   Local, self-hosted or cloud is your call, and the three things your endpoint has to support are in
+   [Choosing a model](model-setup.html).
+
 1. Build the demo sandbox.
 
    ```bash
-   node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+   node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model
    ```
 
-   `--seed-model` puts pre-recorded answers in the cache, so the whole flow works with no model and no network.
-   The screen marks every one of them `[demo answer]`.
+   `--live-model` copies the model settings you just wrote into the sandbox and **seeds nothing** — every
+   sentence you are about to see is one this model produced, just now, about these files.
+
+   <div markdown="span" class="alert alert-info">:information_source: **No model to hand?** Use
+   `--seed-model` instead. It connects to nothing: answers recorded from an earlier real run go into the
+   cache, and the screen marks each one `[demo answer]`. Everything below works the same, and cleanup,
+   duplicate detection and burst grouping never needed a model in the first place.</div>
 
 1. Paste the environment variables it printed into the same terminal. They look like this:
 
@@ -843,7 +861,7 @@ Every flag, every exit code and every edge case is in the [CLI reference](cli.ht
 | **Take a file in by hand** | `node cli.mjs propose FILE…` | `node cli.mjs propose ~/Desktop/notes.txt` |
 | **See the inbox** | `node cli.mjs list [STATUS]` | `node cli.mjs list` |
 | **Search** | `node cli.mjs search WORDS` | `node cli.mjs search deadlock` |
-| **Build a demo sandbox** | `node tools/demo-setup.mjs --dir DIR [--seed-model \| --live-model]` | `node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model` |
+| **Build a demo sandbox** | `node tools/demo-setup.mjs --dir DIR [--live-model \| --seed-model]` | `node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model` |
 
 ### Exit codes
 

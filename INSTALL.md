@@ -4,8 +4,13 @@
 not one byte of your own files is touched:
 
 ```bash
-node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model
 ```
+
+`--live-model` uses whatever model you have configured (see [docs/model-setup.md](docs/model-setup.md)) and
+pre-records nothing, so everything on screen is what your model just said about these files. **No model to
+hand?** Use `--seed-model` instead: it connects to nothing and replays answers from an earlier real run,
+marking each one `[demo answer]`.
 
 The step-by-step walkthrough is in [docs/DEMO.md](docs/DEMO.md). Below is how to install it for real.
 
@@ -34,8 +39,15 @@ node --version                        # check for v24 or higher
 git clone https://github.com/lulu-wen/contextbox
 cd contextbox
 
-node tools/demo-setup.mjs --dir $env:TEMP\contextbox-demo --seed-model
+# Put your model endpoint in %USERPROFILE%\.contextbox\config.json and the key in the environment
+# first, so the demo really asks it — see docs\model-setup.md
+$env:CONTEXTBOX_MODEL_KEY = 'your key'     # local models usually need no key
+
+node tools/demo-setup.mjs --dir $env:TEMP\contextbox-demo --live-model
 ```
+
+No model to hand? Swap the last line for `--seed-model`; it connects to nothing and replays answers from an
+earlier real run. Everything below behaves the same either way.
 
 It prints **the environment variables to paste**. On Windows it prints them in PowerShell form, with
 `$env:USERPROFILE` substituted — that is what the home directory is called there.
@@ -51,8 +63,7 @@ node cli.mjs pet              # open the panel (it prints the address, key inclu
 ```
 
 **The whole sandbox lives in `%TEMP%\contextbox-demo`. Delete that folder and nothing is left behind.**
-The walkthrough with the expected output of every line is in [docs/DEMO.md](docs/DEMO.md); to ask a real
-model instead, use `--live-model` (see [docs/model-setup.md](docs/model-setup.md)).
+The walkthrough with the expected output of every line is in [docs/DEMO.md](docs/DEMO.md).
 
 In `cmd.exe`, write the environment variables as `set NAME=value` — no quotes.
 

@@ -18,7 +18,8 @@ What to shoot, and the state to set up before each one, is in
 Use a demo sandbox, never your real Downloads:
 
 ```bash
-node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model
+# (--seed-model works too, but then every model line in the screenshots carries a "[demo answer]" badge)
 # paste the environment variables it prints, then:
 node cli.mjs cleanup scan
 node cli.mjs pet            # open the address it prints
@@ -54,9 +55,8 @@ theme's styling (not bare HTML), and the nine images load.
 * **A private repo needs GitHub Pro for Pages.** On a free account the repo has to be public first.
 * **Publishing makes the whole history public, not just the current files.** Anything ever committed
   stays reachable.
-* Two folders under `docs/` are still in Chinese and will be published too: `docs/api/` (the HTTP
-  reference) and `docs/reading/` (notes on prior art). Neither is linked from the User Guide, but both
-  get a URL.
+* One folder under `docs/` is still in Chinese and will be published too: `docs/api/` (the HTTP
+  reference). It is not linked from the User Guide, but it does get a URL.
 * The 3D model `core/assets/quaso_v10.glb` has no stated licence yet — see
   [ASSETS.md](https://github.com/lulu-wen/contextbox/blob/main/core/assets/ASSETS.md). Artwork does not
   inherit the repo's Apache 2.0 licence automatically; settle where it came from before going public.

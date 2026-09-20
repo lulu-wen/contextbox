@@ -1,14 +1,14 @@
-﻿# ContextBox — 從這台 Windows 移除
+﻿# ContextBox — remove it from this Windows machine
 #
 #   powershell -ExecutionPolicy Bypass -File os\windows\uninstall.ps1
 #
-# 只刪 install.ps1 建的那兩個捷徑。
-# **不碰你的資料**：~/.contextbox/ 底下的設定、資料庫、隔離區都留著。
+# Deletes only the two shortcuts install.ps1 made.
+# **Your data is left alone**: the settings, database and quarantine under ~/.contextbox/ all stay.
 
 $ErrorActionPreference = 'Stop'
 
 Write-Host ''
-Write-Host 'ContextBox 移除' -ForegroundColor Cyan
+Write-Host 'Removing ContextBox' -ForegroundColor Cyan
 
 $links = @(
   (Join-Path ([Environment]::GetFolderPath('Programs')) 'ContextBox Pet.lnk'),
@@ -19,13 +19,13 @@ $n = 0
 foreach ($l in $links) {
   if (Test-Path $l) {
     Remove-Item $l -Force
-    Write-Host "  ✓ 刪掉 $l"
+    Write-Host "  ok  deleted $l"
     $n++
   }
 }
-if ($n -eq 0) { Write-Host '  · 沒有找到任何捷徑，本來就沒裝' }
+if ($n -eq 0) { Write-Host '  -   No shortcuts found; it was not installed' }
 
-# ── 資料留著，而且要講清楚留在哪 ──────────────────────────────
+# ── The data stays, and we say exactly where ──────────────────
 $data = Join-Path $env:USERPROFILE '.contextbox'
 $quar = Join-Path $data 'quarantine'
 
@@ -33,13 +33,13 @@ Write-Host ''
 if (Test-Path $quar) {
   $items = @(Get-ChildItem $quar -Recurse -File -ErrorAction SilentlyContinue)
   $mb = if ($items.Count) { [math]::Round(($items | Measure-Object Length -Sum).Sum / 1MB, 1) } else { 0 }
-  Write-Host "隔離區還有 $($items.Count) 個檔案（$mb MB）：" -ForegroundColor Yellow
+  Write-Host "Quarantine still holds $($items.Count) files ($mb MB):" -ForegroundColor Yellow
   Write-Host "  $quar"
   Write-Host ''
-  Write-Host '那裡面是**你的檔案**，不是程式的東西。' -ForegroundColor Yellow
-  Write-Host '要救回來：node cli.mjs cleanup quarantine'
-  Write-Host '確定不要了才手動刪那個資料夾。'
+  Write-Host 'Those are your files, not the program''s.' -ForegroundColor Yellow
+  Write-Host 'To get them back: node cli.mjs cleanup quarantine'
+  Write-Host 'Delete that folder by hand only once you are sure you do not want them.'
 } else {
-  Write-Host "設定與資料留在 $data（沒有動它）"
+  Write-Host "Settings and data are still in $data (untouched)"
 }
 Write-Host ''

@@ -80,8 +80,12 @@ names. Your job is yes or no.
 
 ```bash
 node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model
-# or --seed-model to run the whole flow with pre-recorded answers and no network at all
 ```
+
+`--live-model` copies whatever model you have configured into the sandbox and **seeds nothing** — every
+sentence on screen is one your model produced, just now, about these files. **No model to hand?** Swap in
+`--seed-model`: it connects to nothing, replays answers recorded from a real run, and marks each one
+`[demo answer]`. Cleanup, duplicate detection and burst grouping never needed a model anyway.
 
 It builds a fake home directory with 14 realistic files: old installers, a duplicate archive, a
 half-finished download, three burst screenshots, three course handouts, and one browser password export.

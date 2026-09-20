@@ -13,8 +13,11 @@ Node 24 and nothing else.
 Try it without touching your own files:
 
 ```bash
-node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+node tools/demo-setup.mjs --dir /tmp/contextbox-demo --live-model
 ```
+
+That runs against whatever model you have configured — nothing is pre-recorded. No model to hand? Use
+`--seed-model`, which connects to nothing and replays answers from an earlier real run.
 
 That builds a fake home directory with 14 realistic files in it and prints the environment variables to
 paste. Every path stays inside that one folder, and deleting it leaves nothing behind.
