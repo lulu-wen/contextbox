@@ -179,10 +179,24 @@ function scrub(text: string, secrets: string[]): string {
 function secretsOf(raw: unknown): string[] {
   const m = isObj(raw) && isObj(raw.model) ? raw.model : {}
   const out: string[] = []
+  const add = (s: unknown) => {
+    if (typeof s === 'string' && s.length >= SECRET_MIN && !out.includes(s)) out.push(s)
+  }
   for (const v of [m.baseUrl, m.keyEnv]) {
     if (typeof v !== 'string') continue
-    for (const s of [v, v.trim(), v.trim().toLowerCase()]) {
-      if (s.length >= SECRET_MIN && !out.includes(s)) out.push(s)
+    for (const s of [v, v.trim(), v.trim().toLowerCase()]) add(s)
+    // **句子裡出現的不一定是整串。** checkBaseUrl 的「這個主機不安全」那一句印的是
+    // `protocol//hostname`（config.ts），而 URL 解析會把主機名轉小寫 —— 把金鑰貼進
+    // 端點欄位、寫成 `http://<金鑰>/v1` 的時候，登記整串比對不到那個片段，
+    // 小寫過的金鑰就這樣出去了（2026-09-20 修完稽核之後自己實測抓到的）。
+    // 所以每一種會被印出來的切法都要登記，scrub 由長到短替換。
+    let u = null
+    try { u = new URL(v.trim()) } catch { u = null }
+    if (u) {
+      for (const s of [`${u.protocol}//${u.hostname}`, u.hostname, u.username, u.password]) {
+        add(s)
+        if (typeof s === 'string') add(s.toLowerCase())
+      }
     }
   }
   return out.sort((a, b) => b.length - a.length)

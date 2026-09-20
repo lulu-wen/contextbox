@@ -286,14 +286,39 @@ describe('存到一半的壞值：拒絕、檔案一個位元組都不動', () =
     assert.deepEqual(bytes(p), before)
   })
 
+  test('已知的缺口：https 的端點打哪裡都收，所以金鑰貼進那一格會被當成端點存起來', () => {
+    // **這一條記錄的是現況，不是我們想要的樣子。** `checkBaseUrl` 對 https 不看主機
+    // （config.ts 的判準是「會不會離開你的網路」），所以 `https://<金鑰>/v1` 是一個合法端點。
+    // 沒有硬擋是刻意的：擋「看起來像金鑰的主機名」會誤傷區網上那些沒有點的機器名
+    // （`http://gpu-box/v1` 這種），而那是這個作品預期的用法。
+    //
+    // 現有的兩道防線：面板那一格旁邊寫著這是「你的檔案內容會被送去的位址」，
+    // 而且 doctor 會把端點印出來給人看見。真要再補一道的話，該補在**送出去之前**
+    // （連不上那台主機就別送第二次），不是在存檔這一關瞎猜。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    const p = box({})
+    const r = applyPatch(p, { model: { baseUrl: 'https://' + secret + '/v1' } }, NO_ENV, {})
+    assert.equal(r.ok, true, '現況就是收下來 —— 哪天改成擋，改這一條並寫清楚為什麼')
+    assert.match(String(JSON.parse(readFileSync(p, 'utf8')).model.baseUrl), new RegExp(secret, 'i'))
+  })
+
   test('**使用者把金鑰貼進 model.baseUrl：400 那一句話也一個字都不可以帶它**', () => {
     // 成對的另一半在「讀設定」那一節。這一條守的是**被拒絕的 PATCH**：normalize 讀不懂
     // 那串網址時印的是使用者打的整串原文，而那句話會進 400 的 fields、回到瀏覽器、
     // 貼在輸入框旁邊、被截圖 —— 跟 2026-09-20 早上 doctor 那件事是同一個坑。
     // 2026-09-20 的突變測試證明這裡完全沒被釘住：只把這一處的 say() 拿掉，全套 2815 條照樣全綠。
     const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    // **有沒有路徑是有差的**（2026-09-20，修完稽核之後自己實測抓到的）：`http://<金鑰>` 剛好
+    // 整串等於句子裡印的 `protocol//hostname`，所以登記整串就遮得掉；一加上 `/v1` 就不等了，
+    // 而 URL 解析還會把主機名轉小寫 —— 小寫過的金鑰就這樣出去。帳號、密碼那兩格同理。
     for (const raw of [secret, '  ' + secret + '  ', ' ' + secret + ' ', '\t' + secret + '\n',
-                       'http://' + secret, '  HTTP://' + secret + '  ']) {
+                       'http://' + secret, '  HTTP://' + secret + '  ',
+                       'http://' + secret + '/v1', '  http://' + secret + '/v1  ',
+                       'http://' + secret + ':x@10.0.0.5/v1', 'http://u:' + secret + '@10.0.0.5/v1']) {
+      // `https://<金鑰>/v1` 不在這裡：https 打哪裡都是**設計上接受**的（規則是「會不會離開
+      // 你的網路」，不是「可不可信」），所以那一次根本沒有 400 訊息可以洩漏。
+      // 「把金鑰貼進端點欄位、而且是 https」會被當成一個正常的端點存起來 —— 那是另一個坑，
+      // 記在下面那一條。
       const p = box({})
       const before = bytes(p)
       const r = applyPatch(p, { model: { baseUrl: raw } }, NO_ENV, {})
