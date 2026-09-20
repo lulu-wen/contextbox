@@ -1830,6 +1830,33 @@ const TIMEOUT = () => new DOMException('The operation was aborted due to timeout
 const petState = ui => ui.$('quaso').dataset.petState
 const worried = ui => petState(ui) === 'worried'
 
+describe('候選檔案提醒只持續到使用者打開清理面板', () => {
+  test('有候選時先是 found；打開面板後即使候選仍存在也回到 idle', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    s.heartbeat()
+    const ui = await mountUi(t, s)
+    await until(() => petState(ui) === 'found', '等待候選提醒')
+
+    await ui.click('quaso-cleanup-alert')
+
+    assert.equal(petState(ui), 'idle')
+    assert.equal(ui.$('quaso-status').textContent, '我會幫你留意 Downloads 裡有沒有可以整理的檔案！')
+    await ui.poll()
+    assert.equal(petState(ui), 'idle', 'health 輪詢不應再次提醒已查看的同批候選')
+  })
+
+  test('掃描有問題時，打開清理面板仍維持 worried', async t => {
+    const s = await serve(t, { 'a.zip': { days: 60 } })
+    await withScanProblem(s)
+    const ui = await mountUi(t, s)
+    await until(() => petState(ui) === 'worried', '等待掃描警告')
+
+    await ui.click('quaso-cleanup-alert')
+
+    assert.equal(petState(ui), 'worried')
+  })
+})
+
 /**
  * 稽查員 B 的 r7：names 建一份計畫，套用到第一個檔搬完之後，鎖被接走（trigger 模擬）。
  *

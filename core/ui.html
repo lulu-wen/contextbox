@@ -160,6 +160,19 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #quaso-stage canvas[popover] { position: fixed; inset: auto; width: 220px; height: 220px;
     margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; }
   #quaso-stage canvas::backdrop { background: transparent; pointer-events: none; }
+  /* Preserve the stage geometry used to position the pet and its icons. */
+  #quaso[data-show-pet="false"] #quaso-stage { display: block !important; visibility: hidden; }
+  #quaso[data-show-pet="false"] #quaso-stage canvas { visibility: hidden !important; }
+  #quaso[data-show-trash="false"] #quaso-cleanup-alert,
+  #quaso[data-show-restore="false"] #quaso-history-open { display: grid !important; visibility: hidden; }
+  #quaso[data-show-dialog="false"] #quaso-dialog { display: none !important; }
+  #quaso-settings-panel { width: min(320px, calc(100vw - 40px)); box-sizing: border-box;
+    padding: 24px; border: 1px solid #dfd7ca; border-radius: 20px; background: #fffdf8; color: #514637; }
+  #quaso-settings-panel::backdrop { background: #2b24194d; }
+  #quaso-settings-panel fieldset { margin-top: 16px; border: 0; padding: 0; }
+  #quaso-settings-panel label { display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer; }
+  #quaso-settings-panel input { width: 18px; height: 18px; accent-color: #80552c; }
+  #quaso[data-pet-state="worried"] #quaso-tools #quaso-settings-toggle { filter: none; opacity: 1; cursor: pointer; }
   #quaso-dialog { position: absolute; top: 68px; left: 50%;
     transform: translate(-50%, -100%); width: 220px; box-sizing: border-box; max-width: calc(100vw - 24px);
     padding: 12px; border: 1px solid #dfd7ca; border-radius: 16px;
@@ -177,7 +190,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #quaso-dialog-collapse { display: block; margin: 8px 0 0 auto; }
   @keyframes quaso-dot { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; transform: translateY(-3px); } }
   @media (prefers-reduced-motion: reduce) { #quaso-dialog-dots span { animation: none; } }
-  #quaso-dialog button { border: 1px solid #dfd7ca; border-radius: 10px;
+  #quaso-dialog button, #quaso-settings-close { border: 1px solid #dfd7ca; border-radius: 10px;
     padding: 6px 10px; background: #fffaf0; color: #514637; cursor: pointer; }
   #quaso-settings-toggle .quaso-gear { font-size: 30px; line-height: 1; }
   .pet-state-debug { margin-top: 8px; text-align: center; }
@@ -272,21 +285,18 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   /* 「它學到的事」那一區的每一列：沒有勾選框，只有一句話與「忘掉」。 */
   .cleanup-learned-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
   .cleanup-learned-row p { margin: 0; }
-  /* 面板裡的小標籤。一次只顯示一區，空的那幾區標籤變灰（點不下去）。 */
-  .cleanup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
-  .cleanup-tabs button {
-    border: 1px solid #e0d6c4; background: #fbf7ef; border-radius: 999px;
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
+  /* 一次選擇一區，數量隨資料更新。 */
+  .cleanup-section-select {
+    margin: 12px 0 4px; max-width: 100%;
+    border: 1px solid #e0d6c4; background: #fbf7ef; color: #514637; border-radius: 10px;
+    padding: 8px 14px; font-size: 13px; cursor: pointer;
   }
-  .cleanup-tabs button[aria-selected="true"] { background: #4a3f2f; color: #fdfaf4; border-color: #4a3f2f; }
-  .cleanup-tabs button:disabled { opacity: .45; cursor: default; }
   /* 一列一顆的「Clean up」：看得出來是主要動作，但不要搶走整個面板的主按鈕 */
   /* 「正在讀…」那一行：看得出來是進行中，但不要搶戲 */
   .reading { color: #6b5d48; font-size: 13px; }
   .reading::before { content: '⋯ '; }
   .cleanup-one { border: 1px solid #b9a888; background: #f3e9d6; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
   .cleanup-one:disabled { opacity: .45; cursor: default; }
-  .cleanup-tabs button .cleanup-tab-n { opacity: .7; margin-left: 6px; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
   .cleanup-shot { width: 150px; }
@@ -415,6 +425,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <p id="quaso-status" role="status"></p>
     </div>
     <button id="quaso-retry" type="button" hidden>Reload</button>
+    <button id="quaso-problem-ack" type="button" aria-label="Acknowledge this message" hidden>OK</button>
     <button id="quaso-burst-open" type="button" hidden>Look at these</button>
     <button id="quaso-dialog-collapse" type="button" aria-label="Collapse this message" hidden>-</button>
     </div>
@@ -436,8 +447,8 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
         <path d="M16 10l-8 8 8 8M9 18h14a9 9 0 0 1 0 18h-3" transform="translate(0 -3)"/>
       </svg>
     </button>
-    <button id="quaso-settings-toggle" type="button" aria-label="Show or hide the pet state"
-      title="Show or hide the pet state" aria-expanded="true" aria-controls="pet-state-debug">
+    <button id="quaso-settings-toggle" type="button" aria-label="設定" title="設定"
+      aria-haspopup="dialog" aria-controls="quaso-settings-panel">
       <span class="quaso-gear" aria-hidden="true">⚙</span>
     </button>
   </div>
@@ -445,6 +456,57 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     Pet state: <strong id="pet-state-text">idle</strong>
   </div>
 </aside>
+<dialog id="quaso-settings-panel" aria-labelledby="quaso-settings-title">
+  <div class="cleanup-heading">
+    <h2 id="quaso-settings-title">設定</h2>
+    <button id="quaso-settings-close" type="button" aria-label="關閉設定面板">×</button>
+  </div>
+  <fieldset>
+    <legend>顯示</legend>
+    <label><input id="quaso-show-pet" type="checkbox" checked>寵物</label>
+    <label><input id="quaso-show-trash" type="checkbox" checked>垃圾桶 icon</label>
+    <label><input id="quaso-show-restore" type="checkbox" checked>復原 icon</label>
+    <label><input id="quaso-show-dialog" type="checkbox" checked>對話框</label>
+  </fieldset>
+</dialog>
+<script type="module">
+  const settingsKey = 'contextbox.petDisplaySettings'
+  const settings = { showPet: true, showTrash: true, showRestore: true, showDialog: true }
+  try {
+    const saved = JSON.parse(localStorage.getItem(settingsKey))
+    for (const key of Object.keys(settings)) {
+      if (typeof saved?.[key] === 'boolean') settings[key] = saved[key]
+    }
+  } catch { /* Use defaults if storage is unavailable or malformed. */ }
+  const quaso = document.getElementById('quaso')
+  const settingsPanel = document.getElementById('quaso-settings-panel')
+  const settingsButton = document.getElementById('quaso-settings-toggle')
+  const controls = [
+    ['showPet', 'quaso-show-pet', 'quaso-stage'],
+    ['showTrash', 'quaso-show-trash', 'quaso-cleanup-alert'],
+    ['showRestore', 'quaso-show-restore', 'quaso-history-open'],
+    ['showDialog', 'quaso-show-dialog', 'quaso-dialog'],
+  ]
+  for (const [key, inputId, targetId] of controls) {
+    const input = document.getElementById(inputId)
+    const target = document.getElementById(targetId)
+    input.checked = settings[key]
+    quaso.dataset[key] = String(settings[key])
+    // Initially preserve the dialogue's own collapsed/hidden lifecycle.
+    if (key !== 'showDialog' || !settings[key]) target.hidden = !settings[key]
+    input.addEventListener('change', () => {
+      settings[key] = input.checked
+      quaso.dataset[key] = String(settings[key])
+      target.hidden = !settings[key]
+      if (key === 'showDialog' && settings[key]) document.getElementById('quaso-stage').click()
+      try { localStorage.setItem(settingsKey, JSON.stringify(settings)) } catch { /* Session settings still apply. */ }
+    })
+  }
+  settingsButton.onclick = () => { if (!settingsPanel.open) settingsPanel.showModal() }
+  document.getElementById('quaso-settings-close').onclick = () => settingsPanel.close()
+  // Keep settings reachable even when worried disables operation buttons.
+  document.addEventListener('quaso:statechange', () => { settingsButton.disabled = false })
+</script>
 <dialog id="cleanup-panel" aria-labelledby="cleanup-title">
   <div class="cleanup-heading">
     <h2 id="cleanup-title">Quaso's cleanup proposal</h2>
@@ -454,10 +516,8 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
-  <!-- 面板裡的小標籤（P6 之二）。五區各自一個標籤，一次只顯示一區 ——
-       以前全部疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議。
-       標籤是動態產生的（數量會變），示範模式整條不顯示（那時只有清理那一區）。 -->
-  <div id="cleanup-tabs" class="cleanup-tabs" role="tablist" hidden></div>
+  <!-- 示範模式只有清理區，不顯示 section 選單。 -->
+  <select id="cleanup-tabs" class="cleanup-section-select" aria-label="Section" hidden></select>
   <!-- 連拍截圖（P0）。一組一列、縮圖並排，成員的縮圖上畫出差異處；沒有組的時候整區不顯示。
        縮圖是 blob: 網址（面板用帶 token 的 api 取回來的），網址上不帶 token。 -->
   <div class="cleanup-section" id="cleanup-sec-bursts" data-section="bursts">
@@ -495,7 +555,6 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <span id="cleanup-page" aria-live="polite"></span>
       <button id="cleanup-next" type="button">Next</button>
     </div>
-    <div id="cleanup-needs-human" class="cleanup-note"></div>
     <p id="cleanup-summary" aria-live="polite"></p>
     <p id="cleanup-space-note" class="cleanup-note">Cleanup simulates moving files into a quarantine you can undo. That is not the same as freeing disk space.</p>
   </div>
@@ -546,14 +605,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   function renderPetMessage() {
     const status = document.getElementById('quaso-status')
     const state = getPetState()
-    // 狀態一變就換回「狀態算出來的那一句」；狀態沒變的期間，
-    // notice()（連拍的主動詢問這一類）指定的話比它優先，不要每五秒被輪詢洗掉。
-    if (status.dataset.petState !== state) {
-      status.dataset.petState = state
-      status.dataset.notice = ''
-    }
-    if (status.dataset.notice === '1') return
-    status.textContent = getPetMessage(state, getPetMessageData())
+    const data = getPetMessageData()
+    status.textContent = getPetMessage(state, data)
+    document.getElementById('quaso-problem-ack').hidden = state !== 'worried' || !data.canAcknowledge
   }
   document.addEventListener('quaso:statechange', renderPetMessage)
   document.addEventListener('quaso:messagechange', renderPetMessage)
