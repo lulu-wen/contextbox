@@ -96,6 +96,25 @@ describe('金鑰只能放在我們自己的環境變數裡', () => {
     }
   })
 
+  test('**使用者把金鑰本身填進 keyEnv 時，不可以把它印回去**（2026-09-20 真的發生了）', () => {
+    // 那一欄要的是「環境變數的名字」，但很容易被讀成「把金鑰放這裡」。
+    // 使用者真的貼了金鑰進去，而警告訊息把它整串印在 doctor 的畫面上 ——
+    // 於是那把金鑰進了終端機歷史、截圖、以及他複製貼上的每一個地方。
+    const key = 'bsa_' + 'x'.repeat(40)
+    const r = normalize({ model: { keyEnv: key } })
+    const all = r.problems.join('\n')
+    assert.ok(!all.includes(key), `警告訊息把金鑰印出來了：${all}`)
+    assert.ok(!all.includes('x'.repeat(10)), all)
+    assert.match(all, /not the key itself/i, '要講清楚那一欄放的是名字')
+    assert.match(all, /rotate/i, '已經寫進檔案的金鑰要叫他換掉')
+    assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_MODEL_KEY', '退回預設的名字')
+  })
+
+  test('只是打錯名字（短、像個變數名）→ 照舊講規則就好', () => {
+    const r = normalize({ model: { keyEnv: 'MY_KEY' } })
+    assert.match(r.problems.join('\n'), /must start with CONTEXTBOX_/)
+  })
+
   test('CONTEXTBOX_ 開頭的可以', () => {
     const r = normalize({ model: { keyEnv: 'CONTEXTBOX_OTHER_KEY' } })
     assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_OTHER_KEY')

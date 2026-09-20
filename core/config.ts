@@ -374,7 +374,17 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
   const m = (o.model && typeof o.model === 'object') ? o.model as Record<string, unknown> : {}
   let keyEnv = typeof m.keyEnv === 'string' ? m.keyEnv.trim() : ''
   if (keyEnv && !KEY_ENV_OK.test(keyEnv)) {
-    problems.push(`The key's environment variable must start with CONTEXTBOX_ (you wrote ${keyEnv}); using ${d.model.keyEnv} instead.`)
+    // **不可以把使用者寫的東西印回去**（2026-09-20，真的發生了）：
+    // `keyEnv` 要的是「環境變數的名字」，但這一欄非常容易被讀成「把金鑰放這裡」——
+    // 使用者真的貼了金鑰進去，而我們在警告裡把它整串印出來，於是那把金鑰進了終端機、
+    // 進了截圖、進了他複製貼上的每一個地方。**這裡永遠只講規則，不回放值。**
+    const looksLikeAKey = keyEnv.length > 24 || /[^A-Za-z0-9_]/.test(keyEnv)
+    problems.push(looksLikeAKey
+      ? `model.keyEnv must be the NAME of an environment variable (something starting with CONTEXTBOX_), not the key itself. `
+        + `What you wrote looks like a key — it has not been printed here. `
+        + `Put the name in the config file and the key in the environment, then rotate that key: it has been sitting in a plain file. `
+        + `Using ${d.model.keyEnv} for now.`
+      : `The key's environment variable must start with CONTEXTBOX_; using ${d.model.keyEnv} instead.`)
     keyEnv = ''
   }
   const model: ModelConfig = {
