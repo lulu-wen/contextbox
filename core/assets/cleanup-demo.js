@@ -494,7 +494,16 @@ function attachPreview(host, itemId) {
   // **忙的時候照樣可以看**：看內容不動任何檔案，而正在搬檔的時候更需要看得到自己在清什麼
   peek.onclick = () => togglePreview(itemId)
   host.append(peek)
-  if (open) host.append(previewBox(itemId))
+  if (open) {
+    // **連拍那一格只有 150px 寬，預覽是 420px。**（2026-09-21 使用者截圖）
+    // 不標記的話，預覽會從格子裡滿出來、把同一排的其他張擠出畫面右邊，
+    // 連帶那幾張的勾選框也按不到了。展開的那一格整列讓給它（CSS 在 ui.html）。
+    host.classList.add('is-previewing')
+    host.append(previewBox(itemId))
+  }
+  // 沒有 else：每一次 render 都是重新造格子，收起來那一格根本是新的 div，
+  // 舊標記帶不過來。突變測試證實了這件事 —— 拿掉 remove 那一行，一條測試都沒紅，
+  // 那就是死路。看起來像保險的死路比沒有保險更糟（會讓人以為守住了）。
 }
 
 /** 面板最上面那一句。本機模式講真的資料夾名（U4），拿不到就講「監看資料夾」。 */

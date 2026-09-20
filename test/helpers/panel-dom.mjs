@@ -39,10 +39,16 @@ export class FakeEl {
     // 輸入框（設定那一區）。**value 一定要預設成空字串**：undefined 的話，
     // 「400 之後使用者打的字還在不在」這種測試會連真的壞掉都看不出來（兩邊都是 undefined）。
     this.value = ''; this.placeholder = ''; this.oninput = null; this.htmlFor = ''
-    const set = new Set()
+    // **classList 與 className 是同一份東西**（2026-09-21）。以前 classList 自己藏一個 Set，
+    // 兩邊不通：程式用 classList.add 加的 class，byClass()／className 一輩子看不到 ——
+    // 於是畫面真的壞了（連拍格子裡的預覽滿出去），測試照樣全綠。真瀏覽器不是這樣。
+    const list = () => String(this.className).split(/\s+/).filter(Boolean)
+    const write = arr => { this.className = [...new Set(arr)].join(' ') }
     this.classList = {
-      add: c => set.add(c), remove: c => set.delete(c), contains: c => set.has(c),
-      toggle: (c, on) => ((on ?? !set.has(c)) ? set.add(c) : set.delete(c)),
+      add: c => write([...list(), c]),
+      remove: c => write(list().filter(x => x !== c)),
+      contains: c => list().includes(c),
+      toggle: (c, on) => ((on ?? !list().includes(c)) ? write([...list(), c]) : write(list().filter(x => x !== c))),
     }
   }
   get textContent() { return this._text + this.children.map(c => c.textContent).join('') }

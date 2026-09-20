@@ -311,7 +311,13 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
     color: #514637; background: white; border: 1px solid #efe6d7; border-radius: 8px; }
   /* 連拍那一區的格子只有 150px 寬，展開的內容要比格子寬才看得到 */
-  .cleanup-shot .cleanup-preview { width: min(420px, 56vw); }
+  /* 收起來的時候一格 150px；展開預覽的那一格整列讓給它 —— 420px 的預覽塞進
+     150px 的格子會滿出去，把同一排其他張擠出畫面右邊（2026-09-21 使用者截圖）。 */
+  .cleanup-shot.is-previewing { width: 100%; }
+  .cleanup-shot .cleanup-preview { width: auto; max-width: 100%; }
+  /* 保險：這一區裡不管誰算錯寬度，都不可以讓整個面板橫向捲動 */
+  .cleanup-burst-shots { max-width: 100%; }
+  .cleanup-shot, .cleanup-shot * { max-width: 100%; box-sizing: border-box; }
   /* 設定那一區（2026-09-20）。一欄一列：說明與「這一欄哪裡不行」都貼在**那一欄的旁邊** ——
      錯誤跑到整頁最下面的話，使用者只知道存不起來，不知道是哪一格打錯。 */
   .cleanup-setting { margin: 16px 0; }

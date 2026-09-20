@@ -654,3 +654,50 @@ describe('C 真的 server', () => {
     assert.ok(sent, '要走既有的建計畫路徑')
   })
 })
+
+// ═══ D 展開預覽不可以把同一排擠出畫面（2026-09-21 使用者截圖）═══
+
+describe('D 連拍格子裡的預覽', () => {
+  async function open(t, opts, mount = {}) {
+    const ui = await mountPanel(t, { api: fakeApi(opts).api, ...mount })
+    await ui.click('quaso-cleanup-alert')
+    return ui
+  }
+  const cells = ui => rowsOf(ui)[0].byClass('cleanup-shot')
+  const peekOf = cell => cell.byClass('cleanup-peek')[0]
+
+  test('展開的那一格要標記起來，沒展開的不可以有標記', async t => {
+    // 一格只有 150px 寬，預覽是 420px。不讓展開的那一格整列，420px 會從格子裡滿出來，
+    // 把同一排其他張擠出畫面右邊 —— 連那幾張的勾選框都按不到（使用者截圖）。
+    const ui = await open(t, similarFixture())
+    const before = cells(ui)
+    assert.ok(before.length >= 2, '前提：一排不只一張')
+    for (const c of before) {
+      assert.ok(!c.className.includes('is-previewing'), '還沒展開就不該有標記')
+    }
+    await peekOf(before[1]).onclick()
+    const after = cells(ui)
+    assert.ok(after[1].className.includes('is-previewing'), '展開的那一格要整列讓給它')
+    assert.ok(!after[0].className.includes('is-previewing'), '別的格子不要跟著變寬')
+  })
+
+  test('收起來標記就要消失（不然那一格永遠佔著整列）', async t => {
+    const ui = await open(t, similarFixture())
+    await peekOf(cells(ui)[1]).onclick()
+    assert.ok(cells(ui)[1].className.includes('is-previewing'))
+    await peekOf(cells(ui)[1]).onclick()
+    assert.ok(!cells(ui)[1].className.includes('is-previewing'), '收起來了還佔著整列')
+  })
+
+  test('CSS 那一半：展開佔整列、預覽跟著格子走、整區不可以橫向捲', () => {
+    // 面板測試看得到 class，看不到樣式。這條守住樣式那一半 ——
+    // 只留 class 而沒有規則的話，畫面上還是壞的。
+    const css = readFileSync(join(REPO, 'core/ui.html'), 'utf8')
+    assert.match(css, /\.cleanup-shot\.is-previewing\s*\{[^}]*width:\s*100%/,
+      '展開的那一格要佔滿整列')
+    assert.match(css, /\.cleanup-shot \.cleanup-preview\s*\{[^}]*max-width:\s*100%/,
+      '預覽不可以比它的格子寬')
+    assert.ok(!/\.cleanup-shot \.cleanup-preview\s*\{[^}]*width:\s*min\(420px/.test(css),
+      '420px 寫死在 150px 的格子裡，就是這次的 bug')
+  })
+})
