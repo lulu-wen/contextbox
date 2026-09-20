@@ -87,12 +87,13 @@ const tabNamed = (ui, text) => tabs(ui).find(b => b.textContent.startsWith(text)
 const shown = (ui, key) => ui.$('cleanup-sec-' + key).hidden === false
 
 describe('面板裡的小標籤', () => {
-  test('五個標籤都在，各自帶數量；預設停在「可以清理」', async t => {
+  test('五個清單標籤都在，各自帶數量；「設定」沒有數字；預設停在「可以清理」', async t => {
     const ui = await open(t, {
       candidates: [candidate()], renames: [renameItem()], filings: [filingItem()],
     })
+    // 「設定」（2026-09-20）不是一份清單，所以不帶數字 ——「Settings0」看起來像設定被清空了
     assert.deepEqual(tabs(ui).map(b => b.textContent),
-      ['Cleanup1', 'Bursts0', 'Suggested names1', 'Filing1', 'Learned0'])
+      ['Cleanup1', 'Bursts0', 'Suggested names1', 'Filing1', 'Learned0', 'Settings'])
     assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
     assert.equal(shown(ui, 'clean'), true)
     assert.equal(shown(ui, 'filings'), false, '一次只顯示一區')

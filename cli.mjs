@@ -25,6 +25,7 @@
  *   CONTEXTBOX_OPENER      open 用來打開網址的程式（預設看作業系統）
  */
 import { load, modelReady, modelKey, CONFIG_PATH } from './core/config.ts'
+import { reloadInto } from './core/live-config.ts'
 import { modelEnabled, whyDisabled, PROMPT_VERSION } from './core/model.ts'
 import { modelStats } from './core/model-store.ts'
 import { thinkRound, pendingCount, ROUND_MAX_ITEMS } from './core/model-queue.ts'
@@ -128,6 +129,14 @@ const why = raw => shown(safeWhy(raw == null ? null : String(raw)) ?? 'reason un
 
 const [, , cmd, ...args] = process.argv
 
+/**
+ * 這一份 `config` 是**整支檔案共用的那一個物件**，不是一份快照。
+ *
+ * 一次性的指令（propose、rename、doctor…）跑完就結束，讀一次就夠；但 `pet` 是常駐的，
+ * 而面板從 2026-09-20 起改得動設定。所以存檔之後走的是 `reloadInto(config, cfgPath)`
+ * ——**原地**蓋回這一個物件，下面每一處 `config.readonly`、`config.model.*` 都自己跟上。
+ * 不要在任何地方寫 `config = load().config`：那會換掉物件，別人手上那一份就定格在啟動當下。
+ */
 const { config, problems, path: cfgPath, created } = load()
 
 let db
@@ -156,6 +165,18 @@ const admitOpts = {
  * watch 是截圖收件用的：macOS 預設含**桌面**、Windows／Linux 含截圖資料夾。
  * 清理沿用它的話，45 天前放在桌面上的客戶提案 zip 會被當成垃圾搬走（稽查 a11 實測）。
  * cleanup.roots 預設只有 Downloads。scan、list、apply、undo、quarantine、doctor、pet 全部用這一份。
+ *
+ * ⚠ **這是啟動時抓走的那一個陣列，面板存檔之後不會跟上**（2026-09-20）。
+ * `reloadInto()` 換的是一個新陣列，這個常數還指著舊的那一個，`start({ roots: CLEAN_ROOTS })`
+ * 手上那一份也是。這一版沒有問題 —— 白名單只有五欄，沒有一欄改得動 `cleanup.roots`。
+ *
+ * **要加路徑類欄位進白名單的人看這裡。** 不可以只把這個陣列原地改掉（splice）就算了：
+ * `roots` 與下面的 `SHOTS`（cleanup.screenshotsDir）是**一對** —— roots 裡有截圖資料夾時，
+ * 那底下只准清截圖。只跟上 roots、SHOTS 還停在啟動時的 null，清理範圍就多了一個資料夾
+ * 而且少了那層過濾；macOS 的截圖資料夾就是桌面，桌面上的舊 zip 會被當成垃圾搬走。
+ * 兩個要一起換，而且 SCOPE、execOpts、start() 那邊都要改成每次重讀。
+ * core/live-config.ts 的 FROZEN_AT_STARTUP 列的就是這一票，
+ * test/settings-live.test.mjs 有一條守著：白名單一收進路徑類欄位，那一條就會紅。
  */
 const CLEAN_ROOTS = config.cleanup.roots
 /**
@@ -1923,13 +1944,37 @@ switch (cmd) {
     // 清理範圍是 cleanup.roots（RC15），不是截圖的 watch —— macOS 上 watch 含桌面。
     // **放回範圍與截圖資料夾也要傳**（第二輪 R2-4／R2-8）：參數全給了 server 就不讀設定檔，沒傳的話
     // 面板的復原只看清理範圍（舊版從桌面搬走的檔放不回去），截圖資料夾也照全部規則列候選。
+    //
+    // **readonly 傳的是 getter，不是布林值**（2026-09-20）。面板改得動唯讀了，傳值的話
+    // server 手上永遠是啟動當下那一個：使用者在面板關掉唯讀、馬上按 Clean up，還是被擋，
+    // 而面板剛剛才說「已儲存」。route 每個請求自己解一次（cleanup-routes.ts 的 execOptions），
+    // 所以這裡只要不把它凍住就好。
+    // 其餘幾個還是值：maxBytes、filed、roots、restoreRoots、screenshotsDir 都不在白名單裡，
+    // 而且它們是一組互相牽連的路徑（見 CLEAN_ROOTS 上面那段），這一版一律下次啟動才算數。
+
+    /**
+     * 面板按了「儲存」之後要做的事（設定那條 route 寫完檔就叫這裡）。
+     *
+     * 只做一件確定的事：重讀設定檔、**原地**蓋回 `config`。其餘部分要不要再動，
+     * 由 `afterReload` 決定 —— 那個要等下面模型那一段建好才有內容，所以先擺一個空的：
+     * `await srv.ready` 會讓出事件迴圈，這中間真的有可能進來一個請求，
+     * 那一次至少設定檔是重讀到了，不會整個掉在地上。
+     */
+    let afterReload = () => {}
+    const settingsSaved = () => {
+      const next = reloadInto(config, cfgPath)
+      for (const p of next.problems) warn('⚠ ' + shown(p))
+      afterReload()
+    }
+
     const srv = start({
       port: want, roots: CLEAN_ROOTS, quarantine: QUARANTINE,
-      maxBytes: config.maxBytes, readonly: config.readonly,
+      maxBytes: config.maxBytes, readonly: () => config.readonly,
       restoreRoots: restoreRootList(), screenshotsDir: SHOTS,
       // 歸檔（P4）搬進去的那棵樹。不傳的話 server 會用它自己的預設，
       // 與 pet 印出來的「歸檔到……」就可能不是同一個資料夾。
       filed: config.filed,
+      onSettingsSaved: settingsSaved,
     })
     let port
     try { port = await srv.ready }
@@ -2090,19 +2135,41 @@ switch (cmd) {
         try { db.prepare('DELETE FROM meta WHERE k=?').run(META.thinking) } catch { /* 讀的那一端會看時間 */ }
       }
     }
-    if (modelEnabled(config)) {
-      say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the`
-        + ` background, ${THINK_LANES > 1 ? `${THINK_LANES} at a time` : 'one at a time'}.`)
-      say('  (What the model says is an opinion and the panel labels it as such; nothing is renamed or moved because of it.)')
-      // 幾百個檔的時候「每十分鐘二十個」要跑一整天。講一次怎麼現在就做完。
-      say('  In a hurry? In another window: CONTEXTBOX_THINK_CONCURRENCY=4 node cli.mjs think --all')
-      // 開機先讓掃描與面板站穩再問（模型一個檔要 7～10 秒）
-      setTimeout(() => { void thinkOnce() }, Math.min(3000, thinkMs)).unref()
-      thinkTimer = setInterval(() => { void thinkOnce() }, thinkMs)
-    } else {
+    /**
+     * 模型那條線現在該不該跑。**開機叫一次，面板每次存完設定再叫一次**（2026-09-20）。
+     *
+     * `thinkOnce` 每一輪都重讀 `config.model.*`（`thinkRound({ config })` 拿的就是同一個物件），
+     * 所以「改了模型名字，下一輪就用新的」本來就成立。不成立的是**從沒有到有**：
+     * 計時器只在啟動時模型設定好了才開（沒設定就一個計時器都不開，這是原本的不變量），
+     * 而乾淨安裝的機器 baseUrl 與 name 都是空的 —— 使用者在面板把模型填好，面板寫著「立即生效」，
+     * 實際上一輪都不會被叫起來，要重開寵物。那就是規格裡說的「沉默地錯」。
+     *
+     * 反過來也一樣：模型被清空了就把計時器收掉，不要留一個每十分鐘醒來、什麼都不做的東西。
+     */
+    const syncThinkTimer = (first = false) => {
+      if (stopping) return
+      const on = modelEnabled(config)
+      // 狀態沒變就不要再講一次 —— 面板存一次設定就印一段「Reading: …」很吵
+      if (!first && on === Boolean(thinkTimer)) return
+      if (on) {
+        say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the`
+          + ` background, ${THINK_LANES > 1 ? `${THINK_LANES} at a time` : 'one at a time'}.`)
+        say('  (What the model says is an opinion and the panel labels it as such; nothing is renamed or moved because of it.)')
+        // 幾百個檔的時候「每十分鐘二十個」要跑一整天。講一次怎麼現在就做完。
+        say('  In a hurry? In another window: CONTEXTBOX_THINK_CONCURRENCY=4 node cli.mjs think --all')
+        // 開機先讓掃描與面板站穩再問（模型一個檔要 7～10 秒）。
+        // 面板剛存好的那一次不用等：使用者正看著畫面，等的就是第一輪。
+        setTimeout(() => { void thinkOnce() }, first ? Math.min(3000, thinkMs) : 0).unref()
+        thinkTimer = setInterval(() => { void thinkOnce() }, thinkMs)
+        return
+      }
+      if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null }
       const off = whyDisabled(config)
       if (off) say(`Reading: off (${off}). Everything else works as usual.`)
     }
+    syncThinkTimer(true)
+    // 設定存檔之後（settingsSaved 已經重讀完 config）再看一次模型那條線
+    afterReload = syncThinkTimer
 
     say('Ctrl+C to stop.')
     const bye = () => {

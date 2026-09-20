@@ -61,6 +61,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | HTTP | code | 什麼時候 | 呼叫端該做什麼 |
 |---|---|---|---|
 | 400 | `BAD_BODY` | body 看不懂；帶了這條路徑不認得的欄位（`candidateID`、`skippedIDs`…）；欄位型別不對（`candidateIds: null`、`confirmed: "true"`）；計畫 id 的 `%xx` 壞掉；分頁參數不對；略過清單有不屬於這份計畫的 id | 改請求再送 |
+| 400 | `BAD_SETTING` | `PATCH /settings`：白名單以外的鍵（`cleanup.roots`、`watch`…）、型別不對（`readonly: "true"`）、或這次改的欄位 `normalize()` 不收（明文 http 打到外網的 `model.baseUrl`、不是 `CONTEXTBOX_` 開頭的 `model.keyEnv`）。**設定檔一個位元組都沒動**；`fields` 是「欄位路徑 → 為什麼」 | 把 `fields` 顯示在對應的輸入框旁邊，改了再送 |
 | 401 | （沒有） | token 不對或沒帶 | 重新拿 token |
 | 403 | `READ_ONLY` | 唯讀模式：不建計畫、不搬檔 | 告訴使用者，不要重試 |
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
@@ -74,7 +75,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 410 | `CONFIRMATION_EXPIRED` | 清空的預覽 token 過期（五分鐘） | 重新預覽 |
 | 413 | `BODY_TOO_LARGE` | body 超過 1 MB | 送少一點 |
 | 428 | `CONFIRMATION_REQUIRED` | 清空時沒帶 `confirmed`、帶的是 `false`、或 token 不是預覽發的 | 先打一次不帶 token 的預覽 |
-| 500 | `BAD_CONFIG` | 清理資料夾或大小上限沒設好 | 顯示「後端出狀況」，不要自動重試 |
+| 500 | `BAD_CONFIG` | 清理資料夾或大小上限沒設好；`/settings`：這台 server 啟動時沒有設定檔可改（`start()` 沒給 `configPath`，它自己也沒讀過設定檔） | 顯示「後端出狀況」，不要自動重試 |
+| 500 | `WRITE_FAILED` | `PATCH /settings` 寫不出去（權限、磁碟滿），或設定檔現在的內容讀不懂（壞掉的 JSON、不是物件）所以不敢覆蓋 | 顯示原因，請使用者看一眼設定檔；**設定檔沒有被動過** |
 | 500 | `UNSAFE_PATH` | 隔離區或檔案的路徑不安全（捷徑、硬鏈結、不是資料夾） | 同上 |
 | 500 | `UNSAFE_JOURNAL` | 搬移紀錄對不上 | 同上 |
 | 500 | `UNSAFE_FILE` | 清空時檔案太大或認不出身分 | 同上 |
@@ -128,6 +130,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `POST /file/apply` | `items`（`[{ itemId, course, kind }]`） |
 | `POST /file/undo` | `ids`、`last` |
 | `DELETE /learned` | `ids`、`all` |
+| `PATCH /settings` | `readonly`、`model.baseUrl`、`model.name`、`model.keyEnv`、`cleanup.screenshots`（就這五欄，其他一律 400 `BAD_SETTING`） |
 
 ## 檔案清單
 

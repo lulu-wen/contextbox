@@ -36,6 +36,9 @@ export class FakeEl {
     this.hidden = false; this.disabled = false; this.checked = false; this.type = ''
     this.title = ''; this.className = ''; this.dataset = {}; this.attrs = {}; this.listeners = {}
     this.open = false; this.offsetWidth = 0; this.onclick = null; this.onchange = null; this.isContentEditable = false
+    // 輸入框（設定那一區）。**value 一定要預設成空字串**：undefined 的話，
+    // 「400 之後使用者打的字還在不在」這種測試會連真的壞掉都看不出來（兩邊都是 undefined）。
+    this.value = ''; this.placeholder = ''; this.oninput = null; this.htmlFor = ''
     const set = new Set()
     this.classList = {
       add: c => set.add(c), remove: c => set.delete(c), contains: c => set.has(c),
@@ -74,6 +77,21 @@ export class FakeEl {
     walk(this)
     return out
   }
+}
+
+/**
+ * 在一個輸入框裡打字。先換 value 再叫 oninput —— 瀏覽器就是這個順序，
+ * 面板的 oninput 讀的也是 `input.value`（不是事件裡的東西）。
+ */
+export function typeInto(input, text) {
+  input.value = String(text)
+  input.oninput?.({ target: input })
+}
+
+/** 勾／取消勾一個勾選框。 */
+export function toggle(input, on) {
+  input.checked = Boolean(on)
+  input.onchange?.({ target: input })
 }
 
 let mounted = 0
