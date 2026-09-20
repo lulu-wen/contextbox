@@ -653,6 +653,33 @@ describe('C 真的 server', () => {
     const sent = s.seen.find(c => c.path === '/cleanup/plans')
     assert.ok(sent, '要走既有的建計畫路徑')
   })
+
+  test('**逐張那顆按下去也真的搬走那一張**（而且只有那一張）', async t => {
+    // 只檢查按鈕存在是不夠的：把 onclick 換成空函式，那種測試照樣全綠（突變測試抓到）。
+    // 這一條走到底 —— 真的 server、真的檔案、真的搬走。
+    const s = await serve(t, { 'shot-1.png': { days: 200 }, 'shot-2.png': { days: 200 }, 'shot-3.png': { days: 200 } })
+    const one = await s.idsOf('shot-1.png'), two = await s.idsOf('shot-2.png'), keep = await s.idsOf('shot-3.png')
+    s.setHook(path => {
+      if (path === '/cleanup/bursts') {
+        return Response.json({ groups: [{
+          id: 'g1', level: 'similar', keep: shot(keep.itemId, 'shot-3.png'),
+          members: [shot(one.itemId, 'shot-1.png', { level: 'similar' }), shot(two.itemId, 'shot-2.png', { level: 'similar' })],
+        }] })
+      }
+      if (path.startsWith('/cleanup/thumb/')) return pngResponse()
+      return undefined
+    })
+    const ui = await mountPanel(t, { fetch: s.netFetch, token: TOKEN, base: s.base })
+    await ui.click('quaso-cleanup-alert')
+    const cells = shotsOf(rowsOf(ui)[0])
+    const button = cells[1].byClass('cleanup-one')[0]
+    assert.ok(button, '前提：成員那一格有逐張按鈕')
+    await button.onclick()
+    assert.ok(!s.has('shot-1.png'), '按下去的那一張要真的搬走')
+    assert.ok(s.has('shot-2.png'), '沒按的那一張不可以被順便搬走')
+    assert.ok(s.has('shot-3.png'), '**留下的那張永遠不會被清掉**')
+    assert.ok(s.seen.some(c => c.path === '/cleanup/plans'), '要走同一條建計畫的路，不是捷徑')
+  })
 })
 
 // ═══ D 展開預覽不可以把同一排擠出畫面（2026-09-21 使用者截圖）═══
@@ -699,5 +726,65 @@ describe('D 連拍格子裡的預覽', () => {
       '預覽不可以比它的格子寬')
     assert.ok(!/\.cleanup-shot \.cleanup-preview\s*\{[^}]*width:\s*min\(420px/.test(css),
       '420px 寫死在 150px 的格子裡，就是這次的 bug')
+  })
+})
+
+// ═══ E 連拍區要按得下去（2026-09-21）═══════════════════════════
+//
+// 勾得動只是一半。使用者問「是不是要留按鍵給我按刪除截圖的部分」——
+// 問得對：SECTION_BUTTONS 原本只把 Clean up 掛在 clean 那一區，
+// 所以在 Bursts 分頁勾了兩張，整個畫面上一顆能按的都沒有，勾了等於沒用。
+
+describe('E 連拍區的動作按鈕', () => {
+  async function open(t, opts, mount = {}) {
+    const ui = await mountPanel(t, { api: fakeApi(opts).api, ...mount })
+    await ui.click('quaso-cleanup-alert')
+    return ui
+  }
+  const cellsOf = ui => rowsOf(ui)[0].byClass('cleanup-shot')
+  const oneOf = cell => cell.byClass('cleanup-one')[0]
+
+  test('每一張成員一顆「Clean up」；留下的那張沒有（它本來就不會被清掉）', async t => {
+    const ui = await open(t, similarFixture())
+    const cells = cellsOf(ui)
+    assert.equal(cells.length, 3)
+    assert.equal(oneOf(cells[0]), undefined, '留下的那張不可以有清理按鈕')
+    for (const c of cells.slice(1)) {
+      assert.ok(oneOf(c), '每一張成員都要有一顆')
+      assert.equal(oneOf(c).textContent, 'Clean up')
+    }
+  })
+
+  test('**按鈕不在 <label> 裡**（真瀏覽器裡點它會連帶取消那一格的勾選）', async t => {
+    const ui = await open(t, similarFixture())
+    for (const c of cellsOf(ui).slice(1)) {
+      const label = c.all('LABEL')[0]
+      assert.ok(!label.byClass('cleanup-one').length, '按鈕放進 label 裡會偷偷切掉勾選框')
+    }
+  })
+
+  test('勾不動的時候按鈕也要跟著停用（不然按了只會失敗）', async t => {
+    const fx = similarFixture()
+    // 成員不在候選清單上 → 勾選框停用；按鈕不可以還亮著
+    fx.candidates = []
+    const ui = await open(t, fx)
+    for (const c of cellsOf(ui).slice(1)) {
+      const box = c.all('INPUT')[0]
+      assert.equal(box.disabled, true, '前提：這一格勾不動')
+      assert.equal(oneOf(c).disabled, true, '勾不動卻按得下去，按了只會失敗')
+    }
+  })
+
+  test('**整批執行的那幾顆在連拍分頁也看得到**（勾了要有地方按）', async t => {
+    const ui = await open(t, similarFixture())
+    await ui.$('cleanup-tabs') && null
+    // 切到連拍那一區
+    const tabs = ui.$('cleanup-tabs')
+    const opt = tabs.all('OPTION').find(o => o.textContent.startsWith('Bursts'))
+    assert.ok(opt, '前提：有 Bursts 這一區')
+    tabs.value = opt.value
+    await tabs.onchange()
+    assert.equal(ui.$('cleanup-apply').hidden, false, '在 Bursts 勾了卻沒有 Clean up 可以按')
+    assert.equal(ui.$('cleanup-rename').hidden, true, '改名那顆不屬於這一區')
   })
 })

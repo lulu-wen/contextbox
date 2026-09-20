@@ -599,6 +599,16 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   name.textContent = safeName(shot.name)
   label.append(check, name)
   cell.append(label, paragraph(bytes(shot.bytes), 'evidence'))
+  // 一張一顆，跟清理清單與改名／歸檔那幾區一樣（使用者：不用滑到別的分頁去按）。
+  // **掛在 cell 上、不可以掛進 label**：真瀏覽器裡點 label 底下的按鈕會連帶
+  // 把那一格的勾選框切掉，等於按一下「Clean up」順便取消勾選。
+  const one = document.createElement('button')
+  one.type = 'button'
+  one.className = 'cleanup-one'
+  one.textContent = 'Clean up'
+  one.disabled = check.disabled
+  one.onclick = () => cleanOne(state, { itemId: shot.itemId })
+  cell.append(one)
   appendModelOpinion(cell, shot.model)
   attachPreview(cell, shot.itemId)
   return cell
@@ -1004,8 +1014,11 @@ let panelSection = 'clean'
 const alwaysOn = key => PANEL_SECTIONS.some(x => x.key === key && x.always)
 /** 每一顆動作按鈕屬於哪一區（不屬於現在這一區的就收起來）。 */
 const SECTION_BUTTONS = {
-  'cleanup-apply': 'clean', 'cleanup-release': 'clean', 'cleanup-putback': 'clean',
-  'cleanup-undo': 'clean', 'cleanup-dismiss': 'clean',
+  // **連拍也算清理**（2026-09-21）：連拍成員跟清理清單共用同一個勾選集合、同一條
+  // /cleanup/plans。只把按鈕掛在 clean 那一區的話，使用者在 Bursts 勾了兩張，
+  // 整個分頁上一顆能按的都沒有 —— 勾了等於沒用。
+  'cleanup-apply': ['clean', 'bursts'], 'cleanup-release': 'clean', 'cleanup-putback': 'clean',
+  'cleanup-undo': ['clean', 'bursts'], 'cleanup-dismiss': 'clean',
   'cleanup-rename': 'renames', 'cleanup-rename-undo': 'renames',
   'cleanup-file': 'filings', 'cleanup-file-undo': 'filings',
   'cleanup-settings-save': 'settings',
@@ -1057,7 +1070,9 @@ function renderSections() {
   }
   if (!isDemo()) {
     for (const [id, key] of Object.entries(SECTION_BUTTONS)) {
-      if (key !== panelSection && $(id)) $(id).hidden = true
+      // key 可以是一個區、也可以是一串（連拍與清理共用那幾顆）
+      const where = Array.isArray(key) ? key : [key]
+      if (!where.includes(panelSection) && $(id)) $(id).hidden = true
     }
   }
 }
