@@ -4,5 +4,11 @@
   "pendingCount": 2,
   "quarantinedCount": 1,
   "undoable": true,
-  "scanProblems": []
+  "scanProblems": [
+    "有 2 個檔看不懂，這次沒有讀到它們的內容。"
+  ],
+  "burst": {
+    "groups": 0,
+    "newGroups": 0
+  }
 }

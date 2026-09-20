@@ -129,9 +129,9 @@ describe('套用中斷在 rename 之前，之後按復原', () => {
       const s = interrupted(t)
       const r = cli(t, s)(['cleanup', 'undo', s.planId])
       assert.equal(r.code, 0, r.out)
-      assert.match(r.out, /放回原位 1 個檔案/)
-      assert.match(r.out, /b\.zip.*當初就沒有搬走/)
-      assert.doesNotMatch(r.out, /狀態不明|沒放回/)
+      assert.match(r.out, /Put 1 file back/)
+      assert.match(r.out, /b\.zip.*never moved in the first place/)
+      assert.doesNotMatch(r.out, /state unknown|not put back/)
       assert.equal(healthSnapshot(s.db, { roots: s.opts.roots, quarantine: s.opts.quarantine }).quarantine.orphans, 0)
     })
 
@@ -193,8 +193,8 @@ describe('面板的歷史復原：搬到一半中斷、其實沒搬過的，不�
     const { text } = historyUndoMessage({
       restored: 0, restoredFiles: 0, alreadyRestored: 1, notRestored: [], unconfirmed: [{ name: 'a.zip', why: 'w' }],
     })
-    assert.doesNotMatch(text.split('\n')[0], /^另有/)
-    assert.match(text, /勾選的 1 筆先前已經復原過了/)
+    assert.doesNotMatch(text.split('\n')[0], /^Another/)
+    assert.match(text, /The 1 you ticked had already been undone/)
   })
 })
 

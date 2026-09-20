@@ -1,0 +1,50 @@
+[
+  {
+    "a": "01-same-a.png",
+    "b": "01-same-b.png",
+    "burst": true,
+    "why": "完全一樣（同一個畫面截兩次）"
+  },
+  {
+    "a": "01-same-a.png",
+    "b": "02-typed-b.png",
+    "burst": true,
+    "why": "表單裡多打了一個字（極小的變化）"
+  },
+  {
+    "a": "03-check-a.png",
+    "b": "03-check-b.png",
+    "burst": true,
+    "why": "面板裡一個勾選框變了（極小的變化）"
+  },
+  {
+    "a": "04-dialog-a.png",
+    "b": "04-dialog-b.png",
+    "burst": false,
+    "why": "同一個對話框版面，但訊息內容不同"
+  },
+  {
+    "a": "05-scroll-a.png",
+    "b": "05-scroll-b.png",
+    "burst": false,
+    "why": "同一頁捲動了 300px（看到的內容不同）"
+  },
+  {
+    "a": "01-same-a.png",
+    "b": "06-size-b.png",
+    "burst": false,
+    "why": "畫面尺寸不同（1280×860 vs 1280×720）"
+  },
+  {
+    "a": "07-doc-a.png",
+    "b": "07-doc-b.png",
+    "burst": false,
+    "why": "文字很多的文件頁，捲動了 500px"
+  },
+  {
+    "a": "08-text-a.png",
+    "b": "08-text-b.png",
+    "burst": false,
+    "why": "**同一個版面、只有文字不同**（模擬同一個 App 裡兩則不同的訊息）"
+  }
+]

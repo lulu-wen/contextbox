@@ -13,43 +13,63 @@ export function getPetMessage(state: string, data: {
   candidates?: { reason?: string; kind?: string; reasons?: { kind?: string }[] }[];
   candidateCount?: number;
   lastAction?: string | null; freedBytes?: number; restoredCount?: number; errorMessage?: string;
+  /** 這一次有幾個**沒有**回到原位（放不回去的＋結果不明的）。>0 就不可以說「完成」。 */
+  leftBehind?: number;
 } = {}) {
-  const { candidates = [], candidateCount = candidates.length, lastAction = null, freedBytes = 0, restoredCount = 0, errorMessage = '' } = data
+  const {
+    candidates = [], candidateCount = candidates.length, lastAction = null, freedBytes = 0,
+    restoredCount = 0, errorMessage = '', leftBehind = 0,
+  } = data
   function formatBytes(bytes: number) {
     const units = ['B', 'KB', 'MB', 'GB']
     let value = Math.max(0, bytes), index = 0
     while (value >= 1024 && index < units.length - 1) { value /= 1024; index++ }
     return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`
   }
+  const count = (n: number, one: string, many: string = one + 's') => `${n} ${n === 1 ? one : many}`
   switch (state) {
-    case 'idle': return '我會幫你留意 Downloads 裡有沒有可以整理的檔案！'
-    case 'thinking': return '正在查看檔案，請稍等一下……'
+    case 'idle': return 'I keep an eye on your download folders for files worth clearing out.'
+    case 'thinking': return 'Looking through the files. One moment…'
     case 'found': {
-      if (!candidates.length) return `找到 ${candidateCount} 個可能可以清理的檔案！點清理看看吧。`
-      const labels: Record<string, string> = { duplicate: '重複檔案', partial: '未完成下載', empty: '空檔案',
-        installer: '安裝檔', archive: '壓縮檔', 'old-download': '久未使用的下載檔案', 'screenshot-noise': '可能不需要的截圖' }
+      if (!candidates.length) return `Found ${count(candidateCount, 'file')} that can probably be cleaned up. Have a look.`
+      const labels: Record<string, [string, string]> = {
+        duplicate: ['duplicate', 'duplicates'],
+        partial: ['half-finished download', 'half-finished downloads'],
+        empty: ['empty file', 'empty files'],
+        installer: ['installer', 'installers'],
+        archive: ['archive', 'archives'],
+        'old-download': ['download nobody has touched in a long time', 'downloads nobody has touched in a long time'],
+        'screenshot-noise': ['screenshot you probably do not need', 'screenshots you probably do not need'],
+      }
       const counts: Record<string, number> = {}
       for (const item of candidates) {
         const kind = [item.reason, item.kind, ...(item.reasons ?? []).map(r => r.kind)].find(k => k && Object.hasOwn(labels, k))
         if (kind) counts[kind] = (counts[kind] ?? 0) + 1
       }
-      const parts = Object.keys(labels).filter(k => counts[k]).map(k => `${counts[k]} 個${labels[k]}`)
+      const parts = Object.keys(labels).filter(k => counts[k])
+        .map(k => `${counts[k]} ${counts[k] === 1 ? labels[k][0] : labels[k][1]}`)
       const total = candidateCount || candidates.length
       const batchCount = candidates.length
-      if (total > batchCount) {
-        return `這次先處理其中 ${batchCount} 個。${parts.length ? `包含${parts.join('、')}。` : ''}`
-      }
-      return `找到 ${total} 個可能可以清理的檔案！${parts.length ? `包含${parts.join('、')}。` : ''}`
+      const includes = parts.length ? ` That includes ${parts.join(', ')}.` : ''
+      if (total > batchCount) return `Starting with ${batchCount} of them.${includes}`
+      return `Found ${count(total, 'file')} that can probably be cleaned up.${includes}`
     }
-    case 'cleaning': return candidates.length ? `正在幫你整理 ${candidates.length} 個檔案……` : '正在幫你整理檔案……'
-    case 'restoring': return '正在幫你復原檔案……'
+    case 'cleaning': return candidates.length ? `Tidying up ${count(candidates.length, 'file')}…` : 'Tidying up your files…'
+    case 'restoring': return 'Putting your files back…'
     case 'happy':
       if (lastAction === 'cleaning') return freedBytes > 0
-        ? `清理完成！已將 ${formatBytes(freedBytes)} 的檔案移入隔離區 ✨` : '清理完成！檔案已經移到隔離區 ✨'
-      if (lastAction === 'restoring') return restoredCount > 0
-        ? `復原完成！已經幫你復原 ${restoredCount} 個檔案 ✨` : '復原完成！✨'
-      return '完成了！✨'
-    case 'worried': return errorMessage ? `好像遇到了一點問題：${errorMessage}` : '好像遇到了一點問題，請稍後再試一次。'
+        ? `Cleanup done. Moved ${formatBytes(freedBytes)} into quarantine ✨` : 'Cleanup done. The files are in quarantine ✨'
+      if (lastAction === 'restoring') {
+        // **部分放回不可以講成完成**（稽核 2026-09-20）：一個檔還卡在隔離區裡，
+        // 而泡泡說「Undo done ✨」——那是在騙人。呼叫端本來就不該在這時候進 happy，
+        // 這裡是第二道：真的走到了，也要把還沒回去的講出來。
+        if (leftBehind > 0) {
+          return `Put ${count(restoredCount, 'file')} back; ${count(leftBehind, 'file')} did not go back. The panel says why.`
+        }
+        return restoredCount > 0 ? `Undo done. Put ${count(restoredCount, 'file')} back ✨` : 'Undo done ✨'
+      }
+      return 'All done ✨'
+    case 'worried': return errorMessage ? `Something is not right: ${errorMessage}` : 'Something is not right. Try again in a moment.'
     default: return ''
   }
 }

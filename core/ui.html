@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -61,6 +61,17 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,"Roboto Mono",monospace
 }
 .nav a:hover{color:var(--ink); border-color:var(--accent)}
 .nav a span{font-variant-numeric:tabular-nums; color:var(--faint); margin-left:5px}
+
+/* ── 兩塊（P6）。同一頁兩個分頁，不是兩個網址 —— 換網址要把鑰匙再帶一次。 ── */
+.tabs{display:flex; gap:8px; margin-top:11px; flex-wrap:wrap}
+.tabs .tab{
+  text-decoration:none; color:var(--dim); font-size:14px; font-weight:600; white-space:nowrap;
+  border:1px solid var(--line2); border-radius:99px; padding:6px 16px; background:var(--card);
+}
+.tabs .tab:hover{color:var(--ink); border-color:var(--accent)}
+.tabs .tab[aria-current="page"]{color:var(--card); background:var(--accent); border-color:var(--accent)}
+.pane[hidden], #facts-meta[hidden]{display:none !important}
+.filesbtns{display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 2px}
 
 /* ── 內容 ───────────────────────────────────────────────────── */
 main{max-width:940px; margin:0 auto; padding:20px 20px 120px}
@@ -198,8 +209,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #quaso[data-pet-state="worried"] #quaso-dialog.worried-flash {
     animation: quaso-worried-flash .7s ease-in-out 3;
   }
+  /* 灰掉是提示，不是鎖 —— 按鈕照樣按得下去（見 pet-state.js 的說明） */
   #quaso[data-pet-state="worried"] #quaso-tools button {
-    filter: grayscale(1); opacity: .5; cursor: not-allowed; animation: none;
+    filter: grayscale(1); opacity: .6; animation: none;
   }
   @keyframes quaso-worried-flash {
     0%, 100% { background: #fff1f1; box-shadow: 0 0 18px #dc454580, 0 0 5px #dc454560; }
@@ -250,6 +262,51 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file details[open] summary::after { content: ' ⌄'; }
   .cleanup-file details summary::-webkit-details-marker { display: none; }
   .cleanup-file details p { margin-left: 0; }
+  /* 模型的看法（P2）。**看得出來跟規則講的話不一樣**：那是意見，不是事實。
+     示範答案再加一層虛線框，evaluator 不會把預先塞的答案當成真的問過的。 */
+  .cleanup-model { color: #4a5b7a; font-style: italic; margin: 6px 0 0; }
+  .cleanup-model-seeded { border-left: 3px dashed #9aa7bd; padding-left: 8px; }
+  /* 你上次退過的那一個建議（P5）：看得出來跟別的不一樣，但**不要像錯誤**——
+     退貨不是壞掉，只是這一次不預設勾。 */
+  .cleanup-rejected { border-style: dashed; background: #fbf7ef; }
+  /* 「它學到的事」那一區的每一列：沒有勾選框，只有一句話與「忘掉」。 */
+  .cleanup-learned-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+  .cleanup-learned-row p { margin: 0; }
+  /* 面板裡的小標籤。一次只顯示一區，空的那幾區標籤變灰（點不下去）。 */
+  .cleanup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+  .cleanup-tabs button {
+    border: 1px solid #e0d6c4; background: #fbf7ef; border-radius: 999px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  .cleanup-tabs button[aria-selected="true"] { background: #4a3f2f; color: #fdfaf4; border-color: #4a3f2f; }
+  .cleanup-tabs button:disabled { opacity: .45; cursor: default; }
+  .cleanup-tabs button .cleanup-tab-n { opacity: .7; margin-left: 6px; }
+  #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
+  .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
+  .cleanup-shot { width: 150px; }
+  .cleanup-shot-frame { position: relative; border: 1px solid #e9dfce; border-radius: 8px;
+    overflow: hidden; background: #f6f1e7; min-height: 40px; }
+  .cleanup-shot-frame img { display: block; width: 100%; height: auto; }
+  /* 差異處的外框。位置是 0–1 的相對座標換成百分比，縮圖多大都對得上 */
+  .cleanup-shot-box { position: absolute; border: 2px solid #c0451b; border-radius: 3px;
+    box-shadow: 0 0 0 1px #fff9; pointer-events: none; }
+  .cleanup-shot label { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; overflow-wrap: anywhere; }
+  .cleanup-shot input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
+  #cleanup-panel .cleanup-shot p { margin: 4px 0 0; font-size: 13px; }
+  .cleanup-shot-keep { font-weight: 600; color: #4d6b3a; }
+  /* 看內容（P6）。內容是**不可信的輸入**：一律 textContent，這裡只管它長什麼樣。 */
+  .cleanup-peek { margin-top: 8px; font-size: 13px; }
+  .cleanup-preview { margin-top: 10px; border: 1px solid #e9dfce; border-radius: 10px;
+    padding: 10px 12px; background: #fffdf8; }
+  .cleanup-preview img { display: block; max-width: 100%; height: auto;
+    border: 1px solid #e9dfce; border-radius: 8px; }
+  .cleanup-preview-text { margin: 8px 0 0; max-height: 260px; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #514637; background: white; border: 1px solid #efe6d7; border-radius: 8px; }
+  /* 連拍那一區的格子只有 150px 寬，展開的內容要比格子寬才看得到 */
+  .cleanup-shot .cleanup-preview { width: min(420px, 56vw); }
+  .cleanup-select-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
   #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
   #cleanup-summary { font-weight: 600; }
@@ -266,111 +323,185 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
       <h1>ContextBox</h1>
       <span class="sub" id="ver"></span>
     </div>
-    <p class="count" id="count">正在讀你的資料……</p>
-    <div class="bar"><i id="bar"></i></div>
-    <nav class="nav" id="nav"></nav>
+    <nav class="tabs" id="tabs" aria-label="Two sections: files and your details">
+      <a class="tab" id="tab-files" href="#files" aria-current="page">Files</a>
+      <a class="tab" id="tab-facts" href="#facts" aria-current="false">Your details</a>
+    </nav>
+    <div id="facts-meta" hidden>
+      <p class="count" id="count">Loading your details…</p>
+      <div class="bar"><i id="bar"></i></div>
+      <nav class="nav" id="nav"></nav>
+    </div>
   </div>
 </header>
 
 <main>
   <div id="banner"></div>
-  <div class="intro">
-    這一頁跑在<b>你自己的電腦上</b>（http://127.0.0.1），填的東西只會進 <code>~/.contextbox/data.db</code>，不會傳去任何地方。
-    每一格<b>填完跳開就自己存</b>，存進去的是正規化過的值（民國年轉西元、電話轉 +886），所以存完你會看到格子裡的字被改寫成標準寫法。
-    空著不填沒關係，之後隨時可以回來補。
-  </div>
-  <div id="groups"></div>
-  <p class="foot">ContextBox —— 一個認識你的本機 agent</p>
+
+  <!-- 檔案管理（預設這一塊）。清理、改名、歸檔、復原都在可頌貓那兩個面板裡，
+       這裡是入口與現況 —— 以前使用者得先捲過 75 個欄位才找得到那隻貓。 -->
+  <section id="pane-files" class="pane">
+    <div class="intro">
+      This half is about <b>the files on your computer</b>: which ones you can clear out, which ones want a better
+      name or belong in a course folder, and how to put back what you just cleared.
+      Every row has a <b>“View contents”</b> link — if you can't remember what a file holds, open it and look before you decide.
+    </div>
+    <section class="grp">
+      <div class="grphead">
+        <h2>
+          <span>Files you can clear out</span>
+          <span class="n" id="files-candidate-count">Looking…</span>
+        </h2>
+        <p id="files-where">Asking the backend which folders it watches…</p>
+      </div>
+      <div class="grpbody">
+        <div class="filesbtns">
+          <button id="files-open-cleanup" class="add" type="button">Open cleanup panel</button>
+          <button id="files-open-history" class="add" type="button">Undo recent actions</button>
+        </div>
+        <div class="hint">The trash can and the back arrow under Quaso, bottom right, open these same two panels.</div>
+      </div>
+    </section>
+  </section>
+
+  <!-- 基本資料（另外半邊）。原本整頁就是這一塊。 -->
+  <section id="pane-facts" class="pane" hidden>
+    <div class="intro">
+      This page runs <b>on your own computer</b> (http://127.0.0.1). What you type only goes into
+      <code>~/.contextbox/data.db</code> — it is not sent anywhere.
+      Every field <b>saves itself when you click away</b>, and what gets saved is the normalized value
+      (ROC years become Gregorian, phone numbers become +886), so after a save you will see the box rewritten
+      into the standard form. Leaving things blank is fine; you can come back and fill them in any time.
+    </div>
+    <div id="groups"></div>
+  </section>
+
+  <p class="foot">ContextBox — a local agent that knows you</p>
 </main>
 
-<aside id="quaso" aria-label="Quaso 寵物">
+<aside id="quaso" aria-label="Quaso the pet">
   <div id="quaso-dialog" hidden>
-    <button id="quaso-dialog-dots" type="button" aria-label="展開清理提案訊息" hidden><span aria-hidden="true">.</span><span aria-hidden="true">.</span><span aria-hidden="true">.</span></button>
+    <button id="quaso-dialog-dots" type="button" aria-label="Show the cleanup message" hidden><span aria-hidden="true">.</span><span aria-hidden="true">.</span><span aria-hidden="true">.</span></button>
     <div id="quaso-dialog-content">
-    <button id="quaso-dialog-close" type="button" aria-label="隱藏訊息">×</button>
+    <button id="quaso-dialog-close" type="button" aria-label="Hide this message">×</button>
     <div id="quaso-dialog-row">
       <p id="quaso-status" role="status"></p>
     </div>
-    <button id="quaso-retry" type="button" hidden>重新載入</button>
-    <button id="quaso-dialog-collapse" type="button" aria-label="收合訊息" hidden>−</button>
+    <button id="quaso-retry" type="button" hidden>Reload</button>
+    <button id="quaso-burst-open" type="button" hidden>Look at these</button>
+    <button id="quaso-dialog-collapse" type="button" aria-label="Collapse this message" hidden>-</button>
     </div>
   </div>
-  <button id="quaso-stage" type="button" aria-label="與可頌貓對話"
+  <button id="quaso-stage" type="button" aria-label="Talk to Quaso"
     aria-expanded="false" aria-controls="quaso-dialog"></button>
-  <div id="quaso-tools" aria-label="寵物快捷操作">
-    <button id="quaso-cleanup-alert" type="button" aria-label="查看候選檔案" title="查看候選檔案"
+  <div id="quaso-tools" aria-label="Pet shortcuts">
+    <button id="quaso-cleanup-alert" type="button" aria-label="View candidate files" title="View candidate files"
       aria-haspopup="dialog" aria-controls="cleanup-panel">
       <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M8 11h24M16 10V6h8v4M11 15l2 20h14l2-20"/>
       </svg>
       <span id="quaso-candidate-count" aria-hidden="true">…</span>
     </button>
-    <button id="quaso-history-open" type="button" aria-label="復原最近動作" title="復原最近動作"
+    <button id="quaso-history-open" type="button" aria-label="Undo recent actions" title="Undo recent actions"
       aria-haspopup="dialog" aria-controls="cleanup-history-panel">
       <span id="quaso-history-count" aria-hidden="true">…</span>
       <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M16 10l-8 8 8 8M9 18h14a9 9 0 0 1 0 18h-3" transform="translate(0 -3)"/>
       </svg>
     </button>
-    <button id="quaso-settings-toggle" type="button" aria-label="設定" title="設定">
+    <button id="quaso-settings-toggle" type="button" aria-label="Show or hide the pet state"
+      title="Show or hide the pet state" aria-expanded="true" aria-controls="pet-state-debug">
       <span class="quaso-gear" aria-hidden="true">⚙</span>
     </button>
   </div>
-  <div class="pet-state-debug">
-    Pet State: <strong id="pet-state-text">idle</strong>
+  <div id="pet-state-debug" class="pet-state-debug">
+    Pet state: <strong id="pet-state-text">idle</strong>
   </div>
 </aside>
 <dialog id="cleanup-panel" aria-labelledby="cleanup-title">
   <div class="cleanup-heading">
-    <h2 id="cleanup-title">Quaso 的清理提案</h2>
-    <button id="cleanup-close" type="button" aria-label="關閉清理面板">關閉</button>
+    <h2 id="cleanup-title">Quaso's cleanup proposal</h2>
+    <button id="cleanup-close" type="button" aria-label="Close cleanup panel">Close</button>
   </div>
-  <p id="cleanup-mode-note" class="cleanup-note">示範模式 · 以下為範例檔案，清理與復原不會動到你電腦上真的檔案。</p>
+  <p id="cleanup-mode-note" class="cleanup-note">Demo mode · these are sample files. Cleanup and undo will not touch anything real on your computer.</p>
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
-
-  <div class="cleanup-select-actions">
-    <button id="cleanup-select-all" type="button">全部勾選</button>
-    <button id="cleanup-select-none" type="button">全部取消</button>
-    <button id="cleanup-select-page" type="button">本頁全選</button>
-    <button id="cleanup-unselect-page" type="button">取消本頁全選</button>
+  <!-- 面板裡的小標籤（P6 之二）。五區各自一個標籤，一次只顯示一區 ——
+       以前全部疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議。
+       標籤是動態產生的（數量會變），示範模式整條不顯示（那時只有清理那一區）。 -->
+  <div id="cleanup-tabs" class="cleanup-tabs" role="tablist" hidden></div>
+  <!-- 連拍截圖（P0）。一組一列、縮圖並排，成員的縮圖上畫出差異處；沒有組的時候整區不顯示。
+       縮圖是 blob: 網址（面板用帶 token 的 api 取回來的），網址上不帶 token。 -->
+  <div class="cleanup-section" id="cleanup-sec-bursts" data-section="bursts">
+    <div id="cleanup-bursts" hidden></div>
   </div>
-
-  <div id="cleanup-list"></div>
-  <div class="cleanup-actions" aria-label="清理清單分頁">
-    <button id="cleanup-prev" type="button">上一頁</button>
-    <span id="cleanup-page" aria-live="polite"></span>
-    <button id="cleanup-next" type="button">下一頁</button>
+  <!-- 建議的名字（P3）。**模型的意見，不是事實**：每一列都寫著「模型認為」，
+       勾起來按「改名」才會真的動檔案，旁邊永遠有「復原改名」。沒有建議的時候整區不顯示。 -->
+  <div class="cleanup-section" id="cleanup-sec-renames" data-section="renames">
+    <div id="cleanup-renames" hidden></div>
   </div>
-  <p id="cleanup-summary" aria-live="polite"></p>
-  <p id="cleanup-space-note" class="cleanup-note">清理會模擬移入可復原的隔離區；不等於釋放磁碟空間。</p>
+  <!-- 歸檔建議（P4）。**模型的意見，不是事實**：一列一個「檔名 → 課程/作業系統/講義」，
+       勾起來按「整理」才會真的搬檔，旁邊永遠有「復原整理」。沒有建議的時候整區不顯示。
+       只給相對於「整理好的」資料夾的那一段 —— 絕對路徑永遠不離開後端。 -->
+  <div class="cleanup-section" id="cleanup-sec-filings" data-section="filings">
+    <div id="cleanup-filings" hidden></div>
+  </div>
+  <!-- 它學到的事（P5）。**看得到、忘得掉**：每一列「模型說 A ・ 你要 B ・ 用過 N 次」＋一個「忘掉」。
+       這一區裡**沒有路徑、沒有檔名以外的東西**（後端的 preferences 表本來就只存課名、類型與
+       「哪一個建議」的摘要）。什麼都沒學過的時候整區不顯示。 -->
+  <div class="cleanup-section" id="cleanup-sec-learned" data-section="learned">
+    <div id="cleanup-learned" hidden></div>
+  </div>
+  <div class="cleanup-section" id="cleanup-sec-clean" data-section="clean">
+    <!-- 一次勾一整批（隊友那一側）。「本頁」是分頁之後的這一頁，不是整份清單。 -->
+    <div class="cleanup-select-actions">
+      <button id="cleanup-select-all" type="button">Tick everything</button>
+      <button id="cleanup-select-none" type="button">Untick everything</button>
+      <button id="cleanup-select-page" type="button">Tick this page</button>
+      <button id="cleanup-unselect-page" type="button">Untick this page</button>
+    </div>
+    <div id="cleanup-list"></div>
+    <!-- 分頁（隊友那一側）：一頁十個。上百個候選時整條捲軸滑不完。 -->
+    <div class="cleanup-actions" aria-label="Cleanup list pages">
+      <button id="cleanup-prev" type="button">Previous</button>
+      <span id="cleanup-page" aria-live="polite"></span>
+      <button id="cleanup-next" type="button">Next</button>
+    </div>
+    <div id="cleanup-needs-human" class="cleanup-note"></div>
+    <p id="cleanup-summary" aria-live="polite"></p>
+    <p id="cleanup-space-note" class="cleanup-note">Cleanup simulates moving files into a quarantine you can undo. That is not the same as freeing disk space.</p>
+  </div>
   <div id="cleanup-result" role="status" hidden></div>
   <div class="cleanup-actions">
-    <button id="cleanup-apply" class="primary" type="button">確認模擬清理</button>
-    <button id="cleanup-release" type="button" hidden>放棄上次那份</button>
-    <button id="cleanup-putback" type="button" hidden>放回已經搬走的</button>
-    <button id="cleanup-undo" type="button" hidden>復原這次清理</button>
-    <button id="cleanup-dismiss" type="button">這次略過</button>
-    <button id="cleanup-reset" type="button">重新示範</button>
+    <button id="cleanup-apply" class="primary" type="button" data-section="clean">Run the simulated cleanup</button>
+    <button id="cleanup-release" type="button" data-section="clean" hidden>Drop the last plan</button>
+    <button id="cleanup-putback" type="button" data-section="clean" hidden>Put back what moved</button>
+    <button id="cleanup-undo" type="button" data-section="clean" hidden>Undo this cleanup</button>
+    <button id="cleanup-rename" type="button" data-section="renames" hidden>Rename</button>
+    <button id="cleanup-rename-undo" type="button" data-section="renames" hidden>Undo rename</button>
+    <button id="cleanup-file" type="button" data-section="filings" hidden>File</button>
+    <button id="cleanup-file-undo" type="button" data-section="filings" hidden>Undo filing</button>
+    <button id="cleanup-dismiss" type="button" data-section="clean">Skip for now</button>
+    <button id="cleanup-reset" type="button">Restart the demo</button>
   </div>
 </dialog>
 <dialog id="cleanup-history-panel" aria-labelledby="cleanup-history-title">
   <div class="cleanup-heading">
-    <h2 id="cleanup-history-title">復原最近動作</h2>
-    <button id="cleanup-history-close" type="button">關閉</button>
+    <h2 id="cleanup-history-title">Undo recent actions</h2>
+    <button id="cleanup-history-close" type="button">Close</button>
   </div>
-  <p id="cleanup-history-note" class="cleanup-note">每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。</p>
+  <p id="cleanup-history-note" class="cleanup-note">One row per cleanup. Tick one and the files it moved go back where they were.</p>
   <p id="cleanup-history-count" aria-live="polite"></p>
   <div id="cleanup-history-list"></div>
   <div class="cleanup-actions">
-    <button id="cleanup-history-prev" type="button">上一頁</button>
-    <button id="cleanup-history-next" type="button">下一頁</button>
-    <button id="cleanup-history-refresh" type="button">重新載入</button>
+    <button id="cleanup-history-prev" type="button">Previous</button>
+    <button id="cleanup-history-next" type="button">Next</button>
+    <button id="cleanup-history-refresh" type="button">Reload</button>
   </div>
   <div id="cleanup-history-result" role="status" hidden></div>
   <div class="cleanup-actions">
-    <button id="cleanup-history-undo" class="primary" type="button" disabled>復原勾選動作（0）</button>
+    <button id="cleanup-history-undo" class="primary" type="button" disabled>Undo selected (0)</button>
   </div>
 </dialog>
 <script type="module" src="/assets/cleanup-demo.js"></script>
@@ -378,7 +509,16 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   import { getPetMessage } from '/assets/pet-messages.js'
   import { getPetState, getPetMessageData } from '/assets/pet-state.js'
   function renderPetMessage() {
-    document.getElementById('quaso-status').textContent = getPetMessage(getPetState(), getPetMessageData())
+    const status = document.getElementById('quaso-status')
+    const state = getPetState()
+    // 狀態一變就換回「狀態算出來的那一句」；狀態沒變的期間，
+    // notice()（連拍的主動詢問這一類）指定的話比它優先，不要每五秒被輪詢洗掉。
+    if (status.dataset.petState !== state) {
+      status.dataset.petState = state
+      status.dataset.notice = ''
+    }
+    if (status.dataset.notice === '1') return
+    status.textContent = getPetMessage(state, getPetMessageData())
   }
   document.addEventListener('quaso:statechange', renderPetMessage)
   document.addEventListener('quaso:messagechange', renderPetMessage)
@@ -386,7 +526,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   import('/assets/pet-viewer.js').catch(() => {
     document.getElementById('quaso-dialog').hidden = false
     document.getElementById('quaso-stage').setAttribute('aria-expanded', 'true')
-    document.getElementById('quaso-status').textContent = 'Quaso 載入失敗，請確認伺服器已啟動，再重新載入。'
+    document.getElementById('quaso-status').textContent = 'Quaso failed to load. Check that the server is running, then reload.'
     // 「重新載入」由 keepKeyOutOfAddressBar() 接手（帶鑰匙重開）。
     // 不可以直接重新整理：網址上的 k 已經拿掉了，會拿到 401。
     document.getElementById('quaso-retry').hidden = false
@@ -426,13 +566,88 @@ function keepKeyOutOfAddressBar(token, loc = location, hist = history, doc = doc
 }
 keepKeyOutOfAddressBar(TOKEN)
 
+/* ── 兩塊：檔案管理與基本資料（P6）─────────────────────────────
+   使用者第一眼看到的原本是一大片基本資料表單，找不到清理在哪裡。所以同一頁分兩塊，
+   用網址上的 #（`#files`／`#facts`）切換：
+
+   · **不是兩個真的網址。** 真的換頁要把鑰匙再帶一次（`?k=`），而鑰匙在網址上是既有的
+     痛點（RC16），不要放大它。切塊**不重新載入頁面、不重新要鑰匙、不送任何請求**。
+   · **預設開在檔案管理**：這個作品的主軸是檔案，基本資料是另外半邊。
+   · 上次在哪一塊記在 localStorage。讀不到（私密視窗、使用者清掉網站資料、
+     瀏覽器擋 storage）就用預設 —— 每一個存取都包 try/catch，記不住只是少一點方便。
+   · **# 不是 files／facts 的時候不換塊**：基本資料那一塊的分區導覽是 `#g3` 這種錨點，
+     點它只是捲到那一區，不可以把使用者踢回檔案管理。
+   ──────────────────────────────────────────────────────────── */
+const TABS = ['files', 'facts']
+const TAB_DEFAULT = 'files'
+const TAB_KEY = 'contextbox.tab'
+
+/** localStorage 可能整個存取不到（私密視窗、擋第三方資料），拿不到就當作沒有。 */
+function tabStore() {
+  try { return localStorage } catch (_) { return null }
+}
+
+/**
+ * 現在該顯示哪一塊：網址上的 # 說了算，其次是**現在正在看的那一塊**，再其次是記住的，最後才是預設。
+ *
+ * `now` 那一層是稽核 2026-09-20 補的：`#` 不是 files／facts 的時候（基本資料那一塊左上角的
+ * 分區導覽就是 `#g0`、`#g3`⋯⋯），以前會退回「記住的」——
+ * 而另一個面板視窗切過塊之後，localStorage 已經被覆寫成 files，於是**點一下分區導覽，
+ * 整片表單就消失、跳回檔案管理**。私密視窗（讀不到 localStorage）沒有第二個視窗也會中。
+ * 正在看哪一塊，本來就比「上一次記下來的」更接近使用者的意思。
+ */
+function tabFrom(loc, store, now) {
+  const hash = String(loc.hash || '').replace(/^#/, '')
+  if (TABS.includes(hash)) return hash
+  if (TABS.includes(now)) return now
+  try {
+    const saved = store && store.getItem(TAB_KEY)
+    if (TABS.includes(saved)) return saved
+  } catch (_) {}
+  return TAB_DEFAULT
+}
+
+/** 掛好兩塊，回傳 show(tab)。參數都可以換掉，測試才不用碰真的 document／localStorage。 */
+function setupTabs(doc, loc, store) {
+  const show = tab => {
+    const want = TABS.includes(tab) ? tab : TAB_DEFAULT
+    for (const t of TABS) {
+      const pane = doc.getElementById('pane-' + t)
+      if (pane) pane.hidden = t !== want
+      const link = doc.getElementById('tab-' + t)
+      // aria-current 用設值不用刪屬性：兩邊都看得出來現在在哪一塊
+      if (link) link.setAttribute('aria-current', t === want ? 'page' : 'false')
+    }
+    // 欄位進度條與分區導覽只跟基本資料那一塊有關，換塊時一起收起來
+    const meta = doc.getElementById('facts-meta')
+    if (meta) meta.hidden = want !== 'facts'
+    if (doc.body) doc.body.dataset.tab = want
+    try { if (store) store.setItem(TAB_KEY, want) } catch (_) {}
+    return want
+  }
+  let current = show(tabFrom(loc, store, null))
+  // 換塊的入口只有這一個：# 變了就跟上，並且記住現在在哪一塊（下一次 tabFrom 的 `now`）
+  const follow = () => { current = show(tabFrom(loc, store, current)) }
+  return Object.assign(tab => { current = show(tab); return current }, { follow })
+}
+const showTab = setupTabs(document, location, tabStore())
+// <a href="#files"> 本來就只改 #，不會重新載入頁面；這裡只負責把畫面跟上。
+// **這一行沒有它分頁就完全不會動**（稽核：以前沒有任何測試守著它）。
+addEventListener('hashchange', showTab.follow)
+
 const HEAD = { 'content-type': 'application/json', 'x-contextbox-token': TOKEN }
 
 async function api(path, init = {}) {
   if (document.documentElement.dataset.mockBackend === 'offline') {
-    throw new Error('目前模擬後端離線，請按 O 結束模擬後再試。')
+    throw new Error('Backend is simulated offline. Press O to end the simulation, then try again.')
   }
-  const r = await fetch(path, { ...init, headers: HEAD, cache: 'no-store' })
+  // blob: true ＝ 這條路徑回的是二進位（目前只有連拍縮圖），成功時回 Blob，不要當 JSON 解。
+  // 縮圖端點要 token，而 <img> 不會帶 header —— 所以一律先用這裡取回來，再換成 blob: 網址。
+  // **token 不可以放進 <img> 的網址**：那等於把它寫進 DOM、歷史紀錄與使用者的截圖裡。
+  // 失敗時照樣走下面那條（錯誤本體是 JSON）。
+  const { blob, ...rest } = init
+  const r = await fetch(path, { ...rest, headers: HEAD, cache: 'no-store' })
+  if (blob && r.ok) return r.blob()
   let data = {}
   try { data = await r.json() } catch (_) {}
   // server 的錯誤訊息本來就寫得像人話，原樣往上丟，不要自己重寫。
@@ -440,7 +655,7 @@ async function api(path, init = {}) {
   // 「有計畫卡著（要接續）」、「忙碌中（要重試）」—— 三種要做的事完全不同。
   // 回應本體也掛上去（data）：撞到 CONFLICT 時，擋住這次勾選的那份計畫在 data.blockingPlan。
   if (!r.ok) {
-    const e = new Error(data.error || ('伺服器回了 ' + r.status))
+    const e = new Error(data.error || ('Server returned ' + r.status))
     e.code = data.code
     e.status = r.status
     e.data = data
@@ -471,21 +686,21 @@ const badge = (text, cls) => el('span', { class: 'badge ' + cls, text })
    認不出來的前綴會自己掉到最後的「其他」一區。
    ──────────────────────────────────────────────────────────── */
 const GROUPS = [
-  { title: '基本資料',     families: ['person'],     note: '履歷最上面那一塊。' },
-  { title: '證號',         families: ['identity'],   note: '整組都是敏感資料。擴充套件永遠不會自動填，每一次都要你再點一次。' },
-  { title: '聯絡方式',     families: ['contact'],    note: '電話存成 +886 開頭，你填 0912-345-678 也會自己轉。' },
-  { title: '緊急聯絡人',   families: ['emergency'],  note: '這是別人的個資，所以整組敏感。' },
-  { title: '學歷',         families: ['education'],  note: '可以加好幾筆，之後表單問「最高學歷」時再挑一筆。' },
-  { title: '工作經歷',     families: ['work'],       note: '離職年月留空就代表現職。' },
-  { title: '能力',         families: ['skill', 'language', 'cert'], note: '技能、語言、證照三種各自可以加好幾筆。' },
-  { title: '作品',         families: ['portfolio'],  note: '' },
-  { title: '求職條件',     families: ['preference'], note: '這一組是拿來配對機會用的，不會出現在履歷上。' },
-  { title: '長文與推薦人', families: ['writing', 'reference'], note: '長文之後由 agent 幫你寫，這一版你也可以先自己填。' },
+  { title: 'About you',          families: ['person'],     note: 'The block at the top of a CV.' },
+  { title: 'ID numbers',         families: ['identity'],   note: 'All sensitive. The extension never fills these on its own — it asks you every single time.' },
+  { title: 'Contact',            families: ['contact'],    note: 'Phone numbers are stored starting with +886; type 0912-345-678 and it converts itself.' },
+  { title: 'Emergency contact',  families: ['emergency'],  note: 'This is someone else\'s personal data, so the whole group is sensitive.' },
+  { title: 'Education',          families: ['education'],  note: 'Add as many as you like; when a form asks for your highest degree, you pick one then.' },
+  { title: 'Work history',       families: ['work'],       note: 'Leave the end date blank and it means you still work there.' },
+  { title: 'Skills',             families: ['skill', 'language', 'cert'], note: 'Skills, languages and certificates — several of each.' },
+  { title: 'Portfolio',          families: ['portfolio'],  note: '' },
+  { title: 'What you are after', families: ['preference'], note: 'This group is for matching opportunities. It never shows up on a CV.' },
+  { title: 'Long-form and referees', families: ['writing', 'reference'], note: 'The agent will write the long-form answers later; in this version you can also write them yourself.' },
 ]
 /* 可重複的那幾族要有自己的小標題。這是顯示名稱，不是 key 清單。 */
 const FAM_NAME = {
-  education: '學歷', work: '工作經歷', skill: '技能', language: '語言',
-  cert: '證照', portfolio: '作品', reference: '推薦人',
+  education: 'Education', work: 'Work history', skill: 'Skill', language: 'Language',
+  cert: 'Certificate', portfolio: 'Portfolio', reference: 'Referee',
 }
 const famOf = d => d.key.includes('[]') ? d.key.split('[]')[0] : d.key.split('.')[0]
 
@@ -504,13 +719,13 @@ async function boot() {
     ])
     schemaKeys = schema.keys
     for (const f of facts.facts) if (!values.has(f.key)) values.set(f.key, f.value)
-    document.getElementById('ver').textContent = 'key 表 ' + schema.version + '　共 ' + schemaKeys.length + ' 個 key'
+    document.getElementById('ver').textContent = 'key table ' + schema.version + ' · ' + schemaKeys.length + ' keys'
     render()
     recount()
   } catch (e) {
-    document.getElementById('count').textContent = '讀不到資料'
+    document.getElementById('count').textContent = 'Could not load your details'
     document.getElementById('banner').append(
-      el('div', { class: 'banner', text: e.message + '（server 還活著嗎？跑 node --experimental-strip-types core/server.ts）' }))
+      el('div', { class: 'banner', text: e.message + ' (is the server still up? run node --experimental-strip-types core/server.ts)' }))
   }
 }
 
@@ -533,8 +748,8 @@ function render() {
   const rest = schemaKeys.filter(d => !seen.has(d.key))
   if (rest.length) {
     const gi = GROUPS.length
-    host.append(groupCard({ title: '其他', families: [], note: '這幾個 key 是後來加的，還沒歸到任何一區。' }, gi, rest))
-    nav.append(el('a', { href: '#g' + gi, text: '其他' }, [el('span', { id: 'nav' + gi, text: '' })]))
+    host.append(groupCard({ title: 'Other', families: [], note: 'These keys were added later and have not been sorted into a section yet.' }, gi, rest))
+    nav.append(el('a', { href: '#g' + gi, text: 'Other' }, [el('span', { id: 'nav' + gi, text: '' })]))
   }
 }
 
@@ -575,14 +790,14 @@ function repeatBlock(fam, defs, gi, showName) {
 
   const entry = i => {
     const box = el('div', { class: 'entry' }, [
-      el('div', { class: 'no', text: '第 ' + (i + 1) + ' 筆' }),
+      el('div', { class: 'no', text: 'Entry ' + (i + 1) }),
     ])
     defs.forEach((d, j) => box.append(fieldRow(d, keyAt(d, i), gi, j === 0)))
     return box
   }
   for (let i = 0; i < count; i++) list.append(entry(i))
 
-  const add = el('button', { class: 'add', type: 'button', text: '＋ 再加一筆' })
+  const add = el('button', { class: 'add', type: 'button', text: '+ Add another' })
   add.addEventListener('click', () => {
     const box = entry(count++)
     list.append(box)
@@ -605,21 +820,21 @@ function fieldRow(def, key, gi, first) {
   const left = el('div', {}, [
     el('label', { class: 'lbl', for: id, text: def.label }),
     el('div', { class: 'meta' }, [
-      def.sensitivity === 'sensitive' ? badge('🔒 敏感', 'b-lock') : null,
-      def.fill === 'compose' ? badge('✍ 之後由 agent 幫你寫', 'b-compose') : null,
+      def.sensitivity === 'sensitive' ? badge('🔒 Sensitive', 'b-lock') : null,
+      def.fill === 'compose' ? badge('✍ The agent writes this later', 'b-compose') : null,
       el('code', { class: 'keyname', text: key }),
     ]),
   ])
 
   const hints = []
-  if (def.sensitivity === 'sensitive') hints.push({ cls: 'lockhint', text: '🔒 敏感欄位：自動填入時每一次都會再問你一遍，不會有「這個網站以後都好」。' })
-  if (def.fill === 'compose') hints.push({ cls: '', text: '這一欄之後由 agent 用你的筆調寫，寫完再讓你過目。現在先自己填也可以。' })
-  if (def.type === 'tel') hints.push({ cls: '', text: '填 0912-345-678 或 02-2720-8889 都可以，會自動轉成 +886 開頭存起來。' })
+  if (def.sensitivity === 'sensitive') hints.push({ cls: 'lockhint', text: '🔒 Sensitive field: autofill asks you again every single time. There is no “always allow this site”.' })
+  if (def.fill === 'compose') hints.push({ cls: '', text: 'The agent will write this in your voice later and show it to you first. You can also write it yourself now.' })
+  if (def.type === 'tel') hints.push({ cls: '', text: '0912-345-678 or 02-2720-8889 both work; it is stored starting with +886.' })
   // 原生的 date／month 欄位只收 YYYY-MM-DD／YYYY-MM，打民國年進去瀏覽器會直接清空。
   // 所以這裡不承諾民國年，改講真話。想打民國年請用畢業證書那類檔案讓 agent 抽。
-  if (def.type === 'month') hints.push({ cls: '', text: '選年月就好。這一格只吃西元，打民國年瀏覽器會直接清掉。' })
-  if (def.type === 'date') hints.push({ cls: '', text: '這一格只吃西元。證件上是民國年的話，自己加 1911。' })
-  if (def.type === 'file') hints.push({ cls: '', text: '這一版存的是檔案路徑或網址的文字，還不能真的上傳圖片。' })
+  if (def.type === 'month') hints.push({ cls: '', text: 'Year and month is enough. This box only takes Gregorian years; a ROC year gets wiped by the browser.' })
+  if (def.type === 'date') hints.push({ cls: '', text: 'Gregorian years only. If your document shows a ROC year, add 1911 yourself.' })
+  if (def.type === 'file') hints.push({ cls: '', text: 'This version stores a path or a URL as text. It cannot upload a picture yet.' })
   // key 表的 note 有一半是寫給開發者看的內部備註（「覆寫成 pick」之類），
   // 那些字使用者讀了只會困惑。只留看得出是講給使用者聽的。
   const DEV_NOTE = /覆寫|不宣告|autocomplete|schema|推導|欄位是|這個系統|expiresAt|參數|程式/
@@ -654,7 +869,7 @@ function fieldRow(def, key, gi, first) {
     if (e.key === 'Enter' && input.tagName !== 'TEXTAREA') { e.preventDefault(); input.blur() }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); input.blur() }
   })
-  if (values.has(key)) mark(cell, '', '已經存過了')
+  if (values.has(key)) mark(cell, '', 'Already saved')
   return row
 }
 
@@ -664,28 +879,28 @@ function control(def, key, id) {
   const common = { id, class: 'inp', autocomplete: 'off' }  // 不讓瀏覽器自己記這些值
 
   if (def.type === 'enum') {
-    const s = el('select', common, [el('option', { value: '', text: '（未填）' })])
+    const s = el('select', common, [el('option', { value: '', text: '(not set)' })])
     for (const o of (def.enum || [])) s.append(el('option', { value: o, text: o }))
     // 庫裡的舊值已經不在選項裡了（key 表改過）：照樣列出來，不要讓它默默消失
     if (v != null && !(def.enum || []).includes(String(v))) {
-      s.append(el('option', { value: String(v), text: String(v) + '（key 表已經沒有這個選項）' }))
+      s.append(el('option', { value: String(v), text: String(v) + ' (no longer an option in the key table)' }))
     }
     if (v != null) s.value = String(v)   // 要等 option 都進去了才設得動
     return { node: s, input: s }
   }
   if (def.type === 'text') {
     const t = el('textarea', { ...common, rows: 6,
-      placeholder: def.fill === 'compose' ? '空著也沒關係，之後 agent 會幫你寫。' : '' })
+      placeholder: def.fill === 'compose' ? 'Leave it blank if you like — the agent will write it later.' : '' })
     t.value = v == null ? '' : String(v)
     return { node: t, input: t }
   }
   if (def.type === 'boolean') {
     const box = el('input', { type: 'checkbox', id, checked: v === true })
-    return { node: el('label', { class: 'check' }, [box, el('span', { text: '是' })]), input: box }
+    return { node: el('label', { class: 'check' }, [box, el('span', { text: 'Yes' })]), input: box }
   }
   const TYPES = { date: 'date', month: 'month', number: 'number', email: 'email', tel: 'tel', url: 'url' }
   const i = el('input', { ...common, type: TYPES[def.type] || 'text',
-    placeholder: def.type === 'file' ? '例如 ~/photos/id.jpg' : '' })
+    placeholder: def.type === 'file' ? 'e.g. ~/photos/id.jpg' : '' })
   if (def.type === 'number') i.step = 'any'
   i.value = v == null ? '' : String(v)
   return { node: i, input: i }
@@ -702,18 +917,18 @@ async function save(cell) {
   let value
   if (def.type === 'boolean') {
     value = input.checked
-    if (values.get(key) === value) return mark(cell, '', '已經存過了')
+    if (values.get(key) === value) return mark(cell, '', 'Already saved')
   } else {
     value = input.value.trim()
     if (value === '') {
       // server 會擋空值，而且擋得對。與其送過去吃錯誤，先講清楚。
       return mark(cell, values.has(key) ? 'warn' : '',
-        values.has(key) ? '清空不會刪掉已經存好的值，這一版還不能刪。' : '')
+        values.has(key) ? 'Clearing the box does not delete the saved value. This version cannot delete.' : '')
     }
-    if (values.has(key) && String(values.get(key)) === value) return mark(cell, '', '已經存過了')
+    if (values.has(key) && String(values.get(key)) === value) return mark(cell, '', 'Already saved')
   }
 
-  mark(cell, 'busy', '存檔中……')
+  mark(cell, 'busy', 'Saving…')
   try {
     const { fact } = await api('/facts', {
       method: 'POST',
@@ -724,7 +939,7 @@ async function save(cell) {
     if (def.type === 'boolean') input.checked = fact.value === true
     else input.value = fact.value == null ? '' : String(fact.value)
 
-    mark(cell, 'ok', '存好了 ✓')
+    mark(cell, 'ok', 'Saved ✓')
     cell.row.classList.add('saved')
     setTimeout(() => cell.row.classList.remove('saved'), 900)
     recount()
@@ -747,9 +962,9 @@ function recount() {
   }
   document.getElementById('count').textContent = ''
   document.getElementById('count').append(
-    document.createTextNode('已經填了 '), el('b', { text: String(filled) }),
-    document.createTextNode(' 筆　／　畫面上共 '),
-    el('b', { text: String(total) }), document.createTextNode(' 個欄位'))
+    document.createTextNode('Filled in '), el('b', { text: String(filled) }),
+    document.createTextNode(' of '),
+    el('b', { text: String(total) }), document.createTextNode(' fields on this page'))
   document.getElementById('bar').style.width = total ? (filled / total * 100) + '%' : '0'
 
   for (const [gi, p] of per) {

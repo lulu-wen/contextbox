@@ -140,7 +140,7 @@ export function withCleanupLock<T>(db: DatabaseSync, fn: (renew: RenewLock) => T
       try { process.kill(lock.pid, 0) } catch (e: any) { dead = e?.code === 'ESRCH' }
       const at = lockTakenAt(lock.owner)
       const expired = at === null || Math.abs(lockClock.now() - at) > STALE_LOCK_MS
-      if (!dead && !expired) throw new CleanupError('BUSY', '另一個清理動作正在進行，請稍後重試。')
+      if (!dead && !expired) throw new CleanupError('BUSY', 'Another cleanup action is running. Try again shortly.')
     }
     db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, owner)
   })
@@ -148,7 +148,7 @@ export function withCleanupLock<T>(db: DatabaseSync, fn: (renew: RenewLock) => T
     const next = lockOwner(id)
     const r = db.prepare('UPDATE cleanup_operation_lock SET owner=? WHERE singleton=1 AND owner=?').run(next, owner)
     if (Number(r.changes) !== 1) {
-      throw new CleanupError('BUSY', '清理鎖被另一個清理動作接走了，這一步先停在這裡。請稍後重試，會從停下來的地方接著做。')
+      throw new CleanupError('BUSY', 'Another cleanup action took the lock, so this step stops here. Try again shortly and it picks up where it stopped.')
     }
     owner = next
   }
@@ -170,8 +170,8 @@ export function listJournal(db: DatabaseSync, planId: string): JournalRow[] {
 /** Never expose OS error messages (which contain absolute paths) through the API. */
 export function cleanupProblem(e: any): string {
   if (e instanceof CleanupError) return e.message
-  if (e?.code === 'ENOENT') return '檔案或資料夾不見了，請確認後重試。'
-  if (e?.code === 'EACCES' || e?.code === 'EPERM') return '沒有權限搬動這個檔案，請確認權限後重試。'
-  if (e?.code === 'EXDEV') return '來源與隔離區位於不同磁碟，無法安全搬移；原檔仍保留。'
-  return '清理動作失敗，檔案仍可追蹤，請重試。'
+  if (e?.code === 'ENOENT') return 'The file or folder is gone. Check and try again.'
+  if (e?.code === 'EACCES' || e?.code === 'EPERM') return 'No permission to move this file. Check the permissions and try again.'
+  if (e?.code === 'EXDEV') return 'The source and quarantine are on different disks, so it cannot be moved safely. The original is untouched.'
+  return 'The cleanup action failed. The file is still accounted for. Try again.'
 }

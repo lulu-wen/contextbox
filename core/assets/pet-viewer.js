@@ -10,8 +10,10 @@ const content = document.getElementById('quaso-dialog-content')
 const collapse = document.getElementById('quaso-dialog-collapse')
 const pet = document.getElementById('quaso')
 let mode = 'hidden', dismissed = false
+// 只有「找到 N 個」那一句收得起來（收合之後剩三個點）。
+// 主動詢問、剛做完的結果那些話一律維持展開 —— 收起來就等於沒講。
 const collapsible = () => pet.dataset.petState === 'found'
-  && /^(找到 \d+ 個可能可以清理的檔案！|這次先處理其中 \d+ 個。)/u.test(status.textContent.trim())
+  && /^(Found \d+ files? that can probably be cleaned up\.|Starting with \d+ of them\.)/u.test(status.textContent.trim())
 function setDialogMode(next) {
   mode = next === 'collapsed' && !collapsible() ? 'expanded' : next
   dialog.dataset.mode = mode
@@ -377,7 +379,7 @@ async function init() {
   renderer.domElement.addEventListener('webglcontextlost', event => {
     event.preventDefault()
     renderer.setAnimationLoop(null)
-    status.textContent = '3D 顯示暫時中斷，請重新載入。'
+    status.textContent = 'The 3D view stopped. Please reload.'
     showDialog(true)
     retry.hidden = false
   })
@@ -386,7 +388,7 @@ async function init() {
 
 init().catch(error => {
   console.error('Quaso viewer:', error)
-  status.textContent = 'Quaso 暫時無法顯示。請確認伺服器與瀏覽器的 3D 功能，再重新載入。'
+  status.textContent = 'Quaso cannot be shown right now. Check the server and your browser\'s 3D support, then reload.'
   showDialog(true)
   retry.hidden = false
 })

@@ -1,0 +1,14 @@
+作業系統 第五週 行程排班
+先來先服務（FCFS）最簡單，但短工作可能被長工作卡住。
+最短工作優先（SJF）平均等待時間最小，需要預估執行時間。
+Round Robin: each process gets a time quantum q = 20 ms.
+
+第二節 優先權與飢餓
+優先權排班可能讓低優先權的行程永遠等不到 CPU，稱為飢餓。
+解法：老化（aging），等得越久優先權越高。
+
+第三節 練習題
+請計算下表五個行程在 RR（q=4）下的平均周轉時間。
+Deadline: Friday 23:59, submit via the course website.
+
+

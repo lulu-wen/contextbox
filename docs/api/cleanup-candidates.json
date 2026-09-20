@@ -5,21 +5,21 @@
   "bytes": 139,
   "defaultCheckedCount": 6,
   "defaultCheckedBytes": 101,
-  "generatedAt": "2026-09-19T04:42:06.402Z",
+  "generatedAt": "2026-09-19T13:58:10.633Z",
   "candidates": [
     {
-      "itemId": "1f8909ea-63b5-4977-b399-866ffc9253d0",
+      "itemId": "bf289a03-8c59-474c-9a97-25b0492666e5",
       "name": "報告 (1).pdf",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 34,
-      "mtime": "2026-09-19T02:42:06.058Z",
+      "mtime": "2026-09-19T11:58:10.218Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "1e1358ed-81e5-40f0-a9c4-4a99524ab48a"
+        "9cd1f06b-6888-4552-85d4-a7d1e898d143"
       ],
       "reasons": [
         {
@@ -28,21 +28,22 @@
           "reason": "同內容的重複檔案",
           "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「報告.pdf」"
         }
-      ]
+      ],
+      "model": null
     },
     {
-      "itemId": "ffd044dd-feb4-427c-935f-a98b50dcd3f2",
+      "itemId": "fa55212c-0586-4813-93bd-992f57bcdb81",
       "name": "空的.txt",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 0,
-      "mtime": "2026-09-16T04:42:06.058Z",
+      "mtime": "2026-09-16T13:58:10.218Z",
       "kind": "empty",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "8add8ab2-81a7-4296-980b-fb6924299d53"
+        "80719d82-6482-4df0-92f0-44a10ab33b8f"
       ],
       "reasons": [
         {
@@ -51,21 +52,22 @@
           "reason": "空檔案",
           "evidence": "檔案大小是 0 byte，而且 3 天沒有變動"
         }
-      ]
+      ],
+      "model": null
     },
     {
-      "itemId": "23398cd8-bd68-4917-8914-4908e7006418",
+      "itemId": "88af9932-fbaa-4176-a89e-b5362a9307e1",
       "name": "下載中.iso.crdownload",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-09-16T04:42:06.058Z",
+      "mtime": "2026-09-16T13:58:10.218Z",
       "kind": "partial",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "c113d473-c8ff-4dc7-913f-000d6e58f8ba"
+        "35febcd3-f669-4dfc-b400-37b5aa8b2721"
       ],
       "reasons": [
         {
@@ -74,21 +76,22 @@
           "reason": "下載中斷留下的半成品",
           "evidence": ".crdownload 副檔名，而且 3 天沒有變動"
         }
-      ]
+      ],
+      "model": null
     },
     {
-      "itemId": "8a3926cb-4675-49c9-8f62-f1b2aab69a39",
+      "itemId": "42cf03c4-0f4f-4bd3-9221-e7188ac2d9c9",
       "name": "安裝檔.msi",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 19,
-      "mtime": "2026-08-20T04:42:06.058Z",
+      "mtime": "2026-08-20T13:58:10.218Z",
       "kind": "installer",
       "confidence": 70,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "bd50a511-17df-4808-843c-0a74b2447e49"
+        "9a956e48-9e6d-451d-9574-36d0742eb7e4"
       ],
       "reasons": [
         {
@@ -97,21 +100,22 @@
           "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
           "evidence": ".msi 安裝檔，而且 30 天沒有變動"
         }
-      ]
+      ],
+      "model": null
     },
     {
-      "itemId": "2d73d466-6bf5-4033-a00d-c61287f7ad2a",
+      "itemId": "7d7a73bd-1d4f-49de-a8cb-20a52e070bb3",
       "name": "發票.zip",
       "folder": "Downloads",
       "subdir": "2026/09",
       "bytes": 13,
-      "mtime": "2026-08-05T04:42:06.058Z",
+      "mtime": "2026-08-05T13:58:10.218Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "b6d8c8ec-f778-4996-a97e-f0eba61a7826"
+        "0b4f9ced-5b42-42ee-949f-a9ebac4dbf68"
       ],
       "reasons": [
         {
@@ -120,21 +124,22 @@
           "reason": "舊壓縮檔通常是一次性下載",
           "evidence": ".zip 壓縮檔，而且 45 天沒有變動"
         }
-      ]
+      ],
+      "model": null
     },
     {
-      "itemId": "b654eeb8-7b21-4185-8535-f3008a995b54",
+      "itemId": "fb2b312a-3063-488e-aa76-63107558c90d",
       "name": "素材包.zip",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 19,
-      "mtime": "2026-07-21T04:42:06.058Z",
+      "mtime": "2026-07-21T13:58:10.218Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "a3a85847-b1cf-4c4c-82a9-28b23c120965"
+        "7e285846-5fe0-4b88-b244-f4cd8b3f955a"
       ],
       "reasons": [
         {
@@ -143,45 +148,23 @@
           "reason": "舊壓縮檔通常是一次性下載",
           "evidence": ".zip 壓縮檔，而且 60 天沒有變動"
         }
-      ]
-    },
-    {
-      "itemId": "18be94e3-80f3-4f42-975a-d5bab88d85e5",
-      "name": "很舊的.bin",
-      "folder": "Downloads",
-      "subdir": "",
-      "bytes": 22,
-      "mtime": "2026-03-03T04:42:06.058Z",
-      "kind": "old-download",
-      "confidence": 35,
-      "defaultChecked": false,
-      "vetoed": null,
-      "candidateIds": [
-        "fd2966d3-2ba1-497a-ae10-93bee80e2dd0"
       ],
-      "reasons": [
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "200 天沒有變動，且副檔名 .bin 不在保護清單"
-        }
-      ]
+      "model": null
     },
     {
-      "itemId": "ae86a519-4222-4488-92af-5432375a35c1",
+      "itemId": "1c88dd87-3c78-437e-a925-4291ad2fd45d",
       "name": "Screenshot 2026-01-02 141203.png",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-05-22T04:42:06.058Z",
+      "mtime": "2026-05-22T13:58:10.218Z",
       "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
       "vetoed": null,
       "candidateIds": [
-        "10e6cd2d-af4e-4940-8e9f-d1b95ae55b6e",
-        "758f93e8-010c-4ba7-b499-b1636e0d004f"
+        "19ef4d77-f7f9-4434-8ac8-ea525f127803",
+        "333c7aa9-9c5c-421b-9adc-880f14bf0e74"
       ],
       "reasons": [
         {
@@ -196,7 +179,32 @@
           "reason": "舊截圖常常是暫時資訊",
           "evidence": "檔名是 Screenshot 2026-01-02 141203.png，而且 120 天沒有變動"
         }
-      ]
+      ],
+      "model": null
+    },
+    {
+      "itemId": "b89ebcce-2cd8-41d8-9722-96fe006d76f1",
+      "name": "很舊的.bin",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 22,
+      "mtime": "2026-03-03T13:58:10.218Z",
+      "kind": "old-download",
+      "confidence": 35,
+      "defaultChecked": false,
+      "vetoed": null,
+      "candidateIds": [
+        "0b1f26bb-0549-461d-bc85-431e4342be76"
+      ],
+      "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "很久沒有動過的下載檔",
+          "evidence": "200 天沒有變動，且副檔名 .bin 不在保護清單"
+        }
+      ],
+      "model": null
     }
   ],
   "needsHumanTotal": 1,
@@ -207,7 +215,7 @@
   "needsHumanTruncated": false,
   "needsHuman": [
     {
-      "itemId": "da0f76c4-c321-4861-9c62-967e88b5441a",
+      "itemId": "94af327c-c10f-4527-a8f2-551ec83b130f",
       "name": "備份.tar",
       "folder": "Downloads",
       "bytes": 66560,

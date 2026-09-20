@@ -125,10 +125,16 @@ CREATE TABLE IF NOT EXISTS file_items (
   last_seen_at  TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN
                   ('new','candidate','kept','quarantined','restored','missing','error')),
-  error         TEXT
+  error         TEXT,
+  -- 檔名有沒有取名（core/untitled.ts 的三級）。**只是標記**，改名是 P3 的事。
+  -- 既有的資料庫靠 migrate() 補這兩欄，所以這裡不可以是 NOT NULL。
+  naming        TEXT CHECK (naming IN ('untitled','generic','named')),
+  naming_why    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_file_items_sha    ON file_items(sha256) WHERE sha256 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_file_items_status ON file_items(status, last_seen_at);
+-- **naming 故意不建索引。** 實測（300 個檔的資料夾，一個檔一次 insert、WAL 每次都要落地）
+-- 多一個索引就多 12% 的掃描時間；而「列出沒取名的檔」一次最多也就掃幾千列。
 
 CREATE TABLE IF NOT EXISTS cleanup_candidates (
   id           TEXT PRIMARY KEY,
@@ -200,6 +206,165 @@ CREATE TABLE IF NOT EXISTS cleanup_plan_releases (
   plan_id TEXT PRIMARY KEY REFERENCES cleanup_plans(id),
   at      TEXT NOT NULL
 );
+
+-- ── 連拍截圖 ─────────────────────────────────────────────────
+-- 長相指紋。**這是快取，不是事實**：算的時候的 size 與 mtime 一起存，
+-- 任一個跟現在的檔對不上就作廢重算（mtime 精度只到毫秒，同一秒內改內容而大小一樣時
+-- 只看 mtime 會漏掉）。掃描的對帳會把 file_items 已經不在的列一起清掉。
+CREATE TABLE IF NOT EXISTS cleanup_image_sigs (
+  item_id  TEXT PRIMARY KEY REFERENCES file_items(id),
+  width    INTEGER NOT NULL,
+  height   INTEGER NOT NULL,
+  size     INTEGER NOT NULL,     -- 算的時候的檔案大小
+  mtime    TEXT NOT NULL,        -- 算的時候的 mtime
+  hash     TEXT NOT NULL,        -- dHash
+  fine_w   INTEGER NOT NULL,
+  fine_h   INTEGER NOT NULL,
+  fine     BLOB NOT NULL,        -- 細比對縮圖
+  at       TEXT NOT NULL
+);
+
+-- 目前的連拍組。**每一次完整掃描重算**，不是歷史紀錄：組散掉時這裡的列就沒了
+-- （候選另外走 skipped）。留下的那張自己也有一列（keep_id = item_id），
+-- 它的 level 就是整組的等級，boxes 是空的 —— 縮圖端點只認得這張表，
+-- 「現在還在某一組裡」才給圖。boxes 存的是**換算過的 0–1 相對座標**（JSON），
+-- 面板照比例畫，後端不外流原圖尺寸以外的東西。
+CREATE TABLE IF NOT EXISTS cleanup_burst_members (
+  item_id  TEXT PRIMARY KEY REFERENCES file_items(id),
+  group_id TEXT NOT NULL,
+  keep_id  TEXT NOT NULL REFERENCES file_items(id),
+  level    TEXT NOT NULL CHECK (level IN ('same','similar')),
+  boxes    TEXT NOT NULL,
+  at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_burst_group ON cleanup_burst_members(group_id, item_id);
+
+-- ── 文件的內容 ───────────────────────────────────────────────
+-- 掃描時讀出來的文字（.txt／.md／.csv／Word／PowerPoint／PDF 的文字層），給 P2 的模型與之後的改名用。
+-- **這是快取，不是事實**（跟 cleanup_image_sigs 同一個規矩）：讀的時候的 size 與 mtime 一起存，
+-- 任一個跟現在的檔對不上就重讀。讀不懂的檔也留一列（text 是 NULL、reason 寫原因），
+-- 這樣 size／mtime 沒變就不會每一輪都再試一次。
+-- **裡面是使用者檔案的內容**（講義、履歷、對帳單…）：這個資料庫的權限要跟家目錄一樣，
+-- db.ts 的 lockDown 已經把資料夾 0700、檔案 0600 設好了。
+CREATE TABLE IF NOT EXISTS file_texts (
+  item_id   TEXT PRIMARY KEY REFERENCES file_items(id),
+  kind      TEXT NOT NULL CHECK (kind IN ('text','docx','pptx','pdf')),
+  text      TEXT,                 -- 讀得懂才有；最多 4000 字（見 read-text.ts 的 STORE_MAX_CHARS）
+  chars     INTEGER NOT NULL,     -- 原本讀到幾個字（截斷前）
+  truncated INTEGER NOT NULL,     -- 0／1
+  has_text  INTEGER NOT NULL,     -- 有沒有文字層（掃描版 PDF 是 0）
+  pages     INTEGER,              -- PDF 才有
+  unmapped  REAL,                 -- PDF 解不出來的字形比例，P2 拿來決定要不要改用模型看圖
+  reason    TEXT,                 -- 讀不懂的原因（看不懂／太大／逾時／記憶體不足）
+  size      INTEGER NOT NULL,     -- 讀的時候的檔案大小
+  mtime     TEXT NOT NULL,        -- 讀的時候的 mtime
+  at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_file_texts_at ON file_texts(at);
+
+-- ── 模型看懂內容（P2） ───────────────────────────────────────
+-- 模型看過的東西：**快取，也是結果**。鍵是「內容的 sha256 ＋ 提示詞版本」，不是路徑 ——
+-- 同一份檔複製兩份只問一次，改過內容的重問。存進來的每一個欄位都是**模型的意見**，
+-- 不是事實：畫面要標明是模型說的、信心多少、證據是什麼，不可以因為它說了就自動改名或搬檔。
+CREATE TABLE IF NOT EXISTS model_views (
+  key        TEXT PRIMARY KEY,   -- sha256(內容) + ':' + 提示詞版本
+  item_id    TEXT,               -- 最近一次是哪個檔（只是方便查，不是主鍵）
+  source     TEXT NOT NULL,      -- image／text
+  course     TEXT, topic TEXT, kind TEXT, suggested_name TEXT,
+  evidence   TEXT, confidence TEXT,           -- 高／中／低
+  model      TEXT NOT NULL, prompt_version TEXT NOT NULL,
+  at         TEXT NOT NULL,
+  seeded     INTEGER NOT NULL DEFAULT 0       -- 1 ＝ demo 預先塞的，畫面要標示
+);
+CREATE INDEX IF NOT EXISTS ix_model_views_item ON model_views(item_id);
+
+-- 每一次真的送出去的紀錄。**不存內容**，只存「送了多少」與「多久」——
+-- 使用者查得到「今天送了幾次、平均幾秒」，而帳本本身不可以變成第二份內容外洩管道。
+CREATE TABLE IF NOT EXISTS model_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, item_id TEXT, source TEXT NOT NULL,
+  bytes_sent INTEGER, chars_sent INTEGER, ok INTEGER NOT NULL, ms INTEGER, error TEXT,
+  -- 失敗算誰的帳：'answer'（模型有回應但答案不能用）算這個檔的，'transport'（連不上、逾時、5xx）不算
+  blame TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_model_calls_at ON model_calls(at);
+
+-- 沒送出去的與為什麼（看起來像機密、太短、問不到）。一個檔一列。
+CREATE TABLE IF NOT EXISTS model_skips (
+  item_id TEXT PRIMARY KEY, why TEXT NOT NULL, at TEXT NOT NULL
+);
+
+-- ── 改名（P3） ───────────────────────────────────────────────
+-- 每一次改名一列。**這是唯一一份「原本叫什麼」的紀錄**：清理有隔離區，改名沒有 ——
+-- 沒有這張表，改壞了就只剩使用者自己記得。所以先寫 started 再動檔案，改完才寫 done；
+-- 當機之後靠「檔案實際在哪」收尾（core/rename.ts 的 recoverInterruptedRenames）。
+--
+-- **為什麼不共用 cleanup_journal**：那張表的 op CHECK 只有 quarantine／restore／skip，
+-- 動它要遷移，而且改名不是清理（沒有計畫、沒有候選、不搬家）。
+--
+-- dir 是**真路徑**，只在本機用來組出要動的檔；**不可以回給畫面**（不變量 9）。
+-- from_name／to_name 只有檔名，不含資料夾 —— 改名永遠在同一個資料夾裡（不變量 3）。
+CREATE TABLE IF NOT EXISTS renames (
+  id        TEXT PRIMARY KEY,          -- uuid
+  item_id   TEXT NOT NULL REFERENCES file_items(id),
+  from_name TEXT NOT NULL,             -- 只有檔名，不含資料夾
+  to_name   TEXT NOT NULL,
+  dir       TEXT NOT NULL,             -- 所在資料夾（真路徑；只在本機用，不回給畫面）
+  source    TEXT NOT NULL,             -- model／manual
+  status    TEXT NOT NULL CHECK (status IN ('started','done','reverted','failed')),
+  error     TEXT,
+  at        TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_renames_item ON renames(item_id, at);
+
+-- ── 歸檔（P4） ───────────────────────────────────────────────
+-- 每一次「把一個檔搬進整理好的那棵樹」一列。跟 renames 同一套想法，但**搬家比改名更容易讓人找不到檔**：
+-- 改名還在同一個資料夾，搬家是換地方 —— 所以 from_dir 是唯一一份「它本來住在哪」。
+-- 先寫 started 再動檔案，搬完才寫 done；當機之後靠「檔案實際在哪」收尾
+-- （core/filing.ts 的 recoverInterruptedFilings）。
+--
+-- from_dir／to_dir 是**真路徑**，只在本機用來組出要動的檔；**不可以回給畫面**（不變量 8）。
+-- 畫面只看得到相對於 filed 的那一段（課程/作業系統/講義）。
+-- name 是搬的時候的檔名，to_name 是同名加序號之後真正落地的名字 —— 復原要靠這兩個。
+-- topic 不進路徑（太細會變成一堆只有一個檔的資料夾），但記在這裡。
+CREATE TABLE IF NOT EXISTS filings (
+  id        TEXT PRIMARY KEY,
+  item_id   TEXT NOT NULL REFERENCES file_items(id),
+  name      TEXT NOT NULL,            -- 搬的時候的檔名
+  from_dir  TEXT NOT NULL,            -- 原本的資料夾（真路徑，不回給畫面）
+  to_dir    TEXT NOT NULL,            -- 搬去哪（filed 底下）
+  to_name   TEXT NOT NULL,            -- 同名加序號之後真正的名字
+  course    TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  topic     TEXT,
+  status    TEXT NOT NULL CHECK (status IN ('started','done','reverted','failed')),
+  error     TEXT,
+  at        TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_filings_item ON filings(item_id, at);
+
+-- ── 記住你改過的東西（P5） ───────────────────────────────────
+-- 「模型說 A、你改成 B」一列。**只從使用者真的做過的動作寫**（rename apply／file apply 帶的參數，
+-- 以及 undo），不從掃描、不從模型、不從猜測寫（core/learn.ts 的不變量 1）。
+--
+-- **這張表裡沒有路徑、沒有檔名以外的東西、沒有檔案內容**：course 與 file_kind 存的是課名與類型
+-- 這種資料夾名字，rejected 存的是「哪一個建議被退了」的摘要。學到的值**到不了檔案系統**，
+-- 除非再過一次 cleanCourse／kindFolder／suggestedFileName —— 學的是偏好，不是權限。
+--
+-- 註：下面 k 那一行的 '\\n' 在**原始碼裡要寫兩個反斜線**。SCHEMA 是樣板字串，
+-- 單一個 \\n 會變成真的換行 —— SQL 註解就斷在那裡，後面半句變成看不懂的語法。
+CREATE TABLE IF NOT EXISTS preferences (
+  id      TEXT PRIMARY KEY,
+  kind    TEXT NOT NULL CHECK (kind IN ('course','file_kind','rejected')),
+  k       TEXT NOT NULL,            -- 對應鍵（course：courseKey(模型的課名)；file_kind：courseKey(課名)+'\\n'+模型的 kind；rejected：itemId+'\\n'+建議摘要）
+  v       TEXT NOT NULL,            -- 使用者要的值（course：課名的寫法；file_kind：類型；rejected：''）
+  times   INTEGER NOT NULL DEFAULT 1,
+  at      TEXT NOT NULL,            -- 最後一次
+  UNIQUE (kind, k)
+);
+CREATE INDEX IF NOT EXISTS ix_preferences_kind ON preferences(kind, at);
 `
 
 /**
@@ -214,6 +379,32 @@ function lockDown(path: string, createdDir: string | undefined) {
   if (createdDir) { try { chmodSync(createdDir, 0o700) } catch { /* Windows 上沒作用 */ } }
   for (const p of [path, path + '-wal', path + '-shm']) {
     try { chmodSync(p, 0o600) } catch { /* 還沒建出來就算了 */ }
+  }
+}
+
+/**
+ * 既有資料庫要補的欄位。`CREATE TABLE IF NOT EXISTS` 對已經存在的表什麼都不做，
+ * 所以**新欄位一定要在這裡再寫一次**，不然舊的資料庫升級之後會在第一次寫入時炸掉。
+ * 每一筆是 [表, 欄位, ADD COLUMN 的完整寫法]；欄位不可以是 NOT NULL（舊的列沒有值）。
+ */
+const ADDED_COLUMNS: [string, string, string][] = [
+  ['file_items', 'naming', `naming TEXT CHECK (naming IN ('untitled','generic','named'))`],
+  ['file_items', 'naming_why', 'naming_why TEXT'],
+  ['model_calls', 'blame', 'blame TEXT'],
+]
+
+/**
+ * 補欄位。**同一瞬間可能有很多個行程在做同一件事**（右鍵一次選 8 個檔就是 8 個行程），
+ * 所以「已經有這一欄」不算錯 —— 檢查跟 ALTER 之間別人加好了，接住那個訊息就好。
+ */
+function migrate(db: DatabaseSync): void {
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+    if (cols.some(c => c.name === column)) continue
+    try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`) }
+    catch (e: any) {
+      if (!/duplicate column/i.test(String(e?.message ?? e))) throw e
+    }
   }
 }
 
@@ -235,6 +426,7 @@ export function open(path: string = DEFAULT_DB): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
+  migrate(db)
   if (path !== ':memory:') lockDown(path, created)
   return db
 }

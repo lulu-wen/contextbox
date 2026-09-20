@@ -18,22 +18,22 @@ function dto(row: Row) {
 }
 function ids(value: unknown): asserts value is string[] {
   if (!Array.isArray(value) || !value.length || value.length > 100
-    || value.some(v => typeof v !== 'string' || !v || v.length > 200)) throw new Error('請勾選有效的項目（每次最多 100 筆）。')
+    || value.some(v => typeof v !== 'string' || !v || v.length > 200)) throw new Error('Tick valid entries (at most 100 at a time).')
 }
 export function recordDemo(db: DatabaseSync, body: any) {
   ids(body?.candidateIds)
-  if (typeof body?.requestId !== 'string' || !body.requestId || body.requestId.length > 200) throw new Error('缺少操作識別碼。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開後再試。')
+  if (typeof body?.requestId !== 'string' || !body.requestId || body.requestId.length > 200) throw new Error('The action id is missing. Close the panel, open it again from the pet or `node cli.mjs open`, and try again.')
   const selection = JSON.stringify([...new Set(body.candidateIds)].sort())
   const fixture = JSON.parse(readFileSync(new URL('./assets/demo-candidates.json', import.meta.url), 'utf8'))
   const known = new Set(fixture.candidates.flatMap((i: any) => i.candidateIds))
-  if (body.candidateIds.some((id: string) => !known.has(id))) throw new Error('範例候選已變更。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開。')
+  if (body.candidateIds.some((id: string) => !known.has(id))) throw new Error('The sample candidates changed. Close the panel and open it again from the pet or `node cli.mjs open`.')
   const selected = new Set(body.candidateIds)
   const items = fixture.candidates.filter((i: any) => i.candidateIds.some((id: string) => selected.has(id)))
     .map((i: any) => ({ itemId: i.itemId, name: i.name, bytes: i.bytes, candidateIds: i.candidateIds }))
   db.exec('BEGIN IMMEDIATE')
   try {
     const prior = db.prepare('SELECT * FROM cleanup_demo_history WHERE request_id=?').get(body.requestId) as Row | undefined
-    if (prior && prior.selection !== selection) throw new Error('同一次操作的勾選已改變，請重試。')
+    if (prior && prior.selection !== selection) throw new Error('The ticks for this action changed. Try again.')
     if (prior) { db.exec('COMMIT'); return dto(prior) }
     const row: Row = { id: randomUUID(), request_id: body.requestId, selection,
       created_at: new Date().toISOString(), restored_at: null, items: JSON.stringify(items) }
@@ -44,7 +44,7 @@ export function recordDemo(db: DatabaseSync, body: any) {
   } catch (e) { db.exec('ROLLBACK'); throw e }
 }
 export function listDemoHistory(db: DatabaseSync, offset = 0, limit = 20) {
-  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('分頁參數不正確。')
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Bad paging parameters.')
   const total = (db.prepare('SELECT count(*) n FROM cleanup_demo_history WHERE restored_at IS NULL').get() as { n: number }).n
   offset = Math.min(offset, Math.max(0, Math.ceil(total / limit) - 1) * limit)
   const rows = db.prepare('SELECT * FROM cleanup_demo_history WHERE restored_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?').all(limit, offset) as Row[]
@@ -56,7 +56,7 @@ export function undoDemoHistory(db: DatabaseSync, operationIds: unknown) {
   try {
     const rows = [...new Set(operationIds)].map(id => {
       const row = db.prepare('SELECT * FROM cleanup_demo_history WHERE id=?').get(id) as Row | undefined
-      if (!row) throw new Error('找不到所選紀錄。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開後再試。')
+      if (!row) throw new Error('Cannot find the record you picked. Close the panel, open it again from the pet or `node cli.mjs open`, and try again.')
       return row
     })
     let restored = 0, restoredFiles = 0
@@ -81,9 +81,9 @@ export function demoHistoryRoutes(db: DatabaseSync, url: URL, method: string, bo
       send(200, recordDemo(db, body))
     } else if (url.pathname === '/demo/cleanup/undo' && method === 'POST') {
       send(200, undoDemoHistory(db, body?.operationIds))
-    } else send(404, { error: '找不到模擬操作功能。' })
+    } else send(404, { error: 'There is no simulated-action feature here.' })
   } catch (e: any) {
-    send(400, { error: e?.code ? '模擬紀錄暫時無法讀寫，請稍後重試。' : e.message })
+    send(400, { error: e?.code ? 'The simulated log cannot be read or written right now. Try again shortly.' : e.message })
   }
   return true
 }

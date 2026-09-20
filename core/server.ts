@@ -31,6 +31,9 @@ import { Facts } from './facts.ts'
 import { getPetMessage } from './pet-state.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
+import { renameRoutes } from './rename-routes.ts'
+import { filingRoutes } from './filing-routes.ts'
+import { learnRoutes } from './learn-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig } from './config.ts'
 import { join } from 'node:path'
@@ -46,7 +49,14 @@ export const TOKEN_PATH = process.env.CONTEXTBOX_TOKEN_PATH
  * 上一版讀到 '' 就照用，而 '' 跟「沒帶 header」比對起來是相等的 ——
  * 同機任何行程不帶 token 就能搬檔、刪檔、拿到手填頁面（稽核第一波驗證）。
  */
+export const TOKEN_MIN = 16
+
 export function loadToken(path = TOKEN_PATH): string {
+  // **環境變數優先**（跟模型金鑰同一個習慣）：自己指定一把的話，沙盒與真實環境可以共用，
+  // 換一台機器也不用重新拿網址。太短的不收 —— `CONTEXTBOX_TOKEN=1` 等於沒有鎖，
+  // 而這一把鑰匙開的是「搬你的檔案」那道門。空白、太短都當成沒設定，退回檔案那條路。
+  const fromEnv = String(process.env.CONTEXTBOX_TOKEN ?? '').trim()
+  if (fromEnv.length >= TOKEN_MIN) return fromEnv
   const existing = existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
   if (existing) return existing
   mkdirSync(dirname(path), { recursive: true })
@@ -91,7 +101,7 @@ const NONCE = /^[0-9a-f]{32}$/i
  * healthSnapshot 每一段都包了 safe()，拿它算出來的就是「欄位齊全、ok 是 false」的那一份 ——
  * 不另外手寫第三種形狀（稽核 B-r5：以前 catch 路徑回 { ok, db, why }，CLI 把它判成「不是 ContextBox」）。
  */
-const DEAD_DB = { prepare() { throw new Error('資料庫不能用') } } as unknown as DatabaseSync
+const DEAD_DB = { prepare() { throw new Error('the database is unusable') } } as unknown as DatabaseSync
 
 /** 任何一段丟例外都退回預設值。泛型用函式宣告，箭頭會被當成 JSX。 */
 function safe<T>(fn: () => T, fallback: T): T {
@@ -130,7 +140,7 @@ function readBody(req: IncomingMessage): Promise<{ tooLarge: true } | { tooLarge
       ended = true
       resolve(size > MAX_BODY ? { tooLarge: true } : { tooLarge: false, text: Buffer.concat(chunks).toString('utf8') })
     })
-    req.on('close', () => { if (!ended) reject(new Error('連線在送完之前就斷了')) })
+    req.on('close', () => { if (!ended) reject(new Error('the connection dropped before the body finished')) })
     req.on('error', reject)
   })
 }
@@ -152,7 +162,6 @@ const UI_PATH = new URL('./ui.html', import.meta.url)
 
 // 只提供明列的公開素材，不將 URL 拼成本機檔案路徑。
 const PET_ASSETS = new Map([
-  ['/assets/quaso_v8.glb', ['assets/quaso_v8.glb', 'model/gltf-binary']],
   ['/assets/quaso_v10.glb', ['assets/quaso_v10.glb', 'model/gltf-binary']],
   ['/assets/pet-viewer.js', ['assets/pet-viewer.js', 'text/javascript; charset=utf-8']],
   ['/assets/cleanup-demo.js', ['assets/cleanup-demo.js', 'text/javascript; charset=utf-8']],
@@ -177,6 +186,12 @@ function uiHtml(token: string): string {
 
 export function start(opts: {
   port?: number; db?: string; token?: string; roots?: string[]; quarantine?: string
+  /**
+   * 「整理好的」資料夾（config 的 `filed`，P4 的歸檔只搬到這底下）。
+   * **故意不放進 needCfg**：只為了它去讀（甚至建立）使用者的設定檔，就是 RC16 修過的那個坑。
+   * 沒給、而且這一次本來就沒讀設定檔時，用跟 core/config.ts 同一個預設。
+   */
+  filed?: string
   /** 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。 */
   maxBytes?: number; readonly?: boolean
   /**
@@ -220,6 +235,10 @@ export function start(opts: {
   const QUARANTINE = opts.quarantine
     ?? process.env.CONTEXTBOX_QUARANTINE
     ?? join(homedir(), '.contextbox', 'quarantine')
+  // 歸檔（P4）搬進去的那棵樹。讀了設定檔就用設定的；**沒給又沒讀設定檔就是「不知道」**——
+  // 猜一個家目錄底下的位置等於在沒人講過的地方搬使用者的檔。那時 /file/* 回 BAD_CONFIG
+  // （空字串會被 filing-routes 的 scopeOf 擋下來），這正是文件寫的那一條 500。
+  const filedDir = opts.filed ?? (loaded ? cfg().filed : '')
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -254,7 +273,7 @@ export function start(opts: {
     if (!okHost) {
       res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify({
-        error: '只接受 127.0.0.1 或 localhost 這兩個名字。別的網域指到這台也不行。',
+        error: 'Only the names 127.0.0.1 and localhost are accepted — not some other domain pointing here.',
       }))
     }
 
@@ -271,7 +290,7 @@ export function start(opts: {
       if (origin && allowed) {
         h['access-control-allow-origin'] = origin
         h['access-control-allow-headers'] = 'content-type, x-contextbox-token'
-        h['access-control-allow-methods'] = 'GET, POST, OPTIONS'
+        h['access-control-allow-methods'] = 'GET, POST, DELETE, OPTIONS'
       }
       return h
     }
@@ -283,15 +302,15 @@ export function start(opts: {
 
     // 鎖 3：先擋來源，預檢也要過這一關
     if (!allowed) {
-      return send(403, { error: '網頁不能直接讀事實庫' })
+      return send(403, { error: 'A web page cannot read the fact store directly' })
     }
     if (req.method === 'OPTIONS') return send(204, {})
 
     if (url.pathname.startsWith('/assets/')) {
       const asset = PET_ASSETS.get(url.pathname)
-      if (!asset) return send(404, { error: '找不到素材' })
+      if (!asset) return send(404, { error: 'No such asset' })
       if (req.method !== 'GET' && req.method !== 'HEAD') {
-        return send(405, { error: '素材只供讀取。', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
+        return send(405, { error: 'Assets are read-only.', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
       }
       try {
         const data = url.pathname === '/assets/pet-messages.js'
@@ -301,7 +320,7 @@ export function start(opts: {
           'content-length': data.length, 'x-content-type-options': 'nosniff',
           'cross-origin-resource-policy': 'same-origin' })
         res.end(req.method === 'HEAD' ? undefined : data)
-      } catch { send(404, { error: '找不到素材' }) }
+      } catch { send(404, { error: 'No such asset' }) }
       return
     }
 
@@ -310,17 +329,17 @@ export function start(opts: {
       // 瀏覽器直接開網址是 document；網頁用 fetch 或 iframe 來拿的一律不給
       const dest = String(req.headers['sec-fetch-dest'] ?? '')
       if (dest && dest !== 'document') {
-        return send(403, { error: '這一頁只能用瀏覽器直接開' })
+        return send(403, { error: 'This page can only be opened directly in a browser' })
       }
       // **沒帶對的 k 不給頁面** —— 頁面裡印著 token，而本機任何行程都能不帶 Origin 來拿（RC16）。
       // 回純文字：這是給人在瀏覽器分頁裡看的。
       if (!sameToken(url.searchParams.get('k') ?? '', token)) {
         res.writeHead(401, { ...baseHeaders(), 'content-type': 'text/plain; charset=utf-8' })
-        return res.end('這個網址少了鑰匙。請用 `node cli.mjs open` 或 server 啟動時印出來的網址打開。\n')
+        return res.end('This address is missing its key. Open it with `node cli.mjs open`, or with the address the server printed at startup.\n')
       }
       let html: string
       try { html = uiHtml(token) }
-      catch { return send(500, { error: '找不到 core/ui.html' }) }
+      catch { return send(500, { error: 'core/ui.html is missing' }) }
       res.writeHead(200, {
         ...baseHeaders(),
         'content-type': 'text/html; charset=utf-8',
@@ -334,7 +353,7 @@ export function start(opts: {
     }
 
     if (url.pathname === '/health') {
-      if (req.method !== 'GET') return send(405, { error: '這個路徑只收 GET。', code: 'BAD_METHOD' }, { allow: 'GET' })
+      if (req.method !== 'GET') return send(405, { error: 'This route only takes GET.', code: 'BAD_METHOD' }, { allow: 'GET' })
       // **這條在 token 檢查之前，所以它是唯一沒有錯誤處理的路徑。**
       // 不包起來的話，healthSnapshot 丟例外會變成 unhandled error ——
       // 整個行程死掉、離開碼 1、client 的連線永遠掛著。
@@ -350,7 +369,7 @@ export function start(opts: {
       let snap
       try { snap = healthSnapshot(F.db, hopts) }
       catch (e: any) {
-        console.error('[contextbox] /health 自我檢查失敗：', (e && e.message) || e)
+        console.error('[contextbox] /health self-check failed:', (e && e.message) || e)
         // **回應形狀永遠跟正常時一樣**（R2-11）：拿不能用的資料庫再算一次，每一段都退回預設值
         snap = healthSnapshot(DEAD_DB, { ...hopts, roots: [] })
       }
@@ -370,38 +389,67 @@ export function start(opts: {
     }
     // 鎖 2：其他全部要 token
     if (!sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)) {
-      return send(401, { error: 'token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。' })
+      return send(401, { error: 'Wrong token. Paste the contents of ~/.contextbox/token into the extension settings.' })
     }
 
     // 已知的路徑用錯方法回 405，不是掉到 404（RC24）
     const own = OWN_ROUTES.find(([re]) => re.test(url.pathname))
     if (own && !own[1].includes(req.method ?? '')) {
-      return send(405, { error: `這個路徑只收 ${own[1].join('、')}。`, code: 'BAD_METHOD' }, { allow: own[1].join(', ') })
+      return send(405, { error: `This route only takes ${own[1].join(', ')}.`, code: 'BAD_METHOD' }, { allow: own[1].join(', ') })
     }
 
     // **看不懂的 body 回 400，不可以當成 {}**（RC6）。
     // 上一版解析失敗就給 {}，而 POST /cleanup/plans 的 {} 是「清單上打 ✔ 的全部」——
     // 使用者只勾一個，client 送出的 JSON 多一個逗號，就變成全部清掉。
     // 空的 body 才是「什麼都沒帶」。body 必須是物件（null、陣列、字串都是看不懂）。
+    // DELETE 也讀：`DELETE /learned` 的 `{ ids }`／`{ all: true }` 是 body（P5）。
+    // 不讀的話它永遠收到空的 body —— 「忘掉這一條」會變成「看不懂送來的資料」。
     let body: any = {}
-    if (req.method === 'POST') {
+    if (req.method === 'POST' || req.method === 'DELETE') {
       let got
       try { got = await readBody(req) }
       catch { return }   // 連線自己斷了，沒有人在等回應
       if (got.tooLarge) {
-        return send(413, { error: '送來的資料太大（上限 1 MB）。', code: 'BODY_TOO_LARGE' }, { connection: 'close' })
+        return send(413, { error: 'The body is too large (1 MB limit).', code: 'BODY_TOO_LARGE' }, { connection: 'close' })
       }
       if (got.text.trim()) {
         try { body = JSON.parse(got.text) }
-        catch { return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' }) }
+        catch { return send(400, { error: 'Could not make sense of the body.', code: 'BAD_BODY' }) }
         if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-          return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' })
+          return send(400, { error: 'Could not make sense of the body.', code: 'BAD_BODY' })
         }
       }
     }
 
     try {
       if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
+      // 改名（P3）。**在清理之前問**：它只認 `/rename/`，認不得就回 false。
+      // 跟清理共用 RouteCtx，但不需要 scan／sendBytes（改名不掃描、不送圖）。
+      if (renameRoutes({
+        db: F.db, roots, quarantine: QUARANTINE,
+        maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('rename does not scan') },
+      })) return
+      // 歸檔（P4）。跟改名一樣只認自己那個前綴（`/file/`），認不得就回 false。
+      // restoreRoots 是「原本的資料夾不見了可以建回來」的範圍，跟復原同一份（R2-4）。
+      if (filingRoutes({
+        db: F.db, roots, quarantine: QUARANTINE, filed: () => filedDir,
+        restoreRoots: () => restoreRootList,
+        maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('filing does not scan') },
+      })) return
+      // 它學到的事（P5）。只認 `/learned`，跟上面兩個一樣認不得就回 false。
+      // 不需要 roots／filed —— 它只讀寫 preferences 那張表，永遠不碰檔案。
+      if (learnRoutes({
+        db: F.db, roots, quarantine: QUARANTINE,
+        readonly: () => opts.readonly ?? cfg().readonly,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('learned does not scan') },
+      })) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
         // **這些都要是 thunk。** 上一版 `maxBytes: cfg().maxBytes` 是每個請求
@@ -410,10 +458,24 @@ export function start(opts: {
         db: F.db, roots, quarantine: QUARANTINE,
         // 復原用放回的範圍（R2-4）；截圖資料夾只收截圖類（R2-8）
         restoreRoots: () => restoreRootList, screenshotsDir: () => screenshotsDir,
+        // 「整理好的」資料夾（P6）。清理那條線自己不搬到那裡去 —— 它只拿來算
+        // 「面板看得到哪些檔」（歸檔建議那一區），預覽與縮圖的可見範圍要跟面板一樣寬。
+        filed: () => filedDir,
         // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
+        // 連拍縮圖是灰階 PNG，走不了 JSON 的 send。跟素材同一套 header：
+        // 不快取、不嗅探、只准同源用（縮圖是使用者的螢幕內容）。
+        sendBytes: (code, contentType, payload, extra = {}) => {
+          res.writeHead(code, {
+            ...baseHeaders(),
+            'content-type': contentType,
+            'cross-origin-resource-policy': 'same-origin',
+            ...extra,
+          })
+          res.end(Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength))
+        },
         // onProblem 一定要傳：保險絲與讀不到的檔只經由它報，回應的 problems 就是這些
         scan: onProblem => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes, onProblem }),
       })) return
@@ -442,7 +504,7 @@ export function start(opts: {
       if (url.pathname === '/undo' && req.method === 'POST') {
         return send(200, { undone: F.undoLast(body.n ?? 1) })
       }
-      send(404, { error: '沒有這個路徑' })
+      send(404, { error: 'No such route' })
     } catch (e: any) {
       send(400, { error: e.message })
     }
@@ -467,9 +529,9 @@ export function start(opts: {
 if (process.argv[1]?.endsWith('server.ts')) {
   const { ready, token } = start()
   const port = await ready
-  console.log(`ContextBox 在 http://127.0.0.1:${port}`)
+  console.log(`ContextBox is on http://127.0.0.1:${port}`)
   // 網址帶鑰匙（?k=）。不帶的網址打開是 401。
-  console.log(`手填頁面：${uiUrl(port, token)}　（鑰匙已經幫你帶好，直接開就能用）`)
+  console.log(`Form page: ${uiUrl(port, token)}  (the key is already in the address, so it just opens)`)
   console.log(`token：${token}`)
-  console.log(`（也存在 ${TOKEN_PATH}，貼進擴充套件設定）`)
+  console.log(`(also saved at ${TOKEN_PATH}; paste it into the extension settings)`)
 }

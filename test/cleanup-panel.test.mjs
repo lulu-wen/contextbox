@@ -86,7 +86,7 @@ describe('A 勾選要一對一變成搬移', () => {
     real.select(old.itemId, true)
     const r = await real.apply()
     assert.equal(r.status, 'applied', JSON.stringify(r))
-    assert.ok(!s.has('old.bin'), '使用者勾了，就要搬 —— 不然是沉默地錯')
+    assert.ok(!s.has('old.bin'), '使用者勾了，就要搬 — 不然是沉默地錯')
     assert.ok(!s.has('a.zip'))
   })
 
@@ -117,7 +117,7 @@ describe('A 勾選要一對一變成搬移', () => {
     await real.load()
     real.select(s.byName(real, 'a.zip').itemId, false)
     s.calls.length = 0
-    await assert.rejects(real.apply(), /至少/)
+    await assert.rejects(real.apply(), /at least/)
     assert.equal(s.calls.length, 0, '前端要先擋，不可以打 API')
   })
 })
@@ -137,7 +137,7 @@ describe('B 逐項結果要照實講', () => {
     assert.equal(r.moved, 2, '勾了 3 個，搬成 2 個')
     assert.equal(r.failed.length, 1)
     assert.equal(r.failed[0].name, 'b.zip')
-    assert.ok(r.failed[0].why && !/原因不明/.test(r.failed[0].why), '每個失敗都要講得出為什麼')
+    assert.ok(r.failed[0].why && !/reason unknown/.test(r.failed[0].why), '每個失敗都要講得出為什麼')
     assert.equal(r.bytesFreed, sizes['a.zip'] + sizes['c.zip'], '只算真的搬走的')
     assert.equal(r.status, 'partial')
   })
@@ -159,7 +159,7 @@ describe('B 逐項結果要照實講', () => {
     assert.equal(real.candidates.length, 1, '前提：只有其中一份被提議')
     const r = await real.apply()
     assert.equal(r.moved, 0)
-    assert.match(r.failed[0].why, /十分鐘|等一下/)
+    assert.match(r.failed[0].why, /ten minutes|later/)
   })
 
   test('逐項結果的守恆：搬了＋略過＋失敗 = 計畫的檔數', async t => {
@@ -272,7 +272,7 @@ describe('C 重試與卡住的計畫', () => {
     assert.ok(s.has('a.zip') && s.has('b.zip'), '只是提示，一個都還沒動')
     assert.equal(real.locked, true)
 
-    const r2 = await real.apply()        // 使用者按「繼續上次那份」
+    const r2 = await real.apply()        // 使用者按“Finish the last plan”
     assert.equal(r2.status, 'applied')
     assert.ok(!s.has('a.zip'), '上次那份是 a')
     assert.ok(s.has('b.zip'), '**b 不在上次那份裡，不可以被順便搬走**')
@@ -293,7 +293,7 @@ describe('D 候選過期', () => {
 
     const r = await real.apply()
     assert.equal(r.status, 'stale')
-    assert.ok(s.has('old.bin'), '清單變了就不可以自動重試 —— 使用者要再看一眼')
+    assert.ok(s.has('old.bin'), '清單變了就不可以自動重試 — 使用者要再看一眼')
     assert.ok(!real.candidates.some(c => c.name === 'a.zip'), '重載之後 a 不在了')
     assert.ok(real.selected.has(old), '使用者對 old.bin 的選擇沒變，要保留')
     assert.equal(real.locked, false, '沒有建出任何計畫，不需要鎖')
@@ -417,7 +417,7 @@ describe('F 復原要講真話', () => {
     assert.equal(r.restored, 2)
     assert.ok(s.has('a.zip') && s.has('b.zip'), '檔案要回到原位')
     assert.equal(real.candidates.length, 0,
-      'A 的規則：復原過就代表想留著，之後不再提議。前端不可以自己把它們加回清單')
+      'A 的規則：復原過就代表想Keeping，之後不再提議。前端不可以自己把它們加回清單')
     assert.equal(real.canUndo, false)
   })
 })
@@ -441,7 +441,7 @@ test('**測試起的 server 不可以去讀使用者的設定檔**', async t => 
   await s.api('/health')
   await s.api('/cleanup/plans?undoable=1')
   assert.ok(!existsSync(join(FAKE_HOME, '.contextbox')),
-    '跑完一整輪清理，家目錄底下出現了 .contextbox —— 有路徑去讀了設定檔')
+    '跑完一整輪清理，家目錄底下出現了 .contextbox — 有路徑去讀了設定檔')
 })
 
 // ═══ window.api 要把 code 帶上來 ════════════════════════════
@@ -457,7 +457,7 @@ test('window.api 丟錯時要帶 code 與 status', async () => {
     async () => ({ ok: false, status: 409, json: async () => ({ error: '候選已變更', code: 'STALE_CANDIDATE' }) }),
   )
   const e = await api('/x').catch(e => e)
-  assert.equal(e.message, '候選已變更', '訊息維持原樣 —— 既有呼叫端只看 message')
+  assert.equal(e.message, '候選已變更', '訊息維持原樣 — 既有呼叫端只看 message')
   assert.equal(e.code, 'STALE_CANDIDATE')
   assert.equal(e.status, 409)
 })
@@ -531,7 +531,7 @@ test('監看資料夾是捷徑（symlink）時，對帳也要做得到', async t
     rmSync(join(real, 'a.zip'))
     scan()
     const alive = db.prepare(`SELECT name FROM file_items WHERE status NOT IN ('missing','quarantined') ORDER BY name`).all()
-    assert.deepEqual(alive.map(r => r.name), ['b.zip'], '經過捷徑的監看資料夾，被刪的檔也要標成 missing')
+    assert.deepEqual(alive.map(r => r.name), ['b.zip'], '經過捷徑的the watched folder，被刪的檔也要標成 missing')
   } finally { db.close() }
 })
 
@@ -548,9 +548,9 @@ test('**搬失敗的檔要離開候選清單** —— 不然會卡在 STALE 死�
   // 2026-09-19 稽核 RC21：斷言訊息寫了「講得出為什麼」卻沒驗 why —— why 換成「原因不明」也是綠的
   const b = real.needsHuman.find(h => h.name === 'b.zip')
   assert.ok(b, '它該出現在「需要你看一眼」')
-  assert.ok(typeof b.why === 'string' && b.why.trim() && !/原因不明/.test(b.why), `而且講得出為什麼：${b.why}`)
+  assert.ok(typeof b.why === 'string' && b.why.trim() && !/reason unknown/.test(b.why), `而且講得出為什麼：${b.why}`)
   // 剩下沒有可以清的了。再按一次要老實說沒東西可清，不可以回 stale
-  await assert.rejects(real.apply(), /至少/)
+  await assert.rejects(real.apply(), /at least/)
 })
 
 test('清單上的每一個候選都要建得了計畫（清單與 createPlan 用同一套篩選）', async t => {
@@ -580,7 +580,7 @@ describe('獨立重推抓到的', () => {
     s.loseNext((path, m) => m === 'POST' && path.endsWith('/apply'))
     await assert.rejects(real.apply())
     await real.load()                    // 關掉再打開面板
-    const r = await real.apply()         // 按「再試一次」
+    const r = await real.apply()         // 按“Try again”
     assert.equal(r.status, 'applied', JSON.stringify(r))
     assert.equal(r.moved, 2)
     assert.equal(s.plans().length, 1)
@@ -691,7 +691,7 @@ test('**性質：沒勾的絕不搬、搬了幾個就說幾個、復原全部回
 
   // 驗收生成器：有趣的路徑都要真的走到，不然這 40 輪等於同一輪跑 40 次
   for (const [k, min] of Object.entries({ applied: 3, partial: 2, error: 1, rejected: 1, lowConfChecked: 3, twoReasons: 3, uncheckedDefault: 3 })) {
-    assert.ok(hits[k] >= min, `生成器沒走到「${k}」（${hits[k]} 次，至少要 ${min}）：${JSON.stringify(hits)}`)
+    assert.ok(hits[k] >= min, `生成器沒走到“${k}”（${hits[k]} 次，at least要 ${min}）：${JSON.stringify(hits)}`)
   }
   console.log('# 性質測試走到的路徑：' + JSON.stringify(hits))
 })

@@ -122,7 +122,7 @@ const all = (s, sql, ...a) => {
   finally { d.close() }
 }
 const meta = (s, k) => existsSync(s.p.db) ? one(s, 'SELECT v FROM meta WHERE k=?', k)?.v ?? null : null
-const planIdOf = out => /計畫 ([0-9a-f-]{36})/.exec(out)?.[1]
+const planIdOf = out => /Plan ([0-9a-f-]{36})/.exec(out)?.[1]
 
 /** 某個檔（照檔名）的候選 id */
 const candIds = (d, name) => d.prepare(
@@ -308,14 +308,14 @@ describe('R3-2b／R3-15 重送一份跑過的計畫（CLI）', () => {
     const first = s.run(['cleanup', 'apply', id])
     assert.equal(first.code, 3, `前提：第一次是部分失敗\n${first.out}`)
     assert.equal(planStatus(s, id), 'partial', `前提：計畫落在 partial\n${first.out}`)
-    assert.match(first.out, /搬進隔離區 1 個/, '前提：第一次真的搬了一個')
+    assert.match(first.out, /Moved 1 file/, '前提：第一次真的搬了一個')
 
     const again = s.run(['cleanup', 'apply', id])
-    assert.match(again.out, /這次什麼都沒做/, `重送是 no-op，畫面要說出來：\n${again.out}`)
-    assert.doesNotMatch(again.out, /搬進隔離區 \d+ 個/, `一個檔都沒動，不可以印得像剛搬完：\n${again.out}`)
-    assert.match(again.out, /不會重試/, `R3-15：非唯讀路徑也要講「不會重試沒搬成的」：\n${again.out}`)
-    assert.match(again.out, /cleanup scan/, `R3-15：要給真正的下一步（重掃、建新計畫）：\n${again.out}`)
-    assert.match(again.out, new RegExp(`計畫 ${id}`), '計畫 id 照印')
+    assert.match(again.out, /nothing happened this time/, `重送是 no-op，畫面要說出來：\n${again.out}`)
+    assert.doesNotMatch(again.out, /Moved \d+ files? \(/, `一個檔都沒動，不可以印得像剛搬完：\n${again.out}`)
+    assert.match(again.out, /does not retry/, `R3-15：非Read-only路徑也要講「does not retry沒搬成的」：\n${again.out}`)
+    assert.match(again.out, /cleanup scan/, `R3-15：要給真正的下一步（full-rescan、建新計畫）：\n${again.out}`)
+    assert.match(again.out, new RegExp(`Plan ${id}`), '計畫 id 照印')
   })
 
   test('重送不可以把還沒解決的套用錯清掉（寵物照樣擔心）', t => {
@@ -345,9 +345,9 @@ describe('R3-2b／R3-15 重送一份跑過的計畫（CLI）', () => {
     const id = planFor(s, ['a.zip'])
     const r = s.run(['cleanup', 'apply', id])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /搬進隔離區 1 個/, r.out)
+    assert.match(r.out, /Moved 1 file/, r.out)
     assert.match(r.out, /cleanup undo/, r.out)
-    assert.doesNotMatch(r.out, /這次什麼都沒做/, r.out)
+    assert.doesNotMatch(r.out, /nothing happened this time/, r.out)
   })
 
   test('applied 的計畫再 apply：講「什麼都沒做」，但復原這條路還在（離開碼 0）', t => {
@@ -356,8 +356,8 @@ describe('R3-2b／R3-15 重送一份跑過的計畫（CLI）', () => {
     assert.equal(s.run(['cleanup', 'apply', id]).code, 0)
     const again = s.run(['cleanup', 'apply', id])
     assert.equal(again.code, 0, again.out)
-    assert.match(again.out, /這次什麼都沒做/, again.out)
-    assert.doesNotMatch(again.out, /搬進隔離區 \d+ 個/, again.out)
+    assert.match(again.out, /nothing happened this time/, again.out)
+    assert.doesNotMatch(again.out, /Moved \d+ files? \(/, again.out)
     assert.match(again.out, new RegExp(`cleanup undo ${id}`), `搬走的還在隔離區，放回原位這條路要講：\n${again.out}`)
   })
 })
@@ -383,10 +383,10 @@ describe('R3-3b 清理鎖被另一個清理動作接走', () => {
     }
     assert.ok(moved >= 1 && moved < N, `前提：做到一半就停了（搬了 ${moved} 個）\n${r.out}`)
 
-    assert.match(r.out, /計畫 [0-9a-f-]{36}/, `沒有計畫 id 的話使用者沒有 undo 的入口：\n${r.out}`)
+    assert.match(r.out, /Plan [0-9a-f-]{36}/, `沒有計畫 id 的話使用者沒有 undo 的入口：\n${r.out}`)
     assert.match(r.out, /✔ /, `一行逐項結果都沒印：\n${r.out}`)
-    assert.match(r.out, /打斷/, `要說清楚是被另一個清理動作打斷：\n${r.out}`)
-    assert.match(r.out, /再跑一次/, `要說得出下一步（再跑一次接著做）：\n${r.out}`)
+    assert.match(r.out, /interrupted/, `要說清楚是被另一個清理動作interrupted：\n${r.out}`)
+    assert.match(r.out, /again picks up where it stopped/, `要說得出下一步（again picks up where it stopped接著做）：\n${r.out}`)
     assert.equal(r.code, 3, `已經有檔搬進隔離區，回 2（＝動作沒執行）是說謊：\n${r.out}`)
   })
 
@@ -436,9 +436,9 @@ describe('R3-3b 清理鎖被另一個清理動作接走', () => {
     }
     assert.ok(deleted >= 1 && deleted < N, `前提：刪到一半就停了（刪了 ${deleted} 個）\n${r.out}`)
 
-    assert.match(r.out, new RegExp(`刪掉 ${deleted} 個`), `已經永久刪掉的要講出來：\n${r.out}`)
-    assert.match(r.out, /打斷/, `要說清楚是被另一個清理動作打斷：\n${r.out}`)
-    assert.match(r.out, /再跑一次|接著/, `要說得出下一步：\n${r.out}`)
+    assert.match(r.out, new RegExp(`Deleted ${deleted} file`), `已經永久刪掉的要講出來：\n${r.out}`)
+    assert.match(r.out, /interrupted/, `要說清楚是被另一個清理動作interrupted：\n${r.out}`)
+    assert.match(r.out, /carry on with the rest|again picks up/, `要說得出下一步：\n${r.out}`)
     assert.equal(r.code, 3, `刪掉了一部分：3（執行了但沒全部做完），不是 1／2：\n${r.out}`)
   })
 
@@ -469,7 +469,7 @@ describe('R3-3b 清理鎖被另一個清理動作接走', () => {
 
     const r = s.run(['cleanup', 'quarantine', '--empty', '--yes', token])
     assert.equal(r.code, 2, `這一次一個檔都沒刪 → 動作沒執行，回 2：\n${r.out}`)
-    assert.doesNotMatch(r.out, /刪掉 1 個/, `不可以把上一次的數字再報一次：\n${r.out}`)
+    assert.doesNotMatch(r.out, /Deleted 1 file/, `不可以把上一次的數字再報一次：\n${r.out}`)
   })
 
 })
@@ -482,7 +482,7 @@ describe('R3-6b cleanup apply／undo <id> 之前的收尾', () => {
     const id = planFor(s, ['a.zip'])
     backdatePlan(s, id, 2 * 3600_000)
     const r = s.run(['cleanup', 'apply', id])
-    assert.doesNotMatch(r.out, /已經放棄了/, `使用者指名的那一份被同一個指令的收尾作廢了：\n${r.out}`)
+    assert.doesNotMatch(r.out, /was dropped/, `使用者指名的那一份被同一個指令的收尾作廢了：\n${r.out}`)
     assert.equal(existsSync(join(s.dl, 'a.zip')), false, `檔沒有搬走（指令什麼都沒做）：\n${r.out}`)
     assert.equal(planStatus(s, id), 'applied', r.out)
     assert.equal(r.code, 0, r.out)
@@ -498,7 +498,7 @@ describe('R3-6b cleanup apply／undo <id> 之前的收尾', () => {
     backdatePlan(s, named, 2 * 3600_000)
     const r = s.run(['cleanup', 'apply', named])
     assert.equal(planStatus(s, named), 'applied', `指名的那一份要照常套用：\n${r.out}`)
-    assert.equal(planStatus(s, older), 'dismissed', `沒被指名、更舊的那一份照舊自動放棄：\n${r.out}`)
+    assert.equal(planStatus(s, older), 'dismissed', `沒被指名、更舊的那一份照舊dropped automatically：\n${r.out}`)
   })
 
   test('對照：沒有指名（cleanup list）時，放兩小時的計畫照舊自動放棄', t => {
@@ -506,7 +506,7 @@ describe('R3-6b cleanup apply／undo <id> 之前的收尾', () => {
     const id = planFor(s, ['a.zip'])
     backdatePlan(s, id, 2 * 3600_000)
     assert.equal(s.run(['cleanup', 'list']).code, 0)
-    assert.equal(planStatus(s, id), 'dismissed', '自動放棄本身不可以被關掉')
+    assert.equal(planStatus(s, id), 'dismissed', 'dropped automatically本身不可以被關掉')
   })
 
   test('cleanup undo <id> 也一樣：指名的那一份不可以在同一個指令裡被作廢', t => {
@@ -514,8 +514,8 @@ describe('R3-6b cleanup apply／undo <id> 之前的收尾', () => {
     const id = planFor(s, ['a.zip'])
     backdatePlan(s, id, 2 * 3600_000)
     const r = s.run(['cleanup', 'undo', id])
-    assert.doesNotMatch(r.out, /已經放棄了/, `undo 之前的收尾把它作廢了：\n${r.out}`)
-    assert.match(r.out, /還沒套用/, `還沒套用的計畫，undo 要叫人去 release：\n${r.out}`)
+    assert.doesNotMatch(r.out, /was dropped/, `undo 之前的收尾把它作廢了：\n${r.out}`)
+    assert.match(r.out, /was never applied/, `was never applied的計畫，undo 要叫人去 release：\n${r.out}`)
     assert.equal(planStatus(s, id), 'proposed', r.out)
   })
 })
@@ -530,8 +530,8 @@ describe('R3-9 唯讀模式與 doctor', () => {
     const before = releases(s)
     const r = s.run(['cleanup', 'list'], { CONTEXTBOX_READONLY: '1' })
     assert.equal(r.code, 0, r.out)
-    assert.equal(planStatus(s, id), 'proposed', `唯讀模式把計畫作廢了：\n${r.out}`)
-    assert.equal(releases(s), before, '唯讀模式寫了 cleanup_plan_releases')
+    assert.equal(planStatus(s, id), 'proposed', `Read-only mode把計畫作廢了：\n${r.out}`)
+    assert.equal(releases(s), before, 'Read-only mode寫了 cleanup_plan_releases')
   })
 
   test('唯讀的 doctor 什麼都不改，而且講一句「不會自動收尾」', t => {
@@ -539,8 +539,8 @@ describe('R3-9 唯讀模式與 doctor', () => {
     const id = planFor(s, ['a.zip'])
     backdatePlan(s, id, 2 * 3600_000)
     const r = s.run(['doctor'], { CONTEXTBOX_READONLY: '1' })
-    assert.equal(planStatus(s, id), 'proposed', `唯讀的 doctor 改了資料庫：\n${r.out}`)
-    assert.match(r.out, /不會自動收尾/, `唯讀模式要講清楚它不收尾：\n${r.out}`)
+    assert.equal(planStatus(s, id), 'proposed', `Read-only的 doctor 改了資料庫：\n${r.out}`)
+    assert.match(r.out, /does not tidy up/, `Read-only mode要講清楚它不收尾：\n${r.out}`)
   })
 
   test('唯讀模式也不可以跑 recoverInterrupted（它會改 journal）', t => {
@@ -554,17 +554,17 @@ describe('R3-9 唯讀模式與 doctor', () => {
     } finally { d0.close() }
     assert.equal(s.run(['cleanup', 'quarantine'], { CONTEXTBOX_READONLY: '1' }).code, 0)
     assert.equal(one(s, `SELECT status FROM cleanup_journal WHERE op='quarantine'`)?.status, 'started',
-      '唯讀模式改了 journal')
+      'Read-only mode改了 journal')
     // 對照：非唯讀照舊收得掉
     assert.equal(s.run(['cleanup', 'quarantine']).code, 0)
     assert.equal(one(s, `SELECT status FROM cleanup_journal WHERE op='quarantine'`)?.status, 'done',
-      '非唯讀的收尾不可以跟著被關掉')
+      '非Read-only的收尾不可以跟著被關掉')
   })
 
   test('對照：非唯讀的 doctor 不講那句話', t => {
     const s = sandbox(t, { files: { 'a.zip': 60 } })
     const r = s.run(['doctor'])
-    assert.doesNotMatch(r.out, /不會自動收尾/, r.out)
+    assert.doesNotMatch(r.out, /does not tidy up/, r.out)
   })
 })
 
@@ -658,12 +658,12 @@ describe('R3-12 掃描問題不可以只走到 doctor', () => {
 
   test('清理資料夾不見了：寵物要擔心，訊息講得出是資料夾的事', () => {
     const s = routes.petState(base({
-      watcher: { ok: false, watching: [], watchingCount: 1, rootsMissing: 1, why: '有監看資料夾不存在' },
+      watcher: { ok: false, watching: [], watchingCount: 1, rootsMissing: 1, why: '有Watch資料夾不存在' },
       scanProblems: ['掃描資料夾「Downloads」不存在，這次沒有掃。'],
     }), { proposedPlans: 0, activeQuarantine: 0 })
     assert.equal(s.state, 'worried', '清理資料夾不見了，寵物照樣說「沒事，在發呆」')
     assert.notEqual(s.message, '沒事，在發呆。')
-    assert.match(s.message, /資料夾/, s.message)
+    assert.match(s.message, /folder/, s.message)
   })
 
   test('訊息不可以有絕對路徑', () => {
@@ -695,7 +695,7 @@ describe('R3-12 掃描問題不可以只走到 doctor', () => {
     const r = call(f, 'GET', '/pet/state')
     assert.equal(r.code, 200)
     assert.deepEqual(r.body.scanProblems, ['掃描資料夾「Downloads」不存在，這次沒有掃。'],
-      '面板拿不到掃描問題，就永遠只能看 doctor')
+      '面板拿不到Scan issues，就永遠只能看 doctor')
     assert.equal(r.body.state, 'worried')
   })
 })

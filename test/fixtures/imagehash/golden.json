@@ -1,0 +1,131 @@
+{
+  "method": "make-golden.py：面積平均（整數、.5 進位）、9×8 dHash、長邊 640～960 的細比對縮圖",
+  "images": {
+    "01-same-a": {
+      "dHash": "3a3360c0c0c0d15c",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 67773325,
+      "fineSha256": "e331d48fc8fd6da5286c47aed967dc51ec78ebfcd6d1b9f3b7cefdc3ba79780f"
+    },
+    "01-same-b": {
+      "dHash": "3a3360c0c0c0d05c",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 67789063,
+      "fineSha256": "18c77955ab9290b77f391797f481f26d23540d712df9ca450d4b21e68ac6f39c"
+    },
+    "02-typed-b": {
+      "dHash": "3a3360d0c0c0d05c",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 67784365,
+      "fineSha256": "4f6730393ffb269c4bd1b3778174147e6a37f42b6f1daad83e285b43a6fe00b0"
+    },
+    "03-check-a": {
+      "dHash": "71797979f979713d",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 57424764,
+      "fineSha256": "8d2928a6d8889f96dd8c6604d633bf55fd02441e683b75c722af0038594a335c"
+    },
+    "03-check-b": {
+      "dHash": "71797979f979713d",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 57425925,
+      "fineSha256": "0e6c140e49fee5cfb772a483095f8422ee20712426d3ffb3734b6896369e6e99"
+    },
+    "04-dialog-a": {
+      "dHash": "31717971f979d15d",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 54946219,
+      "fineSha256": "603ecb932e5a930320ac355f161bc363e879b52a1ea2278906e46ee79413211c"
+    },
+    "04-dialog-b": {
+      "dHash": "31717979f971d15d",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 55011768,
+      "fineSha256": "30beb5dd3d006b469191e4b676e6baa951f638477c46b459b58603e333b750b2"
+    },
+    "05-scroll-a": {
+      "dHash": "3a3360d0c0c0d15c",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 67774172,
+      "fineSha256": "7e66c603ce5a6ce91120ea9d1dfb6bc41aba030d5822204264e249390a9f7178"
+    },
+    "05-scroll-b": {
+      "dHash": "7842c0d054dc51d8",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 68079723,
+      "fineSha256": "6e9e59f90e12b696f179fe87fd5d8ea902c9d9eb4aa8b6f70854d5874a8a23c1"
+    },
+    "06-size-b": {
+      "dHash": "72132360d0c1c1d0",
+      "fineDims": [
+        640,
+        360
+      ],
+      "fineSum": 56661033,
+      "fineSha256": "1f4ccef59765071bcc6570038334efde3419fcea11605ed725d349fff2efde0d"
+    },
+    "07-doc-a": {
+      "dHash": "5858713969cecccc",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 66386788,
+      "fineSha256": "d5244a2ffb6ad31e96adef9e27498e01568ac28aad04691986df1ded74d79bde"
+    },
+    "07-doc-b": {
+      "dHash": "dacccc404a6b6b4a",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 66734593,
+      "fineSha256": "7dc470700c51b5bc0a213234242aca0a26e4b154c95c0f889f701f4a5c2f65ee"
+    },
+    "08-text-a": {
+      "dHash": "5858713969cecccc",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 66386788,
+      "fineSha256": "d5244a2ffb6ad31e96adef9e27498e01568ac28aad04691986df1ded74d79bde"
+    },
+    "08-text-b": {
+      "dHash": "585871314bdcccd8",
+      "fineDims": [
+        640,
+        430
+      ],
+      "fineSum": 66522865,
+      "fineSha256": "d373e97900cb5d235478160a1e3d6843a13b72ce028b3b3baecabac9a401698b"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+  xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+  office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+  <office:font-face-decls>
+    <style:font-face style:name="Liberation Serif" svg:font-family="'Liberation Serif'" style:font-family-generic="roman"/>
+    <style:font-face style:name="Liberation Sans" svg:font-family="'Liberation Sans'" style:font-family-generic="swiss"/>
+    <style:font-face style:name="AR PL UMing TW" svg:font-family="'AR PL UMing TW'"/>
+    <style:font-face style:name="Noto Sans CJK TC" svg:font-family="'Noto Sans CJK TC'"/>
+  </office:font-face-decls>
+  <office:styles>
+    <style:default-style style:family="paragraph">
+      <style:paragraph-properties fo:margin-bottom="0.2cm"/>
+      <style:text-properties style:font-name="Liberation Serif" fo:font-size="12pt"
+        style:font-name-asian="AR PL UMing TW" style:font-size-asian="12pt" fo:language="zh" fo:country="TW"
+        style:language-asian="zh" style:country-asian="TW"/>
+    </style:default-style>
+    <style:style style:name="Heading" style:family="paragraph">
+      <style:text-properties style:font-name="Liberation Sans" fo:font-size="20pt" fo:font-weight="bold"
+        style:font-name-asian="Noto Sans CJK TC" style:font-size-asian="20pt" style:font-weight-asian="bold"/>
+    </style:style>
+    <style:style style:name="Sub" style:family="paragraph">
+      <style:text-properties style:font-name="Liberation Sans" fo:font-size="15pt"
+        style:font-name-asian="Noto Sans CJK TC" style:font-size-asian="15pt"/>
+    </style:style>
+  </office:styles>
+  <office:automatic-styles>
+    <style:style style:name="Break" style:family="paragraph" style:parent-style-name="Sub">
+      <style:paragraph-properties fo:break-before="page"/>
+    </style:style>
+    <style:style style:name="Em" style:family="text">
+      <style:text-properties fo:font-style="italic" style:font-style-asian="italic"/>
+    </style:style>
+  </office:automatic-styles>
+  <office:body>
+    <office:text>
+      <text:p text:style-name="Heading">資料結構 第三週 二元搜尋樹</text:p>
+      <text:p>本週介紹二元搜尋樹（Binary Search Tree，簡稱 BST）。每個節點的左子樹只放比它小的鍵，右子樹只放比它大的鍵。</text:p>
+      <text:p>在平衡的情況下，搜尋、插入與刪除都只需要 O(log n) 的時間；如果依序插入已排序的資料，樹會退化成一條鏈，最壞情況變成 O(n)。</text:p>
+      <text:p>課堂範例：依序插入 50、30、70、20、40、60、80，畫出完成後的樹，並寫出「中序走訪」的結果。</text:p>
+      <text:p>Café résumé naïve — “quoted” text &amp; symbols: 100% ≤ 200 · ¼ cup.</text:p>
+      <text:p text:style-name="Break">第二節 插入與刪除</text:p>
+      <text:p>插入：從根開始比較，小於往左、大於往右，直到遇到空位為止。</text:p>
+      <text:p>刪除分三種情況：一、沒有子節點，直接移除；二、只有一個子節點，用子節點取代；三、有兩個子節點，找右子樹的最小值（中序後繼者）來替換。</text:p>
+      <text:p>罕用字測試：𠀋（U+2000B）與「𡃁」。</text:p>
+      <text:p text:style-name="Break">第三節 走訪與應用</text:p>
+      <text:p>前序、中序、後序三種走訪方式都可以用遞迴寫出。中序走訪二元搜尋樹會得到由小到大排好的序列。</text:p>
+      <text:p>應用：字典、資料庫索引、排程器。<text:span text:style-name="Em">Self-balancing</text:span> trees such as AVL and red-black trees keep the height at O(log n).</text:p>
+      <text:p text:style-name="Break">第四節 作業與參考資料</text:p>
+      <text:p>作業三：實作 insert、delete、inorder 三個函式，下週二上課前繳交。</text:p>
+      <text:p>參考資料：Introduction to Algorithms 第十二章。</text:p>
+    </office:text>
+  </office:body>
+</office:document>

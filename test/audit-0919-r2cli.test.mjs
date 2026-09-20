@@ -150,7 +150,7 @@ const one = (s, sql, ...a) => {
   finally { d.close() }
 }
 const meta = (s, k) => existsSync(s.p.db) ? one(s, 'SELECT v FROM meta WHERE k=?', k)?.v ?? null : null
-const planIdOf = out => /計畫 ([0-9a-f-]{36})/.exec(out)?.[1]
+const planIdOf = out => /Plan ([0-9a-f-]{36})/.exec(out)?.[1]
 
 /** 某個檔（照檔名）的候選 id */
 const candIds = (d, name) => d.prepare(
@@ -175,7 +175,7 @@ async function crash(s, planId, point) {
     const r = spawnSync(process.execPath, [CRASH, s.p.db, opts, 'apply', planId, point],
       { encoding: 'utf8', env: s.env(), timeout: 30_000 })
     if (r.signal === 'SIGKILL') return
-    assert.match(r.stderr, /BUSY|另一個清理動作/, `前提：子行程在 ${point} 被砍：\n${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, /BUSY|Another cleanup action/, `前提：子行程在 ${point} 被砍：\n${r.stdout}${r.stderr}`)
     await sleep(50)
   }
   assert.fail('前提：一直拿不到清理鎖')
@@ -224,7 +224,7 @@ function startPet(t, s, extra = {}) {
   /** 起好了：回實際的 port */
   const ready = async () => {
     const m = await wait(/127\.0\.0\.1:(\d+)\/\?k=/)
-    await wait(/按 Ctrl\+C/)
+    await wait(/Ctrl\+C to stop/)
     return Number(m[1])
   }
   return { child, wait, ready, out: () => out, stop, exited }
@@ -238,7 +238,7 @@ async function api(port, token, method, path, body) {
   })
   const text = await r.text()
   let json = null
-  try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+  try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
   return { status: r.status, json, text }
 }
 
@@ -282,24 +282,24 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
 
     const q = s.run(['cleanup', 'quarantine'])
     assert.equal(q.code, 0, q.out)
-    assert.match(q.out, /隔離區有 1 個檔案/, `隔離區裡的檔看不到：\n${q.out}`)
+    assert.match(q.out, /Quarantine holds 1 file/, `隔離區裡的檔看不到：\n${q.out}`)
     assert.match(q.out, /only\.zip/)
 
     const doc = s.run(['doctor'])
     assert.equal(doc.code, 0, doc.out)
-    assert.match(doc.out, /隔離區[^\n]*\n\s+1 個檔案/, doc.out)
+    assert.match(doc.out, /Quarantine[^\n]*\n\s+1 file/, doc.out)
     assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', p.id).status, 'applied',
       '整份都做完了，計畫不可以還停在 proposed（R3-1）')
     assert.equal(one(s, `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).n, 0,
       '寵物不可以再說「有 1 份清單等你確認」')
-    assert.doesNotMatch(doc.out, /中斷計畫/, `已經做完的不是中斷計畫：\n${doc.out}`)
+    assert.doesNotMatch(doc.out, /Interrupted/, `已經做完的不是Interrupted：\n${doc.out}`)
 
     const u = s.run(['cleanup', 'undo'])
     assert.equal(u.code, 0, u.out)
     assert.ok(u.out.includes(p.id), u.out)
     assert.ok(existsSync(join(s.dl, 'only.zip')), `沒有放回：\n${u.out}`)
     const after = s.run(['doctor'])
-    assert.match(after.out, /隔離區[^\n]*\n\s+0 個檔案/, after.out)
+    assert.match(after.out, /Quarantine[^\n]*\n\s+0 files/, after.out)
     assert.ok(!after.out.includes(p.id), `放回之後就不是中斷的計畫了：\n${after.out}`)
   })
 
@@ -307,14 +307,14 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     const ok0 = r => assert.equal(r.code, 0, r.out)
     for (const [args, check] of [
       // R3-1：單檔計畫整份做完了 → 收成 applied，不再是「中斷計畫」（隔離區照樣算得到那個檔）
-      [['doctor'], r => { ok0(r); assert.match(r.out, /隔離區[^\n]*\n\s+1 個檔案/, r.out); assert.doesNotMatch(r.out, /中斷計畫/, r.out) }],
-      [['cleanup', 'quarantine'], r => { ok0(r); assert.match(r.out, /隔離區有 1 個檔案/, r.out) }],
-      [['cleanup', 'undo'], r => { ok0(r); assert.match(r.out, /放回原位 1 個檔案/, r.out) }],
+      [['doctor'], r => { ok0(r); assert.match(r.out, /Quarantine[^\n]*\n\s+1 file/, r.out); assert.doesNotMatch(r.out, /Interrupted/, r.out) }],
+      [['cleanup', 'quarantine'], r => { ok0(r); assert.match(r.out, /Quarantine holds 1 file/, r.out) }],
+      [['cleanup', 'undo'], r => { ok0(r); assert.match(r.out, /Put 1 file back/, r.out) }],
       [['cleanup', 'scan'], ok0],
       [['cleanup', 'list'], ok0],
       [['cleanup'], ok0],
       [['cleanup', 'apply'], () => {}],               // 那個檔已經不在 Downloads：沒東西清或撞到中斷的計畫，離開碼不管
-      [['cleanup', 'release', '<id>'], r => assert.match(r.out, /已經開始|做完|放回/, r.out)],   // 收完之後是 applied，放棄不了（1）
+      [['cleanup', 'release', '<id>'], r => assert.match(r.out, /has started|Finish it|Put back/, r.out)],   // 收完之後是 applied，放棄不了（1）
     ]) {
       const s = sandbox(t, { files: { 'only.zip': 120 } })
       s.run(['cleanup', 'scan'])
@@ -335,11 +335,11 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     assert.ok(existsSync(join(s.dl, 'only.zip')), '前提：還在原位')
     const q = s.run(['cleanup', 'quarantine'])
     assert.equal(q.code, 0, q.out)
-    assert.match(q.out, /隔離區是空的/, q.out)
+    assert.match(q.out, /Quarantine is empty/, q.out)
     assert.equal(statusOf(s, p.id), 'reverted', '收尾：原位的指紋對得上、隔離區只有預留的空檔 → 沒搬')
     const u = s.run(['cleanup', 'undo'])
     assert.equal(u.code, 1, u.out)
-    assert.match(u.out, /沒有可以復原的計畫/)
+    assert.match(u.out, /There is no cleanup to undo/)
     assert.ok(existsSync(join(s.dl, 'only.zip')))
   })
 
@@ -353,7 +353,7 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     for (const args of [['cleanup', 'list'], ['cleanup', 'quarantine'], ['doctor']]) {
       const r = s.run(args)
       assert.equal(r.code, 0, `${args.join(' ')}：\n${r.out}`)
-      assert.doesNotMatch(r.out, /收尾|另一個清理動作正在進行/, `BUSY 要安靜略過：\n${r.out}`)
+      assert.doesNotMatch(r.out, /tidying up|Another cleanup action is running/, `BUSY 要安靜skipped：\n${r.out}`)
     }
     assert.match(s.run(['cleanup', 'list']).out, /a\.zip/)
   })
@@ -374,10 +374,10 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     const r = s.run(['cleanup', 'list'])
     assert.equal(r.code, 0, r.out)
     const st = id => one(s, 'SELECT status FROM cleanup_plans WHERE id=?', id).status
-    assert.equal(st(old.id), 'dismissed', '61 分鐘前、沒開始的要自動放棄')
+    assert.equal(st(old.id), 'dismissed', '61 分鐘前、沒開始的要dropped automatically')
     assert.ok(one(s, 'SELECT 1 x FROM cleanup_plan_releases WHERE plan_id=?', old.id), '是放棄（release），不是使用者拒絕')
     assert.equal(st(young.id), 'proposed', '59 分鐘的還不到')
-    assert.equal(st(started.id), 'proposed', '開始過的只能做完或放回，不能自動放棄')
+    assert.equal(st(started.id), 'proposed', '開始過的只能做完或放回，不能dropped automatically')
     assert.match(r.out, /a\.zip/, '放棄計畫不動候選：a.zip 還在清單上')
   })
 
@@ -400,16 +400,16 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     // 指名它：收尾要跳過它（R3-6b），檔真的搬走
     const r = s.run(['cleanup', 'apply', old.id])
     assert.equal(r.code, 0, r.out)
-    assert.doesNotMatch(r.out, /已經放棄了/, `使用者指名的那一份被同一個指令的收尾作廢了：\n${r.out}`)
+    assert.doesNotMatch(r.out, /was dropped/, `使用者指名的那一份被同一個指令的收尾作廢了：\n${r.out}`)
     assert.ok(!existsSync(join(s.dl, 'a.zip')), `指名的計畫要照常套用：\n${r.out}`)
     // 沒指名的那一份：放到超過一小時之後，任何一個清理指令的收尾都會放棄它
     d.prepare('UPDATE cleanup_plans SET created_at=? WHERE id=?').run(ago(61), young.id)
     assert.equal(s.run(['cleanup', 'list']).code, 0)
-    assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', young.id).status, 'dismissed', '前提：被自動放棄了')
+    assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', young.id).status, 'dismissed', '前提：被dropped automatically了')
     const y = s.run(['cleanup', 'apply', young.id])
     assert.equal(y.code, 0, y.out)
-    assert.match(y.out, /超過一小時沒有套用[^\n]*自動放棄/, y.out)
-    assert.ok(existsSync(join(s.dl, 'b.zip')), '已經放棄的計畫不可以搬檔')
+    assert.match(y.out, /sat unapplied for over an hour[^\n]*dropped automatically/, y.out)
+    assert.ok(existsSync(join(s.dl, 'b.zip')), 'was dropped的計畫不可以搬檔')
   })
 
   test('pet 開機與每一輪背景重掃之前都先收尾（掃描子行程卡住、自己收不了尾也一樣）', async t => {
@@ -430,7 +430,7 @@ describe('R2-1a／R2-5 開機與每個清理指令之前先收尾（recoverInter
     await until(() => statusOf(s, pa.id) === 'done', () => `pet 開機沒有收尾：\n${pet.out()}`)
     const pb = await retryBusy(() => createPlan(s.db(), { candidateIds: candIds(d, 'b.zip') }))
     await crash(s, pb.id, 'after-rename')
-    await until(() => statusOf(s, pb.id) === 'done', () => `背景重掃之前沒有收尾：\n${pet.out()}`)
+    await until(() => statusOf(s, pb.id) === 'done', () => `背景full-rescan之前沒有收尾：\n${pet.out()}`)
     assert.ok(existsSync(log), '前提：背景掃描的子行程真的卡住過')
   })
 })
@@ -495,7 +495,7 @@ describe('R2-4／R2-8 pet 把放回範圍與截圖資料夾交給 server；CLI �
 
     const pet = startPet(t, s)
     const port = await pet.ready()
-    await pet.wait(/開機掃描：掃了/)
+    await pet.wait(/Startup scan: looked at/)
     const token = readFileSync(s.p.token, 'utf8').trim()
     const c = await api(port, token, 'GET', '/cleanup/candidates')
     assert.equal(c.status, 200, c.text)
@@ -519,8 +519,8 @@ describe('R2-10 成功與錯誤分種類；doctor 跟寵物講同一句話', () 
     assert.equal(s.run(['cleanup', 'scan']).code, 0)
     assert.notEqual(petNow(s), 'worried', 'CLI 的掃描成功要記成「掃描」的成功')
     const doc = s.run(['doctor'])
-    assert.match(doc.out, /不會再為它擔心/, doc.out)
-    assert.doesNotMatch(doc.out, /還在為它擔心/, doc.out)
+    assert.match(doc.out, /has stopped worrying/, doc.out)
+    assert.doesNotMatch(doc.out, /is still worried/, doc.out)
   })
 
   test('對照（C-e6）：套用壞掉（隔離區是捷徑）、CLI 掃描成功 → 寵物還在擔心，doctor 也說還在擔心', { skip: process.platform === 'win32' && '要 symlink' }, t => {
@@ -534,8 +534,8 @@ describe('R2-10 成功與錯誤分種類；doctor 跟寵物講同一句話', () 
     assert.equal(s.run(['cleanup', 'scan']).code, 0)
     assert.equal(petNow(s), 'worried', '掃描成功不可以蓋掉一直壞著的套用')
     const doc = s.run(['doctor'])
-    assert.match(doc.out, /還在為它擔心/, doc.out)
-    assert.doesNotMatch(doc.out, /不會再為它擔心/, doc.out)
+    assert.match(doc.out, /is still worried/, doc.out)
+    assert.doesNotMatch(doc.out, /has stopped worrying/, doc.out)
   })
 
   test('每一項都失敗的套用記成 apply 的錯，不記套用成功；有一項成功就記成功', t => {
@@ -547,7 +547,7 @@ describe('R2-10 成功與錯誤分種類；doctor 跟寵物講同一句話', () 
       const r = s.run(['cleanup', 'apply', p.id])
       assert.equal(r.code, 3, r.out)
       if (expectError) {
-        assert.match(meta(s, 'cleanup_last_error') ?? '', /一個檔都沒搬成/, r.out)
+        assert.match(meta(s, 'cleanup_last_error') ?? '', /This cleanup moved nothing/, r.out)
         assert.match(meta(s, 'cleanup_last_error_kind') ?? '', / apply$/)
         assert.equal(meta(s, 'cleanup_last_ok_apply'), null, '全部失敗不是成功')
       } else {
@@ -588,12 +588,12 @@ describe('R2-10 成功與錯誤分種類；doctor 跟寵物講同一句話', () 
     assert.equal(s.run(['cleanup', 'scan', '--json']).code, 0)
     const probs = JSON.parse(meta(s, 'cleanup_scan_problems') ?? 'null')
     assert.equal(probs?.length, 50, JSON.stringify(probs))
-    assert.match(probs[48], /硬鏈結/, JSON.stringify(probs))
-    assert.equal(probs[49], '還有 11 條沒有列出來。', '超過的要講出還有幾條，不可以默默截掉')
+    assert.match(probs[48], /hard-link/, JSON.stringify(probs))
+    assert.equal(probs[49], '11 more are not listed.', '超過的要講出還有幾條，不可以默默截掉')
     const doc = s.run(['doctor'])
-    assert.match(doc.out, /上次掃描回報了 60 個問題/, doc.out)
+    assert.match(doc.out, /The last scan reported 60 problems/, doc.out)
     assert.equal((doc.out.match(/^ {10}⚠ h\d\d\.zip/gm) ?? []).length, 10, doc.out)
-    assert.match(doc.out, /…另外 50 個/, doc.out)
+    assert.match(doc.out, /…and 50 more/, doc.out)
   })
 
   test('掃描回報的問題存起來（不帶完整路徑），doctor 印出來；pet 的背景重掃（--json）也存；下一次沒問題就清掉', { skip: noPerm && '要 chmod' }, t => {
@@ -603,14 +603,14 @@ describe('R2-10 成功與錯誤分種類；doctor 跟寵物講同一句話', () 
     s.lock(sub)
     assert.equal(s.run(['cleanup', 'scan', '--json']).code, 0)
     const probs = JSON.parse(meta(s, 'cleanup_scan_problems') ?? 'null')
-    assert.ok(Array.isArray(probs) && probs.some(x => /打不開/.test(x)), `沒存：${JSON.stringify(probs)}`)
+    assert.ok(Array.isArray(probs) && probs.some(x => /ould not be open/.test(x)), `沒存：${JSON.stringify(probs)}`)
     assert.ok(!JSON.stringify(probs).includes(s.home), `帶了完整路徑：${JSON.stringify(probs)}`)
     const doc = s.run(['doctor'])
-    assert.match(doc.out, /掃描問題[^\n]*\n[^\n]*打不開/, doc.out)
+    assert.match(doc.out, /Scan issues[^\n]*\n[^\n]*ould not be open/, doc.out)
     chmodSync(sub, 0o755)
     assert.equal(s.run(['cleanup', 'scan']).code, 0)
     assert.deepEqual(JSON.parse(meta(s, 'cleanup_scan_problems')), [])
-    assert.doesNotMatch(s.run(['doctor']).out, /掃描問題/)
+    assert.doesNotMatch(s.run(['doctor']).out, /Scan issues/)
   })
 })
 
@@ -636,7 +636,7 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     const u = s.run(['cleanup', 'undo'])
     assert.equal(u.code, 0, u.out)
     assert.ok(existsSync(join(s.dl, 'a.zip')), u.out)
-    assert.doesNotMatch(u.out, /有 0 個沒放回/)
+    assert.doesNotMatch(u.out, /0 were not put back/)
   })
 
   test('核心回 partial，但沒有任何一項留在隔離區（b 從沒搬過）→ 0，照印核心的原因', { skip: noPerm && '要 chmod' }, t => {
@@ -649,7 +649,7 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', id).status, 'partial', `前提：核心回 partial：\n${u.out}`)
     assert.equal(u.code, 0, `放回了每一個搬走的檔，離開碼是 0：\n${u.out}`)
     assert.match(u.out, /↩ a\.zip/)
-    assert.match(u.out, /跟當初搬進去的對不上/, `核心的原因要照印：\n${u.out}`)
+    assert.match(u.out, /does not match what was moved in/, `核心的原因要照印：\n${u.out}`)
     assert.ok(existsSync(join(s.dl, 'sub', 'b.zip')), 'b 一直在原位')
   })
 
@@ -661,7 +661,7 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     writeFileSync(join(s.p.q, id, b, 'content'), '隔離區裡的檔被改過')
     const u = s.run(['cleanup', 'undo', id])
     assert.equal(u.code, 3, u.out)
-    assert.match(u.out, /有 1 個沒放回/)
+    assert.match(u.out, /1 were not put back/)
   })
 
   test('undo：已經清空的、狀態不明的都算沒放回 → 3，數字跟行數對得上（對照組：C-exp2 那條全放回是 0）', t => {
@@ -686,10 +686,10 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     const u = s.run(['cleanup', 'undo', id])
     assert.equal(u.code, 3, u.out)
     assert.match(u.out, /↩ a\.zip/)
-    assert.match(u.out, /c\.zip[^\n]*已經清空/, u.out)
-    assert.match(u.out, /？ b\.zip[^\n]*狀態不明/, u.out)
-    assert.match(u.out, /有 2 個沒放回/, u.out)
-    assert.match(u.out, /狀態不明的，執行 node cli\.mjs doctor 檢查/, u.out)
+    assert.match(u.out, /c\.zip[^\n]*already emptied/, u.out)
+    assert.match(u.out, /\? b\.zip[^\n]*state unknown/, u.out)
+    assert.match(u.out, /2 were not put back/, u.out)
+    assert.match(u.out, /unknown state, run node cli\.mjs doctor/, u.out)
   })
 
   test('apply：計畫的 status 是 partial 但逐項全部搬了 → 0；有幾項沒處理到（cancelled）→ 3，說還在原位', t => {
@@ -712,8 +712,8 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     d.prepare(`UPDATE cleanup_plans SET status='partial' WHERE id=?`).run(p.id)
     const c = s2.run(['cleanup', 'apply', p.id])
     assert.equal(c.code, 3, c.out)
-    assert.match(c.out, /有 2 個這次沒有處理到[^\n]*還在原位/, c.out)
-    assert.doesNotMatch(c.out, /原因不明/)
+    assert.match(c.out, /2 files not handled this time[^\n]*still where they were/, c.out)
+    assert.doesNotMatch(c.out, /reason unknown/)
   })
 
   test('cancelled 講實話：沒有處理（計畫中途停了或放棄了），本來就在原位', t => {
@@ -723,8 +723,8 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     assert.equal(s.run(['cleanup', 'release', p.id]).code, 0)
     const r = s.run(['cleanup', 'apply', p.id])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /a\.zip[^\n]*沒有處理[^\n]*本來就在原位/, r.out)
-    assert.doesNotMatch(r.out, /已放棄，沒有動過/)
+    assert.match(r.out, /a\.zip[^\n]*not handled[^\n]*never moved/, r.out)
+    assert.doesNotMatch(r.out, /to quarantine/)
   })
 
   // 第二輪 R2-3：partial／error 的計畫再 apply 原樣回傳、不重試。唯讀試跑要講同一件事，
@@ -734,13 +734,13 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     assert.equal(one(s, 'SELECT status FROM cleanup_plans WHERE id=?', id).status, 'partial', '前提')
     const ro = s.run(['cleanup', 'apply', id], { CONTEXTBOX_READONLY: '1' })
     assert.equal(ro.code, 0, ro.out)
-    assert.match(ro.out, /會清掉 0 個檔案/, ro.out)
-    assert.match(ro.out, /不會重試/, ro.out)
+    assert.match(ro.out, /would clean up 0 files/, ro.out)
+    assert.match(ro.out, /does not retry/, ro.out)
     const real = s.run(['cleanup', 'apply', id])
     // 真的再套用一次也是 no-op：第三輪 R3-2b 之後不再印「搬進隔離區 1 個」（那會讓人以為剛剛真的清了），
     // 改成照實說「先前已經跑過了，這次什麼都沒做」。
-    assert.match(real.out, /這次什麼都沒做/, `前提：真的再套用一次也沒有多搬：\n${real.out}`)
-    assert.doesNotMatch(real.out, /搬進隔離區 \d+ 個/, real.out)
+    assert.match(real.out, /nothing happened this time/, `前提：真的再套用一次也沒有多搬：\n${real.out}`)
+    assert.doesNotMatch(real.out, /Moved \d+ files? \(/, real.out)
     assert.ok(existsSync(join(s.dl, 'sub', 'b.zip')))
 
     const s2 = sandbox(t, { files: { 'c.zip': 60, 'd.zip': 60 } })
@@ -748,7 +748,7 @@ describe('R2-1 離開碼照逐項結果，不看計畫的 status', () => {
     const p = createPlan(s2.db())
     const ro2 = s2.run(['cleanup', 'apply', p.id], { CONTEXTBOX_READONLY: '1' })
     assert.equal(ro2.code, 0, ro2.out)
-    assert.match(ro2.out, /會清掉 2 個檔案/, ro2.out)
+    assert.match(ro2.out, /would clean up 2 files/, ro2.out)
   })
 })
 
@@ -766,9 +766,9 @@ describe('R2-5／R2-11 doctor 列出做到一半中斷的計畫；清理範圍�
     const fresh = createPlan(d, { candidateIds: candIds(d, 'f3.zip') })
     const doc = s.run(['doctor'])
     assert.equal(doc.code, 0, doc.out)
-    assert.match(doc.out, /中斷計畫[^\n]*1 份/, doc.out)
+    assert.match(doc.out, /Interrupted 1 plan/, doc.out)
     assert.ok(doc.out.includes(cut.id), doc.out)
-    assert.match(doc.out, /3 個檔，2 個已經在隔離區/, doc.out)
+    assert.match(doc.out, /3 files, 2 already in quarantine/, doc.out)
     assert.ok(doc.out.includes(`node cli.mjs cleanup undo ${cut.id}`))
     assert.ok(doc.out.includes(`node cli.mjs cleanup apply ${cut.id}`))
     assert.ok(!doc.out.includes(fresh.id), `還沒開始的計畫不是中斷的：\n${doc.out}`)
@@ -783,7 +783,7 @@ describe('R2-5／R2-11 doctor 列出做到一半中斷的計畫；清理範圍�
     s.writeCfg({ cleanup: { roots: [od] } })
     const doc = s.run(['doctor'])
     assert.equal(doc.code, 0, doc.out)
-    assert.match(doc.out, /OneDrive[^\n]*搬進隔離區[^\n]*雲端/, doc.out)
+    assert.match(doc.out, /OneDrive[^\n]*quarantine[^\n]*cloud/, doc.out)
   })
 
   test('OneDrive 的幾種資料夾名字（公司版「OneDrive - 公司」、macOS 的 OneDrive-Personal）都要出聲；對照：OneDriveTemp 不是同步資料夾', t => {
@@ -794,8 +794,8 @@ describe('R2-5／R2-11 doctor 列出做到一半中斷的計畫；清理範圍�
       s.writeCfg({ cleanup: { roots: [root] } })
       const doc = s.run(['doctor'], { OneDrive: '', OneDriveConsumer: '', OneDriveCommercial: '' })
       assert.equal(doc.code, 0, doc.out)
-      if (warned) assert.match(doc.out, /在 OneDrive 裡[^\n]*雲端/, `${name}：\n${doc.out}`)
-      else assert.doesNotMatch(doc.out, /在 OneDrive 裡/, `${name}：\n${doc.out}`)
+      if (warned) assert.match(doc.out, /is inside OneDrive[^\n]*cloud/, `${name}：\n${doc.out}`)
+      else assert.doesNotMatch(doc.out, /is inside OneDrive/, `${name}：\n${doc.out}`)
     }
   })
 
@@ -807,9 +807,9 @@ describe('R2-5／R2-11 doctor 列出做到一半中斷的計畫；清理範圍�
     // 變數不叫 env：RC22 的檢查器會把同名的 env 當成 sandbox 的 env 助手一起檢查
     const oneDriveEnv = { OneDrive: '', OneDriveConsumer: '', OneDriveCommercial: work }
     s.writeCfg({ cleanup: { roots: [beside] } })
-    assert.doesNotMatch(s.run(['doctor'], oneDriveEnv).out, /OneDrive 裡/, '前綴相同但不在底下的不算')
+    assert.doesNotMatch(s.run(['doctor'], oneDriveEnv).out, /inside OneDrive/, '前綴相同但不在底下的不算')
     s.writeCfg({ cleanup: { roots: [inside] } })
-    assert.match(s.run(['doctor'], oneDriveEnv).out, /在 OneDrive 裡[^\n]*雲端/)
+    assert.match(s.run(['doctor'], oneDriveEnv).out, /is inside OneDrive[^\n]*cloud/)
   })
 })
 
@@ -935,21 +935,21 @@ describe('R2-10 pet 的背景掃描子行程有逾時', () => {
     await pet.ready()
     const pids = () => hungPids(log)
     // lastError 與它的種類是兩次寫入（核心的 writeLastError），剛好在中間讀的話種類還沒寫：兩個都等到
-    await until(() => /逾時/.test(meta(s, 'cleanup_last_error') ?? '') && / scan$/.test(meta(s, 'cleanup_last_error_kind') ?? ''),
+    await until(() => /timed out/.test(meta(s, 'cleanup_last_error') ?? '') && / scan$/.test(meta(s, 'cleanup_last_error_kind') ?? ''),
       () => `逾時沒有記成掃描種類的 lastError（${meta(s, 'cleanup_last_error')}／${meta(s, 'cleanup_last_error_kind')}）：\n${pet.out()}`, 10_000)
-    assert.match(meta(s, 'cleanup_last_error'), /背景掃描逾時（資料夾可能卡住了）/)
+    assert.match(meta(s, 'cleanup_last_error'), /Background scan timed out/)
     await until(() => pids().length >= 2, () => `下一輪沒有新的子行程：${pids()}\n${pet.out()}`, 10_000)
     const [firstPid] = pids()
     await until(() => !alive(firstPid), () => `逾時的子行程沒被殺掉：${firstPid}`, 5_000)
     assert.equal(pet.child.exitCode, null, 'pet 不可以跟著掛掉')
-    assert.match(pet.out(), /逾時|沒有結束/, '要講出來')
+    assert.match(pet.out(), /timed out|without finishing/, '要講出來')
   })
 
   test('對照：掃描在逾時內做完 → 沒有逾時的錯', async t => {
     const s = sandbox(t, { files: { 'a.zip': 60 } })
     const pet = startPet(t, s, { CONTEXTBOX_SCAN_TIMEOUT_MS: '20000' })
     await pet.ready()
-    await pet.wait(/開機掃描：掃了/)
+    await pet.wait(/Startup scan: looked at/)
     assert.equal(meta(s, 'cleanup_last_error'), null, pet.out())
   })
 })

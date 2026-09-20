@@ -19,7 +19,12 @@ let messageData = {}
 export function getPetMessageData() { return messageData }
 export function setPetMessageData(data) {
   messageData = { ...messageData, ...data }
-  document.dispatchEvent(new CustomEvent('quaso:messagechange'))
+  // 跟 renderState() 一樣要守：測試那份假 DOM 不一定有 dispatchEvent
+  if (typeof document !== 'undefined'
+    && typeof document.dispatchEvent === 'function'
+    && typeof CustomEvent === 'function') {
+    document.dispatchEvent(new CustomEvent('quaso:messagechange'))
+  }
 }
 
 function currentState() {
@@ -36,11 +41,9 @@ function renderState() {
 
   quaso.dataset.petState = state
 
-  if (typeof quaso.querySelectorAll === 'function') {
-    for (const button of quaso.querySelectorAll('#quaso-tools button:not(#quaso-worried)')) {
-      button.disabled = state === 'worried'
-    }
-  }
+  // **worried 的時候不要把按鈕鎖起來。** 隊友原本的版本會把三顆都 disabled，
+  // 但「掃描出問題」也算 worried —— 那正是使用者要打開面板看清楚的時候，
+  // 鎖起來就變成死路（連歷史面板也打不開）。灰掉當提示就夠了。
 
   if (
     typeof document !== 'undefined' &&

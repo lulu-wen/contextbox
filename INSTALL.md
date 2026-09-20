@@ -1,60 +1,106 @@
-# 安裝
+# Installing
 
-**骨架版。** M3 之前會補完 Windows／macOS 的實際步驟與截圖。
+**Want to see what it does without installing anything?** Build a fake home directory and run the demo —
+not one byte of your own files is touched:
+
+```bash
+node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
+```
+
+The step-by-step walkthrough is in [docs/DEMO.md](docs/DEMO.md). Below is how to install it for real.
 
 ---
 
-## 你需要什麼
+## What you need
 
 | | |
 |---|---|
-| **Node 24 以上** | `node -v` 要看到 `v24` 或更新 |
-| 硬碟 | 隔離區會放你清掉的檔案，**準備跟 Downloads 差不多的空間** |
-| 網路 | **不用。** 這個版本完全在本機跑，不連任何外面的服務 |
+| **Node 24 or newer** | `node -v` has to say `v24` or higher |
+| Disk | Quarantine holds the files you clean up, so **leave about as much room as your Downloads folder takes** |
+| Network | **Not needed.** This version runs entirely on your machine and talks to no outside service |
 
-**不用 `npm install`。** 這個專案零外部依賴。
+**No `npm install`.** This project has zero external dependencies.
 
 ---
 
 ## Windows
 
+### Run the demo first (your own files stay untouched, five minutes)
+
 ```powershell
-winget install OpenJS.NodeJS
+winget install OpenJS.NodeJS          # Node 24 or newer; **open a new PowerShell window** afterwards
+node --version                        # check for v24 or higher
+
 git clone https://github.com/lulu-wen/contextbox
+cd contextbox
+
+node tools/demo-setup.mjs --dir $env:TEMP\contextbox-demo --seed-model
+```
+
+It prints **the environment variables to paste**. On Windows it prints them in PowerShell form, with
+`$env:USERPROFILE` substituted — that is what the home directory is called there.
+**Paste those lines into the same window, unchanged**, then:
+
+```powershell
+node cli.mjs cleanup scan     # look around
+node cli.mjs cleanup list     # the three burst screenshots come back as one group
+node cli.mjs cleanup apply    # moved to quarantine (not deleted)
+node cli.mjs rename           # what the model would call the unnamed files
+node cli.mjs file             # same course, filed into Courses/<course>/<kind>/
+node cli.mjs pet              # open the panel (it prints the address, key included)
+```
+
+**The whole sandbox lives in `%TEMP%\contextbox-demo`. Delete that folder and nothing is left behind.**
+The walkthrough with the expected output of every line is in [docs/DEMO.md](docs/DEMO.md); to ask a real
+model instead, use `--live-model` (see [docs/model-setup.md](docs/model-setup.md)).
+
+In `cmd.exe`, write the environment variables as `set NAME=value` — no quotes.
+
+### Installing it for real
+
+```powershell
 cd contextbox
 node cli.mjs doctor
 ```
 
-`doctor` 會告訴你它打算清哪個資料夾（「清理範圍」）。預設一律是 `%USERPROFILE%\Downloads`，
-**不會自動改用 `%USERPROFILE%\OneDrive\Downloads`** —— 從 OneDrive 同步的資料夾搬進隔離區，
-等於在雲端與你所有的裝置上刪掉。
+`doctor` tells you which folder it intends to clean ("Cleanup scope"). That is always
+`%USERPROFILE%\Downloads`, and it is **deliberately not switched to `%USERPROFILE%\OneDrive\Downloads`** —
+moving a OneDrive-synced folder into quarantine deletes it in the cloud and on every other device you own.
 
-**先確認那是你真的在用的 Downloads。** 不對的話改 `%USERPROFILE%\.contextbox\config.json` 的
-`cleanup.roots`（清理只看它）：
+**Check that it is the Downloads you actually use.** If it is not, change `cleanup.roots` in
+`%USERPROFILE%\.contextbox\config.json` — cleanup looks at nothing else:
 
 ```json
 { "cleanup": { "roots": ["D:\\Downloads"] } }
 ```
 
-**不是 `watch`** —— `watch` 是截圖功能的監看資料夾，改它不會改到清理範圍。
-你的 Downloads 真的在 OneDrive 裡、也確定要清它，才自己把那個路徑寫進 `cleanup.roots`。
+> ⚠️ **The cleanup scope and quarantine have to be on the same drive.** Quarantine defaults to
+> `%USERPROFILE%\.contextbox\quarantine`, which is usually on C:. Point the cleanup scope at `D:\` and every
+> cleanup becomes a cross-device move — and this project **does not do copy-then-delete** (that is deleting),
+> so those files fail one by one with a reason. To clean D:, move quarantine there too:
+> `$env:CONTEXTBOX_QUARANTINE = "D:\.contextbox\quarantine"` (in the same window, or as a user-level
+> environment variable).
+
+**Not `watch`** — `watch` is the list of folders the screenshot feature watches. Changing it does not change
+what gets cleaned. If your Downloads really is inside OneDrive and you really do want it cleaned, put that
+path into `cleanup.roots` yourself.
 
 ```powershell
 node cli.mjs pet
 ```
 
-裝成開始選單捷徑（**不需要系統管理員**）：
+Install a Start Menu shortcut (**no administrator rights needed**):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File os\windows\install.ps1
 ```
 
-要開機自動啟動就加 `-Startup`。細節與移除方式看
-[os/windows/README.md](os/windows/README.md)。
+Add `-Startup` to start it at login. Details and how to remove it are in
+[os/windows/README.md](os/windows/README.md).
 
-> ⚠️ **OneDrive 檔案隨選**：如果你的 Downloads 是「僅線上」的佔位檔，
-> 掃描時會需要讀檔案內容來算指紋。**M0 要驗這件事不會把整個資料夾拉回本機。**
-> 驗完會把結論寫在這裡。
+> ⚠️ **OneDrive Files On-Demand is untested.** If your Downloads folder is full of online-only placeholders,
+> scanning has to read contents to fingerprint them, and that may pull the whole folder down to your disk.
+> Until someone has tested it, **do not put a OneDrive path into `cleanup.roots`.**
 
 ---
 
@@ -68,12 +114,13 @@ node cli.mjs doctor
 node cli.mjs pet
 ```
 
-第一次跑會跳「ContextBox 想要存取你的下載檔案夾」，要按允許。
+The first run asks for permission to access your Downloads folder. Allow it.
 
-> **macOS 的截圖資料夾就是桌面。** 設定檔的 `cleanup.screenshots` 預設是 `false`；打開的話，
-> 桌面會加進清理範圍，但**桌面上只清截圖**（檔名 `Screenshot`、`截圖`、`螢幕快照` 開頭，放了 30 天以上的），
-> 桌面上的壓縮檔、安裝檔、文件都不會被列出來。要清整個桌面，得自己把它寫進 `cleanup.roots`
-> 而且不開這個開關。
+> **On macOS the screenshot folder is the Desktop.** `cleanup.screenshots` in the config file is `false` by
+> default. Turn it on and the Desktop joins the cleanup scope — but **only screenshots on the Desktop are
+> ever listed** (names starting with `screenshot`, `screen shot`, `截圖`, `螢幕擷取` or `螢幕快照`, at least 30 days old). Archives,
+> installers and documents on the Desktop are not. To clean the whole Desktop you have to put it into
+> `cleanup.roots` yourself, and leave that switch off.
 
 ---
 
@@ -88,48 +135,49 @@ node cli.mjs pet
 
 ---
 
-## 檔案放在哪
+## Where things live
 
 ```
-~/.contextbox/config.json      設定（第一次跑會自己建）
-~/.contextbox/data.db          資料庫，權限 0600
-~/.contextbox/quarantine/      清掉的檔案放這裡，七天後才能清空
-~/.contextbox/token            本機 server 的鑰匙
+~/.contextbox/config.json      settings (created on first run)
+~/.contextbox/data.db          the database, mode 0600
+~/.contextbox/quarantine/      cleaned-up files land here; can be emptied after seven days
+~/.contextbox/token            the local server's key
+~/Documents/Filed/             the tree `node cli.mjs file` moves things into — it only ever moves inward
 ```
 
-**Windows 上的 `~` 是 `%USERPROFILE%`。**
+**On Windows, `~` is `%USERPROFILE%`.**
 
 ---
 
-## 怎麼確認它真的在跑
+## Checking that it is working
 
 ```bash
 node cli.mjs doctor
 ```
 
-三行要是 ✓：**Downloads 存在**、**隔離區存在**、**監看還活著**。
-「監看」那行如果說「從來沒跑過」，就是你還沒開 `pet` 或 `watch`。
+Three lines should be ✓: **Downloads exists**, **quarantine exists**, **the watcher is alive**. If the
+watcher line says it never ran, you have not started `pet` or `watch` yet.
 
 ---
 
-## 怎麼移除
+## Uninstalling
 
 ```bash
-# 1. 先把隔離區裡還要的東西救回來
+# 1. Rescue anything in quarantine you still want
 node cli.mjs cleanup quarantine
 node cli.mjs cleanup undo <plan-id>
 
-# 2. 再刪設定與資料
+# 2. Then delete the settings and the data
 rm -rf ~/.contextbox
 ```
 
-**順序不要反。** `~/.contextbox/quarantine/` 裡是你的檔案，
-刪掉那個資料夾就真的沒了 —— 那是整個專案裡唯一會真的失去檔案的地方。
+**Do not do it in the other order.** `~/.contextbox/quarantine/` holds your files. Deleting that folder
+really does lose them — it is the one place in this project where a file can be lost for good.
 
 ---
 
-## 待補（M3）
+## Still to do (M3)
 
-- [ ] macOS 的 LaunchAgent
-- [ ] 乾淨機器實測紀錄（Windows 與 macOS 各一次）
-- [ ] OneDrive 檔案隨選的結論
+- [ ] A LaunchAgent for macOS
+- [ ] A clean-machine install log, once on Windows and once on macOS
+- [ ] A verdict on OneDrive Files On-Demand

@@ -216,8 +216,8 @@ export function createWatcher(opts: WatcherOptions) {
           if (n >= maxRetries) {
             retries.delete(path)
             rememberSeen(path, fingerprint)
-            problem(`${basename(path)}：試了 ${n} 次還是「${v.why}」，先放棄。內容有變的話會再試。`)
-          } else if (n === 1) problem(`${basename(path)}：${v.why}（等一下再看一次）`)
+            problem(`${basename(path)}: still “${v.why}” after ${n} tries, so it is given up for now. It will be tried again if the contents change.`)
+          } else if (n === 1) problem(`${basename(path)}: ${v.why} (it will be looked at again shortly)`)
           continue
         }
         // 永久拒絕（副檔名、黑名單、不在白名單）—— 記起來，不要每次輪詢都重算
@@ -235,8 +235,8 @@ export function createWatcher(opts: WatcherOptions) {
         // 那個檔案就永遠消失了。
         const n = (retries.get(path) ?? 0) + 1
         retries.set(path, n)
-        problem(`處理 ${basename(path)} 時出錯：${(e && e.message) || e}`
-          + (n >= maxRetries ? '　試太多次了，先放棄。' : '　等一下會再試一次。'))
+        problem(`Something went wrong handling ${basename(path)}: ${(e && e.message) || e}`
+          + (n >= maxRetries ? ' Too many tries, so it is given up for now.' : ' It will be tried again shortly.'))
         if (n >= maxRetries) { retries.delete(path); rememberSeen(path, fingerprint) }
         continue
       }
@@ -255,8 +255,8 @@ export function createWatcher(opts: WatcherOptions) {
       // 每一輪都講一次的話，常駐就是 30 秒洗一次健康列。只講第一次。
       if (truncated && !warnedTruncated.has(root)) {
         warnedTruncated.add(root)
-        problem(`${root} 裡的檔案超過 ${maxFiles} 個，只掃了前面那些。`
-          + '把監看範圍縮小，不然後面的檔案永遠掃不到。')
+        problem(`${root} holds more than ${maxFiles} files, so only the first ones were scanned. `
+          + 'Narrow the watch scope, or the rest will never be seen.')
       }
       for (const p of files) notice(p)
     }
@@ -269,17 +269,17 @@ export function createWatcher(opts: WatcherOptions) {
 
     // 先掛監看再掃既有檔案 —— 反過來的話，掃描期間落地的檔案會整個漏掉
     for (const root of opts.roots) {
-      if (!existsSync(root)) { problem(`監看資料夾不存在：${root}`); continue }
+      if (!existsSync(root)) { problem(`The watched folder does not exist: ${root}`); continue }
       try {
         const w = watch(root, { recursive: true }, (_event, filename) => {
           if (!filename) return
           notice(join(root, String(filename)))
         })
-        w.on('error', e => problem(`監看 ${root} 出錯：${e.message}。還有每 ${pollMs / 1000} 秒的保底掃描。`))
+        w.on('error', e => problem(`Watching ${root} hit an error: ${e.message}. The fallback scan every ${pollMs / 1000}s still runs.`))
         watchers.push(w)
       } catch (e: any) {
         // 某些檔案系統不支援 recursive。不是致命的——保底輪詢照樣會找到。
-        problem(`${root} 不支援即時監看（${e.message}），改用每 ${pollMs / 1000} 秒掃一次。`)
+        problem(`${root} does not support live watching (${e.message}), so it is scanned every ${pollMs / 1000}s instead.`)
       }
     }
 

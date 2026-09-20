@@ -67,11 +67,11 @@ describe('已經開始復原的計畫：出口只有「接著放回」', () => {
   test('面板的提示：restoring 不講「繼續上次那份」，講「接著放回」', () => {
     const items = [{ itemId: 'i1', name: 'a.zip', bytes: 1 }]
     const on = pendingPlanMessage({ id: 'p1', items, started: true, restoring: true })
-    assert.match(on, /復原做到一半中斷/)
-    assert.match(on, /放回已經搬走的/)
-    assert.doesNotMatch(on, /繼續上次那份/)
+    assert.match(on, /undo from last time was interrupted partway/)
+    assert.match(on, /Put back what moved/)
+    assert.doesNotMatch(on, /Finish the last plan/)
     const off = pendingPlanMessage({ id: 'p1', items, started: true, restoring: false, moved: 1, unsure: 0 })
-    assert.match(off, /繼續上次那份/)
+    assert.match(off, /Finish the last plan/)
   })
 
   test('面板按「繼續」：restoring 的那份自己擋下來，一個 POST 都不送', async () => {
@@ -87,7 +87,7 @@ describe('已經開始復原的計畫：出口只有「接著放回」', () => {
     const real = createReal(api)
     const pending = await real.checkPending()
     assert.equal(pending.restoring, true)
-    await assert.rejects(real.apply(), /已經開始復原/)
+    await assert.rejects(real.apply(), /has started restoring/)
     assert.equal(posts, 0, '不可以送出一定會 409 的 apply')
   })
 })
@@ -124,8 +124,8 @@ describe('CLI：doctor 與 CONFLICT 的說法', () => {
     s.db.prepare(`UPDATE cleanup_plans SET status='proposed' WHERE id=?`).run(p.id)
     const r = s.run('doctor')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /它開始復原了，只能接著放回/)
-    assert.doesNotMatch(r.out, /把它做完/)
+    assert.match(r.out, /It has started restoring; the only way on is to carry on/)
+    assert.doesNotMatch(r.out, /Finish it/)
   })
 
   test('撞到已經開始復原的那份：預設清理的 CONFLICT 也只給「接著放回」', t => {
@@ -146,9 +146,9 @@ describe('CLI：doctor 與 CONFLICT 的說法', () => {
     // 那些檔還被這份佔著 → 預設清理會撞 CONFLICT，離開碼 1
     const r = s.run('cleanup', 'apply')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /它已經開始復原了/)
+    assert.match(r.out, /This plan has started restoring/)
     assert.match(r.out, /cleanup undo/)
-    assert.doesNotMatch(r.out, /把它做完/)
+    assert.doesNotMatch(r.out, /Finish it/)
   })
 
   test('一個檔都沒搬走的中斷計畫：doctor 照實說，不說「0 個已經在隔離區」', t => {
@@ -162,8 +162,8 @@ describe('CLI：doctor 與 CONFLICT 的說法', () => {
       .run(new Date().toISOString(), p.id, item.item_id)
     const r = s.run('doctor')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /一個檔都還沒搬走/)
-    assert.doesNotMatch(r.out, /0 個已經在隔離區/)
+    assert.match(r.out, /not one file has moved yet/)
+    assert.doesNotMatch(r.out, /0 already in quarantine/)
   })
 
   test('沒事就不要拿清理鎖：乾淨的資料庫跑 list 不碰鎖，有一列停在 started 才會去拿', t => {
@@ -178,7 +178,7 @@ describe('CLI：doctor 與 CONFLICT 的說法', () => {
     const clean = s.run('cleanup', 'list')
     unblock()
     assert.equal(clean.code, 0, clean.out)
-    assert.doesNotMatch(clean.out, /收尾上次中斷的清理時出錯/, '沒事的時候不可以去拿鎖')
+    assert.doesNotMatch(clean.out, /Could not finish tidying up the interrupted cleanup/, '沒事的時候不可以去拿鎖')
 
     applyPlan(s.db, p.id, s.opts)
     s.db.prepare(`UPDATE cleanup_journal SET status='started' WHERE plan_id=?`).run(p.id)
@@ -187,6 +187,6 @@ describe('CLI：doctor 與 CONFLICT 的說法', () => {
     const dirty = s.run('cleanup', 'list')
     unblock()
     assert.equal(dirty.code, 0, dirty.out)
-    assert.match(dirty.out, /收尾上次中斷的清理時出錯/, '有東西要收尾就要去拿鎖')
+    assert.match(dirty.out, /Could not finish tidying up the interrupted cleanup/, '有東西要收尾就要去拿鎖')
   })
 })

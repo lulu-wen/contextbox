@@ -8,7 +8,10 @@ import {
 } from './pet-state.js'
 import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
-  folderPhrase,
+  folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
+  modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
+  createLearned, learnedLines,
+  createPreviews, previewLines, plural,
 } from './cleanup-real-state.js'
 
 const $ = id => document.getElementById(id)
@@ -28,6 +31,19 @@ const alertButton = $('quaso-cleanup-alert')
 let demo, savedDemo, data, busy = false, pending = null, demoEnabled = false
 // 本機模式：接真的路由，會真的搬動監看資料夾（cleanup.roots）裡的檔案。介面跟 demo 一樣，渲染共用。
 let real = null
+// 連拍截圖（P0）：組與縮圖。示範模式不用它（那時畫面上是假的清單）。
+const bursts = createBursts((path, init) => window.api(path, init))
+// 建議的名字（P3）：模型看得出內容、但檔名沒取名的檔。示範模式不用它（同上）。
+// **一個都不預設勾**：改名只有 renames 那一份紀錄救得回來，不像清理還有隔離區。
+const renames = createRenames((path, init) => window.api(path, init))
+// 歸檔建議（P4）：模型看得出是哪一堂課的檔。示範模式不用它（同上）。
+// **一個都不預設勾**：搬家比改名更容易讓人找不到檔，只有 filings 那一份紀錄救得回來。
+const filings = createFilings((path, init) => window.api(path, init))
+// 它學到的事（P5）：使用者改過的課名與類型。示範模式不用它（同上）。
+// **這一區按不出任何會動檔案的事** —— 只看得到與「忘掉」。
+const learned = createLearned((path, init) => window.api(path, init))
+// 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
+const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
 let healthChecked = false, healthBusy = false, stopped = false
 /**
@@ -53,7 +69,7 @@ const historyPanel = $('cleanup-history-panel')
 let historyOffset = 0, historyData = null, historyBusy = false
 let cleanupPage = 0
 const cleanupPageSize = 10
-// Proposal-only exclusions: no backend dismiss and no filesystem changes.
+// 「先不清」只動這一輪的提案：不送後端的 dismiss，也不碰任何檔案。
 const skippedOperations = []
 const proposalSkips = () => skippedOperations.filter(op => op.demo === demoEnabled)
 const localHistory = () => proposalSkips().filter(op => !op.pending)
@@ -88,14 +104,18 @@ function uiSafeName(value) {
     .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, '·')
 }
 
+// 理由裡的行話換成人話。規則那一側寫的是「N other files have the same sha256」——
+// 對不寫程式的人，sha256 只是一串沒有意義的字。
 function reasonText(text) {
-  return uiSafeName(text).replace(/同一個 sha256 還有 (\d+) 份檔案存在/gi, '找到 $1 份內容相同的檔案')
-    .replace(/sha256/gi, '檔案內容指紋')
+  return uiSafeName(text)
+    .replace(/(\d+) other files? (?:has|have) the same sha256/gi,
+      (_, n) => `${n} other file${n === '1' ? '' : 's'} ${n === '1' ? 'has' : 'have'} exactly the same contents`)
+    .replace(/sha256/gi, 'content fingerprint')
 }
 let badgeRequest = 0
 function setHistoryBadge(total) {
   $('quaso-history-count').textContent = String(total)
-  $('quaso-history-open').setAttribute('aria-label', `復原最近動作（${total} 筆）`)
+  $('quaso-history-open').setAttribute('aria-label', `Undo recent actions (${plural(total, 'action')})`)
 }
 async function refreshHistoryBadge() {
   const version = ++badgeRequest
@@ -127,12 +147,21 @@ const bytes = formatBytes
 // 歷史面板的說明跟著模式走（稽核 RC10）。本機模式以前也寫著「模擬…不會更動真實檔案」——
 // 那是在騙人：本機的復原會真的把檔案放回原位。
 const HISTORY_NOTE = {
-  demo: '模擬操作紀錄 · 每次清理為一筆，勾選後會復原該次全部檔案。不會更動真實檔案。',
-  local: '每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。',
+  demo: 'Simulated action log · one row per cleanup. Tick one and every file from that cleanup comes back. No real file is touched.',
+  local: 'One row per cleanup. Tick one and the files it moved go back where they were.',
 }
 
-function notice(message) {
-  setPetMessageData({})
+/**
+ * 寵物說一句。burst 為 true 時多給一顆「看看這幾張」（點下去打開連拍區）。
+ *
+ * 泡泡平常寫的是「狀態算出來的那一句」（getPetMessage，見 ui.html 的 renderPetMessage）。
+ * notice 講的是狀態算不出來的事 —— 連拍的主動詢問、這一次動作的逐項結果。
+ * dataset.notice 讓渲染那一支在狀態沒變的期間不要把它蓋掉；狀態一變就換回去。
+ */
+function notice(message, { burst = false } = {}) {
+  $('quaso-status').dataset.notice = '1'
+  $('quaso-status').textContent = message
+  $('quaso-burst-open').hidden = !burst
   $('quaso-dialog').hidden = false
   $('quaso-stage').setAttribute('aria-expanded', 'true')
 }
@@ -143,9 +172,9 @@ function notice(message) {
 // 面板照樣列清單、寵物照樣說「沒事，在發呆」，而工具其實一個檔都沒掃到。
 // 帶 token 的 /health 就有 scanProblems（後端已經把完整路徑換成資料夾名），面板拿它來講。
 // 示範模式不講：那時候畫面上是假的清單，掛真的警告只會讓人分不清在看什麼。
-
-/** 寵物「沒事做」時的台詞。有掃描問題就換掉它。 */
-const RESTING_BUBBLE = '今天吃可頌了嗎？'
+//
+// 泡泡那一側現在歸 systemHealthProblem() → worried 狀態管（隊友那一側）：
+// 掃描出過問題寵物就是擔心臉，話裡帶得出是哪一種問題。這裡只負責面板頂端那一條與 stage title。
 
 /** 後端回報的掃描問題。名字是不可信的輸入 —— 後端已經擋過一次，這裡照樣 safeName。 */
 function scanProblems() {
@@ -155,7 +184,7 @@ function scanProblems() {
 }
 
 const scanProblemText = probs =>
-  `⚠ 上次掃描回報了 ${probs.length} 個問題，可能有檔案沒有掃到：${probs.join('；')}`
+  `⚠ The last scan reported ${probs.length} problems, so some files may have been missed: ${probs.join('; ')}`
 
 /**
  * 掃描問題畫到三個地方：面板頂端的提示、寵物的 stage title、寵物泡泡的靜止台詞。
@@ -175,7 +204,7 @@ function systemHealthProblem() {
   if (!health) {
     return {
       type: 'offline',
-      message: '暫時連不上 ContextBox。'
+      message: 'cannot reach ContextBox right now.'
     }
   }
 
@@ -183,7 +212,7 @@ function systemHealthProblem() {
   if (health.db?.ok === false || health.ok === false) {
     return {
       type: 'db',
-      message: 'ContextBox 資料庫暫時無法使用。'
+      message: 'the ContextBox database is not available right now.'
     }
   }
 
@@ -192,7 +221,7 @@ function systemHealthProblem() {
   if ((health.watcher?.rootsMissing ?? 0) > 0) {
     return {
       type: 'watcher',
-      message: '有清理資料夾不存在，請檢查設定。'
+      message: 'a cleanup folder is not there. Check the settings.'
     }
   }
 
@@ -208,11 +237,13 @@ function systemHealthProblem() {
   return null
 }
 function updateAlert() {
-  void refreshHistoryBadge()
+  // 後端有回話、而且沒說自己壞掉，才算連得上。
+  // （health 現在存的是原始快照，ok:false 也留著讓 systemHealthProblem 講得出是哪裡壞。）
+  const offline = healthChecked && (!health || health.ok === false)
   const count = demo ? demo.candidates.length : health?.pendingCandidates
   $('quaso-candidate-count').textContent = count == null ? '—' : count > 99 ? '99+' : String(count)
-  const source = demo ? '示範' : '本機'
-  const label = count == null ? '候選數量尚未取得，點擊重試' : `${source}待清檔案 ${count} 個，點擊開啟清理面板`
+  const source = demo ? 'demo' : 'local'
+  const label = count == null ? 'Candidate count not available yet — click to retry' : `${plural(count, source + ' file')} waiting to be cleaned up — click to open the cleanup panel`
   alertButton.setAttribute('aria-label', label)
   alertButton.title = label
   const problem = systemHealthProblem()
@@ -238,8 +269,8 @@ function updateAlert() {
   // 資料夾名照後端說的（U4）：清理範圍不一定只有 Downloads，名字是不可信的輸入（folderPhrase 會 safeName）
   // 掃描出過問題就先講那件事（R3-12b）：「監看中」在一個檔都沒掃到的時候是在騙人
   const probs = scanProblems()
-  $('quaso-stage').title = probs.length ? `⚠ 上次掃描有問題（${probs.length} 個） · 點我看說明`
-    : health?.watcher?.ok ? `📁 ${folderPhrase(health.watcher, { quoted: false })} · 監看中` : '與可頌貓對話'
+  $('quaso-stage').title = probs.length ? `⚠ The last scan hit ${probs.length} problems · click for details`
+    : health?.watcher?.ok ? `📁 Watching ${folderPhrase(health.watcher, { quoted: false })}` : 'Talk to Quaso'
   renderScanProblems(probs)
   if (count > previousCount && !worried) {
     $('quaso-stage').classList.remove('found-hop')
@@ -247,23 +278,32 @@ function updateAlert() {
     $('quaso-stage').classList.add('found-hop')
   }
   previousCount = count ?? 0
+  // 檔案管理那一塊（P6）：同一份資料，只是換一個使用者找得到的位置
+  $('files-candidate-count').textContent = count == null ? 'Looking…' : plural(count, 'file')
+  $('files-where').textContent = demo
+    ? 'Demo mode · the two panels below open a sample list. Nothing real on your computer gets touched.'
+    : offline ? 'Cannot reach the local service right now. Start the server and this updates itself.'
+    : health?.watcher?.ok ? `Watching ${folderPhrase(health.watcher)}.`
+    : 'Not watching anything yet.'
 }
 function announce() {
   updateAlert()
 }
 function applyLabel(s) {
-  if (s.canUndo) return '完成本次清理'
-  if (isDemo()) return '確認模擬清理'
-  if (s.pendingPlan) return `繼續上次那份（${s.pendingPlan.items.length} 個）`
-  if (s.locked) return '再試一次'
-  return `清理勾選的 ${s.selected.size} 個檔案`
+  if (s.canUndo) return 'Cleanup done'
+  if (isDemo()) return 'Run the simulated cleanup'
+  if (s.pendingPlan) return `Finish the last plan (${s.pendingPlan.items.length})`
+  if (s.locked) return 'Try again'
+  return `Clean up ${plural(s.selected.size, 'selected file')}`
 }
 function summary() {
+  updateAlert()
   const s = session()
+  // 「先不清」的那幾個這一輪不算數：不進分母，也不算大小
   const candidates = proposalItems(s)
   const selected = candidates.filter(item => s.selected.has(item.itemId))
-  updateAlert()
-  $('cleanup-summary').textContent = `已選 ${selected.length} / ${candidates.length} 個檔案 · ${bytes(selected.reduce((sum, item) => sum + item.bytes, 0))}`
+  $('cleanup-summary').textContent = `${selected.length} of ${candidates.length} files selected`
+    + ` · ${bytes(selected.reduce((sum, item) => sum + item.bytes, 0))}`
   // 鎖住（結果不明、或正在提示上次那份）時按鈕仍要能按 —— 它就是「再試一次」／「繼續」
   $('cleanup-apply').disabled = busy || (!s.canUndo && !s.locked && s.selected.size === 0)
   $('cleanup-apply').textContent = applyLabel(s)
@@ -286,12 +326,397 @@ function paragraph(text, className = '') {
   p.className = className
   return p
 }
+/**
+ * 把「模型認為⋯⋯」掛到一張卡片（或一張縮圖）上（P2）。沒有看法就什麼都不加。
+ *
+ * **只加字，不碰勾選框**（預想的不變量 4）：模型說了不代表要清、要改名。
+ * 示範答案多一個 class，樣式上看得出來那不是真的問過的。
+ */
+function appendModelOpinion(node, model) {
+  const lines = modelOpinionLines(model)
+  if (!lines) return
+  const head = paragraph(lines.head, lines.seeded ? 'cleanup-model cleanup-model-seeded' : 'cleanup-model')
+  node.append(head, paragraph(lines.note, 'evidence'))
+}
+// -- 看內容（P6）---------------------------------------------
+//
+// 每一列多一顆「看內容」，點開在**同一列底下**展開（不是彈窗：彈窗會蓋住勾選框，
+// 而使用者正是為了決定要不要勾才點開的），再點一次收起。
+//
+// **點了才抓**、同一個檔只抓一次（createPreviews 負責）。示範模式沒有這顆按鈕 ——
+// 那時候畫面上是假的清單，後端根本沒有那幾個檔，點下去只會拿到 404。
+const previews = createPreviews((path, init) => window.api(path, init))
+const previewOpen = new Set()
+
+async function togglePreview(itemId) {
+  // 復原面板那幾列也有「看內容」，而它是另一份畫面 —— 兩邊都要重畫，
+  // 不然在復原面板點了會沒反應（稽核 2026-09-20）。沒開的那一份 render 本來就很便宜。
+  const redraw = () => { render(); if (historyData) renderHistory() }
+  if (previewOpen.has(itemId)) { previewOpen.delete(itemId); redraw(); return }
+  previewOpen.add(itemId)
+  redraw()                       // 先畫「正在讀」，不要讓使用者以為按了沒反應
+  await previews.load(itemId)
+  // 讀回來之前使用者可能已經又收起來了
+  if (previewOpen.has(itemId)) redraw()
+}
+
+/**
+ * 展開的那一塊：後設資料、為什麼被列出來、內容（文字或縮圖）。
+ *
+ * **內容一律 textContent**，一個會解析 HTML 的寫法都不准用 —— 這是檔案裡的字，
+ * 由誰寫的我們不知道。圖用 `blob:`（帶 token 的 api 取回來的），token 不進網址。
+ */
+function previewBox(itemId) {
+  const box = document.createElement('div')
+  box.className = 'cleanup-preview'
+  const got = previews.get(itemId)
+  if (!got) { box.append(paragraph('Reading this file…', 'evidence')); return box }
+  if (!got.ok) { box.append(paragraph(safeName(got.message), 'evidence')); return box }
+  const lines = previewLines(got.view)
+  if (!lines) { box.append(paragraph("Could not read this file's contents.", 'evidence')); return box }
+  box.append(paragraph(lines.meta, 'evidence'), paragraph(lines.why, 'evidence'))
+  const url = previews.image(itemId)
+  if (url) {
+    const img = document.createElement('img')
+    img.src = url
+    img.alt = lines.name
+    box.append(img)
+  } else if (lines.image !== null) {
+    // 後端說有圖，但縮圖抓不回來（掃完之後檔被刪掉、或檔換過使磁碟核對失敗）。
+    // **不可以什麼都不說**（稽核 2026-09-20）—— 那會變成一個空框，使用者以為壞掉了。
+    box.append(paragraph('This image cannot be shown right now — the file may have been deleted or replaced.', 'evidence'))
+  }
+  if (lines.text !== null) {
+    const pre = document.createElement('pre')
+    pre.className = 'cleanup-preview-text'
+    pre.textContent = lines.text
+    box.append(pre)
+    // 截斷了就要講「還有更多」，不可以安靜地少給
+    if (lines.truncated) box.append(paragraph(lines.more, 'evidence'))
+  } else if (lines.empty) {
+    box.append(paragraph(lines.empty, 'evidence'))
+  }
+  return box
+}
+
+/** 在一列底下掛「看內容」，展開時把內容接在同一列裡。 */
+function attachPreview(host, itemId) {
+  if (isDemo() || typeof itemId !== 'string' || !itemId) return
+  const open = previewOpen.has(itemId)
+  const peek = document.createElement('button')
+  peek.type = 'button'
+  peek.className = 'cleanup-peek'
+  peek.textContent = open ? 'Hide' : 'View contents'
+  peek.setAttribute('aria-expanded', String(open))
+  // **忙的時候照樣可以看**：看內容不動任何檔案，而正在搬檔的時候更需要看得到自己在清什麼
+  peek.onclick = () => togglePreview(itemId)
+  host.append(peek)
+  if (open) host.append(previewBox(itemId))
+}
+
 /** 面板最上面那一句。本機模式講真的資料夾名（U4），拿不到就講「監看資料夾」。 */
 function modeNote() {
   $('cleanup-mode-note').textContent = isDemo()
-    ? '示範模式 · 以下為範例檔案，清理與復原不會動到你電腦上真的檔案。'
-    : `本機模式 · 這些是你${folderPhrase(health?.watcher)}裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。`
+    ? 'Demo mode · these are sample files. Cleanup and undo will not touch anything real on your computer.'
+    : `Local mode · these are the real files in ${folderPhrase(health?.watcher)}. Cleanup moves the ticked ones to quarantine; you can undo it for seven days.`
 }
+/** 0–1 的相對座標 → 百分比（小數點後一位就夠，框不用畫得比這更準）。 */
+const pct = v => (Math.round(v * 1000) / 10) + '%'
+
+/**
+ * 連拍區裡的一張縮圖。
+ *
+ * - 縮圖是 `blob:` 網址（面板用帶 token 的 api 取回來的）。**token 不在網址上**，
+ *   所以不能寫成 `<img src="/cleanup/thumb/…">`（那條端點要 token，img 不會帶 header）。
+ * - 差異處的外框用**相對座標**（0–1）換成百分比疊在圖上，縮圖多大都對得上。
+ * - 留下的那張標「留著」、**沒有勾選框** —— 它永遠不會被提議清掉。
+ * - 檔名是不可信的輸入：一律 safeName，而且只進 textContent。
+ */
+function burstShotCell(shot, { keep = false, state = null } = {}) {
+  const cell = document.createElement('div')
+  cell.className = 'cleanup-shot'
+  const frame = document.createElement('div')
+  frame.className = 'cleanup-shot-frame'
+  const url = bursts.thumb(shot.itemId)
+  if (url) {
+    const img = document.createElement('img')
+    img.src = url
+    img.alt = safeName(shot.name)
+    frame.append(img)
+  } else {
+    frame.append(paragraph('(no thumbnail)', 'evidence'))
+  }
+  for (const b of shot.boxes) {
+    const mark = document.createElement('span')
+    mark.className = 'cleanup-shot-box'
+    mark.setAttribute('style', `left:${pct(b.x)};top:${pct(b.y)};width:${pct(b.w)};height:${pct(b.h)}`)
+    frame.append(mark)
+  }
+  cell.append(frame)
+  if (keep) {
+    cell.append(paragraph(`Keeping · ${safeName(shot.name)}`, 'cleanup-shot-keep'))
+    appendModelOpinion(cell, shot.model)
+    attachPreview(cell, shot.itemId)
+    return cell
+  }
+  const label = document.createElement('label')
+  const check = document.createElement('input')
+  check.type = 'checkbox'
+  // 成員本來就是候選清單上的檔，勾選走**同一個** selected 集合 —— 清理是同一條路。
+  // 萬一它不在清單上（後端兩邊不同步），給看但不給勾：勾了也送不出去。
+  const listed = state.candidates.some(c => c.itemId === shot.itemId)
+  check.checked = state.selected.has(shot.itemId)
+  check.disabled = busy || state.canUndo || Boolean(state.locked) || !listed
+  check.onchange = () => { state.select(shot.itemId, check.checked); request = null; summary() }
+  const name = document.createElement('strong')
+  name.textContent = safeName(shot.name)
+  label.append(check, name)
+  cell.append(label, paragraph(bytes(shot.bytes), 'evidence'))
+  appendModelOpinion(cell, shot.model)
+  attachPreview(cell, shot.itemId)
+  return cell
+}
+
+/**
+ * 連拍區。**沒有組就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的連拍組只會讓人分不清在看什麼）。
+ */
+function renderBursts() {
+  const box = $('cleanup-bursts')
+  box.replaceChildren()
+  const groups = isDemo() ? [] : bursts.groups
+  box.hidden = groups.length === 0
+  if (!groups.length) return
+  const s = session()
+  box.append(paragraph('Screenshot bursts · keep only the newest of each batch', 'cleanup-note'))
+  for (const g of groups) {
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-burst'
+    row.append(paragraph(burstGroupLine(g)), paragraph(burstNote(g.level), 'evidence'))
+    const shots = document.createElement('div')
+    shots.className = 'cleanup-burst-shots'
+    shots.append(burstShotCell(g.keep, { keep: true }))
+    for (const m of g.members) shots.append(burstShotCell(m, { state: s }))
+    row.append(shots)
+    box.append(row)
+  }
+  if (bursts.more) box.append(paragraph(`${plural(bursts.more, 'more group')}. Deal with these, then open the panel again to see them.`, 'evidence'))
+}
+
+/**
+ * 建議的名字（P3）。**沒有建議就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的改名按鈕會讓人以為示範會動到自己的檔）。
+ *
+ * 每一列都寫著「模型認為⋯⋯」與證據，**一個勾選框都不預設勾起來**。
+ */
+function renderRenames() {
+  const box = $('cleanup-renames')
+  box.replaceChildren()
+  const items = isDemo() ? [] : renames.items
+  box.hidden = items.length === 0
+  $('cleanup-rename').hidden = items.length === 0
+  $('cleanup-rename-undo').hidden = isDemo() || !renames.canUndo
+  if (!items.length) return
+  box.append(paragraph("Suggested names · these are the model's opinion, not facts. Nothing changes until you tick them and press “Rename”, and it can be undone.", 'cleanup-note'))
+  for (const item of items) {
+    const lines = renameLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-rename-row' + (lines.rejected ? ' cleanup-rejected' : '')
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    // **退過貨的一樣不預設勾** —— 這一區本來就一個都不勾，所以這裡不用特例；
+    // 真正要做的是**講出來**（下面那一行），不然使用者不知道為什麼它還在清單上。
+    check.checked = renames.selected.has(item.itemId)
+    check.disabled = busy
+    check.onchange = () => { renames.select(item.itemId, check.checked); summary() }
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    label.append(check, head)
+    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    attachPreview(row, item.itemId)
+    box.append(row)
+  }
+  if (renames.more) box.append(paragraph(`${renames.more} more. Rename these, then open the panel again to see them.`, 'evidence'))
+}
+
+/**
+ * 歸檔建議（P4）。**沒有建議就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的整理按鈕會讓人以為示範會動到自己的檔）。
+ *
+ * 每一列都寫著「模型認為⋯⋯」與證據，**一個勾選框都不預設勾起來**。
+ */
+function renderFilings() {
+  const box = $('cleanup-filings')
+  box.replaceChildren()
+  const items = isDemo() ? [] : filings.items
+  box.hidden = items.length === 0
+  $('cleanup-file').hidden = items.length === 0
+  $('cleanup-file-undo').hidden = isDemo() || !filings.canUndo
+  if (!items.length) return
+  box.append(paragraph("Filing suggestions · these are the model's opinion, not facts. Nothing moves until you tick them and press “File”, and it can be undone.", 'cleanup-note'))
+  for (const item of items) {
+    const lines = filingLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-filing-row' + (lines.rejected ? ' cleanup-rejected' : '')
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    // 同上：一個都不預設勾，退過貨的**另外講一句**
+    check.checked = filings.selected.has(item.itemId)
+    check.disabled = busy
+    check.onchange = () => { filings.select(item.itemId, check.checked); summary() }
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    label.append(check, head)
+    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    attachPreview(row, item.itemId)
+    box.append(row)
+  }
+  if (filings.more) box.append(paragraph(`${filings.more} more. File these, then open the panel again to see them.`, 'evidence'))
+}
+
+/**
+ * 它學到的事（P5）。**什麼都沒學過就整區不顯示**；示範模式也不顯示（那時候畫面上是假的清單，
+ * 掛真的「忘掉」按鈕會讓人以為示範會改到自己的設定）。
+ *
+ * 這一區**只有「忘掉」一顆按鈕**，按不出任何會動檔案的事。
+ */
+function renderLearned() {
+  const box = $('cleanup-learned')
+  box.replaceChildren()
+  const items = isDemo() ? [] : learned.items
+  box.hidden = items.length === 0
+  if (!items.length) return
+  box.append(paragraph('What it learned · all of this comes from changes you made yourself. It only shapes the suggestions — it never moves a file on its own.', 'cleanup-note'))
+  for (const item of items) {
+    const lines = learnedLines(item)
+    if (!lines) continue
+    const row = document.createElement('article')
+    row.className = 'cleanup-file cleanup-learned-row'
+    const head = document.createElement('strong')
+    head.textContent = lines.head
+    const drop = document.createElement('button')
+    drop.type = 'button'
+    drop.textContent = 'Forget'
+    drop.disabled = busy
+    drop.onclick = () => forgetLearned(lines.id)
+    row.append(head, paragraph(lines.why, 'evidence'), drop)
+    box.append(row)
+  }
+  if (learned.more) box.append(paragraph(`${learned.more} more.`, 'evidence'))
+  if (learned.evicted) {
+    box.append(paragraph(`Too much to remember, so the ${plural(learned.evicted, 'oldest and least-used entry')} got dropped.`, 'evidence'))
+  }
+}
+
+/** 忘掉一條。忘完要重畫上面兩區 —— 建議會跟著變回模型原本的說法。 */
+async function forgetLearned(id) {
+  if (busy) return
+  busy = true
+  render()
+  result('Forgetting…')
+  try {
+    const out = await tracked(() => learned.forget(id))
+    // 建議是算出來的，忘掉一條之後整份都要重讀，不然畫面還停在舊的寫法
+    try { await renames.load() } catch { /* 那一區讀不到就維持原樣 */ }
+    try { await filings.load() } catch { /* 同上 */ }
+    result(out.message)
+  } catch (error) {
+    result(safeName(error?.message ?? 'Could not forget that. Try again.'))
+  } finally {
+    busy = false
+    render()
+  }
+}
+
+/**
+ * 面板裡的五個小標籤（P6 之二）。
+ *
+ * **為什麼**：以前五區疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議 ——
+ * 使用者自己講的第一句話就是「不然我都要滑到好下面」。
+ *
+ * 規矩：
+ *   · 一次只顯示一區；空的那幾區標籤變灰，點不下去（但**看得到**，使用者才知道有這個功能）
+ *   · 現在這一區變空了就跳到第一個有東西的；全都空的時候留在「可以清理」（那一區會講「目前沒有待清檔案」）
+ *   · 動作按鈕跟著區塊走（data-section）：在歸檔那一區只會看到「整理」與「復原整理」
+ *   · **示範模式整條不顯示** —— 那時只有清理那一區是真的
+ */
+const PANEL_SECTIONS = [
+  { key: 'clean', label: 'Cleanup' },
+  { key: 'bursts', label: 'Bursts' },
+  { key: 'renames', label: 'Suggested names' },
+  { key: 'filings', label: 'Filing' },
+  { key: 'learned', label: 'Learned' },
+]
+let panelSection = 'clean'
+/** 每一顆動作按鈕屬於哪一區（不屬於現在這一區的就收起來）。 */
+const SECTION_BUTTONS = {
+  'cleanup-apply': 'clean', 'cleanup-release': 'clean', 'cleanup-putback': 'clean',
+  'cleanup-undo': 'clean', 'cleanup-dismiss': 'clean',
+  'cleanup-rename': 'renames', 'cleanup-rename-undo': 'renames',
+  'cleanup-file': 'filings', 'cleanup-file-undo': 'filings',
+}
+
+/** 每一區現在有幾筆。空的（0）那一區的標籤會變灰。 */
+function sectionCounts() {
+  const s = session()
+  if (isDemo()) return { clean: s.candidates.length, bursts: 0, renames: 0, filings: 0, learned: 0 }
+  const inBurst = bursts.memberIds()
+  return {
+    clean: s.candidates.filter(c => !inBurst.has(c.itemId)).length + (s.needsHuman?.length ?? 0),
+    bursts: bursts.groups.length,
+    renames: renames.items.length,
+    filings: filings.items.length,
+    learned: learned.items.length,
+  }
+}
+
+/** 畫標籤列，並且把沒選到的那幾區與它們的按鈕藏起來。 */
+function renderSections() {
+  const counts = sectionCounts()
+  // 現在這一區空了就換到第一個有東西的（全空就留在「可以清理」）
+  if (!counts[panelSection]) {
+    panelSection = PANEL_SECTIONS.find(x => counts[x.key])?.key ?? 'clean'
+  }
+  const bar = $('cleanup-tabs')
+  bar.hidden = isDemo()
+  bar.replaceChildren()
+  if (!isDemo()) {
+    for (const { key, label } of PANEL_SECTIONS) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.dataset.section = key
+      b.setAttribute('role', 'tab')
+      b.setAttribute('aria-selected', String(key === panelSection))
+      b.disabled = !counts[key] && key !== panelSection
+      b.append(document.createTextNode(label))
+      const n = document.createElement('span')
+      n.className = 'cleanup-tab-n'
+      n.textContent = String(counts[key])
+      b.append(n)
+      b.onclick = () => { panelSection = key; render() }
+      bar.append(b)
+    }
+  }
+  // **照 id 拿，不要用 querySelectorAll**：面板的程式碼一律只用 getElementById，
+  // 測試那份 DOM 也只實作了它（多一個選擇器語法就多一個測不到的地方）。
+  for (const { key } of PANEL_SECTIONS) {
+    const box = $('cleanup-sec-' + key)
+    // 示範模式沒有標籤列，那時候每一區都照舊（各自的 hidden 說了算）
+    if (box) box.hidden = !isDemo() && key !== panelSection
+  }
+  if (!isDemo()) {
+    for (const [id, key] of Object.entries(SECTION_BUTTONS)) {
+      if (key !== panelSection && $(id)) $(id).hidden = true
+    }
+  }
+}
+
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
@@ -302,13 +727,23 @@ function render() {
   $('cleanup-apply').hidden = false
   $('cleanup-reset').hidden = !isDemo()   // 「重新示範」只有 demo 有意義
   for (const id of ['cleanup-undo', 'cleanup-dismiss']) $(id).hidden = false
+  renderBursts()
+  renderRenames()
+  renderFilings()
+  renderLearned()
+  // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個。
+  // **分頁也不要把它們算進去**，不然會有一頁十格、其中幾格是空的。
+  const inBurst = isDemo() ? new Set() : bursts.memberIds()
   $('cleanup-list').replaceChildren()
-  const pages = Math.max(1, Math.ceil(candidates.length / cleanupPageSize))
-  cleanupPage = Math.min(cleanupPage, pages - 1)
-  $('cleanup-page').textContent = `第 ${cleanupPage + 1} / ${pages} 頁 · 共 ${eligible.length} 個待清檔案`
+  const rows = candidates.filter(item => !inBurst.has(item.itemId))
+  const listed = rows.length
+  const pages = Math.max(1, Math.ceil(rows.length / cleanupPageSize))
+  cleanupPage = Math.min(Math.max(0, cleanupPage), pages - 1)
+  $('cleanup-page').textContent = `Page ${cleanupPage + 1} of ${pages}`
+    + ` · ${plural(eligible.filter(item => !inBurst.has(item.itemId)).length, 'file')} to clean up`
   $('cleanup-prev').disabled = busy || cleanupPage === 0
   $('cleanup-next').disabled = busy || cleanupPage === pages - 1
-  for (const item of candidates.slice(cleanupPage * cleanupPageSize, (cleanupPage + 1) * cleanupPageSize)) {
+  for (const item of rows.slice(cleanupPage * cleanupPageSize, (cleanupPage + 1) * cleanupPageSize)) {
     const card = document.createElement('article')
     card.className = 'cleanup-file'
     const pendingSkip = proposalSkips().find(op => op.pending && op.items.some(i => i.itemId === item.itemId))
@@ -316,7 +751,7 @@ function render() {
       const restore = document.createElement('button')
       restore.type = 'button'
       restore.className = 'cleanup-restore-skipped'
-      restore.textContent = '恢復清理 ›'
+      restore.textContent = 'Put it back on the list ›'
       restore.disabled = busy || s.canUndo || Boolean(s.locked)
       restore.onclick = () => {
         if (busy || s.canUndo || s.locked) return
@@ -351,27 +786,51 @@ function render() {
     size.textContent = bytes(item.bytes)
     const skip = document.createElement('button')
     skip.type = 'button'
-    skip.textContent = '先不清'
+    skip.textContent = 'Not this one'
     skip.disabled = check.disabled
     skip.onclick = () => skipItem(s, item)
     row.append(label, size, skip)
+    // 理由收在「Why this one」裡：一眼掃過去是檔名與大小，想知道為什麼再點開
     const details = document.createElement('details')
     const heading = document.createElement('summary')
-    heading.textContent = '清理原因'
-    details.append(heading, paragraph(where))
+    heading.textContent = 'Why this one'
+    details.append(heading, paragraph(`${where} · confidence ${item.confidence}%`))
     card.append(row, details)
     for (const reason of item.reasons) {
       details.append(paragraph(reasonText(reason.reason)), paragraph(reasonText(reason.evidence), 'evidence'))
     }
+    // 模型對這個檔的看法（P2）。示範模式沒有這一段（那時畫面上是假的清單）
+    if (!isDemo()) appendModelOpinion(card, item.model)
     if (item.vetoed) card.append(paragraph('⚠ ' + uiSafeName(item.vetoed), 'evidence'))
+    // 「不記得這個檔存了什麼」就點開看一眼（P6）
+    attachPreview(card, item.itemId)
     $('cleanup-list').append(card)
   }
-  if (!candidates.length) $('cleanup-list').append(paragraph('本次提案沒有待清檔案。'))
+  if (!listed && !$('cleanup-bursts').children.length && !$('cleanup-renames').children.length
+    && !$('cleanup-filings').children.length) {
+    $('cleanup-list').append(paragraph(isDemo() ? 'Every sample file has been dealt with.' : 'Nothing to clean up right now.'))
+  }
+  $('cleanup-needs-human').replaceChildren()
+  for (const item of (isDemo() ? data.needsHuman : s.needsHuman) ?? []) {
+    // 這一區最需要「看內容」：太大、讀不到的檔，使用者更不記得它是什麼
+    const row = document.createElement('div')
+    row.className = 'cleanup-human-row'
+    row.append(paragraph(`Needs your eyes: ${uiSafeName(item.name)} — ${uiSafeName(item.why)} (not included in the cleanup)`))
+    attachPreview(row, item.itemId)
+    $('cleanup-needs-human').append(row)
+  }
   summary()
+  // **一定要在 summary() 之後**：summary 會依狀態決定每顆按鈕的 hidden，
+  // 這裡再把「不屬於現在這一區」的收起來。
+  renderSections()
 }
 $('cleanup-prev').onclick = () => { if (!busy && cleanupPage > 0) { cleanupPage--; render() } }
 $('cleanup-next').onclick = () => {
-  if (!busy && (cleanupPage + 1) * cleanupPageSize < proposalRows(session()).length) { cleanupPage++; render() }
+  const s = session()
+  if (!s) return
+  const inBurst = isDemo() ? new Set() : bursts.memberIds()
+  const rows = proposalRows(s).filter(item => !inBurst.has(item.itemId))
+  if (!busy && (cleanupPage + 1) * cleanupPageSize < rows.length) { cleanupPage++; render() }
 }
 function result(message) {
   $('cleanup-result').hidden = false
@@ -382,7 +841,7 @@ async function load() {
   if (savedDemo) { demo = savedDemo; updateAlert(); return }
   if (!pending) pending = (async () => {
     const response = await fetch('/assets/demo-candidates.json')
-    if (!response.ok) throw new Error('無法載入範例')
+    if (!response.ok) throw new Error('Could not load the sample data')
     data = await response.json()
   })().finally(() => { pending = null })
   await pending
@@ -399,6 +858,12 @@ async function toggleDemo() {
   historyPanel.close()
   $('quaso-dialog').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
+  bursts.clear()   // 連拍組是本機模式的東西；切模式時把 blob: 網址還回去
+  renames.clear()  // 建議的名字也是本機模式的東西
+  filings.clear()  // 歸檔建議也是
+  learned.clear()  // 「它學到的事」也是（示範模式沒有這一區）
+  previews.clear() // 展開的內容也是；blob: 網址要還回去
+  previewOpen.clear()
   if (!demoEnabled) {
     if (demo) savedDemo = demo
     demo = null
@@ -409,11 +874,12 @@ async function toggleDemo() {
   catch {
     demoEnabled = false
     document.documentElement.dataset.mockCandidates = 'false'
-    notice('範例暫時讀不到，請確認伺服器已啟動，再按 D 重試。')
+    notice('The sample data is not available right now. Check that the server is running, then press D again.')
   }
 }
-alertButton.onclick = async () => {
+async function openCleanupPanel() {
   $('quaso-dialog').hidden = true
+  $('quaso-burst-open').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   if (demo) {
     render()
@@ -424,9 +890,10 @@ alertButton.onclick = async () => {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo', 'cleanup-learned']) $(id).hidden = true
   $('cleanup-result').hidden = true
-  $('cleanup-list').replaceChildren(paragraph('正在讀取候選檔案……'))
+  $('cleanup-list').replaceChildren(paragraph('Loading candidate files…'))
+  $('cleanup-needs-human').replaceChildren()
   $('cleanup-summary').textContent = ''
   if (!panel.open) panel.showModal()
   // 每次打開都是新的一輪 —— **除非上一輪結果還不明**。那時候丟掉就會撞上
@@ -436,10 +903,28 @@ alertButton.onclick = async () => {
     await real.load()
     // 有待處理的計畫就一打開先提示（R2-5）。查不到就照常，撞到 CONFLICT 仍是入口
     await real.checkPending()
+    // 連拍組（後端沒有這條就是空的，面板照常）。**similar 一律再取消勾一次**：
+    // 這一區是主動問的，寧可少勾一格，也不要讓人一按就丟掉一張內容不一樣的截圖。
+    await bursts.load()
+    applyBurstDefaults(real, bursts.groups)
+    // 建議的名字（P3）。後端沒有這幾條就是空的，面板照常
+    await renames.load()
+    // 歸檔建議（P4）。後端沒有這幾條就是空的，面板照常
+    await filings.load()
+    // 它學到的事（P5）。後端沒有這一條就是空的，面板照常
+    await learned.load()
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
-    else if (real.locked) result('上一次清理的結果還沒確認。按「再試一次」會沿用同一份，不會多搬。')
-  } catch { $('cleanup-list').replaceChildren(paragraph('讀取失敗，請確認伺服器已啟動，關閉面板後點垃圾桶重試。')) }
+    else if (real.locked) result('The result of the last cleanup was never confirmed. “Try again” reuses that same plan; nothing extra gets moved.')
+  } catch { $('cleanup-list').replaceChildren(paragraph('Loading failed. Check that the server is running, close the panel and click the trash can to try again.')) }
+}
+alertButton.onclick = openCleanupPanel
+// 檔案管理那一塊的入口（P6）：跟可頌貓底下的垃圾桶開的是同一個面板
+$('files-open-cleanup').onclick = openCleanupPanel
+// 寵物主動問完之後的那顆按鈕：點一下就是打開連拍區（面板一打開就在最上面）
+$('quaso-burst-open').onclick = () => {
+  $('quaso-burst-open').hidden = true
+  return openCleanupPanel()
 }
 $('cleanup-select-all').onclick = () => {
   if (busy) return
@@ -504,24 +989,17 @@ $('cleanup-dismiss').onclick = () => {
   if (busy) return
   panel.close()
   updateAlert()
-  notice('好，這次先不清。今天吃可頌了嗎？')
+  notice('Fine, no cleanup this time. Had a croissant today?')
 }
 /** 真的清理。訊息**一律照後端說的結果講**，不用勾選數去推算。 */
 async function operateReal(kind) {
   if (kind === 'apply') {
-    result(
-      real.pendingPlan
-        ? '正在繼續上次那份……'
-        : real.locked
-          ? '正在重試（沿用同一份，不會多搬）……'
-          : '正在搬進隔離區……'
-    )
-
+    result(real.pendingPlan ? 'Finishing the last plan…' : real.locked ? 'Retrying (same plan, nothing extra gets moved)…' : 'Moving files to quarantine…')
     const r = await real.apply()
     setPetMessageData({ freedBytes: r.bytesFreed ?? 0 })
 
     if (r.status === 'stale') {
-      result('清單在你看的時候更新了（例如有檔案被刪掉、或已經被別的地方清過）。一個都還沒動，請再確認一次勾選。')
+      result('The list changed while you were looking at it — a file was deleted, or something else cleaned it up. Nothing moved. Check your ticks again.')
       return false
     }
 
@@ -534,212 +1012,206 @@ async function operateReal(kind) {
     result(m.text)
     notice(m.notice)
 
-    // API 有成功回應，不代表真的完成清理。
-    // noop（例如重複 apply）或實際搬動 0 個檔案，都不能顯示 happy／「清理完成」。
+    // API 回 200 不等於真的清掉了：noop（重複套用）與 moved=0 都不算完成，
+    // 那時候寵物不可以切成 happy、也不可以說「清理完成」。
     return r.noop !== true && (r.moved ?? 0) > 0
   }
 
   if (kind === 'release') {
-    result('正在放棄上次那份……')
-
+    result('Dropping the last plan…')
     const r = await real.release()
-
-    result(
-      `已放棄上次那份（${r.items.length} 個檔案），沒有動任何檔案。現在可以重新勾選再清理。`
-      + (r.reloadFailed
-        ? '\n（清單沒有重新整理成功。關掉面板再打開就會更新。）'
-        : '')
-    )
-
-    // release 不是「完成清理」
+    result(`Dropped the last plan (${plural(r.items.length, 'file')}). Nothing moved. You can tick files and clean up again now.`
+      + (r.reloadFailed ? '\n(The list did not refresh. Close the panel and open it again to see the current state.)' : ''))
+    // 放棄不是「完成清理」
     return false
   }
 
   if (kind === 'putback') {
-    result('正在把已經搬走的放回原位……')
-
+    // 做到一半中斷的那份：把已經在隔離區的放回原位，還沒搬的不動（R2-5b）
+    result('Putting back what already moved…')
     const restored = await real.putBack()
     const restoredCount = restored.restored ?? 0
-    setPetMessageData({ restoredCount })
+    setPetMessageData({ restoredCount, leftBehind: leftBehind(restored) })
     const m = undoMessage(restored)
     result(m.text)
     notice(m.notice)
-
-    // 真的有檔案放回原位才算完成復原。
-    return restoredCount > 0
+    // **全部回到原位才算做完**：有放不回去的就不可以說「完成」（見 leftBehind）
+    return restoredCount > 0 && leftBehind(restored) === 0
   }
 
-  // undo
-  result('正在放回原位……')
-
+  result('Putting files back…')
   const r = await real.undo()
+  // 只講發生了什麼。**不講「之後不會再被提議」**：之後符合新的理由會再出現；
+  // 原位置被佔時放回來的那份會改名，重掃後以重複檔的身分被預設勾起來。
+  // 寵物的話也看結果：全部放回、部分放回、一個都沒放回，三種不同的話（RC9）。
   const restoredCount = r.restored ?? 0
-  setPetMessageData({ restoredCount })
+  setPetMessageData({ restoredCount, leftBehind: leftBehind(r) })
   const m = undoMessage(r)
-
   result(m.text)
   notice(m.notice)
-
-  // API 成功但 0 個放回時，不可以顯示「復原完成！」。
-  return restoredCount > 0
+  // **全部回到原位才算做完。** 部分放回也不算 —— 不然寵物會說「Undo done ✨」，
+  // 而使用者還有一個檔卡在隔離區裡沒人講（稽核 2026-09-20，合併時這條被放鬆了）。
+  return restoredCount > 0 && leftBehind(r) === 0
 }
+
+/**
+ * 改名與復原改名。跟清理走同一套忙碌旗標（兩邊都會動同一批檔，後端也是同一把鎖）。
+ * **訊息一律照後端的逐項結果講**，不用勾選數推算。
+ */
+async function renameOperate(kind) {
+  if (busy || isDemo()) return
+  busy = true
+  render()
+  result(kind === 'apply' ? 'Renaming…' : 'Changing the names back…')
+  try {
+    const r = await tracked(() => (kind === 'apply' ? renames.apply() : renames.undo()))
+    result(r.message)
+  } catch (error) {
+    result(safeName(error.message))
+  } finally {
+    busy = false
+    // 改完名字，記住的預覽裡那個檔名就是舊的了
+    previews.clear()
+    previewOpen.clear()
+    // 改完名字，清理清單上的檔名也變了 —— 重讀一次再畫
+    try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
+    render()
+  }
+  pollHealth()
+}
+
+/**
+ * 整理與復原整理。跟清理、改名走同一套忙碌旗標（三邊都會動同一批檔，後端也是同一把鎖）。
+ * **訊息一律照後端的逐項結果講**，不用勾選數推算。
+ */
+async function filingOperate(kind) {
+  if (busy || isDemo()) return
+  busy = true
+  render()
+  result(kind === 'apply' ? 'Filing…' : 'Moving the files back to the folders they came from…')
+  try {
+    const r = await tracked(() => (kind === 'apply' ? filings.apply() : filings.undo()))
+    result(r.message)
+  } catch (error) {
+    result(safeName(error.message))
+  } finally {
+    busy = false
+    // 搬走的檔已經不在原本的資料夾，記住的預覽跟著作廢
+    previews.clear()
+    previewOpen.clear()
+    // 搬走的檔不在清理範圍裡了 —— 清單要重讀一次再畫
+    try { await real.load() } catch { /* 讀不到就先用舊的，關掉面板再打開會更新 */ }
+    render()
+  }
+  pollHealth()
+}
+
+/**
+ * 這個錯要不要讓寵物切成 worried。
+ * 伺服器明確回的 4xx（勾了不能清的、計畫過期）結果是確定的，只是這次不能做，
+ * 不必把整隻寵物變成擔心臉；結果不明、連不上、500 才是。
+ */
 function seriousOperationError(error) {
-  // createReal 已經判定操作結果不確定
   if (real?.uncertain) return true
-
-  // 沒有 HTTP status：
-  // fetch failed / timeout / server disconnected
   if (!error?.status) return true
-
-  // server internal error
   if (error.status >= 500) return true
-
   return false
 }
+/**
+ * 這一次復原有幾個**沒有**回到原位（放不回去的＋結果不明的）。
+ *
+ * 「做完了嗎」不可以只看「有沒有放回任何一個」：兩個檔放回一個，那一個還在隔離區裡，
+ * 而寵物會說「Undo done ✨」—— 那是在騙人。這個專案的第一條原則是講實話。
+ */
+const leftBehind = r => (r?.notRestored?.length ?? 0) + (r?.unconfirmed?.length ?? 0)
+
 async function operate(kind) {
   if (busy) return
-
   busy = true
-
-  // ① 操作開始
+  // ① 動作開始：寵物先進暫時狀態（清理／放回），泡泡跟著換成「正在……」
   if (kind === 'apply') {
-    setPetMessageData({ lastAction: 'cleaning', freedBytes: 0, restoredCount: 0, errorMessage: '', candidates: proposalItems(session()).filter(i => session().selected.has(i.itemId)) })
+    setPetMessageData({
+      lastAction: 'cleaning', freedBytes: 0, restoredCount: 0, errorMessage: '',
+      candidates: proposalItems(session()).filter(i => session().selected.has(i.itemId)),
+    })
     setPetTransientState('cleaning')
   } else if (kind === 'undo' || kind === 'putback') {
     setPetMessageData({ lastAction: 'restoring', freedBytes: 0, restoredCount: 0, errorMessage: '' })
     setPetTransientState('restoring')
   }
-
   render()
-
-  // ─────────────────────────────
-  // REAL MODE
-  // ─────────────────────────────
+  // ── 真的清理 ────────────────────────────────────────────
   if (!isDemo()) {
     try {
+      // ② **真的做完了才 happy。** API 回 200、noop、搬了 0 個都不算（見 operateReal 的回傳）
       const completed = await tracked(() => operateReal(kind))
-
-      // ② 真的完成清理 / 復原才 happy
-      if (completed) {
-        setPetTransientState('happy')
+      if (completed) setPetTransientState('happy')
+      else clearPetTransientState()
+    } catch (error) {
+      // 伺服器明確回的錯（有 status）結果是確定的：只講原因，勾選照樣可以改（RC8）。
+      // 只有網路斷了才是「結果不明」，那時候寵物才切成擔心。
+      if (seriousOperationError(error)) {
+        setPetMessageData({ errorMessage: safeName(error.message) })
+        setPetTransientState('worried')
       } else {
         clearPetTransientState()
       }
-
-  } catch (error) {
-    const serious = seriousOperationError(error)
-
-    if (serious) {
-      setPetMessageData({ errorMessage: safeName(error.message) })
-      setPetTransientState('worried')
-    } else {
-      clearPetTransientState()
-    }
-
-    const lines = [safeName(error.message)]
-
-    if (real?.uncertain) {
-      lines.push(
-        !real.pendingPlan
-          ? '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。'
-          : real.pendingPlan.started
-            ? '結果還沒確認。再按一次「繼續上次那份」或「放回已經搬走的」都是安全的，不會多搬。'
-            : '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。'
-      )
-    }
-
-    result(lines.join('\n'))
-  } finally {
+      const lines = [safeName(error.message)]
+      if (real?.uncertain) {
+        lines.push(!real.pendingPlan ? 'The result is not confirmed. “Try again” reuses the same plan; nothing extra gets moved.'
+          : real.pendingPlan.started ? 'The result is not confirmed. Pressing “Finish the last plan” or “Put back what moved” again is safe; nothing extra gets moved.'
+          : 'The result is not confirmed. Pressing “Finish the last plan” or “Drop the last plan” again is safe; nothing extra gets moved.')
+      }
+      result(lines.join('\n'))
+    } finally {
       busy = false
+      // 清完（或放回）之後組可能散了、也可能少了一張 —— 重讀一次再畫，不要留著舊的縮圖。
+      // **而且要再套一次預設**：重讀清單會把新冒出來的 similar 成員照後端的 defaultChecked 勾起來，
+      // 使用者再按一次「清理」就會搬走一張他從來沒看過、有看得見變化的截圖（P0 驗證員）。
+      await bursts.load()
+      applyBurstDefaults(real, bursts.groups)
+      // 清過之後那些檔的樣子（甚至還在不在）都變了，記住的預覽不可以再用
+      previews.clear()
+      previewOpen.clear()
       render()
     }
-
     pollHealth()
     return
   }
-
-  // ─────────────────────────────
-  // DEMO MODE
-  // ─────────────────────────────
-
-  result(
-    kind === 'apply'
-      ? '正在模擬移入隔離區……'
-      : '正在模擬復原……'
-  )
-
+  // ── 示範模式 ────────────────────────────────────────────
+  result(kind === 'apply' ? 'Simulating a move to quarantine…' : 'Simulating an undo…')
   try {
     if (kind === 'apply') {
-      const candidateIds = demo.candidates
-        .filter(c => demo.selected.has(c.itemId))
-        .flatMap(c => c.candidateIds)
-
-      request ??= {
-        requestId: crypto.randomUUID(),
-        candidateIds
-      }
-
+      const candidateIds = demo.candidates.filter(c => demo.selected.has(c.itemId)).flatMap(c => c.candidateIds)
+      request ??= { requestId: crypto.randomUUID(), candidateIds }
       const saved = await demoHistoryApi('history', request)
-
-      if (!saved.canUndo) {
-        throw new Error('這次操作已在其他頁面復原，請重新示範。')
-      }
-
+      if (!saved.canUndo) throw new Error('Another page already undid this action. Restart the demo.')
       currentOperation = saved.id
       request = null
-
       const response = demo.apply()
       setPetMessageData({ freedBytes: response.bytesFreed })
-
-      const message =
-        `模擬清理完成：${response.quarantined} 個檔案，共 ${bytes(response.bytesFreed)} 已移入模擬隔離區。未勾選的檔案保留原樣。`
-
+      const message = `Simulated cleanup done: ${plural(response.quarantined, 'file')} (${bytes(response.bytesFreed)}) moved to the simulated quarantine. Unticked files were left alone.`
       result(message)
-      notice('整理好了！想改變心意，隨時可以復原這次清理。')
-
-      // cleaning → happy
+      notice('All tidied up. Changed your mind? You can undo this cleanup any time.')
       setPetTransientState('happy')
-
     } else {
-      await demoHistoryApi('undo', {
-        operationIds: [currentOperation]
-      })
-
+      await demoHistoryApi('undo', { operationIds: [currentOperation] })
       const response = demo.undo()
       setPetMessageData({ restoredCount: response.restored })
-
       currentOperation = null
-
-      result(
-        `已模擬復原 ${response.restored} 個檔案，回到清理前的清單與勾選狀態。`
-      )
-
-      notice('都幫你放回來了！')
-
-      // restoring → happy
+      result(`Simulated undo: put ${plural(response.restored, 'file')} back, and the list and ticks are as they were before the cleanup.`)
+      notice('Everything is back where it was.')
       setPetTransientState('happy')
     }
-
     updateAlert()
-
   } catch (error) {
+    // 示範模式裡 real 可能根本還不存在（沒開過本機面板），
+    // 「結果不明」那幾句是真的清理才有的事 —— 這裡只照實講這一句。
     clearPetTransientState()
-    const lines = [safeName(error.message)]
-
-    if (real.uncertain) {
-      lines.push(
-        !real.pendingPlan
-          ? '結果還沒確認。按「再試一次」會沿用同一份，不會多搬。'
-          : real.pendingPlan.started
-            ? '結果還沒確認。再按一次「繼續上次那份」或「放回已經搬走的」都是安全的，不會多搬。'
-            : '結果還沒確認。再按一次「繼續上次那份」或「放棄上次那份」都是安全的，不會多搬。'
-      )
-    }
-
-    result(lines.join('\n'))
+    result(safeName(error.message))
   } finally {
-      busy = false
-      render()
+    busy = false
+    render()
   }
 }
 $('cleanup-apply').onclick = () => {
@@ -747,12 +1219,15 @@ $('cleanup-apply').onclick = () => {
   if (session().canUndo) {
     updateAlert()
     panel.close()
-    
-    notice('這次整理完成了，需要時可以勾選最近動作來復原。')
+    notice('This cleanup is done. Tick it under recent actions whenever you want it undone.')
   }
   else return operate('apply')
 }
 $('cleanup-undo').onclick = () => operate('undo')
+$('cleanup-rename').onclick = () => renameOperate('apply')
+$('cleanup-rename-undo').onclick = () => renameOperate('undo')
+$('cleanup-file').onclick = () => filingOperate('apply')
+$('cleanup-file-undo').onclick = () => filingOperate('undo')
 $('cleanup-release').onclick = () => operate('release')
 $('cleanup-putback').onclick = () => operate('putback')
 $('cleanup-reset').onclick = () => {
@@ -770,7 +1245,7 @@ function historyResult(message) {
   $('cleanup-history-result').textContent = message
 }
 function historyControls() {
-  $('cleanup-history-undo').textContent = `復原勾選動作（${historySelected.size}）`
+  $('cleanup-history-undo').textContent = `Undo selected (${historySelected.size})`
   $('cleanup-history-undo').disabled = historyBusy || busy || historySelected.size === 0
   $('cleanup-history-prev').disabled = historyBusy || historyOffset === 0
   $('cleanup-history-next').disabled = historyBusy || !historyData || historyOffset + historyData.limit >= historyData.total
@@ -781,7 +1256,7 @@ function renderHistory() {
   list.replaceChildren()
   const { total, operations, limit } = historyData
   setHistoryBadge(total)
-  $('cleanup-history-count').textContent = `尚可復原 ${total} 筆操作${total ? ` · 第 ${Math.floor(historyOffset / limit) + 1} / ${Math.ceil(total / limit)} 頁` : ''}`
+  $('cleanup-history-count').textContent = `${plural(total, 'action')} can still be undone${total ? ` · page ${Math.floor(historyOffset / limit) + 1} of ${Math.ceil(total / limit)}` : ''}`
   for (const operation of operations) {
     const card = document.createElement('article')
     card.className = 'cleanup-file'
@@ -795,12 +1270,23 @@ function renderHistory() {
       else historySelected.delete(operation.id)
       historyControls()
     }
-    label.append(check, document.createTextNode(`${new Date(operation.createdAt).toLocaleString('zh-TW')} · ${operation.kind === 'skip' ? '先不清' : '清理'} ${operation.itemCount} 個檔案 · ${bytes(operation.bytes)}`))
-    card.append(label, paragraph(operation.items.map(i => uiSafeName(i.name)).join('、')),
-      paragraph(operation.canUndo ? '可復原' : `已復原 · ${new Date(operation.restoredAt).toLocaleString('zh-TW')}`, 'evidence'))
+    // 「先不清」那幾筆只動這一輪的提案，沒有搬過任何檔 —— 標得出來，不要跟清理混在一起
+    label.append(check, document.createTextNode(`${new Date(operation.createdAt).toLocaleString('en-US')}`
+      + ` · ${operation.kind === 'skip' ? 'skipped' : 'cleaned up'} ${plural(operation.itemCount, 'file')} · ${bytes(operation.bytes)}`))
+    card.append(label)
+    // **隔離區裡的檔也要看得到內容**（稽核 2026-09-20）：使用者在這裡正要決定「要不要放回來」，
+    // 而清完之後它已經不在清理清單上了 —— 這是唯一列得到它的地方。一個檔一行，各自有「看內容」。
+    for (const item of operation.items) {
+      const line = document.createElement('div')
+      line.className = 'cleanup-history-item'
+      line.append(paragraph(uiSafeName(item.name)))
+      attachPreview(line, item.itemId)
+      card.append(line)
+    }
+    card.append(paragraph(operation.canUndo ? 'Can be undone' : `Undone · ${new Date(operation.restoredAt).toLocaleString('en-US')}`, 'evidence'))
     list.append(card)
   }
-  if (!operations.length) list.append(paragraph('目前沒有可復原的動作。'))
+  if (!operations.length) list.append(paragraph('There is nothing to undo right now.'))
   historyControls()
 }
 async function refreshHistory() {
@@ -809,7 +1295,7 @@ async function refreshHistory() {
   historySelected.clear()
   historyControls()
   $('cleanup-history-note').textContent = demoEnabled ? HISTORY_NOTE.demo : HISTORY_NOTE.local
-  $('cleanup-history-list').replaceChildren(paragraph('正在讀取操作紀錄……'))
+  $('cleanup-history-list').replaceChildren(paragraph('Loading the action log…'))
   try {
     historyData = await historyApi(`history?offset=${historyOffset}&limit=20`)
     historyOffset = historyData.offset
@@ -817,8 +1303,8 @@ async function refreshHistory() {
   } catch {
     historyData = null
     $('cleanup-history-list').replaceChildren()
-    $('cleanup-history-count').textContent = '紀錄尚未載入'
-    historyResult('暫時讀不到操作紀錄，請確認伺服器已啟動，再按「重新載入」。')
+    $('cleanup-history-count').textContent = 'Log not loaded'
+    historyResult('The action log is not available right now. Check that the server is running, then press “Reload”.')
   } finally {
     historyBusy = false
     if (historyData) renderHistory()
@@ -833,6 +1319,7 @@ async function openHistory() {
   await refreshHistory()
 }
 $('quaso-history-open').onclick = openHistory
+$('files-open-history').onclick = openHistory
 $('cleanup-history-close').onclick = () => historyPanel.close()
 $('cleanup-history-refresh').onclick = () => {
   $('cleanup-history-result').hidden = true
@@ -842,28 +1329,18 @@ $('cleanup-history-prev').onclick = () => { historyOffset = Math.max(0, historyO
 $('cleanup-history-next').onclick = () => { historyOffset += 20; refreshHistory() }
 $('cleanup-history-undo').onclick = async () => {
   if (historyBusy || busy || !historySelected.size) return
-
   historyBusy = true
-
-  // ① 開始復原
+  // ① 開始放回
   setPetMessageData({ lastAction: 'restoring', restoredCount: 0, freedBytes: 0, errorMessage: '' })
   setPetTransientState('restoring')
-
+  // 「先不清」那幾筆只存在這一頁：撤銷它們不必送後端，也沒有檔案會動
   const localUndo = localHistory().filter(op => historySelected.has(op.id))
   const localIds = new Set(localUndo.map(op => op.id))
   const operationIds = [...historySelected].filter(id => !localIds.has(id))
-
   renderHistory()
-
-  historyResult(
-    demoEnabled
-      ? '正在復原勾選的模擬動作……'
-      : '正在把勾選的清理放回原位……'
-  )
-
+  historyResult(demoEnabled ? 'Undoing the selected simulated actions…' : 'Putting the selected cleanups back…')
   let message
   let restoredSkipped = 0
-
   try {
     for (const op of localUndo) {
       skippedOperations.splice(skippedOperations.indexOf(op), 1)
@@ -875,152 +1352,126 @@ $('cleanup-history-undo').onclick = async () => {
       setPetTransientState('happy')
       return
     }
-    const response = await tracked(() =>
-      historyApi('undo', { operationIds })
-    )
+    const response = await tracked(() => historyApi('undo', { operationIds }))
     setPetMessageData({ restoredCount: response.restoredFiles ?? 0 })
-
     if (!demoEnabled) {
-      // ─────────────────────────
-      // 真實模式
-      // ─────────────────────────
-
+      // 真的復原：檔案回到原位，但**不會回到清理清單**（A 的規則：復原過就代表想留著）。
+      // 目前這一輪若不是結果不明，就丟掉，下次打開面板重新載入。
       if (real && !real.locked) real = null
-
-      if (panel.open && panel.dataset.mode === 'local') {
-        panel.close()
-      }
-
+      if (panel.open && panel.dataset.mode === 'local') panel.close()
       pollHealth()
-
+      // 放回幾個、沒放回哪幾個（附原因）照轉接器算好的講；寵物的話也看結果（RC9）。
+      // 以前不管結果一律說「都幫你放回來了」—— 一個都沒放回的時候也是。
       const m = historyUndoMessage(response)
-
       message = m.text
       notice(m.notice)
-
     } else {
-      // ─────────────────────────
-      // Demo 模式
-      // ─────────────────────────
-
       const currentDemo = demo ?? savedDemo
-
-      if (
-        currentOperation &&
-        response.operationIds.includes(currentOperation) &&
-        currentDemo?.canUndo
-      ) {
+      if (currentOperation && response.operationIds.includes(currentOperation) && currentDemo?.canUndo) {
         currentDemo.undo()
         currentOperation = null
         $('cleanup-result').hidden = true
       }
-
       currentDemo?.restoreItems(response.restoredItems ?? [])
-
       updateAlert()
-
-      if (panel.open && panel.dataset.mode === 'demo') {
-        render()
-      }
-
-      message =
-        `已復原 ${response.restored} 次模擬清理，共 ${response.restoredFiles} 個檔案。`
-        + (
-          response.alreadyRestored
-            ? `另有 ${response.alreadyRestored} 筆先前已復原。`
-            : ''
-        )
-        + (
-          demo
-            ? `待清理清單目前有 ${demo.candidates.length} 個檔案，可點垃圾桶查看。`
-            : '按 D 可開啟示範清單。'
-        )
-
-      notice('已放回待清理清單，點垃圾桶就能看到。')
+      if (panel.open && panel.dataset.mode === 'demo') render()
+      message = `Undid ${plural(response.restored, 'simulated cleanup')}: ${plural(response.restoredFiles, 'file')}.`
+        + (response.alreadyRestored ? `Another ${response.alreadyRestored} had already been undone.` : '')
+        + (demo ? ` The cleanup list now has ${plural(demo.candidates.length, 'file')}; click the trash can to see them.` : ' Press D to open the demo list.')
+      notice('They are back on the cleanup list — click the trash can to see them.')
     }
-
-    // ② API 有回應不代表復原完整成功。
-    // 只有這次真的有放回，而且沒有「沒放回」或「尚未確認」項目時才進 happy。
+    // ② 有回應不等於全部放回來了。真的放回了、而且沒有「沒放回」也沒有「還不確定」，才 happy。
     const restoredFiles = response.restoredFiles ?? 0
     const hasFailures = (response.notRestored?.length ?? 0) > 0
     const hasUnknown = (response.unconfirmed?.length ?? 0) > 0
-
-    if (restoredFiles > 0 && !hasFailures && !hasUnknown) {
-      setPetTransientState('happy')
-    } else {
-      clearPetTransientState()
-    }
-
-} catch (error) {
-  // ③ 復原失敗
-  setPetMessageData({ errorMessage: safeName(error.message) })
-  // 結果無法確認 → worried
-  setPetTransientState('worried')
-
-  console.error('History undo failed:', error)
-
-  message = '復原尚未確認完成，請重新載入紀錄後重試。'
-
-} finally {
-  historyBusy = false
-
-  await refreshHistory()
-
-  historyResult([message, restoredSkipped ? `已將 ${restoredSkipped} 個「先不清」檔案放回本次提案；沒有搬動檔案。` : ''].filter(Boolean).join('\n'))
-}
+    if (restoredFiles > 0 && !hasFailures && !hasUnknown) setPetTransientState('happy')
+    else clearPetTransientState()
+  } catch (error) {
+    // ③ 結果不明：寵物擔心，話裡講得出是什麼錯
+    setPetMessageData({ errorMessage: safeName(error.message) })
+    setPetTransientState('worried')
+    message = 'The undo was not confirmed. Reload the log and try again.'
+  } finally {
+    historyBusy = false
+    await refreshHistory()
+    historyResult([
+      message,
+      restoredSkipped ? `Put ${plural(restoredSkipped, 'skipped file')} back into this proposal. No file was moved.` : '',
+    ].filter(Boolean).join('\n'))
+  }
 }
 
 async function pollHealth() {
   if (healthBusy || stopped) return
-
   clearTimeout(healthTimer)
   healthBusy = true
-
-  // 記住這次 health request 開始時的 action 世代。
-  // 即使 timeout 發生時 action 已經結束，也能知道這次輪詢曾經和 action 重疊。
+  // 記住這次輪詢送出時的動作世代：逾時的那一刻動作可能已經結束，
+  // 但只要這段期間有動作跑過，這次逾時就不算數。
   const epochAtStart = actionEpoch
-
   try {
-    if (mockOffline) {
-      throw new Error('Mock backend offline')
-    }
-
-    const snapshot = await window.api('/health', {
-      signal: AbortSignal.timeout(4000)
-    })
-
-    // Server 有明確回答就相信它。
-    // 即使正在清理，ok:false 仍然是真正的 health 問題。
+    if (mockOffline) throw new Error('Mock backend offline')
+    // 帶 token 問（window.api 會帶）：資料夾名（watcher.watching）只給帶 token 的（U4）
+    const snapshot = await window.api('/health', { signal: AbortSignal.timeout(4000) })
+    // 後端回了話就是結論，動作在不在跑都一樣 —— **ok:false 也留著**，
+    // systemHealthProblem 會照它講得出是資料庫壞了還是資料夾不見了。
     health = snapshot
     healthChecked = true
-
   } catch {
-    const overlappedWithAction =
-      actionsInFlight > 0 ||
-      actionEpoch !== epochAtStart
-
-    if (!mockOffline && overlappedWithAction) {
-      // P3：
-      // 這次 health timeout 和清理／復原操作重疊，
-      // 很可能只是 server 正忙，所以不能判定斷線。
-      //
-      // 刻意不改 health，也不改 healthChecked。
+    // **沒回應**（逾時、連不上）的時候，面板自己的動作在這次輪詢期間跑過（開始時就在跑、或中途開始／結束）
+    // → 多半是 server 正忙著搬檔，這次不算數，寵物維持上一次的樣子；動作結束之後的輪詢照常算（稽核 C-f14）。
+    // 模擬離線（按 O）照樣算數。
+    if (!mockOffline && (actionsInFlight > 0 || actionEpoch !== epochAtStart)) {
+      // 刻意不動 health，也不動 healthChecked
     } else {
-      // 沒有任何面板操作干擾，這次 timeout 才算真的連不上。
       health = null
       healthChecked = true
     }
-
   } finally {
     healthBusy = false
   }
-
   updateAlert()
-
-  if (!stopped) {
-    healthTimer = setTimeout(pollHealth, 5000)
-  }
+  // 復原徽章跟著輪詢更新就夠了。掛在 updateAlert 上的話，每勾一個勾選框都會多送一次請求。
+  void refreshHistoryBadge()
+  if (health) await askAboutBursts()
+  if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
 }
+
+/**
+ * 主動詢問（P0）。**有新的連拍組才彈** —— 舊的組還在連拍區裡，只是不再跳出來問。
+ *
+ * `/pet/state` 的 `burst.newGroups` 是「還沒問過的組數」（後端把問過的組 id 記在 meta）。
+ * 這裡再守一層：**只在它比上一次大的時候彈**。後端萬一沒把問過的記下來（一直回同一個數字），
+ * 不守的話寵物會每五秒跳出來問一次同一批。
+ *
+ * 忙的時候（面板開著、正在搬檔、示範模式）不彈，**也不把數字記起來** —— 下一輪再問，
+ * 不要蓋掉使用者正在看的結果。真的要彈之前先把組讀回來：讀不到就什麼都不做，
+ * 彈一句「有 N 張很像」卻打不開任何東西比不彈更糟。
+ */
+async function askAboutBursts() {
+  if (isDemo() || busy || historyBusy || panel.open || historyPanel.open) return
+  let state
+  try { state = await window.api('/pet/state') } catch { return }
+  const n = Number(state?.burst?.newGroups)
+  // 舊版後端沒有 burst 這一段（n 是 NaN）：當成沒有新的組
+  if (!Number.isFinite(n) || n <= 0) return
+  // **記住問過哪幾組，不是問過幾組。** 拿數量當高水位的話：問過 2 組之後那 2 組被清掉、
+  // 又出現 1 組新的（newGroups 從 2 掉到 1），1 ≤ 2 就再也不會問了（P0 驗證員）。
+  const groups = await bursts.load()
+  const fresh = groups.filter(g => g.id && !burstAsked.has(g.id))
+  if (!fresh.length) return
+  for (const g of fresh) burstAsked.add(g.id)
+  // 記太多沒有意義：留最近 200 組（一組一個短字串）
+  if (burstAsked.size > 200) for (const id of [...burstAsked].slice(0, burstAsked.size - 200)) burstAsked.delete(id)
+  notice(burstAskMessage(fresh), { burst: true })
+}
+/** 「Pet state: …」那一行（隊友加的）。齒輪與 S 鍵是同一件事。 */
+function togglePetStateLine() {
+  const line = $('pet-state-debug')
+  if (!line) return
+  line.hidden = !line.hidden
+  $('quaso-settings-toggle').setAttribute('aria-expanded', String(!line.hidden))
+}
+$('quaso-settings-toggle').onclick = togglePetStateLine
 function toggleOffline() {
   if (healthBusy || busy || historyBusy) return
   mockOffline = !mockOffline
@@ -1038,12 +1489,14 @@ document.addEventListener('keydown', event => {
   const target = event.target
   if (target instanceof Element && (target.closest('input, textarea, select, [role="textbox"], [role="combobox"]') || target.isContentEditable)) return
   const key = event.key.toLowerCase()
-  if (key === 's') {
-    const debug = document.querySelector('#quaso .pet-state-debug')
-    if (debug) { event.preventDefault(); debug.hidden = !debug.hidden }
-  }
+  if (key === 's') { event.preventDefault(); togglePetStateLine() }
   if (key === 'd') { event.preventDefault(); toggleDemo() }
   if (key === 'o') { event.preventDefault(); toggleOffline() }
 })
-window.addEventListener('pagehide', () => { stopped = true; clearTimeout(healthTimer) }, { once: true })
+window.addEventListener('pagehide', () => {
+  stopped = true
+  clearTimeout(healthTimer)
+  bursts.clear()
+  previews.clear()
+}, { once: true })
 pollHealth()

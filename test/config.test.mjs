@@ -32,7 +32,28 @@ describe('監看與歸檔資料夾', () => {
     const r = normalize({ watch: [dl], filed: join(dl, 'Filed') })
 
     assert.deepEqual(r.config.watch, [dl], '監看資料夾一定要留著')
-    assert.ok(r.problems.some(p => /排除/.test(p)), '要說明歸檔的會被排除掉')
+    assert.ok(r.problems.some(p => /exclude/.test(p)), '要說明歸檔的會被排除掉')
+  })
+
+  test('歸檔資料夾在**清理**資料夾底下：要出聲（不然「整理好的不再被提議清理」不成立）', () => {
+    // 稽核（2026-09-20）：watch 那一邊有警告，cleanup.roots 這一邊沒有，
+    // 而 filed=~/Downloads/Filed 是很自然的設法 —— 那樣搬進去的檔過一陣子又會被列成候選。
+    const d = tmp()
+    const dl = join(d, 'Downloads')
+    mkdirSync(dl, { recursive: true })
+    const r = normalize({ cleanup: { roots: [dl] }, filed: join(dl, 'Filed') })
+    assert.deepEqual(r.config.cleanup.roots, [dl], '清理資料夾一定要留著（只出聲，不改設定）')
+    assert.ok(r.problems.some(p => /cleanup folders/.test(p) && /cleanup candidates/.test(p)), JSON.stringify(r.problems))
+  })
+
+  test('歸檔資料夾跟清理資料夾分開的時候不要亂警告', () => {
+    const d = tmp()
+    const dl = join(d, 'Downloads')
+    const filed = join(d, 'Filed')
+    mkdirSync(dl, { recursive: true })
+    mkdirSync(filed, { recursive: true })
+    const r = normalize({ cleanup: { roots: [dl] }, filed, watch: [dl] })
+    assert.equal(r.problems.filter(p => /清理候選/.test(p)).length, 0, JSON.stringify(r.problems))
   })
 
   test('監看資料夾在歸檔資料夾底下：要出聲，不然等於白看', () => {
@@ -41,7 +62,7 @@ describe('監看與歸檔資料夾', () => {
     const w = join(filed, 'Inbox')
     mkdirSync(w, { recursive: true })
     const r = normalize({ watch: [w], filed })
-    assert.ok(r.problems.some(p => /等於沒在看/.test(p)))
+    assert.ok(r.problems.some(p => /nothing is watched/.test(p)))
   })
 
   test('同一個資料夾寫兩次只算一次', () => {
@@ -52,7 +73,7 @@ describe('監看與歸檔資料夾', () => {
   test('watch 寫壞了就退回預設值並出聲', () => {
     const r = normalize({ watch: 'not-an-array' })
     assert.ok(r.config.watch.length > 0)
-    assert.ok(r.problems.some(p => /watch 設定看不懂/.test(p)))
+    assert.ok(r.problems.some(p => /The watch setting could not be read/.test(p)))
   })
 
   test('歸檔資料夾不可以是家目錄或金鑰資料夾', () => {
@@ -76,8 +97,8 @@ describe('金鑰只能放在我們自己的環境變數裡', () => {
   })
 
   test('CONTEXTBOX_ 開頭的可以', () => {
-    const r = normalize({ model: { keyEnv: 'CONTEXTBOX_SPARK_KEY' } })
-    assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_SPARK_KEY')
+    const r = normalize({ model: { keyEnv: 'CONTEXTBOX_OTHER_KEY' } })
+    assert.equal(r.config.model.keyEnv, 'CONTEXTBOX_OTHER_KEY')
     assert.deepEqual(r.problems, [])
   })
 
@@ -118,7 +139,7 @@ describe('模型網址', () => {
   test('網址裡的帳號密碼要拿掉', () => {
     const r = normalize({ model: { baseUrl: 'https://user:pw@api.example.com/v1' } })
     assert.ok(!r.config.model.baseUrl.includes('pw'), '不要把密碼留在設定裡')
-    assert.ok(r.problems.some(p => /帳號密碼/.test(p)))
+    assert.ok(r.problems.some(p => /username and password/.test(p)))
   })
 })
 
@@ -152,7 +173,7 @@ describe('讀檔', () => {
     try {
       const r = load(join(d, 'config.json'))
       assert.equal(r.created, false, '沒寫成功就不可以說建好了')
-      assert.ok(r.problems.some(p => /寫不出來/.test(p)))
+      assert.ok(r.problems.some(p => /could not be written/.test(p)))
     } finally { chmodSync(d, 0o700) }
   })
 
@@ -160,7 +181,7 @@ describe('讀檔', () => {
     const p = join(tmp(), 'config.json')
     writeFileSync(p, '{ 這不是 JSON')
     const r = load(p)
-    assert.ok(r.problems.some(x => /讀不懂/.test(x)))
+    assert.ok(r.problems.some(x => /could not be read/.test(x)))
     assert.equal(r.config.watch.length > 0, true)
     assert.equal(readFileSync(p, 'utf8'), '{ 這不是 JSON', '不可以覆蓋掉')
   })
@@ -215,7 +236,7 @@ describe('監看資料夾也要檢查', () => {
   test('指到家目錄或根目錄要出聲', () => {
     for (const bad of [homedir(), '/']) {
       const r = normalize({ watch: [bad] })
-      assert.ok(r.problems.some(p => /監看資料夾/.test(p)), bad + ' 要出聲')
+      assert.ok(r.problems.some(p => /watched folder/.test(p)), bad + ' 要出聲')
     }
   })
 })

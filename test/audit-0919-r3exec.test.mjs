@@ -312,7 +312,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     const { f, p, q } = stuck(t)
     assert.equal(row(f, p.id, 'a.zip').status, 'done', 'journal 不可以停在 started：那樣誰都看不到它')
     const why = f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=? AND item_id=?').get(p.id, q.item_id)
-    assert.ok(why && /隔離區/.test(why.why), `要把原因寫下來：${JSON.stringify(why)}`)
+    assert.ok(why && /quarantine/.test(why.why), `要把原因寫下來：${JSON.stringify(why)}`)
     assert.deepEqual(listQuarantine(f.db).map(x => x.name), ['a.zip'], '隔離區清單要列得出來')
     assert.deepEqual(quarantineItems(f.db).map(x => x.name), ['a.zip'])
     invalidateQuarantineCache()
@@ -320,7 +320,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     assert.equal(h.quarantine.items, 1)
     assert.equal(h.quarantine.orphans, 0, '認得它就不是來路不明的檔')
     assert.equal(outcomes(f, p.id)['a.zip'].outcome, 'moved')
-    assert.ok(/隔離區/.test(outcomes(f, p.id)['a.zip'].why ?? ''), '逐項要講得出那句話')
+    assert.ok(/quarantine/.test(outcomes(f, p.id)['a.zip'].why ?? ''), '逐項要講得出那句話')
     // 收尾不會再被這一列卡住
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
     assert.equal(f.db.prepare(`SELECT count(*) n FROM cleanup_journal WHERE status='started'`).get().n, 0,
@@ -332,7 +332,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     const before = readFileSync(q.to_path, 'utf8')
     const u = undoPlan(f.db, p.id, f.opts)
     assert.equal(u.status, 'error')
-    assert.ok(/對不上|已變更/.test(u.error ?? ''), `要照實說對不上：${u.error}`)
+    assert.ok(/does not match|changed/.test(u.error ?? ''), `要照實說對不上：${u.error}`)
     assert.equal(readFileSync(q.to_path, 'utf8'), before, '隔離區那份不動')
   })
 
@@ -341,10 +341,10 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     // CLI 套用完馬上會呼叫 recordItemErrors；它以前會把「不是 failed」的那一項的原因刪掉
     recordItemErrors(f.db, p.id)
     const why = f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=? AND item_id=?').get(p.id, q.item_id)
-    assert.ok(why && /隔離區/.test(why.why), `原因被刪掉了，隔離區那個檔又沒有線索：${JSON.stringify(why)}`)
+    assert.ok(why && /quarantine/.test(why.why), `原因被刪掉了，隔離區那個檔又沒有線索：${JSON.stringify(why)}`)
     // 下一次掃描會改寫 file_items.error —— 那句話還是要講得出來
     f.db.prepare('UPDATE file_items SET error=NULL WHERE id=?').run(q.item_id)
-    assert.ok(/隔離區/.test(outcomes(f, p.id)['a.zip'].why ?? ''), '重掃之後就講不出原因了')
+    assert.ok(/quarantine/.test(outcomes(f, p.id)['a.zip'].why ?? ''), '重掃之後就講不出原因了')
   })
 
   test('滿七天之後清空看得到它（不再是「每個清單都空的」）', t => {
@@ -361,7 +361,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     const first = emptyQuarantine(f.db, { ...f.opts, token: prepareEmptyQuarantine(f.db, f.opts).token, confirmed: true })
     assert.deepEqual({ deleted: first.deletedCount, errors: first.errors.length, aside: first.setAside.length },
       { deleted: 0, errors: 0, aside: 1 }, '內容對不上就不刪，但不可以算成錯（算錯的話清空永遠回離開碼 3）')
-    assert.match(first.setAside[0].why, /內容跟當初搬進去的不一樣/)
+    assert.match(first.setAside[0].why, /no longer matches what was moved in/)
     assert.deepEqual(listQuarantine(f.db).map(x => x.name), ['a.zip'], '還在清單上，等使用者自己看')
 
     // 使用者看過之後自己刪掉：下一次清空要把那一列收掉，清單才會真的空
@@ -369,7 +369,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     const second = emptyQuarantine(f.db, { ...f.opts, token: prepareEmptyQuarantine(f.db, f.opts).token, confirmed: true })
     assert.deepEqual({ deleted: second.deletedCount, errors: second.errors.length, aside: second.setAside.length },
       { deleted: 0, errors: 0, aside: 1 })
-    assert.match(second.setAside[0].why, /已經不在隔離區/)
+    assert.match(second.setAside[0].why, /no longer in quarantine/)
     assert.deepEqual(listQuarantine(f.db), [], '收掉之後清單要空')
     invalidateQuarantineCache()
     const h = healthSnapshot(f.db, { roots: f.opts.roots, quarantine: f.opts.quarantine, full: true })
@@ -392,7 +392,7 @@ describe('R3-4 搬進去了、驗證沒過、又搬不回原位：不可以讓�
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
     assert.equal(row(f, p.id, 'a.zip').status, 'done')
     const why = f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=? AND item_id=?').get(p.id, q.item_id)
-    assert.ok(why && /隔離區/.test(why.why), `要把原因寫下來：${JSON.stringify(why)}`)
+    assert.ok(why && /quarantine/.test(why.why), `要把原因寫下來：${JSON.stringify(why)}`)
     assert.deepEqual(listQuarantine(f.db).map(x => x.name), ['a.zip'])
   })
 

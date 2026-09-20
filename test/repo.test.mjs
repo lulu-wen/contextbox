@@ -32,7 +32,9 @@ import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan, undoPlan } from '../core/cleanup-exec.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SRC_DIRS = ['core', 'schema', 'extension', 'test']
+// tools/ 也要看（稽核 2026-09-20）：這條檢查宣稱守整個專案，但漏掉 tools/ ——
+// 而全專案唯一一處**遞迴**刪除就在 tools/demo-setup.mjs。
+const SRC_DIRS = ['core', 'schema', 'extension', 'test', 'tools']
 const SRC_EXT = new Set(['.ts', '.mjs', '.js'])
 
 function sources() {
@@ -72,8 +74,8 @@ describe('只搬不刪', () => {
       if (p.includes('/test/')) continue
       const src = readFileSync(p, 'utf8')
       src.split('\n').forEach((line, i) => {
-        // 四人分工 §9 B: the sole exception is the guarded quarantine purge.
-        // Behavioral boundary tests live in cleanup-undo.test.mjs.
+        // 唯一的例外：有守門的「清空隔離區」（要滿七天、二次確認）。
+        // 行為邊界測試在 test/cleanup-undo.test.mjs。
         if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(path)') return
         // 稽核第三輪 R3-5 的第二個（也是唯一另一個）例外：dropReservation。
         // 為什麼安全：它刪的**不是使用者的資料**，而是 putBack 幾微秒前自己用 'wx' 建的 0 byte
@@ -84,6 +86,17 @@ describe('只搬不刪', () => {
         // 大小 0（lstat 一次、O_NOFOLLOW 開起來 fstat 再驗一次），任何一項對不上就什麼都不做。
         // 邊界測試在 test/audit-0919-r3exec.test.mjs 的「R3-5」那一段。
         if (p === join(REPO, 'core', 'cleanup-quarantine.ts') && line.trim() === 'unlinkSync(reservation)') return
+        // tools/demo-setup.mjs 的 --reset：**它刪的是 demo 沙盒自己的紀錄**，不是使用者的檔。
+        // 三道守門：要有這支程式自己寫的記號檔（真的安裝沒有）、dir 解過 symlink、
+        // 不可以在真的家目錄或 ~/.contextbox 底下。行為邊界測試在 test/demo-setup.test.mjs。
+        if (p === join(REPO, 'tools', 'demo-setup.mjs')
+          && (line.trim() === 'if (existsSync(p)) rmSync(p)'
+            || line.trim() === "if (existsSync(q)) rmSync(q, { recursive: true })")) return
+        // tools/gen-api-examples.mjs 只在**它自己 mkdtemp 出來的那個暫存家目錄**裡動手
+        // （產 docs/api 範例用的假沙盒，跑完就整個丟掉）。兩行都在那棵樹底下。
+        if (p === join(REPO, 'tools', 'gen-api-examples.mjs')
+          && (line.includes('rmSync(T, { recursive: true, force: true })')
+            || line.trim() === "rmSync(join(DL, '下載中.iso.crdownload'))")) return
         if (forbidden.test(line)) offenders.push(`${p.replace(REPO + '/', '')}:${i + 1} ${line.trim()}`)
       })
     }
@@ -237,7 +250,11 @@ describe('docs/api 的範例跟產生器現在的輸出，欄位一模一樣（R
  */
 function routeCodes() {
   const codes = new Map(Object.entries(HTTP_FOR_CODE))
-  for (const f of ['server.ts', 'cleanup-routes.ts', 'cleanup-demo-history.ts']) {
+  // **每一支 route 都要看**（稽核 2026-09-20，B-11）：以前只掃這三支，
+  // 所以 P3／P4／P5 三條線自己 fail(…) 出去的 code 完全不在檢查範圍裡 ——
+  // 加一個沒寫進文件的 429 也照樣全綠。
+  for (const f of ['server.ts', 'cleanup-routes.ts', 'cleanup-demo-history.ts',
+    'rename-routes.ts', 'filing-routes.ts', 'learn-routes.ts']) {
     const src = readFileSync(join(REPO, 'core', f), 'utf8')
     const found = [
       ...src.matchAll(/send\((\d{3}),\s*\{[^}\n]*?code:\s*(['"`])([A-Z_]+)\2/g),
@@ -660,30 +677,36 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
 
 // ═══ 第三波之二 ・ 根目錄 README 照現況寫 ═══════════════════════
 
-describe('README.md 的頁面說明照現況寫（第三波之二）', () => {
-  const md = readFileSync(join(REPO, 'README.md'), 'utf8')
+describe('面板說明照現況寫（第三波之二）', () => {
+  // 2026-09-20：README 改寫成作品說明（給外面的人看的），面板那一整段搬到 docs/panel.md。
+  // 這一組檢查跟的是**內容**不是檔名，所以換檔案就好，該守的還是一樣要守。
+  const md = readFileSync(join(REPO, 'docs', 'panel.md'), 'utf8')
   const demoJs = readFileSync(join(REPO, 'core', 'assets', 'cleanup-demo.js'), 'utf8')
 
   test('按 D 的範例來源：寫 demo 真的讀的那一份（core/assets/demo-candidates.json），份數也對', () => {
     // demo 讀的是 /assets/demo-candidates.json（server.ts 對到 core/assets/）—— 不是 docs/api 的產生器輸出
     assert.match(demoJs, /fetch\('\/assets\/demo-candidates\.json'\)/, '前提：demo 讀的是這一份')
-    const line = md.split('\n').find(l => /按 \*\*D\*\*/.test(l)) ?? ''
-    assert.ok(line, 'README 沒有講按 D')
+    const line = md.split('\n').find(l => /\*\*D\*\*/.test(l)) ?? ''
+    assert.ok(line, 'docs/panel.md 沒有講按 D')
     assert.ok(line.includes('`core/assets/demo-candidates.json`'), `範例來源寫錯了：${line}`)
     assert.ok(!md.includes('docs/api/cleanup-candidates.json'), 'docs/api 的範例會隨產生器重產，demo 不讀它')
     const n = JSON.parse(readFileSync(join(REPO, 'core', 'assets', 'demo-candidates.json'), 'utf8')).candidates.length
-    assert.ok(line.includes(`${'〇一二三四五六七八九十'[n]}份待清範例`), `範例有 ${n} 份：${line}`)
+    // 面板說明英文化（2026-09-20）：守的性質一樣 —— 那一行講的份數要跟 fixture 真的有幾份對得上。
+    const WORD = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+    assert.ok(line.includes(`${WORD[n]} sample candidates`), `範例有 ${n} 份：${line}`)
   })
 
   test('不再說「尚未串接真實清理 API」：沒開 D 的時候，面板接的是真的清理路由', () => {
     // 前提：本機模式真的走 createReal（/cleanup/…），歷史面板走 createRealHistory
     assert.match(demoJs, /createReal\(/)
     assert.match(demoJs, /createRealHistory\(/)
-    assert.doesNotMatch(md, /尚未串接真實清理 API/)
-    assert.match(md, /本機模式[^\n]*真的清理 API/, '要講沒開 D 的時候接的是真的清理 API')
-    // 寵物的狀態：頁面看 /health 自己算，沒有讀 /pet/state —— README 不可以說頁面讀了它
-    assert.doesNotMatch(demoJs, /\/pet\/state/, '前提：頁面沒有讀 /pet/state')
-    assert.match(md, /`GET \/pet\/state`[^\n]*頁面沒有讀/, '要照實講頁面還沒讀後端的寵物狀態')
+    assert.doesNotMatch(md, /not (?:yet )?wired (?:up )?to the real cleanup API/i)
+    assert.match(md, /local mode[^\n]*real cleanup API/, '要講沒開 D 的時候接的是真的清理 API')
+    // 寵物的**狀態**還是頁面看 /health 自己算。P0 起頁面會讀 /pet/state，但只拿
+    // burst.newGroups（連拍有沒有新的一組要主動問）—— README 要照實講它拿來做什麼
+    assert.match(demoJs, /\/pet\/state/, '前提：頁面為了連拍主動詢問會讀 /pet/state')
+    assert.match(demoJs, /newGroups/, '前提：只拿它的 burst.newGroups')
+    assert.match(md, /`GET \/pet\/state`[^\n]*`burst\.newGroups`/, '要照實講頁面拿 /pet/state 做什麼')
   })
 })
 
@@ -716,8 +739,8 @@ describe('docs/cli.md（RC13）', () => {
     for (const [what, re] of [
       ['cleanup release <plan-id>', /cleanup release <plan-id>/],
       ['open', /node cli\.mjs open\b/],
-      ['--skip <編號>', /--skip <編號/],
-      ['--also <編號>', /--also <編號/],
+      ['--skip <id>', /--skip <id>/],
+      ['--also <id>', /--also <id>/],
       ['undo 不給 id', /cleanup undo \[plan-id\]/],
       ['quarantine --empty --yes <token>', /--empty --yes <token>/],
     ]) assert.match(md, re, `cli.md 沒寫 ${what}`)
@@ -739,7 +762,7 @@ describe('docs/cli.md（RC13）', () => {
 
   test('「放棄那一份」的建議是 release，不可以是 undo', () => {
     // 建議 ＝ 帶指令的那一行（解釋是什麼意思的說明文字不算）
-    const lines = md.split('\n').filter(l => /放棄那一份/.test(l) && /\bcleanup [a-z]+/.test(l))
+    const lines = md.split('\n').filter(l => /Drop that plan/.test(l) && /\bcleanup [a-z]+/.test(l))
     assert.ok(lines.length, 'cli.md 找不到「放棄那一份」那一條建議')
     for (const l of lines) {
       assert.match(l, /cleanup release/, `「放棄那一份」要叫人 release：${l}`)
@@ -789,14 +812,15 @@ describe('docs/cli.md（RC13）', () => {
       })
       assert.equal(r.status, 1, `前提：CLI 撞到 CONFLICT：\n${r.stdout}${r.stderr}`)
       const lines = r.stdout.split('\n')
-      const from = lines.findIndex(l => /兩個選擇：$/.test(l))
+      const from = lines.findIndex(l => /Two choices:$/.test(l))
       assert.ok(from >= 0, `前提：CLI 印了選項：\n${r.stdout}`)
       return lines.slice(from).filter(Boolean).map(l => l.replaceAll(plan.id, '5c1e…'))
     } finally { rmSync(home, { recursive: true, force: true }) }
   }
 
   test('卡住的計畫：範例裡的選項跟 CLI 真的印的一字不差（還沒開始的、做到一半中斷的各一份）', () => {
-    const sec = md.split(/^### /m).find(x => x.startsWith('卡住的計畫')) ?? ''
+    // cli.md 英文化（2026-09-20）：節名換成英文，逐行比 CLI 的那一段照舊
+    const sec = md.split(/^### /m).find(x => x.startsWith('Plans in the way')) ?? ''
     const docLines = new Set(sec.split('\n'))
     for (const started of [false, true]) {
       const said = conflictChoices(started)
@@ -808,35 +832,35 @@ describe('docs/cli.md（RC13）', () => {
   })
 
   test('卡住的計畫（CONFLICT）離開碼是 1，不是 2', () => {
-    const rows = md.split('\n').filter(l => l.startsWith('|') && /佔著/.test(l))
+    const rows = md.split('\n').filter(l => l.startsWith('|') && /held by a plan/.test(l))
     assert.ok(rows.length, '離開碼對照表沒有「被計畫佔著」那一列')
     for (const r of rows) assert.match(r, /\|\s*1\s*\|\s*$/, `CONFLICT 重試一百次也一樣，是 1：${r}`)
-    const sec = md.split(/^### /m).find(x => x.startsWith('卡住的計畫'))
+    const sec = md.split(/^### /m).find(x => x.startsWith('Plans in the way'))
     assert.ok(sec, 'cli.md 沒有「卡住的計畫」那一節')
-    assert.match(sec, /離開碼 1/)
-    assert.doesNotMatch(sec, /離開碼 2/)
+    assert.match(sec, /[Ee]xit code 1/)
+    assert.doesNotMatch(sec, /[Ee]xit code 2/)
   })
 
   test('做到一半中斷的計畫：寫了 undo 放回、apply 做完，而且寫明 release 不行', () => {
-    const sec = md.split(/^### /m).find(x => x.startsWith('卡住的計畫')) ?? ''
-    assert.match(sec, /中斷/, '沒寫做到一半中斷的計畫怎麼辦')
+    const sec = md.split(/^### /m).find(x => x.startsWith('Plans in the way')) ?? ''
+    assert.match(sec, /interrupted partway/i, '沒寫做到一半中斷的計畫怎麼辦')
     assert.match(sec, /cleanup undo 5c1e…/, '中斷的計畫要叫人 undo 把已經搬的放回來')
-    assert.match(sec, /release[^\n]*不行|不能[^\n]*release/, '要寫明中斷的計畫不能 release')
+    assert.match(sec, /cannot be released|cannot be dropped \(release\)/, '要寫明中斷的計畫不能 release')
   })
 
   test('編號是「至少 4 碼、撞號會延長」', () => {
-    assert.match(md, /至少 4 碼/)
-    assert.match(md, /撞[^\n]*(延長|多印)/)
+    assert.match(md, /at least 4 characters/)
+    assert.match(md, /collide[^\n]*longer/)
   })
 
   test('unknown 的建議跟 CLI 真的印的一樣', () => {
-    const said = '搬到一半中斷，檔案可能已經在隔離區，執行 node cli.mjs doctor 檢查'
+    const said = 'interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check'
     assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes(said), '前提：CLI 印的是這一句')
     assert.ok(md.includes(said), 'cli.md 寫的建議跟 CLI 印的不一樣')
   })
 
   test('open 在 pet 沒跑的時候回 2', () => {
-    assert.match(md, /pet 沒在跑[^\n]*離開碼 2/)
+    assert.match(md, /pet is not running[^\n]*exit code 2/)
   })
 
   test('環境變數表有 pet／open 用的那四個', () => {
@@ -892,7 +916,7 @@ describe('docs/cli.md（RC13）', () => {
       put('smoke-report.pdf', 'SMOKE report content 34 bytes....\n', 30)
       put('smoke-assets.zip', 'smoke assets zip!!\n', 60)
       put('smoke-old.bin', 'smoke old binary file\n', 200)
-      put('備份.tar', Buffer.alloc(66560), 60)
+      put('backup.tar', Buffer.alloc(66560), 60)
       assert.equal(cli('cleanup', 'scan').status, 0, '前提')
       const r = cli('cleanup', 'list')
       assert.equal(r.status, 0, r.stdout + r.stderr)
@@ -916,62 +940,65 @@ describe('docs/cli.md（RC13）', () => {
   test('「cleanup.screenshots」那句寫明那底下只清截圖、macOS 的截圖資料夾就是桌面', () => {
     const line = md.split('\n').find(l => /cleanup\.screenshots/.test(l)) ?? ''
     const para = md.slice(md.indexOf(line), md.indexOf(line) + 400)
-    assert.match(para, /只清截圖/, para)
-    assert.match(para, /macOS[^\n]*截圖資料夾就是桌面/, para)
+    assert.match(para, /only screenshots are cleaned there/, para)
+    assert.match(para, /macOS[^\n]*the screenshots folder is the Desktop/, para)
   })
 
   test('重試的語意照第二輪：partial／error 再 apply 原樣回傳、重試＝重掃再建新計畫；中斷的 proposed 計畫 apply 會接著做', () => {
-    assert.match(md, /`partial`／`error`[^\n]*原樣/, '要寫 partial／error 的計畫再 apply 原樣回傳')
-    assert.match(md, /重試[^\n]*(cleanup scan|重掃)/, '要寫怎麼重試失敗的檔：重掃、建新計畫')
-    assert.match(md, /中斷[^\n]*`proposed`[^\n]*接著做|`proposed`[^\n]*中斷[^\n]*接著做/, '要寫做到一半中斷的計畫 apply 會接著做')
-    assert.doesNotMatch(md, /可重試|仍可重跑/)
-    assert.match(md, /`apply <已經套用過的計畫>`[^\n]*N 是 0/, '唯讀模式 apply 套用過的計畫：會清掉 0 個')
+    assert.match(md, /`partial` \/ `error`[^\n]*as-is/, '要寫 partial／error 的計畫再 apply 原樣回傳')
+    assert.match(md, /retry[^\n]*cleanup scan/, '要寫怎麼重試失敗的檔：重掃、建新計畫')
+    assert.match(md, /`proposed`[^\n]*interrupted[^\n]*carries it on|interrupted[^\n]*`proposed`[^\n]*carries it on/, '要寫做到一半中斷的計畫 apply 會接著做')
+    assert.doesNotMatch(md, /can be retried|is retryable|still safe to re-?run/i)
+    assert.match(md, /`apply <a plan already applied>`[^\n]*N is 0/, '唯讀模式 apply 套用過的計畫：會清掉 0 個')
     const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
-    assert.ok(cli.includes('再套用不會重試沒搬成的') && md.includes('再套用不會重試沒搬成的'), '唯讀模式那一句跟 CLI 印的一樣')
+    assert.ok(cli.includes('Applying again does not retry what failed') && md.includes('Applying again does not retry what failed'), '唯讀模式那一句跟 CLI 印的一樣')
   })
 
   test('cancelled 怎麼印跟 CLI 一樣：沒有處理，本來就在原位', () => {
     const row = md.split('\n').find(l => l.startsWith('| `cancelled`')) ?? ''
-    assert.match(row, /沒有處理/, row)
-    assert.match(row, /本來就在原位/, row)
-    assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes('沒有處理：計畫中途停了或放棄了，本來就在原位'), '前提：CLI 印的是這一句')
+    assert.match(row, /not handled/, row)
+    assert.match(row, /never moved/, row)
+    assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes('not handled: the plan stopped or was dropped; the file never moved'), '前提：CLI 印的是這一句')
   })
 
   test('undo 的離開碼只看逐項，不看計畫的 status', () => {
     const sec = md.split(/^### /m).find(x => x.startsWith('`cleanup undo`')) ?? ''
-    assert.match(sec, /逐項/, sec)
+    assert.match(sec, /per-item/, sec)
     assert.match(sec, /status/, '要寫明不看計畫的 status')
   })
 
   test('每個清理指令之前先收尾：寫了中斷的搬移怎麼結掉、放太久沒開始的計畫自動放棄、BUSY 略過', () => {
-    assert.match(md, /收尾/)
-    assert.match(md, /60 分鐘|一小時/, '要寫多久沒開始的計畫會自動放棄')
-    assert.match(md, /另一個清理動作正在跑[^\n]*略過|略過[^\n]*另一個清理動作/, '要寫鎖被佔的時候收尾略過、指令照跑')
+    assert.match(md, /tidies up|tidying up/)
+    assert.match(md, /60 minutes|an hour/, '要寫多久沒開始的計畫會自動放棄')
+    assert.match(md, /another cleanup action is running[^\n]*skipped|skipped[^\n]*another cleanup action/i, '要寫鎖被佔的時候收尾略過、指令照跑')
   })
 
   test('doctor 的新段落：中斷的計畫（跟 CLI 印的同一個樣子）、掃描問題、OneDrive、寵物還擔不擔心', () => {
     const sec = md.split(/^### /m).find(x => x.startsWith('`doctor`')) ?? ''
     for (const [what, re] of [
-      ['中斷的計畫', /中斷計畫/], ['放回', /cleanup undo 5c1e…/], ['做完', /cleanup apply 5c1e…/],
-      ['掃描問題', /掃描問題/], ['OneDrive', /OneDrive[^\n]*雲端/], ['跟寵物同一個判斷', /還在為它擔心/],
+      ['中斷的計畫', /Interrupted \d+ plan/], ['放回', /cleanup undo 5c1e…/], ['做完', /cleanup apply 5c1e…/],
+      ['掃描問題', /Scan issues/], ['OneDrive', /OneDrive[^\n]*cloud/], ['跟寵物同一個判斷', /still worried/],
     ]) assert.match(sec, re, `doctor 那一節沒寫 ${what}`)
     // 中斷計畫那幾行照 CLI 真的印的樣子（數字、時間、id 換掉再比）
     const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
-    for (const said of ['個檔，', '個已經在隔離區', '把已經搬走的放回原位：node cli.mjs cleanup undo', '把它做完：node cli.mjs cleanup apply',
-      '做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：']) {
+    for (const said of ['files, ', 'already in quarantine', 'Put back what already moved: node cli.mjs cleanup undo', 'Finish it: node cli.mjs cleanup apply',
+      'stopped partway (killed mid-apply, a crash, or Ctrl+C):']) {
       assert.ok(cli.includes(said), `前提：CLI 印的有「${said}」`)
       assert.ok(sec.includes(said), `doctor 那一節跟 CLI 印的不一樣，少了「${said}」`)
     }
   })
 
   test('open／pet 的身分：寫了 nonce 與 proof（綁埠號），不再靠「記錄上的 pet 行程」', () => {
-    const sec = md.split(/^### /m).find(x => x.startsWith('`pet` 與 `open`')) ?? ''
+    const sec = md.split(/^### /m).find(x => x.startsWith('`pet` and `open`')) ?? ''
+    assert.ok(sec, 'cli.md 沒有 pet／open 那一節')
     assert.match(sec, /nonce/)
     assert.match(sec, /proof/)
-    assert.match(sec, /埠號/)
-    assert.doesNotMatch(md, /記錄上的 pet 行程/, '身分不再看 pid')
-    assert.match(md, /pet 沒在跑[^\n]*不印/, 'pet 沒在跑的時候不印帶鑰匙的網址')
-    assert.match(sec, /打開瀏覽器|用瀏覽器打開/, '撞到自己的 pet 要打開瀏覽器')
+    assert.match(sec, /port/)
+    // 身分不再看 pid：不可以再宣稱靠「記錄上的 pet 行程」認人，而且要寫明現在不看它
+    assert.doesNotMatch(md, /the recorded pid is alive|identifies the pet by[^\n]*pid/i, '身分不再看 pid')
+    assert.match(sec, /pid is no longer looked\s+at/, '要寫明身分不看 pid')
+    assert.match(md, /pet is not running[^\n]*does not print/, 'pet 沒在跑的時候不印帶鑰匙的網址')
+    assert.match(sec, /opens a browser|open a browser/, '撞到自己的 pet 要打開瀏覽器')
   })
 })
 
@@ -1722,7 +1749,7 @@ describe('R3-17 apply 的新欄位 noop／stoppedEarly 要寫進文件', () => {
   test('README 講了 stoppedEarly：還沒做完就停了，之後接得下去', () => {
     const line = md.split('\n').find(l => /`stoppedEarly`/.test(l) && /\|/.test(l)) ?? ''
     assert.ok(line, 'README 的欄位表裡沒有 stoppedEarly')
-    assert.match(line, /停|中斷/, '要講它是「停在中途」')
+    assert.match(line, /停|nterrupted/, '要講它是「停在中途」')
     assert.match(line, /接著|接得下去|重試/, '要講之後接得下去')
   })
 

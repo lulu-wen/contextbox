@@ -15,7 +15,10 @@
  * CLI 與 HTTP route 都呼叫 `listCandidates()`。
  * **只有一個地方決定 defaultChecked**，不准有第二份。
  */
-import { readdirSync, existsSync, realpathSync, lstatSync } from 'node:fs'
+import {
+  closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync,
+  realpathSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -30,6 +33,15 @@ import { createPlan, getPlan, dismissPlan, releasePlan, validateIds } from './cl
 import { prepareEmptyQuarantine, emptyQuarantine } from './cleanup-quarantine.ts'
 import { CleanupError, execRefusesName, transaction } from './cleanup-journal.ts'
 import { keepersFirst } from './cleanup-scanner.ts'
+import { decodePngGray } from './png.ts'
+import { resizeGray } from './imagehash.ts'
+import { encodeGrayPng } from './png-write.ts'
+import { opinionsFor, type ModelOpinion } from './model-store.ts'
+import { fileTextOf } from './file-texts.ts'
+// 預覽的可見範圍要跟面板一模一樣，所以這裡直接問那兩區的正本（P6 的 panelReason）。
+// **不會成環**：rename.ts／filing.ts 都不 import 這一支。
+import { renameSuggestions } from './rename.ts'
+import { filingSuggestions } from './filing.ts'
 
 /**
  * meta 表的 key。**兩邊不要各打一次字串。**
@@ -65,8 +77,12 @@ export const META = {
 /**
  * 會記成功與錯誤的動作種類（第二輪 R2-10）。**寵物只在「最新的錯誤之後，同一種動作成功過」時才不擔心** ——
  * 以前任何一次成功都算，pet 每 30 分鐘的背景重掃一成功，一直壞著的套用就被蓋掉了（稽核 C-e6）。
+ *
+ * `model` 是 P2 加的（看懂內容）：它不是一條 HTTP 路由，是背景佇列 —— 模型連續失敗三次時
+ * 記一筆這一種的錯。分開一種的理由跟上面一樣：**模型叫不動不可以被一次成功的掃描蓋掉**，
+ * 反過來模型好了也不該讓寵物不再擔心一個一直搬不動的清理。
  */
-export const ACTION_KINDS = ['scan', 'apply', 'undo', 'empty'] as const
+export const ACTION_KINDS = ['scan', 'apply', 'undo', 'empty', 'model'] as const
 export type ActionKind = (typeof ACTION_KINDS)[number]
 const isActionKind = (k: unknown): k is ActionKind => typeof k === 'string' && (ACTION_KINDS as readonly string[]).includes(k)
 /** 每一種動作最近一次成功的 meta key：cleanup_last_ok_scan、cleanup_last_ok_apply… */
@@ -79,10 +95,10 @@ export const lastOkKey = (kind: ActionKind) => `cleanup_last_ok_${kind}`
  * 或已經刪掉之後（例如刪完檔、寫回結果時資料庫出錯）。稽查實測過：檔案已經永久刪了，
  * 訊息卻說沒有（C-C5）。我們不知道的時候，就說不知道。
  */
-export const INTERNAL_MESSAGE = '後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。'
+export const INTERNAL_MESSAGE = 'The backend hit an error, so this step may not have completed. Close the panel and open it again from the pet or `node cli.mjs open` to see where things stand.'
 
 /** 太大、算不出指紋的檔：執行層一定拒收，所以不列成候選，改列在「需要你查看」。 */
-export const TOO_LARGE_WHY = '檔案太大，這個工具不處理，要不要留請自己決定。'
+export const TOO_LARGE_WHY = 'This file is too large for this tool to handle. Whether to keep it is your call.'
 
 /** 預設清理（不帶 id）一次最多幾個檔。超過的下次再清（RC12）。 */
 export const DEFAULT_PLAN_MAX_FILES = 1000
@@ -139,6 +155,13 @@ export type CandidateRow = {
   candidateIds: string[]
   /** 依信心由高到低 */
   reasons: CandidateReason[]
+  /**
+   * 模型對這個檔的看法（P2），沒問過是 null。
+   *
+   * **這是意見，不是事實**：面板要標明是模型說的、信心多少、證據是什麼，而且
+   * **不可以**因為它說了就自動打勾或改名（預想的不變量 4）。`seeded` 是 demo 預先塞的示範答案。
+   */
+  model: ModelOpinion | null
 }
 
 export type NeedsHumanRow = {
@@ -282,6 +305,7 @@ export function displayPath(path: string, roots: string[]): { folder: string; su
   const folder = basename(hit.root)
 
   // cleanup root 本身若是家目錄，不暴露使用者名稱。
+  // 比整條路徑，不要比 basename —— /mnt/backup/alice 跟家目錄沒關係。
   return {
     folder: resolve(hit.root) === resolve(homedir()) ? '' : folder,
     subdir,
@@ -309,7 +333,7 @@ function enrichDuplicate(db: DatabaseSync, item: ItemRow, evidence: string, root
   // 會被當成同一個檔，「會留著」那句話整個消失 —— 而那句話正是使用者敢勾的理由。
   if (!keep || keep.id === item.id) return evidence
   const where = displayPath(keep.path, roots).subdir
-  return `${evidence}，會留著「${keep.name}」` + (where ? `（在 ${where}）` : '')
+  return `${evidence}; “${keep.name}” is the one being kept` + (where ? ` (in ${where})` : '')
 }
 
 /**
@@ -327,23 +351,23 @@ function humanError(raw: string | null): string {
   const s = String(raw ?? '')
   if (/EACCES|EPERM|permission denied/i.test(s)) {
     // 建隔離區資料夾、搬檔時的權限錯誤不是「讀不到」，講錯的話使用者會去查錯的地方
-    if (/\bmkdir\b/.test(s)) return '沒有權限建立資料夾'
-    if (/\brename\b/.test(s)) return '沒有權限搬動這個檔案'
-    return '沒有權限讀這個檔案'
+    if (/\bmkdir\b/.test(s)) return 'no permission to create a folder'
+    if (/\brename\b/.test(s)) return 'no permission to move this file'
+    return 'no permission to read this file'
   }
-  if (/ENOENT|no such file/i.test(s)) return '這個檔案已經不在了'
-  if (/EISDIR/i.test(s)) return '這是一個資料夾，不是檔案'
-  if (/EMFILE|ENFILE/i.test(s)) return '同時開太多檔案了，等一下會再試'
-  if (/EBUSY|EAGAIN/i.test(s)) return '這個檔案正在被別的程式使用'
+  if (/ENOENT|no such file/i.test(s)) return 'this file is no longer there'
+  if (/EISDIR/i.test(s)) return 'this is a folder, not a file'
+  if (/EMFILE|ENFILE/i.test(s)) return 'too many files open at once; it will try again shortly'
+  if (/EBUSY|EAGAIN/i.test(s)) return 'another program is using this file'
   // 寫入端的錯（第二輪 R2-11）。以前全部掉到最後那句「讀不到這個檔案」——
   // 隔離區所在的磁碟滿了，doctor 卻叫使用者去查 Downloads 的讀取權限。
-  if (/\bENOSPC\b|no space left/i.test(s)) return '隔離區所在的磁碟滿了，沒有空間放這個檔'
-  if (/\bEXDEV\b|cross-device/i.test(s)) return '隔離區跟這個檔不在同一顆碟，沒辦法搬'
-  if (/\bEROFS\b|read-only file system/i.test(s)) return '這顆碟是唯讀的，沒辦法寫入或搬動'
-  if (/\bELOOP\b|too many symbolic links/i.test(s)) return '路徑裡的捷徑繞成一圈，沒辦法安全處理'
-  if (/\bEIO\b|i\/o error/i.test(s)) return '磁碟讀寫出錯（可能是硬體或網路磁碟的問題）'
+  if (/\bENOSPC\b|no space left/i.test(s)) return 'the disk holding quarantine is full, with no room for this file'
+  if (/\bEXDEV\b|cross-device/i.test(s)) return 'quarantine is on a different disk from this file, so it cannot be moved'
+  if (/\bEROFS\b|read-only file system/i.test(s)) return 'this disk is read-only, so nothing can be written or moved'
+  if (/\bELOOP\b|too many symbolic links/i.test(s)) return 'the symlinks in this path loop back on themselves, so it cannot be handled safely'
+  if (/\bEIO\b|i\/o error/i.test(s)) return 'a disk read or write error, possibly hardware or a network drive'
   if (/too large|太大|超過.*上限/i.test(s)) return TOO_LARGE_WHY
-  return '讀不到這個檔案'
+  return 'cannot read this file'
 }
 
 /**
@@ -601,7 +625,7 @@ function needsHumanWhy(b: ItemRow): string {
   // 太大是事實（沒有指紋），不看 scanner 寫了什麼字 —— 那句「超過清理掃描上限」
   // 以前被翻成「讀不到這個檔案」（稽核 RC11）。
   if (b.status !== 'error' && noFingerprint(b)) return TOO_LARGE_WHY
-  return safeWhy(b.error) ?? '讀不到這個檔案'
+  return safeWhy(b.error) ?? 'cannot read this file'
 }
 
 const isDefaultChecked = (g: Group) => g.cands[0].confidence >= DEFAULT_CHECK_MIN
@@ -616,6 +640,9 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
   const pre = rootPrefixes(opts.roots)
 
   const rows: CandidateRow[] = []
+  // 模型的看法一次查完（一個檔最多兩次索引查詢）。查不到就是 null —— 沒接模型時這裡永遠是空的
+  const opinions = safe(() => opinionsFor(db, all.rows.slice(0, limit).map(g => g.item.id)),
+    new Map<string, ModelOpinion>())
   let bytes = 0, checkedCount = 0, checkedBytes = 0
   for (const g of all.rows) {
     // 一個檔一個決定，用**最高**信心那條。
@@ -650,6 +677,7 @@ export function listCandidates(db: DatabaseSync, opts: ListOptions): CandidateLi
       vetoed: null,
       candidateIds: g.cands.map(c => c.id),
       reasons,
+      model: opinions.get(item.id) ?? null,
     })
     bytes += item.bytes
   }
@@ -893,6 +921,12 @@ export function invalidateQuarantineCache() { countCache = null }
  * 都是同步 request，回應送出的時候它們已經結束了。那三個是前端在等
  * response 的時候自己播的動畫，不該由這裡回報。
  */
+/**
+ * 英文的單複數。`1 files` 是最容易被看到、也最廉價的破綻 ——
+ * 而寵物的對話框是整個作品最常被截圖的地方（稽核 2026-09-20）。
+ */
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
 export function petState(
   h: {
     db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown; rootsMissing?: unknown }
@@ -925,16 +959,16 @@ export function petState(
   // **訊息裡不放問題的原文**（R3-12）：那些字串已經去過路徑，但寵物的對話框是最容易被截圖、
   // 最容易被旁人看到的地方，檔名與資料夾名不必出現在那裡。詳情在 scanProblems 陣列裡，面板自己決定怎麼列。
   const scanWhy = rootsMissing > 0
-    ? (rootsMissing > 1 ? `有 ${rootsMissing} 個清理資料夾好像不見了，先看一下 doctor。` : '清理資料夾好像不見了，先看一下 doctor。')
-    : `上次掃描回報了 ${problems.length} 個問題，先看一下 doctor。`
+    ? (rootsMissing > 1 ? `${rootsMissing} cleanup folders look like they are gone. Have a look at doctor.` : 'A cleanup folder looks like it is gone. Have a look at doctor.')
+    : `The last scan reported ${plural(problems.length, 'problem')}. Have a look at doctor.`
 
   const message =
-    !h.db.ok || errorStillActive(h) ? '後端出了點狀況，先看一下 doctor。'
+    !h.db.ok || errorStillActive(h) ? 'Something is off in the backend. Have a look at doctor.'
     : state === 'worried' ? scanWhy
-    : state === 'waiting' ? `有 ${counts.proposedPlans} 份清單等你確認。`
-    : state === 'found' ? `找到 ${h.pendingCandidates} 個可以清的檔案。`
-    : state === 'watching' ? `盯著${watchingPhrase(h.watcher)}。`
-    : '沒事，在發呆。'
+    : state === 'waiting' ? `${plural(counts.proposedPlans, 'list')} ${counts.proposedPlans === 1 ? 'is' : 'are'} waiting for you.`
+    : state === 'found' ? `Found ${plural(h.pendingCandidates, 'file')} that could be cleaned up.`
+    : state === 'watching' ? `Keeping an eye on ${watchingPhrase(h.watcher)}.`
+    : 'Nothing going on. Just daydreaming.'
 
   return {
     state,
@@ -967,10 +1001,10 @@ function watchingPhrase(w: { watching?: unknown; watchingCount?: unknown }): str
   const count = typeof w.watchingCount === 'number' && Number.isInteger(w.watchingCount) ? w.watchingCount : 0
   const total = Math.max(count, list.length)
   const names = list.filter(n => typeof n === 'string' && n !== '')
-    .map(n => `「${String(n).replace(UNSAFE_DISPLAY, '·')}」`)
-  if (!names.length) return total > 1 ? `這 ${total} 個監看資料夾` : '監看資料夾'
-  const shown = names.slice(0, 3).join('、')
-  return names.length === total && total <= 3 ? shown : `${shown}等 ${total} 個資料夾`
+    .map(n => `“${String(n).replace(UNSAFE_DISPLAY, '·')}”`)
+  if (!names.length) return total > 1 ? `${total} watched folders` : 'the watched folder'
+  const shown = names.slice(0, 3).join(', ')
+  return names.length === total && total <= 3 ? shown : `${shown} and more (${total} folders)`
 }
 
 /**
@@ -1001,7 +1035,7 @@ function parseLastError(raw: string | null): { at: string | null; why: string | 
   if (!raw) return { at: null, why: null }
   const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z)\s+([\s\S]*)$/.exec(raw)
   const at = m && Number.isFinite(Date.parse(m[1])) ? m[1] : null
-  return { at, why: safeWhy(m ? m[2] : raw) ?? '後端出錯了' }
+  return { at, why: safeWhy(m ? m[2] : raw) ?? 'the backend hit an error' }
 }
 
 const setMeta = (db: DatabaseSync, k: string, v: string) =>
@@ -1062,8 +1096,8 @@ export function isSurprise(e: unknown): boolean {
 export function recordCleanupError(db: DatabaseSync, e: unknown, kind?: ActionKind): boolean {
   if (!isSurprise(e)) return false
   const raw = String((e as any)?.message ?? e).slice(0, 300)
-  console.error('[contextbox] 清理出錯：', raw)
-  writeLastError(db, safeWhy(raw) ?? '後端出錯了', isActionKind(kind) ? kind : undefined)
+  console.error('[contextbox] cleanup error:', raw)
+  writeLastError(db, safeWhy(raw) ?? 'the backend hit an error', isActionKind(kind) ? kind : undefined)
   return true
 }
 
@@ -1107,14 +1141,14 @@ export function recordActionResult(db: DatabaseSync, kind: 'apply' | 'undo' | 'e
   let why: string | null = null
   if (kind === 'empty') {
     if (Array.isArray(r.errors) && r.errors.length && !r.deletedCount) {
-      why = `清空隔離區一個檔都沒刪掉：${safeWhy(String(r.errors[0]?.error ?? '')) ?? '原因不明'}`
+      why = `Emptying quarantine deleted nothing: ${safeWhy(String(r.errors[0]?.error ?? '')) ?? 'reason unknown'}`
     }
   } else if (r.status === 'error') {
-    const first = safeWhy(typeof r.error === 'string' ? r.error : null) ?? '原因不明'
-    why = kind === 'apply' ? `這次清理一個檔都沒搬成：${first}` : `這次復原一個檔都沒放回去：${first}`
+    const first = safeWhy(typeof r.error === 'string' ? r.error : null) ?? 'reason unknown'
+    why = kind === 'apply' ? `This cleanup moved nothing: ${first}` : `This undo put nothing back: ${first}`
   }
   if (why) {
-    console.error('[contextbox] 清理出錯：', why)
+    console.error('[contextbox] cleanup error:', why)
     writeLastError(db, why.slice(0, 300), kind)
     return 'error'
   }
@@ -1202,10 +1236,10 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
       watchingCount: rootList.length,
       // 顯示名只給帶 token 的。watch 設成家目錄時，basename 就是使用者名稱。
       watching: full ? rootList.map(r => displayPath(join(r, 'x'), rootList).folder) : [],
-      why: !beat ? '從來沒跑過'
-        : !running ? '那個行程已經不在了'
-        : !fresh ? '行程還在，但心跳停了超過五分鐘'
-        : rootsMissing ? '有監看資料夾不存在'
+      why: !beat ? 'never ran'
+        : !running ? 'that process is gone'
+        : !fresh ? 'the process is alive but its heartbeat stopped over five minutes ago'
+        : rootsMissing ? 'a watched folder does not exist'
         : null,
     },
     quarantine: {
@@ -1228,7 +1262,7 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
     // 讀出來再翻一次 —— 舊版存的是原文，帶完整路徑（fs 的 message 一律含 path）。
     lastError: full
       ? (lastErrorRaw ? (lastErr.at ? `${lastErr.at} ${lastErr.why}` : lastErr.why) : null)
-      : (lastErrorRaw ? '有，帶 token 才看得到' : null),
+      : (lastErrorRaw ? 'yes, but only visible with a token' : null),
     // 時間只給帶 token 的：免 token 的 /health 同機任何行程都讀得到，時間會洩漏
     // 「使用者什麼時候清理過」。欄位兩版都有（形狀一致），遮蔽時是 null。
     // 寵物（/pet/state，要 token）拿它們比「錯在成功之後嗎」。
@@ -1305,7 +1339,7 @@ export function createPlanForRoots(db: DatabaseSync, scope: string[] | CleanupSc
   if (!replay) {
     const listed = new Set(collect(db, scopeOf(scope)).rows.flatMap(g => g.cands.map(c => c.id)))
     if (ids.some(id => !listed.has(id))) {
-      throw new CleanupError('STALE_CANDIDATE', '候選已變更，請重新掃描並建立計畫。')
+      throw new CleanupError('STALE_CANDIDATE', 'The candidates changed. Scan again and build a new plan.')
     }
   }
   return createPlan(db, { candidateIds: ids, requestId: opts.requestId as string | undefined })
@@ -1372,12 +1406,12 @@ type Outcome = { outcome: ItemOutcome; why: string | null; restoredAs?: string }
  * 只有還沒跑完的 proposed 再套用會接著做。所以照實講：說不準檔在哪；復原（undoPlan）會把在隔離區、
  * 指紋對得上的放回原位，確認沒搬過的結掉；doctor 看得到整體的狀態。
  */
-const MOVE_INTERRUPTED = '搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。'
+const MOVE_INTERRUPTED = 'Interrupted mid-move, so there is no telling whether the file is where it was or in quarantine. “Undo” puts back whatever is in quarantine; you can also run node cli.mjs doctor to check.'
 /**
  * 復原到一半中斷的話。再按一次復原多半接得完（performMove 認得「已經放回去了」），但放回之後
  * 原位的檔又被改過就接不上 —— 所以不說「會把它接完」，只說會接著放回。
  */
-const RESTORE_INTERRUPTED = '復原到一半中斷，說不準檔案現在在隔離區還是已經放回原位。再按一次復原會接著放回；也可以執行 node cli.mjs doctor 檢查。'
+const RESTORE_INTERRUPTED = 'Interrupted mid-undo, so there is no telling whether the file is still in quarantine or already back. Pressing undo again carries on; you can also run node cli.mjs doctor to check.'
 
 const tableExists = (db: DatabaseSync, name: string) =>
   Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name))
@@ -1475,7 +1509,7 @@ function outcomesOf(db: DatabaseSync, planId: string, opts: OutcomeOptions = {})
       // 根本不會寫 journal**，只寫 file_items.error —— 而那一欄下一次掃描就被改寫。
       // 所以先讀套用當下存起來的（cleanup_item_errors），再看 journal，最後才是 file_items。
       raw = safeWhy(q?.error) ?? safeWhy(i.error)
-      why = stored.get(i.item_id) ?? raw ?? '沒有搬動，原因不明'
+      why = stored.get(i.item_id) ?? raw ?? 'did not move, reason unknown'
     }
     const o: InnerOutcome = { outcome, why, raw, restoring }
     // **原位置被佔的時候，放回來的那份會改名**（B 的 restoreTarget：X.zip.restored）。
@@ -1598,7 +1632,7 @@ export function listPlans(db: DatabaseSync, opts: { filter?: 'undoable' | 'pendi
   const limit = opts.limit ?? 20
   let offset = opts.offset ?? 0
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0) {
-    throw new CleanupError('BAD_BODY', '分頁參數不正確：limit 要是 1 到 100，offset 不可以是負的。')
+    throw new CleanupError('BAD_BODY', 'Bad paging: limit must be 1 to 100 and offset cannot be negative.')
   }
   if (!tableExists(db, 'cleanup_snapshots')) return { total: 0, offset: 0, limit, operations: [] }
 
@@ -1678,7 +1712,7 @@ export function quarantineItems(db: DatabaseSync) {
     const snap = JSON.parse(r.snapshot) as { name: string; bytes: number }
     const done = r.completed_at ? Date.parse(r.completed_at) : NaN
     // 跟 B 的 quarantineCompletedAt 一樣：算不出七天就不猜
-    if (!Number.isFinite(done)) throw new CleanupError('UNSAFE_JOURNAL', '缺少隔離完成時間，無法清空。')
+    if (!Number.isFinite(done)) throw new CleanupError('UNSAFE_JOURNAL', 'The quarantine timestamp is missing, so this cannot be emptied.')
     return {
       seq: r.seq, planId: r.plan_id, itemId: r.item_id, name: snap.name, bytes: snap.bytes,
       quarantinedAt: r.completed_at!, canEmptyAt: new Date(done + RETENTION_MS).toISOString(),
@@ -1695,11 +1729,405 @@ function pruneEmptyRequests(db: DatabaseSync) {
       .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString())
   } catch (e: any) {
     // 清不掉只是表多幾列，不可以讓預覽本身失敗
-    console.error('[contextbox] 清空預覽的舊紀錄清不掉：', e?.message ?? e)
+    console.error('[contextbox] could not clear old empty-preview rows:', e?.message ?? e)
   }
 }
 
 // ── HTTP ─────────────────────────────────────────────────────
+
+// ── 連拍截圖：組、縮圖、主動詢問 ─────────────────────────────
+
+/**
+ * 縮圖的長邊上限。**原圖不回**：4K 截圖一張 8 MB，面板要同時看好幾張；
+ * 而且原圖就是使用者的螢幕內容，沒有必要整張再走一次 HTTP。
+ */
+export const THUMB_MAX_SIDE = 480
+
+/** 縮圖端點願意讀多大的檔（超過的不給縮圖 —— 上游 png.ts 還有 4000 萬像素的上限）。 */
+const THUMB_MAX_BYTES = 64 * 1024 * 1024
+
+/** meta 裡記「已經主動彈過的組 id」。 */
+export const BURST_ASKED_KEY = 'burst_asked'
+/** burst_asked 只留最新這麼多組。 */
+export const BURST_ASKED_KEEP = 50
+
+export type BurstBox = { x: number; y: number; w: number; h: number }
+export type BurstMemberView = {
+  itemId: string
+  name: string
+  bytes: number
+  level: 'same' | 'similar'
+  thumb: string
+  boxes: BurstBox[]
+  /** 模型對這張截圖的看法（P2），沒問過是 null。**是意見，不是事實** */
+  model: ModelOpinion | null
+}
+export type BurstGroupView = {
+  id: string
+  level: 'same' | 'similar'
+  keep: { itemId: string; name: string; bytes: number; thumb: string; model: ModelOpinion | null }
+  members: BurstMemberView[]
+}
+
+type BurstRowView = {
+  item_id: string
+  group_id: string
+  keep_id: string
+  level: string
+  boxes: string
+  name: string
+  bytes: number
+  path: string
+  mtime: string
+}
+
+const thumbUrl = (itemId: string) => `/cleanup/thumb/${encodeURIComponent(itemId)}`
+
+function parseBoxes(raw: string): BurstBox[] {
+  let v: unknown
+  try { v = JSON.parse(raw) } catch { return [] }
+  if (!Array.isArray(v)) return []
+  const out: BurstBox[] = []
+  for (const b of v) {
+    if (!b || typeof b !== 'object') continue
+    const { x, y, w, h } = b as Record<string, unknown>
+    if (![x, y, w, h].every(n => typeof n === 'number' && Number.isFinite(n))) continue
+    out.push({ x: x as number, y: y as number, w: w as number, h: h as number })
+  }
+  return out
+}
+
+/**
+ * 目前的連拍組。**掃描算好的**（core/cleanup-scanner.ts 的 wireBursts），這裡只組畫面要的樣子：
+ * 檔名、大小、等級、縮圖網址、0–1 的外框。**沒有路徑**。
+ *
+ * 再過濾一次的理由跟 collect 一樣：
+ * - **只看現在清理範圍底下的**。設定改小之後，上一輪留下的組不該再出現在畫面上
+ *   （掃描端不去動範圍外的列，見 wireBursts 的 K5 註解）。
+ * - **檔案狀態要還在**：搬進隔離區、不見了、讀不到的不列；少到剩一張的整組不列。
+ */
+export function burstGroupsView(
+  db: DatabaseSync, scope: string[] | CleanupScope, opts: { models?: boolean } = {},
+): BurstGroupView[] {
+  const m = scopeMatcher(scopeOf(scope))
+  const rows = safe(() => db.prepare(
+    `SELECT b.item_id, b.group_id, b.keep_id, b.level, b.boxes, i.name, i.bytes, i.path, i.mtime
+       FROM cleanup_burst_members b JOIN file_items i ON i.id = b.item_id
+      WHERE i.status IN ('candidate','kept','restored') AND i.error IS NULL
+      ORDER BY b.group_id, i.mtime DESC, b.item_id`
+  ).all() as BurstRowView[], [] as BurstRowView[])
+
+  const byGroup = new Map<string, BurstRowView[]>()
+  for (const r of rows) {
+    if (!underAny(r.path, m.pre)) continue
+    // **檔案真的還在才列。** 整個資料夾被清空時，大量消失的保險絲會讓那些列維持 candidate
+    // （外接碟沒掛上的情況不可以亂標 missing），但那時候問使用者「要不要清掉這幾張」很荒謬，
+    // 縮圖也全部 404（P0 驗證員）。這裡的筆數很少（一組幾張、最多列 20 組），一次 lstat 不貴。
+    if (!safe(() => { lstatSync(r.path); return true }, false)) continue
+    const list = byGroup.get(r.group_id)
+    if (list) list.push(r)
+    else byGroup.set(r.group_id, [r])
+  }
+
+  // 模型的看法（P2）。**縮圖那條路不查**（burstThumbPng 只是要知道「在不在組裡」）
+  const wantModels = opts.models !== false
+  const ids: string[] = []
+  if (wantModels) for (const list of byGroup.values()) for (const r of list) ids.push(r.item_id)
+  const opinions = wantModels
+    ? safe(() => opinionsFor(db, ids), new Map<string, ModelOpinion>())
+    : new Map<string, ModelOpinion>()
+
+  const out: (BurstGroupView & { at: string })[] = []
+  for (const [id, list] of byGroup) {
+    const keep = list.find(r => r.item_id === r.keep_id)
+    const members = list.filter(r => r.item_id !== r.keep_id)
+    // 留下的那張不在了（被清掉、被改掉）就整組不列 —— 「會留著 X」不成立的話不可以再問
+    if (!keep || !members.length) continue
+    const level = keep.level === 'same' ? 'same' : 'similar'
+    out.push({
+      id,
+      level,
+      at: keep.mtime,
+      keep: {
+        itemId: keep.item_id, name: keep.name, bytes: keep.bytes, thumb: thumbUrl(keep.item_id),
+        model: opinions.get(keep.item_id) ?? null,
+      },
+      members: members.map(r => ({
+        itemId: r.item_id,
+        name: r.name,
+        bytes: r.bytes,
+        level: r.level === 'same' ? 'same' as const : 'similar' as const,
+        thumb: thumbUrl(r.item_id),
+        boxes: parseBoxes(r.boxes),
+        model: opinions.get(r.item_id) ?? null,
+      })),
+    })
+  }
+  // 最近的一組排最前面；時間一樣時照組 id，每次都一樣
+  out.sort((a, b) => cmpDesc(a.at, b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return out.map(({ at, ...g }) => g)
+}
+
+/**
+ * 縮圖：灰階 PNG、長邊 ≤ THUMB_MAX_SIDE。**只給面板看得到的那些 item**，
+ * 其他一律 null（呼叫端回 404）—— 這不是「任意檔案的讀取端點」。
+ * 讀不到、不是 PNG、解不開的也回 null：那是一張看不到的縮圖，不是伺服器故障。
+ *
+ * **可見範圍問 panelReason，跟預覽同一支**（P6）。以前這裡只認「還在某一組連拍裡」，
+ * 比面板窄：面板上一個普通的候選截圖點「看內容」就拿不到圖。放寬之後兩條端點寬窄永遠一致 ——
+ * **不可以在這裡另外寫一份判斷**，分岔出來的那一條就是一個任意檔案讀取端點。
+ */
+export function burstThumbPng(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): Buffer | null {
+  if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
+  const row = safe(() => db.prepare(
+    'SELECT id, path, bytes, mtime FROM file_items WHERE id=?').get(itemId) as
+    { id: string; path: string; bytes: number; mtime: string } | undefined, undefined)
+  if (!row || Number(row.bytes) > THUMB_MAX_BYTES) return null
+  // **先看它到底是不是一張解得開的圖**（稽核 2026-09-20）。兩個理由，都是 P6 放寬可見範圍之後才有的：
+  //   1. 省錢：這一關是一行 SQL；panelReason 要把所有候選算一遍（8000 個候選 30 ms），
+  //      而面板一打開就會連打好幾次縮圖。
+  //   2. 更要緊的是記憶體：放寬之後「面板看得到的檔」包含 zip、exe、影片 ——
+  //      以前它們連可見範圍那一關都過不了，現在會被 readFileSync 整個讀進來（上限 64 MB）
+  //      才在 decodePngGray 失敗。掃描時算過長相指紋的才有這一列，那就是「解得開的 PNG」。
+  if (!hasThumb(db, row)) return null
+  if (panelReason(db, scope, itemId) === null) return null
+
+  // 檔案可能在這中間被換掉（甚至換成捷徑）：O_NOFOLLOW 開，再核對大小與 mtime
+  let fd: number
+  try { fd = openSync(row.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)) }
+  catch { return null }
+  let buf: Buffer
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile() || st.size !== Number(row.bytes) || st.mtime.toISOString() !== row.mtime) return null
+    buf = readFileSync(fd)
+  } catch { return null }
+  finally { closeSync(fd) }
+
+  try {
+    const img = decodePngGray(buf)
+    const long = Math.max(img.width, img.height)
+    if (long <= THUMB_MAX_SIDE) return encodeGrayPng(img.width, img.height, img.gray)
+    const w = Math.max(1, Math.round(img.width * THUMB_MAX_SIDE / long))
+    const h = Math.max(1, Math.round(img.height * THUMB_MAX_SIDE / long))
+    return encodeGrayPng(w, h, resizeGray(img, w, h))
+  } catch { return null }
+}
+
+/**
+ * 寵物要不要主動開口：`groups` 是現在有幾組，`newGroups` 是**這次新出現、還沒彈過**的幾組。
+ *
+ * 「彈過」記在 meta 的 burst_asked（組 id，留最新 BURST_ASKED_KEEP 組）。組 id 是
+ * 「留下的那張 ＋ 成員」算出來的，所以**成員變了就是新的一組**，會再彈一次；
+ * 一模一樣的一組不會每次掃描都來煩人（預想表第 44 列）。
+ *
+ * **會寫 meta 的讀取端點**：問過就算問過，不然使用者沒理它、下一次輪詢又彈一次。
+ * 寫不進去（資料庫忙、唯讀）不算錯 —— 最壞是多問一次。
+ */
+export function burstAsk(db: DatabaseSync, scope: string[] | CleanupScope): { groups: number; newGroups: number } {
+  const ids = burstGroupsView(db, scope, { models: false }).map(g => g.id)
+  let asked: string[] = []
+  const raw = safe(() => getMeta(db, BURST_ASKED_KEY), null)
+  if (raw) {
+    try {
+      const v = JSON.parse(raw)
+      if (Array.isArray(v)) asked = v.filter((x: unknown): x is string => typeof x === 'string')
+    } catch { /* 壞掉的舊值當成沒問過 */ }
+  }
+  const seen = new Set(asked)
+  const fresh = ids.filter(id => !seen.has(id))
+  if (fresh.length || asked.length > BURST_ASKED_KEEP) {
+    const next = [...asked, ...fresh].slice(-BURST_ASKED_KEEP)
+    safe(() => setMeta(db, BURST_ASKED_KEY, JSON.stringify(next)), undefined)
+  }
+  return { groups: ids.length, newGroups: fresh.length }
+}
+
+// ── 看得到檔案內容（P6）──────────────────────────────────────
+//
+// 使用者的話：「建議刪除的檔要能點進去看內容，不然我不記得那個檔存了什麼。」
+//
+// **這是第一條把檔案內容送到瀏覽器的路**，所以兩條不變量刻在這一段裡：
+//   1. **不新增任何「照路徑讀檔」的介面。** 內容只來自兩份**已經存在**的資料 ——
+//      `file_texts.text`（掃描時抽好的，最多 4000 字）與 `/cleanup/thumb/:itemId`（P0 的縮圖）。
+//      這一段一行 `readFileSync`／`openSync` 都沒有，端點收的也只有 itemId，不收路徑。
+//   2. **看得到的範圍就是面板本來列得出來的那些**，判斷只有 panelReason 一支，
+//      預覽與縮圖共用（見那一支的檔頭）。不在範圍內一律 404，訊息跟「不存在」一模一樣。
+
+/**
+ * 預覽最多給幾個字（以 code point 計）。
+ * `file_texts` 本來就只留 4000 個字（read-text.ts 的 STORE_MAX_CHARS）；面板一次看得完的比那更少，
+ * 截斷的時候要講「還有更多」，不可以安靜地少給。
+ */
+export const PREVIEW_MAX_CHARS = 2000
+
+/**
+ * 檔案內容是**不可信的輸入**（任何人都能讓你下載一個檔）。控制字元與方向字元換成「·」——
+ * 跟檔名的 UNSAFE_DISPLAY 同一組字元，**只留下換行與 tab**：內容本來就有行，
+ * 把換行也換掉的話一份講義會擠成一長條，使用者根本認不出那是什麼。
+ *
+ * `\r\n` 與單獨的 `\r` 先收成 `\n`：不收的話 Windows 上存的檔每一行尾巴都會多一個「·」。
+ * 換行留著是安全的 —— 這段字只進 `textContent`（不是 innerHTML），而且它自己一個框，
+ * 不會跟面板講的話混在一起（結果框那種「偽造一行」的招數在這裡沒有東西可以偽造）。
+ */
+export function safePreviewText(raw: string): string {
+  let out = ''
+  for (const ch of String(raw ?? '').replace(/\r\n?/g, '\n')) {
+    if (ch === '\n' || ch === '\t') { out += ch; continue }
+    const c = ch.codePointAt(0) ?? 0
+    const bad = c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x61c
+      || (c >= 0x200e && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)
+    out += bad ? '·' : ch
+  }
+  return out
+}
+
+/** 前 n 個 code point（不會切在代理對中間），順便說有沒有切到。 */
+function headChars(s: string, n: number): { text: string; cut: boolean } {
+  const cps = [...s]
+  if (cps.length <= n) return { text: s, cut: false }
+  return { text: cps.slice(0, n).join(''), cut: true }
+}
+
+/**
+ * 預覽與縮圖要的範圍。`CleanupScope` 再加兩個可選的：
+ * - `quarantine`：改名／歸檔那兩區判斷「這個檔是不是在隔離區裡」要用（跟它們的 route 同一個值）
+ * - `filed`：「整理好的」資料夾。沒設定的話面板本來就沒有歸檔建議那一區，這裡也不去查
+ */
+export type PanelScope = CleanupScope & {
+  quarantine?: string
+  filed?: string | null
+}
+
+const panelScopeOf = (s: string[] | PanelScope): PanelScope => Array.isArray(s) ? { roots: s } : s
+
+/**
+ * 這個 itemId **面板看得到嗎**？看得到回「它為什麼會出現在面板上」那一句，看不到回 `null`。
+ *
+ * **預覽（`GET /cleanup/preview/:itemId`）與縮圖（`GET /cleanup/thumb/:itemId`）共用這一支，
+ * 不准有第二份。** 兩邊的可見範圍一旦分岔，比較寬的那一條就變成「任意檔案的讀取端點」——
+ * 而這正是 P6 最大的風險。縮圖以前只認「還在某一組連拍裡」，範圍比面板窄；
+ * 現在兩邊都問這一支，寬窄永遠一致。
+ *
+ * 範圍＝面板本來就列得出來的那些：
+ *   1. 清理候選（`collect` 的 rows —— 跟 `/cleanup/candidates` 同一份篩選）
+ *   2. 需要你查看（`collect` 的 needsHuman）
+ *   3. 連拍組：留下的那張與成員
+ *   4. 隔離區裡的（「復原最近動作」列得出來的）—— 使用者正要決定要不要放回來
+ *   5. 改名建議（P3）
+ *   6. 歸檔建議（P4；沒設定 `filed` 就沒有這一區，也不查）
+ *
+ * **由便宜排到貴，第一個命中就回**：面板一打開就會打好幾次縮圖，不可以每一次都把
+ * 改名與歸檔的建議整份算一遍。任何一段查詢炸掉都當成「這一段沒有命中」（safe），
+ * 不可以讓一張讀不到的縮圖變成 500。
+ */
+export function panelReason(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): string | null {
+  // id 是呼叫端給的字串。太長的、空的直接回絕 —— 不用拿它去查任何一張表
+  if (typeof itemId !== 'string' || !itemId || itemId.length > 200) return null
+  const s = panelScopeOf(scope)
+  const listed = safe(() => collect(db, s), { rows: [], needsHuman: [] } as Collected)
+  for (const g of listed.rows) {
+    if (g.item.id !== itemId) continue
+    // 信心最高的那一條理由就是清單上印的那一句
+    return safeWhy(g.cands[0]?.reason) ?? 'It is on the cleanup list.'
+  }
+  for (const n of listed.needsHuman) if (n.item.id === itemId) return n.why
+  for (const g of safe(() => burstGroupsView(db, s, { models: false }), [] as BurstGroupView[])) {
+    if (g.keep.itemId === itemId) return 'The one being kept from a burst of screenshots.'
+    if (g.members.some(m => m.itemId === itemId)) return 'Much like the other screenshots in its burst, so it is suggested for cleanup.'
+  }
+  for (const q of safe(() => quarantineItems(db), [] as { itemId: string }[])) {
+    if (q.itemId === itemId) return 'Already moved to quarantine, and still possible to put back.'
+  }
+  const moveScope = { roots: s.roots, quarantine: s.quarantine }
+  for (const r of safe(() => renameSuggestions(db, moveScope).items, [])) {
+    if (r.itemId === itemId) return 'The model suggests a different name; not renamed yet.'
+  }
+  if (s.filed) {
+    for (const f of safe(() => filingSuggestions(db, { ...moveScope, filed: s.filed as string }).items, [])) {
+      if (f.itemId === itemId) return 'The model suggests filing it under a course folder; not moved yet.'
+    }
+  }
+  return null
+}
+
+/**
+ * 一個檔的預覽。**回應裡沒有路徑**（只有檔名、副檔名、大小、時間），
+ * 面板看不到的檔回 null（呼叫端回 404，訊息不分「不存在」與「不給看」）。
+ */
+export type PreviewView = {
+  name: string
+  ext: string
+  bytes: number
+  mtime: string
+  /** `text` ＝ 抽到文字；`image` ＝ 有縮圖；`none` ＝ 兩者都沒有（只給後設資料） */
+  kind: 'text' | 'image' | 'none'
+  /** 洗過、最多 PREVIEW_MAX_CHARS 個字；沒有內容是 null */
+  text: string | null
+  /** 還有更多沒顯示（這一次截斷的，或當初存進 file_texts 時就截斷過的） */
+  truncated: boolean
+  /** `/cleanup/thumb/<id>` 或 null。**不是原圖**，而且那條端點一樣要 token */
+  image: string | null
+  /** 它為什麼會出現在面板上（panelReason 給的那一句） */
+  why: string
+}
+
+type PreviewItemRow = { id: string; name: string; ext: string; bytes: number; mtime: string }
+
+/**
+ * 有沒有可以拿來當預覽圖的縮圖。
+ *
+ * **不去讀檔**：看的是掃描時算長相指紋留下的那一列（`cleanup_image_sigs`）——
+ * 有那一列就代表掃描器真的把它解成了 PNG，`/cleanup/thumb/` 走得通。
+ * 那一列跟 `file_texts` 一樣是快取：大小或 mtime 跟現在對不上就當成沒有
+ * （檔換過了，舊指紋算出來的縮圖不是現在這個檔）。
+ */
+function hasThumb(db: DatabaseSync, item: { id: string; bytes: number; mtime: string }): boolean {
+  const row = safe(() => db.prepare(
+    'SELECT size, mtime FROM cleanup_image_sigs WHERE item_id=?').get(item.id) as
+    { size: number; mtime: string } | undefined, undefined)
+  return Boolean(row && Number(row.size) === Number(item.bytes) && row.mtime === item.mtime)
+}
+
+/**
+ * 預覽一個檔。**內容只從已經抽好的那兩份來**，這一支不開任何檔案。
+ *
+ * - 文字：`file_texts.text`。那張表是**快取**（file-texts.ts 的檔頭），所以這裡照它的規矩
+ *   核對 size 與 mtime —— 對不上代表檔案在抽完之後改過，那段字已經不是這個檔的內容了，
+ *   寧可說「還沒讀到」也不可以拿舊的內容騙人。
+ * - 圖：既有的縮圖端點（長邊 ≤ THUMB_MAX_SIDE 的灰階 PNG），**不送原圖**。
+ * - 兩者都沒有：照樣回 200，用大小、最後修改與 `why` 讓使用者自己判斷要不要留。
+ */
+export function previewOf(db: DatabaseSync, scope: string[] | PanelScope, itemId: string): PreviewView | null {
+  const why = panelReason(db, scope, itemId)
+  if (why === null) return null
+  const item = safe(() => db.prepare(
+    'SELECT id, name, ext, bytes, mtime FROM file_items WHERE id=?').get(itemId) as PreviewItemRow | undefined, undefined)
+  // 看得到卻查不到那一列（中間被刪掉）—— 跟看不到走同一個出口
+  if (!item) return null
+
+  const stored = safe(() => fileTextOf(db, itemId), null)
+  const fresh = Boolean(stored && Number(stored.size) === Number(item.bytes) && stored.mtime === item.mtime)
+  const raw = fresh && typeof stored!.text === 'string' ? safePreviewText(stored!.text) : ''
+  // 空白字串（空檔、只有空白的檔）不算有內容：畫面上一個空框比「沒有內容」更讓人困惑
+  const cut = /\S/.test(raw) ? headChars(raw, PREVIEW_MAX_CHARS) : null
+  const image = hasThumb(db, item) ? thumbUrl(item.id) : null
+  return {
+    name: item.name,
+    ext: item.ext,
+    bytes: Number(item.bytes),
+    mtime: item.mtime,
+    kind: cut ? 'text' : image ? 'image' : 'none',
+    text: cut ? cut.text : null,
+    // 當初存進 file_texts 的時候就截斷過的（原檔超過 4000 字）也要講
+    truncated: Boolean(cut && (cut.cut || (fresh && stored!.truncated === 1))),
+    image,
+    why,
+  }
+}
+
+/** 看不到與不存在**講同一句話**：不讓呼叫端從訊息或狀態碼問出「這個 id 存不存在」。 */
+const PREVIEW_NOT_FOUND = 'There is no such file to look at.'
 
 export type RouteCtx = {
   db: DatabaseSync
@@ -1713,6 +2141,11 @@ export type RouteCtx = {
   /** 截圖資料夾（config 的 cleanup.screenshotsDir）：清單、徽章、預設清理、建計畫在這底下只收截圖類。 */
   screenshotsDir?: string | null | (() => string | null)
   quarantine: string
+  /**
+   * 「整理好的」資料夾（config 的 `filed`）。**只有歸檔（P4）那三條用得到**；
+   * 沒給的話那三條回 500 BAD_CONFIG（不猜一個位置去搬使用者的檔）。
+   */
+  filed?: string | (() => string)
   /** 這兩個只有會動檔案的 route 才需要。跟 roots 一樣可以是 thunk（延後讀設定）。 */
   maxBytes?: number | (() => number)
   readonly?: boolean | (() => boolean)
@@ -1722,11 +2155,22 @@ export type RouteCtx = {
   /** 第三個參數是額外的 response header（例如 BUSY 的 Retry-After、405 的 Allow）。 */
   send: (code: number, payload: unknown, headers?: Record<string, string>) => void
   /**
+   * 送二進位（現在只有連拍縮圖的灰階 PNG）。**沒給的呼叫端就沒有縮圖**：
+   * 那一條路徑會回 501，而不是假裝成功或把圖塞進 JSON 裡。server.ts 一定要給。
+   */
+  sendBytes?: (code: number, contentType: string, body: Uint8Array, headers?: Record<string, string>) => void
+  /**
    * 手動掃一次。由呼叫端注入，這一支不直接相依 scanner。
    * `onProblem` 要傳給 scanDownloads：保險絲、讀不到的檔、打不開的資料夾都從這裡報，
    * 回應的 `problems` 就是收到的這些（不傳的話那些話走 HTTP 永遠看不到）。
    */
-  scan: (onProblem: (msg: string) => void) => { scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean }
+  scan: (onProblem: (msg: string) => void) => {
+    scanned: number; candidates: number; skipped: number; errors: number; truncated: boolean
+    /** 還有幾張圖的長相指紋沒算（一批有上限，見 scanner 的 MAX_IMAGE_BATCH）。 */
+    imagesPending?: number
+    /** 還有幾個文件檔沒讀內容（一批有上限，見 scanner 的 MAX_TEXT_BATCH）。 */
+    textsPending?: number
+  }
 }
 
 /** POST /cleanup/scan 回應裡 problems 最多幾條。 */
@@ -1757,7 +2201,7 @@ export function scanProblems(raw: string[], roots: string[]): string[] {
   }))]
   if (clean.length <= MAX_SCAN_PROBLEMS) return clean
   const shown = clean.slice(0, MAX_SCAN_PROBLEMS - 1)
-  return [...shown, `還有 ${clean.length - shown.length} 條沒有列出來。`]
+  return [...shown, `${clean.length - shown.length} more are not listed.`]
 }
 
 /** 錯誤沿用既有 server 的 { error: 字串 }，多一個 code 給程式分支。 */
@@ -1814,6 +2258,9 @@ export const HTTP_FOR_CODE: Record<string, number> = {
   OUTSIDE_ROOT: 500,
   NO_DUPLICATE: 500,
   VERIFY_FAILED: 500,
+  // 歸檔（P4）：`filed` 在另一顆碟，rename 回 EXDEV。**不硬搬**（複製＋刪除等於刪檔），
+  // 所以它只出現在逐項結果裡，那一項失敗、其他項照做。
+  CROSS_DEVICE: 500,
 }
 
 /**
@@ -1897,6 +2344,9 @@ const KNOWN: [RegExp, string[]][] = [
   [/^\/cleanup\/plans$/, ['GET', 'POST']],
   [/^\/cleanup\/plans\/[^/]+$/, ['GET']],
   [/^\/cleanup\/plans\/[^/]+\/(?:apply|undo|dismiss|release)$/, ['POST']],
+  [/^\/cleanup\/bursts$/, ['GET']],
+  [/^\/cleanup\/thumb\/[^/]+$/, ['GET']],
+  [/^\/cleanup\/preview\/[^/]+$/, ['GET']],
   [/^\/cleanup\/quarantine$/, ['GET']],
   [/^\/cleanup\/quarantine\/empty$/, ['POST']],
   [/^\/pet\/state$/, ['GET']],
@@ -1914,13 +2364,13 @@ const KNOWN: [RegExp, string[]][] = [
 function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> {
   const b = ctx.body
   if (b === undefined) return {}
-  if (b === null || typeof b !== 'object' || Array.isArray(b)) throw new CleanupError('BAD_BODY', '看不懂送來的資料。')
+  if (b === null || typeof b !== 'object' || Array.isArray(b)) throw new CleanupError('BAD_BODY', 'Could not make sense of the body.')
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
     // key 是呼叫端給的字串：控制字元換掉、只講前幾個
-    const shown = unknown.slice(0, 3).map(k => k.replace(UNSAFE_DISPLAY, '·').slice(0, 40)).join('、')
-    throw new CleanupError('BAD_BODY', `看不懂送來的資料：不認得的欄位 ${shown}。`
-      + (allowed.length ? `這個路徑只收 ${allowed.join('、')}。` : '這個路徑不收任何欄位。'))
+    const shown = unknown.slice(0, 3).map(k => k.replace(UNSAFE_DISPLAY, '·').slice(0, 40)).join(', ')
+    throw new CleanupError('BAD_BODY', `Could not make sense of the body: unknown field ${shown}.`
+      + (allowed.length ? ` This route only takes ${allowed.join(', ')}.` : ' This route takes no fields.'))
   }
   return b
 }
@@ -1936,7 +2386,14 @@ const BODY_KEYS = {
 const rootsOf = (ctx: RouteCtx) => typeof ctx.roots === 'function' ? ctx.roots() : ctx.roots
 const shotsOf = (ctx: RouteCtx) =>
   typeof ctx.screenshotsDir === 'function' ? ctx.screenshotsDir() : (ctx.screenshotsDir ?? null)
-const scopeOfCtx = (ctx: RouteCtx): CleanupScope => ({ roots: rootsOf(ctx), screenshotsDir: shotsOf(ctx) })
+const filedOf = (ctx: RouteCtx) => typeof ctx.filed === 'function' ? ctx.filed() : (ctx.filed ?? null)
+/**
+ * 這一次請求的範圍。**帶上 quarantine 與 filed**（P6）：預覽與縮圖的可見範圍要跟面板一樣寬，
+ * 而面板的改名／歸檔那兩區看得到什麼，就是靠這兩個值算的。其他路徑不讀這兩個欄位，行為不變。
+ */
+const scopeOfCtx = (ctx: RouteCtx): PanelScope => ({
+  roots: rootsOf(ctx), screenshotsDir: shotsOf(ctx), quarantine: ctx.quarantine, filed: filedOf(ctx),
+})
 
 /**
  * 這個請求是哪一種動作（記錯的時候用，R2-10）。建計畫算「套用」—— 那是清理的第一步。
@@ -1958,7 +2415,7 @@ function route(ctx: RouteCtx): boolean {
 
   const known = KNOWN.find(([re]) => re.test(p))
   if (known && !known[1].includes(method)) {
-    fail(send, 405, `這個路徑只收 ${known[1].join('、')}。`, 'BAD_METHOD', { allow: known[1].join(', ') })
+    fail(send, 405, `This route only takes ${known[1].join(', ')}.`, 'BAD_METHOD', { allow: known[1].join(', ') })
     return true
   }
 
@@ -1966,10 +2423,43 @@ function route(ctx: RouteCtx): boolean {
     const raw = url.searchParams.get('limit')
     const limit = raw === null ? undefined : Number(raw)
     if (raw !== null && (!Number.isInteger(limit) || limit! < 1 || limit! > 1000)) {
-      fail(send, 400, 'limit 要是 1 到 1000 之間的整數。', 'BAD_BODY')
+      fail(send, 400, 'limit must be a whole number between 1 and 1000.', 'BAD_BODY')
       return true
     }
     send(200, listCandidates(ctx.db, { ...scopeOfCtx(ctx), limit }))
+    return true
+  }
+
+  // 連拍組：畫面要的只有縮圖與外框，**沒有路徑**（見 burstGroupsView）
+  if (p === '/cleanup/bursts' && method === 'GET') {
+    send(200, { groups: burstGroupsView(ctx.db, scopeOfCtx(ctx)) })
+    return true
+  }
+
+  // 縮圖。**只給現在還在某一組裡的 item**，其他一律 404 —— 這不是任意檔案的讀取端點。
+  const thumb = /^\/cleanup\/thumb\/([^/]+)$/.exec(p)
+  if (thumb && method === 'GET') {
+    let itemId: string
+    try { itemId = decodeURIComponent(thumb[1]) }
+    catch { throw new CleanupError('BAD_BODY', 'That thumbnail id is not a valid shape.') }
+    if (!ctx.sendBytes) { fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED'); return true }
+    const png = burstThumbPng(ctx.db, scopeOfCtx(ctx), itemId)
+    // 不在組裡、讀不到、解不開都一樣回 404：不讓呼叫端從狀態碼問出「這個 id 存不存在」
+    if (!png) { fail(send, 404, 'There is no such thumbnail.', 'NOT_FOUND'); return true }
+    ctx.sendBytes(200, 'image/png', png, { 'content-length': String(png.length) })
+    return true
+  }
+
+  // 看內容（P6）。**只吃 itemId，不收路徑，也不開任何檔** —— 內容來自 file_texts（掃描時抽好的）
+  // 與既有的縮圖端點。面板看不到的一律 404，訊息跟「不存在」一模一樣。
+  const peek = /^\/cleanup\/preview\/([^/]+)$/.exec(p)
+  if (peek && method === 'GET') {
+    let itemId: string
+    try { itemId = decodeURIComponent(peek[1]) }
+    catch { throw new CleanupError('BAD_BODY', 'That file id is not a valid shape.') }
+    const view = previewOf(ctx.db, scopeOfCtx(ctx), itemId)
+    if (!view) { fail(send, 404, PREVIEW_NOT_FOUND, 'NOT_FOUND'); return true }
+    send(200, view)
     return true
   }
 
@@ -1993,7 +2483,7 @@ function route(ctx: RouteCtx): boolean {
       // scanner 逐檔寫入沒有交易，掃到一半炸掉時資料庫已經改了一半，
       // 所以只說「可能沒有完成」；掃描本身從來不搬也不刪，那一句是真的。
       recordCleanupError(ctx.db, e, 'scan')
-      fail(send, 500, '掃描的時候出錯了，這次掃描可能沒有完成。掃描不會搬動或刪除任何檔案。', 'INTERNAL')
+      fail(send, 500, 'The scan hit an error, so it may not have finished. A scan never moves or deletes anything.', 'INTERNAL')
       return true
     }
     recordOk(ctx.db, 'scan')
@@ -2023,7 +2513,7 @@ function route(ctx: RouteCtx): boolean {
     // 建了再被 apply 擋下的話，那份計畫卡在 proposed、永遠佔住那些檔，
     // 之後任何人建計畫都撞 CONFLICT。CLI 那輪修過一模一樣的 bug。
     const ro = typeof ctx.readonly === 'function' ? ctx.readonly() : ctx.readonly
-    if (ro) throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會建立清理計畫，也不會搬動任何檔案。')
+    if (ro) throw new CleanupError('READ_ONLY', 'Read-only mode is on: no cleanup plan is created and no file is moved.')
     const scope = scopeOfCtx(ctx)
     // **只有完全沒帶 candidateIds 才是預設**（清單上打 ✔ 的，一次最多 1000 個檔）。
     // `null` 是看不懂，不是沒帶 —— 上一版用 `??`，null 就變成「全部打 ✔ 的」（RC6）。
@@ -2056,7 +2546,7 @@ function route(ctx: RouteCtx): boolean {
     let id: string
     // 壞掉的 %xx 是呼叫端送錯，不是後端故障（RC5）—— 上一版丟 URIError，變成 500 + lastError
     try { id = decodeURIComponent(plan[1]) }
-    catch { throw new CleanupError('BAD_BODY', '計畫 id 的格式不正確。') }
+    catch { throw new CleanupError('BAD_BODY', 'That plan id is not a valid shape.') }
     const action = plan[2]
     // 每個回應都帶逐項結果（outcome／why）。UI 不可以自己用「勾了幾個」推算。
     if (!action) { send(200, withOutcomes(ctx.db, getPlan(ctx.db, id))); return true }
@@ -2115,7 +2605,7 @@ function route(ctx: RouteCtx): boolean {
     // 而這是整個專案唯一會真的刪檔的路徑。
     // 帶了但不是布林是**送錯**（400），跟「還沒確認」（沒帶或 false，428）分開（RC23）。
     if (body.confirmed !== undefined && typeof body.confirmed !== 'boolean') {
-      throw new CleanupError('BAD_BODY', 'confirmed 要是 true 或 false。')
+      throw new CleanupError('BAD_BODY', 'confirmed must be true or false.')
     }
     let result
     // 清空刪了檔，孤兒對帳的快取同樣要作廢（以前沒有：清空後十秒內 /health 會報假的孤兒）
@@ -2129,11 +2619,16 @@ function route(ctx: RouteCtx): boolean {
   if (p === '/pet/state' && method === 'GET') {
     // 這條要 token，所以拿完整版 —— 寵物要比 lastErrorAt 與 lastOkAt，瘦身版兩個都是 null
     const h = healthSnapshot(ctx.db, { ...scopeOfCtx(ctx), quarantine: ctx.quarantine, full: true })
-    send(200, petState(h, {
-      proposedPlans: safe(() => (ctx.db.prepare(
-        `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
-      activeQuarantine: h.quarantine.items,
-    }))
+    send(200, {
+      ...petState(h, {
+        proposedPlans: safe(() => (ctx.db.prepare(
+          `SELECT count(*) n FROM cleanup_plans WHERE status='proposed'`).get() as { n: number }).n, 0),
+        activeQuarantine: h.quarantine.items,
+      }),
+      // 連拍：現在有幾組、其中幾組是還沒主動彈過的。**畫面自己決定要不要開口**
+      // （petState 的 state 階梯不動 —— 那是「第一個成立的贏」，插隊會蓋掉待辦與錯誤）。
+      burst: safe(() => burstAsk(ctx.db, scopeOfCtx(ctx)), { groups: 0, newGroups: 0 }),
+    })
     return true
   }
 
@@ -2143,7 +2638,7 @@ function route(ctx: RouteCtx): boolean {
   // 而漏掉的後果就是這段註解要避免的那件事。
   // 認得的路徑用錯方法在最上面就回 405 了，走到這裡的是真的不認得的路徑。
   if (p.startsWith('/cleanup/') || p.startsWith('/pet/')) {
-    fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED')
+    fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED')
     return true
   }
 

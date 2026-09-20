@@ -98,7 +98,7 @@ describe('a 大量消失的保險絲：用裝置編號與「根目錄是空的�
     s.scan()
     assert.equal(s.missing(), 12)
     assert.equal(s.names().length, 8)
-    assert.ok(!s.problems.some(m => /整個不見了|同一顆碟/.test(m)), JSON.stringify(s.problems))
+    assert.ok(!s.problems.some(m => /vanished entirely|same disk/.test(m)), JSON.stringify(s.problems))
   })
 
   test('根目錄的 st_dev 跟上次不同 → 一個都不標、記 problem；（推論）新的裝置編號記下來，下一次照常標', t => {
@@ -114,7 +114,7 @@ describe('a 大量消失的保險絲：用裝置編號與「根目錄是空的�
     s.problems.length = 0
     s.scan()
     assert.equal(s.missing(), 0, '換了碟（或沒掛上）的時候一個都不可以標')
-    const hit = s.problems.find(m => /同一顆碟/.test(m))
+    const hit = s.problems.find(m => /same disk/.test(m))
     assert.ok(hit, JSON.stringify(s.problems))
     assert.ok(hit.includes('Downloads') && !hit.includes(s.dir), `problem 要有資料夾名稱、不帶完整路徑：${hit}`)
 
@@ -130,7 +130,7 @@ describe('a 大量消失的保險絲：用裝置編號與「根目錄是空的�
     s.problems.length = 0
     s.scan()
     assert.equal(s.missing(), 0)
-    const hit = s.problems.find(m => m.includes('看起來整個不見了'))
+    const hit = s.problems.find(m => m.includes('looks like it vanished entirely'))
     assert.ok(hit, JSON.stringify(s.problems))
     assert.ok(!hit.includes(s.dir), hit)
   })
@@ -227,7 +227,7 @@ describe('b 長時間操作每處理一項就續約鎖', () => {
       if (++n === 2) other.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, thief)
     } })
     assert.ok(r.stoppedEarly, `要回 stoppedEarly：${JSON.stringify(r.stoppedEarly)}`)
-    assert.match(r.stoppedEarly.why, /清理鎖/)
+    assert.match(r.stoppedEarly.why, /took the lock/)
     assert.equal(f.db.prepare('SELECT status FROM cleanup_plans WHERE id=?').get(p.id).status, 'proposed',
       '停在半路不可以寫計畫狀態，不然接不下去')
     assert.equal(f.db.prepare('SELECT owner FROM cleanup_operation_lock').get()?.owner, thief, '不可以刪掉別人的鎖')
@@ -376,7 +376,7 @@ describe('（推論）e2 重複檔的保留者要在目前的清理根目錄底�
     s.scan()
     const c = s.list().candidates
     assert.deepEqual(c.map(x => x.name), ['b.pdf'])
-    assert.match(c[0].reasons[0].evidence, /會留著「a\.pdf」/)
+    assert.match(c[0].reasons[0].evidence, /“a\.pdf” is the one being kept/)
     const p = routes.createPlanForRoots(s.db, [s.dl], { candidateIds: c[0].candidateIds })
     assert.equal(exec.applyPlan(s.db, p.id, s.opts).status, 'applied')
     assert.ok(existsSync(a) && !existsSync(b) && existsSync(s.dz))
@@ -530,7 +530,7 @@ describe('i cleanup.roots 不可以是根目錄、家目錄、家目錄的上一
     for (const bad of ['/', home, join(base, 'users'), base, join(base, 'users') + '/']) {
       const r = config.normalize({ cleanup: { roots: [bad] } }, sys)
       assert.deepEqual(r.config.cleanup.roots, [join(home, 'Downloads')], bad)
-      assert.ok(r.problems.some(p => p.includes('清理資料夾')), `${bad}：${JSON.stringify(r.problems)}`)
+      assert.ok(r.problems.some(p => p.includes('cleanup folder')), `${bad}：${JSON.stringify(r.problems)}`)
     }
     const good = [join(base, 'users', 'alice-backup'), join(home, 'Downloads', 'sub')]
     const ok = config.normalize({ cleanup: { roots: good } }, sys)
@@ -641,6 +641,31 @@ describe('k 空 token 不可以跑起來', () => {
     assert.equal(readFileSync(kept, 'utf8'), 'abc-123\n')
   })
 
+  test('CONTEXTBOX_TOKEN：環境變數優先，太短的不算（2026-09-20）', t => {
+    // 使用者想自己指定一把（沙盒與真實環境共用、換機器不用重拿網址）。
+    // 但這一把鑰匙開的是「搬你的檔案」那道門，所以短到沒有意義的一律不收。
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-env-')))
+    t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.CONTEXTBOX_TOKEN })
+    const p = join(dir, 'token')
+    writeFileSync(p, 'from-the-file-1234567890')
+
+    process.env.CONTEXTBOX_TOKEN = 'a-token-from-the-environment'
+    assert.equal(server.loadToken(p), 'a-token-from-the-environment', '環境變數優先')
+    assert.equal(readFileSync(p, 'utf8'), 'from-the-file-1234567890', '不可以去動 token 檔')
+
+    process.env.CONTEXTBOX_TOKEN = '  spaces-around-a-long-enough-token  '
+    assert.equal(server.loadToken(p), 'spaces-around-a-long-enough-token', '前後空白要去掉')
+
+    for (const tooShort of ['', '   ', '1', 'short', 'x'.repeat(server.TOKEN_MIN - 1)]) {
+      process.env.CONTEXTBOX_TOKEN = tooShort
+      assert.equal(server.loadToken(p), 'from-the-file-1234567890',
+        `太短的要退回檔案那條路：${JSON.stringify(tooShort)}`)
+    }
+    // 剛好到門檻的收
+    process.env.CONTEXTBOX_TOKEN = 'y'.repeat(server.TOKEN_MIN)
+    assert.equal(server.loadToken(p), 'y'.repeat(server.TOKEN_MIN))
+  })
+
   test('server 啟動時 token 檔是空的 → 用新產生的那把；不帶 header 的請求一律 401', async t => {
     mkdirSync(join(FAKE_HOME, '.contextbox'), { recursive: true })
     writeFileSync(server.TOKEN_PATH, '')
@@ -675,8 +700,8 @@ describe('l POST /cleanup/scan 回 problems（人話、不帶完整路徑）', (
       url: new URL('http://x/cleanup/scan'), method: 'POST', body: {},
       send: (code, body) => { got = { code, body } },
       scan: onProblem => {
-        onProblem('打不開掃描資料夾「Downloads」（沒有權限？），這次什麼都沒掃到。')
-        onProblem(`掃描資料夾不存在：${f.downloads}`)
+        onProblem('Could not open the scan folder “Downloads” (no permission?), so nothing in it was scanned.')
+        onProblem(`The scan folder does not exist: ${f.downloads}`)
         return f.scan()
       },
     })
@@ -684,8 +709,8 @@ describe('l POST /cleanup/scan 回 problems（人話、不帶完整路徑）', (
     assert.equal(got.code, 200)
     assert.ok(Array.isArray(got.body.problems))
     assert.equal(got.body.problems.length, 2)
-    assert.match(got.body.problems[0], /打不開掃描資料夾「Downloads」/)
-    assert.match(got.body.problems[1], /掃描資料夾不存在/)
+    assert.match(got.body.problems[0], /Could not open the scan folder/)
+    assert.match(got.body.problems[1], /The scan folder does not exist/)
     for (const m of got.body.problems) assert.ok(!m.includes(f.dir), `problem 帶了完整路徑：${m}`)
     assert.equal(typeof got.body.scanned, 'number', '原本的欄位還在')
   })
@@ -709,7 +734,7 @@ describe('l POST /cleanup/scan 回 problems（人話、不帶完整路徑）', (
       chmodSync(join(s.downloads, '鎖住的'), 0o000)
       try { r = await s.api('POST', '/cleanup/scan', {}) }
       finally { chmodSync(join(s.downloads, '鎖住的'), 0o755) }
-      assert.ok(r.json.problems.some(m => /打不開/.test(m)), JSON.stringify(r.json.problems))
+      assert.ok(r.json.problems.some(m => /ould not be open/.test(m)), JSON.stringify(r.json.problems))
     }
     for (const m of r.json.problems) {
       assert.equal(typeof m, 'string')
@@ -735,12 +760,12 @@ describe('m 失敗原因在 applyPlan 裡面記（不經過 route）', () => {
     const r = routes.withOutcomes(f.db, exec.applyPlan(f.db, p.id, f.opts))
     const failed = r.items.filter(i => i.outcome === 'failed')
     assert.equal(failed.length, 1)
-    assert.match(failed[0].why, /十分鐘內還在變動/)
+    assert.match(failed[0].why, /changed within the last ten minutes/)
     assert.equal(f.db.prepare('SELECT count(*) n FROM cleanup_item_errors WHERE plan_id=?').get(p.id).n, 1)
     f.scan()                                            // 會改寫 file_items.error
     const later = routes.withOutcomes(f.db, plans.getPlan(f.db, p.id)).items.find(i => i.itemId === failed[0].itemId)
     assert.equal(later.outcome, 'failed')
-    assert.match(later.why, /十分鐘內還在變動/, `重掃之後原因不見了：${later.why}`)
+    assert.match(later.why, /changed within the last ten minutes/, `重掃之後原因不見了：${later.why}`)
   })
 
   test('（推論）同一份計畫接著做成功 → 失敗紀錄刪掉', t => {
@@ -780,8 +805,8 @@ describe('n recordOk 匯出、o 只留 safeWhy 一個翻譯入口', () => {
 
   test('humanError 不再匯出；safeWhy 翻帶路徑的、人話原樣通過、空的回 null', () => {
     assert.equal(routes.humanError, undefined)
-    assert.equal(routes.safeWhy("EACCES: permission denied, open '/home/u/x.pdf'"), '沒有權限讀這個檔案')
-    assert.equal(routes.safeWhy('這個檔案十分鐘內還在變動，先不搬。等一下再試一次。'), '這個檔案十分鐘內還在變動，先不搬。等一下再試一次。')
+    assert.equal(routes.safeWhy("EACCES: permission denied, open '/home/u/x.pdf'"), 'no permission to read this file')
+    assert.equal(routes.safeWhy('This file changed within the last ten minutes, so it stays put.'), 'This file changed within the last ten minutes, so it stays put.')
     assert.equal(routes.safeWhy(null), null)
     assert.equal(routes.safeWhy(''), null)
   })
@@ -813,7 +838,7 @@ async function serve(t, { files = {}, token = 'core2-token', extraRoot = null } 
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8')
         let json = null
-        try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+        try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
         resolve({ status: res.statusCode, headers: res.headers, text, json })
       })
     })
