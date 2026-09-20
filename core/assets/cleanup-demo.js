@@ -45,6 +45,8 @@ const learned = createLearned((path, init) => window.api(path, init))
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
+/** 後端說的「正在讀嗎、還剩幾個」（/pet/state 的 reading）。舊版後端沒有這一段就是全 0。 */
+let reading = { running: false, pending: 0 }
 let healthChecked = false, healthBusy = false, stopped = false
 /**
  * 面板自己送出、還沒回來的動作（清理、復原、放回、放棄、歷史面板的復原）。
@@ -82,6 +84,29 @@ function proposalItems(s) {
   for (const id of hidden) s.select(id, false)
   return s.candidates.filter(item => !hidden.has(item.itemId))
 }
+/**
+ * 只清這一個檔。
+ *
+ * **不是另一條路**：把勾選換成「只有它」，然後走跟總按鈕一模一樣的 operate('apply') ——
+ * 建計畫、寫 journal、逐項結果、可復原，一個環節都不跳過。
+ * 做不成的話把使用者原本的勾選放回去（他可能勾了一堆，只是想先清這一個）。
+ */
+async function cleanOne(s, item) {
+  if (busy || s.canUndo || s.locked) return
+  const before = new Set(s.selected)
+  for (const id of before) s.select(id, false)
+  s.select(item.itemId, true)
+  render()
+  await operate('apply')
+  // 還在清單上（沒搬成）就把原本的勾選還原 —— 搬成了的話那一列已經不在了
+  if (session().candidates.some(c => c.itemId === item.itemId)) {
+    const now = session()
+    now.select(item.itemId, false)
+    for (const id of before) now.select(id, true)
+    render()
+  }
+}
+
 function skipItem(s, item) {
   if (busy || s.canUndo || s.locked) return
   let op = proposalSkips().find(op => op.pending && op.owner === s)
@@ -262,6 +287,10 @@ function updateAlert() {
   if (worried) {
     clearPetTransientState()
     setPetBaseState('worried')
+  } else if (reading.running) {
+    // `thinking` 以前是死狀態（宣告了、有台詞、但全樹沒有任何地方會設它）。
+    // 模型一個檔十幾秒、幾百個檔要幾小時 —— 使用者最需要知道的就是「它到底有沒有在動」。
+    setPetBaseState('thinking')
   } else {
     setPetBaseState(count > 0 ? 'found' : 'idle')
   }
@@ -285,6 +314,24 @@ function updateAlert() {
     : offline ? 'Cannot reach the local service right now. Start the server and this updates itself.'
     : health?.watcher?.ok ? `Watching ${folderPhrase(health.watcher)}.`
     : 'Not watching anything yet.'
+  renderReading()
+}
+
+/**
+ * 「它現在在讀檔案嗎、還剩幾個」。
+ *
+ * 少了這一行，使用者看到「Suggested names 0」分不出兩件完全不同的事：
+ * **還沒輪到它**（模型一個檔十幾秒，幾百個檔要幾小時）與**它根本沒在動**。
+ * 後者才需要動手，前者只要等 —— 但畫面上長得一模一樣。
+ */
+function renderReading() {
+  const line = $('files-reading')
+  if (!line) return
+  if (isDemo() || !reading.pending) { line.hidden = true; return }
+  line.hidden = false
+  line.textContent = reading.running
+    ? `Reading your files… ${reading.pending >= 500 ? '500+' : reading.pending} still to go.`
+    : `${reading.pending >= 500 ? '500+' : plural(reading.pending, 'file')} not read yet — it works through them in the background.`
 }
 function announce() {
   updateAlert()
@@ -789,7 +836,16 @@ function render() {
     skip.textContent = 'Not this one'
     skip.disabled = check.disabled
     skip.onclick = () => skipItem(s, item)
-    row.append(label, size, skip)
+    // 一列一顆「Clean up」：391 個候選的時候，為了清掉一個檔而滑到最底下按總按鈕
+    // 是很糟的體驗（使用者自己講的）。這顆只清這一個，走的是同一條路
+    // （建計畫 → 套用 → 逐項結果 → 可復原），不是另一條捷徑。
+    const one = document.createElement('button')
+    one.type = 'button'
+    one.className = 'cleanup-one'
+    one.textContent = 'Clean up'
+    one.disabled = busy || s.canUndo || Boolean(s.locked)
+    one.onclick = () => cleanOne(s, item)
+    row.append(label, size, one, skip)
     // 理由收在「Why this one」裡：一眼掃過去是檔名與大小，想知道為什麼再點開
     const details = document.createElement('details')
     const heading = document.createElement('summary')
@@ -1432,7 +1488,10 @@ async function pollHealth() {
   updateAlert()
   // 復原徽章跟著輪詢更新就夠了。掛在 updateAlert 上的話，每勾一個勾選框都會多送一次請求。
   void refreshHistoryBadge()
-  if (health) await askAboutBursts()
+  // 一次輪詢只問一次 /pet/state：連拍要它、「正在讀」那一行也要它
+  const petSnapshot = health ? await pollPetState() : null
+  if (health) updateAlert()          // reading 變了要重畫那一行與寵物狀態
+  if (health) await askAboutBursts(petSnapshot)
   // 背景那一輪問完模型之後，面板要自己跟上（不用關掉重開）
   if (health) await refreshSuggestions()
   if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
@@ -1482,10 +1541,26 @@ const suggestionSignature = () => JSON.stringify([
   learned.items.map(i => i.id),
 ])
 
-async function askAboutBursts() {
-  if (isDemo() || busy || historyBusy || panel.open || historyPanel.open) return
+/**
+ * 每一輪輪詢問一次 `/pet/state`，**面板開著也要問** —— 「它正在讀」那一行就靠它。
+ * 連拍那邊用同一份回應，不再自己打一次（一次輪詢只送一個請求）。
+ */
+async function pollPetState() {
+  if (isDemo()) { reading = { running: false, pending: 0 }; return null }
   let state
-  try { state = await window.api('/pet/state') } catch { return }
+  try { state = await window.api('/pet/state') } catch { return null }
+  const r = state?.reading
+  // 舊版後端沒有 reading 這一段：當成沒有在讀、沒有待讀（那一行就不顯示）
+  reading = {
+    running: r?.running === true,
+    pending: Number.isFinite(Number(r?.pending)) ? Math.max(0, Math.floor(Number(r.pending))) : 0,
+  }
+  return state
+}
+
+async function askAboutBursts(state) {
+  if (isDemo() || busy || historyBusy || panel.open || historyPanel.open) return
+  if (!state) return
   const n = Number(state?.burst?.newGroups)
   // 舊版後端沒有 burst 這一段（n 是 NaN）：當成沒有新的組
   if (!Number.isFinite(n) || n <= 0) return

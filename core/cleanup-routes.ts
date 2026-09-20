@@ -37,6 +37,7 @@ import { decodePngGray } from './png.ts'
 import { resizeGray } from './imagehash.ts'
 import { encodeGrayPng } from './png-write.ts'
 import { opinionsFor, type ModelOpinion } from './model-store.ts'
+import { pendingCount } from './model-queue.ts'
 import { fileTextOf } from './file-texts.ts'
 // 預覽的可見範圍要跟面板一模一樣，所以這裡直接問那兩區的正本（P6 的 panelReason）。
 // **不會成環**：rename.ts／filing.ts 都不 import 這一支。
@@ -72,7 +73,21 @@ export const META = {
    * 這一列就不在裡面／對不上，下一個指令會照常再試一次。cli.mjs 的 needsSettling／settleCleanupState 在用。
    */
   stuckJournal: 'cleanup_stuck_journal',
+  /**
+   * 「現在正在讀檔案嗎」。值是那一輪開始的 ISO 時間；那一輪結束時這一列被刪掉。
+   *
+   * 為什麼要有：模型一個檔要十幾秒，幾百個檔就是好幾個小時。使用者在面板前面看到
+   * 「Suggested names 0」，分不出是**還沒輪到**還是**它根本沒在動** —— 那是最讓人不信任的狀態。
+   * 有這一列，/pet/state 就講得出「正在讀，還剩 N 個」，寵物也才有事情可以做
+   * （thinking 這個狀態以前是死的，沒有任何地方會設它）。
+   *
+   * **當機之後會留一列假的**（pet 被 kill）。所以讀的那一端要看時間：超過 STALE_THINK_MS 就不算。
+   */
+  thinking: 'model_round_started',
 } as const
+
+/** 「正在讀」這件事最多信多久。pet 被砍掉的話那一列會留著，不看時間就會永遠顯示在讀。 */
+export const STALE_THINK_MS = 15 * 60_000
 
 /**
  * 會記成功與錯誤的動作種類（第二輪 R2-10）。**寵物只在「最新的錯誤之後，同一種動作成功過」時才不擔心** ——
@@ -926,6 +941,19 @@ export function invalidateQuarantineCache() { countCache = null }
  * 而寵物的對話框是整個作品最常被截圖的地方（稽核 2026-09-20）。
  */
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/**
+ * 「現在在讀嗎、還剩幾個」。
+ *
+ * `running` 看的是 META.thinking 那一列：**要夠新**才算（pet 被砍掉會留下一列假的，
+ * 見那個 key 的說明）。`pending` 是還沒讀過的檔數，上限 500（畫面只寫 500+）。
+ */
+export function readingState(db: DatabaseSync, roots: readonly string[]): { running: boolean; pending: number } {
+  const started = safe(() => getMeta(db, META.thinking), null)
+  const at = started ? Date.parse(started) : NaN
+  const running = Number.isFinite(at) && Date.now() - at < STALE_THINK_MS
+  return { running, pending: safe(() => pendingCount(db, roots), 0) }
+}
 
 export function petState(
   h: {
@@ -2628,6 +2656,9 @@ function route(ctx: RouteCtx): boolean {
       // 連拍：現在有幾組、其中幾組是還沒主動彈過的。**畫面自己決定要不要開口**
       // （petState 的 state 階梯不動 —— 那是「第一個成立的贏」，插隊會蓋掉待辦與錯誤）。
       burst: safe(() => burstAsk(ctx.db, scopeOfCtx(ctx)), { groups: 0, newGroups: 0 }),
+      // 「它現在在讀檔案嗎、還剩幾個」。畫面靠這個決定要不要轉圈圈 ——
+      // 少了它，使用者分不出「還沒輪到」與「它根本沒在動」。
+      reading: safe(() => readingState(ctx.db, rootsOf(ctx) ?? []), { running: false, pending: 0 }),
     })
     return true
   }

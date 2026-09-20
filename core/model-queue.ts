@@ -235,6 +235,14 @@ export type RoundOptions = {
   config: Config
   roots: readonly string[]
   limit?: number
+  /**
+   * 同時問幾個（預設 1）。
+   *
+   * **為什麼預設是 1**：這是背景工作，一次一個對別人的閘道最客氣，而且失敗的時候
+   * 「連續三次就停」講得清楚。但一個檔要 7～12 秒，幾百個檔就是好幾個小時 ——
+   * 所以留一個旋鈕（CLI 的 CONTEXTBOX_THINK_CONCURRENCY）。上限 8：再多就不是「客氣」了。
+   */
+  concurrency?: number
   signal?: AbortSignal
   fetchImpl?: typeof fetch
   timeoutMs?: number
@@ -351,8 +359,17 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
   }
 
   let inARow = 0
-  for (const item of items) {
-    if (opts.signal?.aborted) { result.cancelled = true; break }
+  // **同一輪裡同樣的內容只問一次**：平行跑的時候兩個一模一樣的檔會同時查不到快取、
+  // 同時送出去。先搶到的那一個負責問，另一個等它寫完再讀快取。
+  const inFlight = new Map<string, Promise<void>>()
+  const lanes = Math.max(1, Math.min(8, Math.floor(opts.concurrency ?? 1) || 1))
+  let cursor = 0
+  let stop = false
+
+  const takeOne = async (): Promise<boolean> => {
+    if (stop || cursor >= items.length) return false
+    const item = items[cursor++]
+    if (opts.signal?.aborted) { result.cancelled = true; return false }
     index++
     const step = (p: Partial<RoundProgress>): void => {
       const full = { index, total: result.total, name: item.name, source: item.source, ...p } as RoundProgress
@@ -367,7 +384,7 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       try { putModelSkip(db, item.id, UNANSWERED_WHY, now().toISOString()) } catch { /* 忙就下次 */ }
       result.skipped++
       step({ outcome: 'skipped', why: UNANSWERED_WHY })
-      continue
+      return true
     }
 
     let p: Payload
@@ -380,7 +397,7 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       }
       result.skipped++
       step({ outcome: 'skipped', why: p.why })
-      continue
+      return true
     }
 
     const cacheKey = viewKey(p.payload)
@@ -395,16 +412,37 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
         course: String(cached.course ?? ''), topic: String(cached.topic ?? ''),
         confidence: String(cached.confidence ?? ''),
       })
-      continue
+      return true
+    }
+    // 同一輪裡已經有人在問同樣的內容：等它，然後照快取算（不重複送）
+    const already = inFlight.get(cacheKey)
+    if (already) {
+      await already
+      let twin = null
+      try { twin = getModelView(db, cacheKey) } catch { twin = null }
+      if (twin) {
+        try { adoptModelView(db, cacheKey, item.id) } catch { /* 忙就下次 */ }
+        result.cached++
+        step({
+          outcome: 'cached',
+          course: String(twin.course ?? ''), topic: String(twin.topic ?? ''),
+          confidence: String(twin.confidence ?? ''),
+        })
+        return true
+      }
     }
 
-    const r = await askModel(config, p.input, {
+    const asking = askModel(config, p.input, {
       signal: opts.signal, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs,
     })
+    inFlight.set(cacheKey, asking.then(() => undefined, () => undefined))
+    let r
+    try { r = await asking } finally { inFlight.delete(cacheKey) }
     if (!r.ok && r.aborted) {
       // 使用者自己停的：不記帳、不算失敗、不留半筆
       result.cancelled = true
-      break
+      stop = true
+      return false
     }
     const at = now().toISOString()
     try {
@@ -423,9 +461,10 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       if (inARow >= STOP_AFTER_FAILURES) {
         result.stopped = `The model failed to answer ${STOP_AFTER_FAILURES} times in a row (last one: ${r.error}). This round stops here and it will try again next round.`
         try { opts.onError?.(result.stopped) } catch { /* 記不下來就算了 */ }
-        break
+        stop = true
+        return false
       }
-      continue
+      return true
     }
 
     inARow = 0
@@ -440,7 +479,13 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
     } catch { /* 寫不進去下一輪會再問一次 */ }
     result.asked++
     step({ outcome: 'asked', course: r.view.course, topic: r.view.topic, confidence: r.view.confidence })
+    return true
   }
+
+  // lanes 條「一直拿下一個來做」的線。lanes=1 的時候跟原本的 for 迴圈一模一樣。
+  await Promise.all(Array.from({ length: lanes }, async () => {
+    while (await takeOne()) { /* 拿到就做，做完再拿 */ }
+  }))
 
   if (!result.cancelled) sweepModel(db)
   return result
@@ -449,4 +494,14 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
 /** 這一輪有沒有東西可以做（pet 用來決定要不要排）。 */
 export function hasPending(db: DatabaseSync, roots: readonly string[]): boolean {
   try { return pendingItems(db, roots, 1).length > 0 } catch { return false }
+}
+
+/**
+ * 還有幾個檔沒被讀過（畫面上的「還在讀，剩 N 個」用這個）。
+ *
+ * 上限 `cap`：這是給人看的數字，不是報表 —— 幾千個檔的時候問「還有沒有超過 500 個」
+ * 比精確數完便宜，畫面也只會寫「500+」。
+ */
+export function pendingCount(db: DatabaseSync, roots: readonly string[], cap = 500): number {
+  try { return pendingItems(db, roots, cap).length } catch { return 0 }
 }

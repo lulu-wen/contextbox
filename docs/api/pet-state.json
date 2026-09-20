@@ -1,14 +1,18 @@
 {
   "state": "worried",
-  "message": "後端出了點狀況，先看一下 doctor。",
+  "message": "Something is off in the backend. Have a look at doctor.",
   "pendingCount": 2,
   "quarantinedCount": 1,
   "undoable": true,
   "scanProblems": [
-    "有 2 個檔看不懂，這次沒有讀到它們的內容。"
+    "2 files could not be made sense of, so their contents were not read this time."
   ],
   "burst": {
     "groups": 0,
     "newGroups": 0
+  },
+  "reading": {
+    "running": false,
+    "pending": 0
   }
 }

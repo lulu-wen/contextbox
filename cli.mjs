@@ -27,7 +27,7 @@
 import { load, modelReady, modelKey, CONFIG_PATH } from './core/config.ts'
 import { modelEnabled, whyDisabled, PROMPT_VERSION } from './core/model.ts'
 import { modelStats } from './core/model-store.ts'
-import { thinkRound, ROUND_MAX_ITEMS } from './core/model-queue.ts'
+import { thinkRound, pendingCount, ROUND_MAX_ITEMS } from './core/model-queue.ts'
 import { admit } from './core/guard.ts'
 import { createWatcher } from './core/watcher.ts'
 import { open, DEFAULT_DB } from './core/db.ts'
@@ -1032,6 +1032,16 @@ function scanTimeoutFromEnv() {
 }
 
 /** pet 多久讓模型看一輪（測試調小）。 */
+/**
+ * 同時問幾個（`CONTEXTBOX_THINK_CONCURRENCY`）。**預設 1**：別人 clone 去接自己的端點時，
+ * 我們不該替他決定要打多兇。自己的閘道撐得住就開大 —— 一個檔約 12 秒，
+ * 4 條等於每秒 0.34 次請求。上限 8。
+ */
+const THINK_LANES = (() => {
+  const n = Number(process.env.CONTEXTBOX_THINK_CONCURRENCY)
+  return Number.isInteger(n) && n >= 1 && n <= 8 ? n : 1
+})()
+
 function thinkFromEnv() {
   const n = Number(process.env.CONTEXTBOX_THINK_MS)
   return Number.isInteger(n) && n >= 100 ? n : null
@@ -1388,27 +1398,47 @@ switch (cmd) {
       }
       limit = n
     }
+    const all = args.includes('--all')
     say(`Asking the model: ${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
-    say(`One file at a time, 60 seconds each. Ctrl+C stops it wherever it is, with no half-written records.`)
+    say(THINK_LANES > 1
+      ? `${THINK_LANES} at a time, 60 seconds each. Ctrl+C stops it wherever it is, with no half-written records.`
+      : `One file at a time, 60 seconds each. Ctrl+C stops it wherever it is, with no half-written records.`)
     const ac = new AbortController()
     const stopThinking = () => { if (!ac.signal.aborted) ac.abort() }
     process.on('SIGINT', stopThinking)
     process.on('SIGTERM', stopThinking)
-    const r = await thinkRound({
-      db, config, roots: CLEAN_ROOTS, limit, signal: ac.signal,
-      onError: w => noteError(new Error(w), 'model'),
-      onProgress: p => say(thinkLine(p)),
-    })
+    // `--all`：一輪接一輪做到沒東西為止（幾百個檔的時候不用自己按十次）。
+    // 每一輪照樣是 limit 個、照樣守「連續三次失敗就停」—— 停了就不再排下一輪。
+    const sum = { total: 0, asked: 0, cached: 0, skipped: 0, failed: 0, cancelled: false, stopped: null }
+    let rounds = 0
+    let r
+    do {
+      r = await thinkRound({
+        db, config, roots: CLEAN_ROOTS, limit, signal: ac.signal, concurrency: THINK_LANES,
+        onError: w => noteError(new Error(w), 'model'),
+        onProgress: p => say(thinkLine(p)),
+      })
+      rounds++
+      for (const k of ['total', 'asked', 'cached', 'skipped', 'failed']) sum[k] += r[k]
+      sum.cancelled = sum.cancelled || r.cancelled
+      sum.stopped = sum.stopped ?? r.stopped
+    } while (all && r.total && !r.cancelled && !r.stopped)
     process.off('SIGINT', stopThinking)
     process.off('SIGTERM', stopThinking)
     say('')
-    if (!r.total) {
+    if (!sum.total) {
       say('Nothing to ask about — every document and screenshot with text has been read, or nothing has been scanned yet.')
       break
     }
-    say(`This round: ${r.total} queued, ${r.asked} asked`
-      + `, ${r.cached} served from cache, ${r.skipped} not sent, ${r.failed} failed.`)
-    if (r.cancelled) say('(You stopped it; the rest wait for the next round.)')
+    say(`${rounds > 1 ? `${rounds} rounds` : 'This round'}: ${sum.total} queued, ${sum.asked} asked`
+      + `, ${sum.cached} served from cache, ${sum.skipped} not sent, ${sum.failed} failed.`)
+    if (sum.cancelled) say('(You stopped it; the rest wait for the next round.)')
+    // 還有一堆沒讀的：講一次怎麼加快，不然使用者只會覺得它很慢
+    const left = pendingCount(db, CLEAN_ROOTS)
+    if (left > 0 && !all) {
+      say(`${plural(left, 'file')} still to read. \`node cli.mjs think --all\` keeps going until there are none left`
+        + (THINK_LANES > 1 ? '.' : `, and CONTEXTBOX_THINK_CONCURRENCY=4 asks four at a time.`))
+    }
     say('What the model says is an **opinion**, not a fact: nothing is renamed or moved because it said so. The panel marks every one “The model thinks”.')
     if (r.asked) noteOk('model')
     if (r.stopped) {
@@ -2031,6 +2061,9 @@ switch (cmd) {
     const thinkOnce = async () => {
       if (thinking || stopping || !modelEnabled(config)) return
       thinking = true
+      // 讓面板看得見「它正在讀」（META.thinking）。少了這個，使用者在
+      // 「Suggested names 0」前面分不出是還沒輪到、還是根本沒在動。
+      try { setMeta(META.thinking, new Date().toISOString()) } catch { /* 寫不進去不影響這一輪 */ }
       try {
         const r = await thinkRound({
           db, config, roots: CLEAN_ROOTS, signal: thinkAbort.signal,
@@ -2044,7 +2077,10 @@ switch (cmd) {
       } catch (e) {
         // thinkRound 自己不丟例外，這裡只是保險：一輪壞掉不可以讓 pet 死掉
         noteError(e, 'model')
-      } finally { thinking = false }
+      } finally {
+        thinking = false
+        try { db.prepare('DELETE FROM meta WHERE k=?').run(META.thinking) } catch { /* 讀的那一端會看時間 */ }
+      }
     }
     if (modelEnabled(config)) {
       say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the background, one at a time.`)

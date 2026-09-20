@@ -58,7 +58,9 @@ function fakeApi(opts = {}) {
         scanProblems: [],
       }
     }
-    if (path === '/pet/state') return { state: 'idle', message: '沒事', burst: { groups: 0, newGroups: 0 } }
+    if (path === '/pet/state') {
+      return opts.petState ?? { state: 'idle', message: 'nothing going on', burst: { groups: 0, newGroups: 0 } }
+    }
     if (path.startsWith('/cleanup/candidates')) {
       return { candidates, needsHuman: [], total: candidates.length, needsHumanTotal: 0 }
     }
@@ -185,5 +187,51 @@ describe('背景問完模型之後，面板自己抓回來', () => {
     await ui.poll()
     assert.deepEqual(calls.filter(c => c.path.startsWith('/rename/suggestions')), [],
       '面板關著就不用抓建議')
+  })
+})
+
+// ═══ 看得出它有沒有在跑（2026-09-20）═══════════════════════════
+
+describe('「它正在讀檔案」看得見', () => {
+  const withReading = (reading, over = {}) => ({
+    candidates: [candidate()], petState: { state: 'idle', message: '', burst: { groups: 0, newGroups: 0 }, reading },
+    ...over,
+  })
+
+  test('正在讀 → 那一行講剩幾個，寵物進 thinking', async t => {
+    const ui = await mountPanel(t, {
+      api: fakeApi(withReading({ running: true, pending: 128 })), fetch: demoFetch,
+    })
+    await ui.poll()
+    assert.equal(ui.$('files-reading').hidden, false)
+    assert.match(ui.$('files-reading').textContent, /Reading your files… 128 still to go/)
+    assert.equal(ui.$('quaso').dataset.petState, 'thinking',
+      'thinking 以前是死狀態，現在要真的用得到')
+  })
+
+  test('沒在讀但還有待讀 → 講「還沒讀」，不要假裝正在跑', async t => {
+    const ui = await mountPanel(t, {
+      api: fakeApi(withReading({ running: false, pending: 3 })), fetch: demoFetch,
+    })
+    await ui.poll()
+    assert.match(ui.$('files-reading').textContent, /3 files not read yet/)
+    assert.notEqual(ui.$('quaso').dataset.petState, 'thinking')
+  })
+
+  test('全部讀完 → 那一行整個不顯示', async t => {
+    const ui = await mountPanel(t, {
+      api: fakeApi(withReading({ running: false, pending: 0 })), fetch: demoFetch,
+    })
+    await ui.poll()
+    assert.equal(ui.$('files-reading').hidden, true)
+  })
+
+  test('舊版後端（沒有 reading 這一段）→ 面板照常，那一行不顯示', async t => {
+    const ui = await mountPanel(t, {
+      api: fakeApi({ candidates: [candidate()], petState: { state: 'idle', burst: { groups: 0, newGroups: 0 } } }),
+      fetch: demoFetch,
+    })
+    await ui.poll()
+    assert.equal(ui.$('files-reading').hidden, true)
   })
 })

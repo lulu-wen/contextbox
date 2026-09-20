@@ -301,6 +301,22 @@ Round three added three more:
 
 ---
 
+### Going faster
+
+`think` is deliberately gentle: one file at a time, and the pet only runs a round every ten minutes in the
+background. A file takes ten to fifteen seconds, so a few hundred of them take hours. Two knobs:
+
+```bash
+CONTEXTBOX_THINK_CONCURRENCY=4 node cli.mjs think --all   # four at a time, round after round until none are left
+CONTEXTBOX_THINK_MS=60000 node cli.mjs pet                # the background round every minute instead of every ten
+```
+
+- `--all` keeps going until nothing is left to read. It still stops on three failures in a row, and Ctrl+C
+  still stops it cleanly.
+- `CONTEXTBOX_THINK_CONCURRENCY` is 1 by default and caps at 8 — the default is polite because the endpoint
+  is usually somebody else's. Four parallel requests at ~12 s each is about 0.34 requests per second.
+- The panel shows what is happening: "Reading your files… N still to go", and the pet sits in `thinking`.
+
 ## Exit codes are a contract
 
 **Context menus and scripts decide success from the exit code.** Print ✓ on screen and return non-zero and

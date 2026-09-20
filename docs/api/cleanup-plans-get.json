@@ -1,67 +1,67 @@
 {
-  "id": "6c11d1d4-c609-42ee-b449-9f2de8f5fde9",
+  "id": "8695c881-b92f-4607-8066-2e637f430f2a",
   "status": "proposed",
   "itemCount": 3,
-  "createdAt": "2026-09-19T13:58:10.670Z",
+  "createdAt": "2026-09-20T12:32:37.926Z",
   "appliedAt": null,
   "error": null,
   "bytes": 38,
   "items": [
     {
-      "itemId": "fb2b312a-3063-488e-aa76-63107558c90d",
+      "itemId": "06b1dcd1-feb6-43ec-ada3-77b4fbe4123f",
       "name": "素材包.zip",
       "bytes": 19,
-      "mtime": "2026-07-21T13:58:10.218Z",
+      "mtime": "2026-07-22T12:32:37.392Z",
       "candidateIds": [
-        "7e285846-5fe0-4b88-b244-f4cd8b3f955a"
+        "5de31ed1-b0cb-4da2-b822-5504b805a3c2"
       ],
       "skipped": false,
       "reasons": [
         {
           "kind": "archive",
           "confidence": 65,
-          "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 60 天沒有變動"
+          "reason": "Old archives are usually one-off downloads",
+          "evidence": ".zip archive, and untouched for 60 days"
         }
       ],
       "outcome": "pending",
       "why": null
     },
     {
-      "itemId": "42cf03c4-0f4f-4bd3-9221-e7188ac2d9c9",
+      "itemId": "e09f0be0-aad0-4b31-9ddd-214d94264101",
       "name": "安裝檔.msi",
       "bytes": 19,
-      "mtime": "2026-08-20T13:58:10.218Z",
+      "mtime": "2026-08-21T12:32:37.392Z",
       "candidateIds": [
-        "9a956e48-9e6d-451d-9574-36d0742eb7e4"
+        "ec76501e-2daf-4291-8aa1-dbcf7c603a74"
       ],
       "skipped": false,
       "reasons": [
         {
           "kind": "installer",
           "confidence": 70,
-          "reason": "舊安裝檔通常裝完就不需要留在 Downloads",
-          "evidence": ".msi 安裝檔，而且 30 天沒有變動"
+          "reason": "Old installers rarely need to stay in Downloads",
+          "evidence": ".msi installer, and untouched for 30 days"
         }
       ],
       "outcome": "pending",
       "why": null
     },
     {
-      "itemId": "fa55212c-0586-4813-93bd-992f57bcdb81",
+      "itemId": "9e67476a-f7ce-457c-991b-3d4a105594ef",
       "name": "空的.txt",
       "bytes": 0,
-      "mtime": "2026-09-16T13:58:10.218Z",
+      "mtime": "2026-09-17T12:32:37.392Z",
       "candidateIds": [
-        "80719d82-6482-4df0-92f0-44a10ab33b8f"
+        "8343518e-9472-48e9-a326-a52010279889"
       ],
       "skipped": false,
       "reasons": [
         {
           "kind": "empty",
           "confidence": 95,
-          "reason": "空檔案",
-          "evidence": "檔案大小是 0 byte，而且 3 天沒有變動"
+          "reason": "An empty file",
+          "evidence": "0 bytes, and untouched for 3 days"
         }
       ],
       "outcome": "pending",

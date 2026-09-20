@@ -358,6 +358,18 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 `undoable` 是旗標不是 state —— 當 state 會卡住七天。`thinking`／`cleaning`／`happy` 是前端在等回應時
 自己播的動畫，後端不回。
 
+`reading` 是「它現在在讀檔案嗎、還剩幾個」（P2 的背景佇列）：
+
+```json
+"reading": { "running": true, "pending": 128 }
+```
+
+- `running`：現在有一輪正在跑。看的是 pet 寫的那一列，**而且要夠新**（15 分鐘）——
+  pet 被砍掉會留下一列假的。
+- `pending`：還沒被讀過的檔數，上限 500（畫面寫「500+」）。
+- 面板拿它畫「Reading your files… N still to go」，寵物也靠它進 `thinking`。
+  舊版後端沒有這一段，面板當成「沒在讀、沒有待讀」，那一行就不顯示。
+
 ### `burst` —— 連拍截圖要不要**主動**問（P0）
 
 多一段 `burst: { groups, newGroups }`：`groups` 是現在一共幾組連拍，

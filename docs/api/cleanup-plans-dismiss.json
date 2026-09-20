@@ -1,27 +1,27 @@
 {
-  "id": "aad70da9-b72e-45a0-8232-5084b81040a2",
+  "id": "1a0490b3-bac5-4047-9811-fa8bf34fdef7",
   "status": "dismissed",
   "itemCount": 1,
-  "createdAt": "2026-09-19T13:58:10.881Z",
+  "createdAt": "2026-09-20T12:32:38.113Z",
   "appliedAt": null,
   "error": null,
   "bytes": 22,
   "items": [
     {
-      "itemId": "b89ebcce-2cd8-41d8-9722-96fe006d76f1",
+      "itemId": "de596b71-9e97-4be2-bad3-0f131f609973",
       "name": "很舊的.bin",
       "bytes": 22,
-      "mtime": "2026-03-03T13:58:10.218Z",
+      "mtime": "2026-03-04T12:32:37.392Z",
       "candidateIds": [
-        "0b1f26bb-0549-461d-bc85-431e4342be76"
+        "b0a869a6-bcf0-4729-ba60-95905f640d70"
       ],
       "skipped": false,
       "reasons": [
         {
           "kind": "old-download",
           "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "200 天沒有變動，且副檔名 .bin 不在保護清單"
+          "reason": "A download nobody has touched in a long time",
+          "evidence": "untouched for 200 days, and .bin is not on the protected list"
         }
       ],
       "outcome": "cancelled",

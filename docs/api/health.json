@@ -24,7 +24,7 @@
   },
   "pendingCandidates": 2,
   "needsHumanCount": 2,
-  "lastError": "有，帶 token 才看得到",
+  "lastError": "yes, but only visible with a token",
   "lastErrorAt": null,
   "lastOkAt": null,
   "lastErrorKind": null,

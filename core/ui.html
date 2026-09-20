@@ -280,6 +280,12 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   }
   .cleanup-tabs button[aria-selected="true"] { background: #4a3f2f; color: #fdfaf4; border-color: #4a3f2f; }
   .cleanup-tabs button:disabled { opacity: .45; cursor: default; }
+  /* 一列一顆的「Clean up」：看得出來是主要動作，但不要搶走整個面板的主按鈕 */
+  /* 「正在讀…」那一行：看得出來是進行中，但不要搶戲 */
+  .reading { color: #6b5d48; font-size: 13px; }
+  .reading::before { content: '⋯ '; }
+  .cleanup-one { border: 1px solid #b9a888; background: #f3e9d6; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+  .cleanup-one:disabled { opacity: .45; cursor: default; }
   .cleanup-tabs button .cleanup-tab-n { opacity: .7; margin-left: 6px; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
@@ -353,6 +359,9 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
           <span class="n" id="files-candidate-count">Looking…</span>
         </h2>
         <p id="files-where">Asking the backend which folders it watches…</p>
+        <!-- 「它正在讀檔案嗎、還剩幾個」。模型一個檔十幾秒，幾百個檔要幾小時 ——
+             少了這一行，使用者分不出「還沒輪到」與「根本沒在動」。 -->
+        <p id="files-reading" class="reading" hidden></p>
       </div>
       <div class="grpbody">
         <div class="filesbtns">

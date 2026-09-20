@@ -6,8 +6,8 @@
   },
   "watcher": {
     "ok": true,
-    "lastHeartbeatAt": "2026-09-19T13:58:11.047Z",
-    "pid": 170221,
+    "lastHeartbeatAt": "2026-09-20T12:32:38.252Z",
+    "pid": 1103293,
     "rootsMissing": 0,
     "watchingCount": 1,
     "watching": [
@@ -18,27 +18,27 @@
   "quarantine": {
     "items": 1,
     "bytes": 13,
-    "oldestMtimeAt": "2026-08-05T13:58:10.218Z",
-    "canEmptyAt": "2026-09-18T13:58:11.040Z",
+    "oldestMtimeAt": "2026-08-06T12:32:37.392Z",
+    "canEmptyAt": "2026-09-19T12:32:38.248Z",
     "canEmptyNow": true,
     "orphans": 0,
     "truncated": false
   },
   "pendingCandidates": 2,
   "needsHumanCount": 2,
-  "lastError": "2026-09-19T13:58:10.904Z 只處理一般檔案，不處理捷徑或硬鏈結。",
-  "lastErrorAt": "2026-09-19T13:58:10.904Z",
-  "lastOkAt": "2026-09-19T13:58:10.984Z",
+  "lastError": "2026-09-20T12:32:38.133Z Only ordinary files are handled — not symlinks or hard links.",
+  "lastErrorAt": "2026-09-20T12:32:38.133Z",
+  "lastOkAt": "2026-09-20T12:32:38.199Z",
   "lastErrorKind": "apply",
   "lastOkByKind": {
-    "scan": "2026-09-19T13:58:10.617Z",
-    "apply": "2026-09-19T13:58:10.865Z",
-    "undo": "2026-09-19T13:58:10.984Z",
+    "scan": "2026-09-20T12:32:37.874Z",
+    "apply": "2026-09-20T12:32:38.099Z",
+    "undo": "2026-09-20T12:32:38.199Z",
     "empty": null,
     "model": null
   },
   "scanProblems": [
-    "有 2 個檔看不懂，這次沒有讀到它們的內容。"
+    "2 files could not be made sense of, so their contents were not read this time."
   ],
   "facts": 0
 }
