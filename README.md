@@ -99,6 +99,7 @@ node cli.mjs file --undo      # never mind, put it all back
 node cli.mjs pet              # the panel: everything above, but clickable
 ```
 
+**[User Guide](docs/UserGuide.md)** — every command, what it prints, and the panel, with screenshots.
 Step-by-step walkthrough with the exact output of every command: **[docs/DEMO.md](docs/DEMO.md)**.
 Installing it for real, Windows included: **[INSTALL.md](INSTALL.md)**.
 
@@ -107,15 +108,17 @@ Installing it for real, Windows included: **[INSTALL.md](INSTALL.md)**.
 Run `think`, and the first line is this:
 
 ```
-－ [1/8] logins.csv   looks like credentials, not sent
+－ [1/8] 2026-09 export.csv   looks like credentials, not sent
 ✔ [2/8] operating-systems-ch5-scheduling.txt   The model thinks: Operating Systems / CPU scheduling (confidence high)
 ✔ [3/8] Screenshot 2026-09-18 at 14.02.44.png   The model thinks: Unknown / Unknown (confidence low)
 
 This round: 8 queued, 7 asked, 0 cache hits, 1 withheld, 0 failures.
 ```
 
-`logins.csv` has a completely innocent filename and not one credential pattern in it. It was held back
-because the *contents* look like a password table. And for the screenshots the model says it can't tell —
+`2026-09 export.csv` has a completely innocent filename — no `password`, no `secret`, nothing on the
+blocked-name list — and not one credential pattern inside it either. It was held back because the *shape* of
+the contents is a table of usernames and passwords. That check exists because a reviewer got an earlier
+version to ship a browser's entire password export to the model. And for the screenshots the model says it can't tell —
 so nothing is suggested for them. **A model that admits it doesn't know is worth more than one that always
 has an answer.**
 
@@ -177,7 +180,7 @@ repairs were caught by round three. That's why there is always a round three.
 node --test test/*.test.mjs
 ```
 
-2587 tests, 0 failures. The two `todo`s are known issues, documented in the tests themselves.
+2683 tests, 0 failures. The two `todo`s are known issues, documented in the tests themselves.
 
 ```
 core/       facts store, local server, file pipeline (guard / scan / cleanup / text / model / rename / filing / learning)

@@ -218,12 +218,12 @@ note('IMG_2041.txt', 5, 'a camera default name; the contents are an exam syllabu
 // `think` 那一行會寫「沒送出去 1 個」，清單上講得出為什麼。
 //
 // **裡面的帳號密碼都是假的**，而且故意寫成一看就知道是範例的樣子。
-put('logins.csv', Buffer.from(
+put('2026-09 export.csv', Buffer.from(
   'url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed\n'
   + 'https://portal.example.edu,s1234567@example.edu,DemoOnly-NotARealPassword-1,,,{demo-1},1694500000000,1694500000000\n'
   + 'https://mail.example.com,demo.user@example.com,DemoOnly-NotARealPassword-2,,,{demo-2},1694500000000,1694500000000\n'
   + 'https://shop.example.net,demo.user@example.com,DemoOnly-NotARealPassword-3,,,{demo-3},1694500000000,1694500000000\n'), 12)
-note('logins.csv', 12, 'a password export from a browser — the name looks innocent; the contents are what stops it reaching the model')
+note('2026-09 export.csv', 12, 'a password export from a browser — the name looks innocent; the contents are what stops it reaching the model')
 
 // ── --live-model：現場真的問模型 ──────────────────────────────
 //

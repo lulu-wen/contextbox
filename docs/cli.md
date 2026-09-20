@@ -1,298 +1,358 @@
-# CLI 指令
+---
+layout: default
+title: CLI reference
+---
 
-**D 的交付。** 這是**介面契約**，不是說明書 —— 先定死長什麼樣，實作與右鍵選單、每晚 smoke 才對得上。
-2026-09-19 照稽核 RC13 的行為改寫（上一版寫了幾個實作沒有的東西，也漏了幾個實作有的）；
-同一天第三波（C8）再對一次：CONFLICT 的離開碼、`unknown` 的建議、編號長度、`open` 的離開碼、
-環境變數、做到一半中斷的計畫怎麼處理。`test/repo.test.mjs` 的「docs/cli.md（RC13）」守著這幾條。
-第三波之二：「卡住的計畫」的範例照 CLI 真的印的改（那一條測試真的跑一次 CLI，逐行比）；`pet` 撞 port 的行為。
-第二輪（稽核「根因（第二輪）」）：每個清理指令之前先收尾、離開碼照逐項結果、截圖資料夾只清截圖、
-`doctor` 列出中斷的計畫與掃描問題、`open`／`pet` 用 proof 認 pet、背景掃描逾時；`cleanup list` 的範例也改成真的跑一次逐行比。
+**This is an interface contract, not a tutorial.** It pins down the shape first, so the implementation, the
+context menu and the nightly smoke run all line up against the same thing.
+Rewritten on 2026-09-19 to match the behaviour audit RC13 found (the previous version described things the
+implementation did not have, and missed things it did); checked again the same day in the third wave (C8):
+the exit code for CONFLICT, the suggestion for `unknown`, how long an id is, the exit code for `open`,
+the environment variables, and what happens to a plan that stopped partway. The "docs/cli.md (RC13)" group in
+`test/repo.test.mjs` holds these.
+Third wave, part two: the "Plans in the way" examples now match what the CLI really prints (that test runs the
+CLI and compares line by line), and what `pet` does when the port is taken.
+Second round (audit "root causes, round two"): every cleanup command tidies up first, exit codes follow the
+per-item results, only screenshots are cleaned in the screenshots folder, `doctor` lists interrupted plans and
+scan problems, `open` and `pet` identify the pet with a proof, and the background scan times out. The
+`cleanup list` example is also a real run compared line by line.
 
 ---
 
-## 全部指令
+## Every command
 
 ```bash
-node cli.mjs doctor                          # 現在什麼狀況：設定檔、資料庫、清理資料夾、隔離區各在哪
-node cli.mjs pet                             # 啟動 server 與清理監看，印出帶鑰匙（?k=）的網址
-node cli.mjs open                            # 用瀏覽器打開寵物與清理面板（網址帶好鑰匙）
+node cli.mjs doctor                          # how things are: where the config, database, cleanup folders and quarantine are
+node cli.mjs pet                             # start the server and the cleanup watcher; print the address with the key (?k=)
+node cli.mjs open                            # open the pet and the cleanup panel in a browser (address with the key)
 
-node cli.mjs cleanup scan                    # 手動掃一次清理資料夾（預設只有 Downloads）
-node cli.mjs cleanup list                    # 看清理候選
-node cli.mjs cleanup apply                   # 用清單上打 ✔ 的建一份計畫並套用
-node cli.mjs cleanup apply --skip <編號>,…   #   同上，但跳過這幾個 ✔ 的
-node cli.mjs cleanup apply --also <編號>,…   #   同上，另外加上這幾個 ☐ 的
-node cli.mjs cleanup apply <plan-id>         # 套用（或重送）某一份計畫
-node cli.mjs cleanup undo [plan-id]          # 復原；不給 id ＝ 最近一份還能復原的
-node cli.mjs cleanup release <plan-id>       # 放棄一份還沒開始的計畫，檔案不動
-node cli.mjs cleanup quarantine              # 看隔離區
-node cli.mjs cleanup quarantine --empty      # 預覽清空（要滿七天），印出確認用的 token
-node cli.mjs cleanup quarantine --empty --yes <token>   # 真的清空預覽裡的那些
+node cli.mjs cleanup scan                    # scan the cleanup folders once by hand (Downloads only, by default)
+node cli.mjs cleanup list                    # see the cleanup candidates
+node cli.mjs cleanup apply                   # build a plan from the ✔ rows on the list and apply it
+node cli.mjs cleanup apply --skip <id>,…     #   the same, but leave these ✔ ones out
+node cli.mjs cleanup apply --also <id>,…     #   the same, plus these ☐ ones
+node cli.mjs cleanup apply <plan-id>         # apply (or re-send) one particular plan
+node cli.mjs cleanup undo [plan-id]          # undo; no id means the most recent one that can still be undone
+node cli.mjs cleanup release <plan-id>       # drop a plan that never started; no file moves
+node cli.mjs cleanup quarantine              # see quarantine
+node cli.mjs cleanup quarantine --empty      # preview emptying it (seven days old), and print a confirmation token
+node cli.mjs cleanup quarantine --empty --yes <token>   # really empty the files in that preview
 
-node cli.mjs think                           # 讓模型看一輪還沒看過的檔（P2）
-node cli.mjs think --limit <n>               #   這一輪最多看幾個（1～500，預設 20）
+node cli.mjs think                           # let the model read a round of unread files (P2)
+node cli.mjs think --limit <n>               #   how many at most this round (1–500, default 20)
 
-node cli.mjs rename                          # 列出可以改名的檔（模型的建議，P3）
-node cli.mjs rename --apply [編號⋯]           #   改名（不給編號 ＝ 清單上全部，退過貨的除外）
-node cli.mjs rename --apply <編號> --to <名字> #   自己指名新名字（跟建議不一樣就會被記住，P5）
-node cli.mjs rename --undo [紀錄 id⋯]         #   復原改名（不給 id ＝ 最近那一次）
+node cli.mjs rename                          # list the files that could be renamed (the model's suggestions, P3)
+node cli.mjs rename --apply [id…]            #   rename (no id means everything on the list, except what you turned down)
+node cli.mjs rename --apply <id> --to <name> #   name it yourself (a name unlike the suggestion gets remembered, P5)
+node cli.mjs rename --undo [record id…]      #   undo a rename (no id means the most recent)
 
-node cli.mjs file                            # 列出可以歸到課程資料夾的檔（模型的建議，P4）
-node cli.mjs file --apply [編號⋯]             #   整理（不給編號 ＝ 清單上全部，退過貨的除外）
-node cli.mjs file --apply [編號⋯] --course <課名> [--kind <類型>]
-                                             #   自己指名課名／類型（跟建議不一樣就會被記住，P5）
-node cli.mjs file --undo [紀錄 id⋯]           #   復原整理（不給 id ＝ 最近那一次）
+node cli.mjs file                            # list the files that belong in a course folder (the model's suggestions, P4)
+node cli.mjs file --apply [id…]              #   file them (no id means everything on the list, except what you turned down)
+node cli.mjs file --apply [id…] --course <course> [--kind <kind>]
+                                             #   name the course/kind yourself (unlike the suggestion gets remembered, P5)
+node cli.mjs file --undo [record id…]        #   undo a filing (no id means the most recent)
 
-node cli.mjs learned                         # 它從你的修改學到什麼（P5；不動任何檔案）
-node cli.mjs learned --forget <編號⋯>         #   忘掉那幾條
-node cli.mjs learned --forget-all            #   全部忘掉
+node cli.mjs learned                         # what it learned from your changes (P5; it touches no file)
+node cli.mjs learned --forget <id…>          #   forget those entries
+node cli.mjs learned --forget-all            #   forget everything
 
-node cli.mjs watch                           # 常駐監看（截圖功能，既有）
+node cli.mjs watch                           # stay watching in the foreground (the screenshot feature, as before)
 ```
 
-`cleanup dismiss` **還沒有**：印「這個指令還沒有」，離開碼 1。
+`cleanup dismiss` **does not exist**: it prints "there is no such command" and exits 1.
 
-**編號**是 `cleanup list` 每一列最前面方括號裡的那幾碼（例如 `[e2dc]`），**至少 4 碼**；
-跟別的檔的 id 前幾碼撞在一起時，會延長到分得開為止（例如 `[abcd1]`、`[abcd2]`）。
-`--skip`／`--also` 收逗號分隔的多個編號，每個至少要打 4 碼；有任何一個不到 4 碼、對不上清單上的列、
-或同時對到好幾列 → 離開碼 1，一個都不搬（對到好幾列時會列出分得開的編號）。
+**An id** is the few characters in square brackets at the start of each `cleanup list` row (`[e2dc]`, say), and
+is **at least 4 characters**; when it would collide with the start of another file's id it gets longer until it
+does not (`[abcd1]`, `[abcd2]`).
+`--skip` and `--also` take several ids separated by commas, each at least 4 characters. If any one of them is
+shorter than 4, matches no row, or matches several rows → exit code 1 and nothing moves (when it matches
+several, the ids that would tell them apart are printed).
 
-**帶值的旗標**（`--to`、`--course`、`--kind`、`--forget`）後面一定要接一個值；
-編號收到**下一個旗標為止**，所以 `file --apply a1b2 --course OS` 裡的 `OS` 是課名，不是第二個編號。
-旗標後面沒接東西（或接的是另一個旗標）→ 離開碼 1，一個檔都不動。
-`--to`／`--course`／`--kind` **只能跟 `--apply` 一起用**；`--to` 一次只能指名一個檔
-（多個檔改成同一個名字只會讓它們變成 `X`、`X-2`、`X-3`，那不是任何人要的）。
+**Flags that take a value** (`--to`, `--course`, `--kind`, `--forget`) must be followed by one. Ids are read
+**up to the next flag**, so in `file --apply a1b2 --course OS` the `OS` is the course name, not a second id.
+A flag with nothing after it (or another flag) → exit code 1 and nothing moves.
+`--to`, `--course` and `--kind` **only work together with `--apply`**; `--to` names one file at a time
+(renaming several files to the same name would only produce `X`, `X-2`, `X-3`, which is nobody's intention).
 
-### 清理範圍
+### The cleanup scope
 
-清理只看設定檔的 `cleanup.roots`，**預設只有家目錄底下的 Downloads**（Windows 也是 `%USERPROFILE%\Downloads`，
-不挑 OneDrive 的那一個：從 OneDrive 同步資料夾搬進隔離區，等於在雲端與所有裝置上刪掉；第二輪 R2-11）。
-`watch` 是截圖功能的監看資料夾，跟清理無關 —— macOS 的 `watch` 預設含桌面，清理絕對不可以跟著它走（稽核 RC15）。
-`cleanup.screenshots: true` 才會把截圖資料夾加進清理範圍，**那底下只清截圖**（截圖類的規則；其他檔不列、不搬）。
-macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的舊壓縮檔、安裝檔一樣不會被當成垃圾（第二輪 R2-8）。
-`pet` 啟動時與 `doctor` 會講出哪一個是截圖資料夾。
+Cleanup looks at `cleanup.roots` in the config file and nothing else. **By default that is Downloads under
+your home directory only** (on Windows, `%USERPROFILE%\Downloads`, and deliberately not the OneDrive one:
+moving a file out of a OneDrive-synced folder into quarantine deletes it in the cloud and on every device;
+round two, R2-11).
+`watch` is the list of folders the screenshot feature watches and has nothing to do with cleanup — on macOS
+`watch` includes the Desktop by default, and cleanup must never follow it (audit RC15).
+Only `cleanup.screenshots: true` adds the screenshots folder to the cleanup scope, and **only screenshots are cleaned there** (the screenshot rules; other files are neither listed nor moved).
+On macOS the screenshots folder is the Desktop, so even with that switch on, an old archive or installer on the Desktop is not treated as junk (round two, R2-8).
+`pet` says which folder that is at startup, and so does `doctor`.
 
-### `think`：讓模型看懂內容（P2）
+### `think`: let the model understand the contents (P2)
 
-`think` 手動跑一輪；`pet` 在背景每 10 分鐘自己跑一輪。兩邊做的是同一件事：
+`think` runs one round by hand; `pet` runs one in the background every 10 minutes. They do the same thing:
 
-- **沒設定模型就什麼都不做**（`model.baseUrl`、`model.name` 沒填，或金鑰的環境變數是空的）：
-  講一句怎麼設定，離開碼 **0** —— 那不是錯，是還沒接。掃描、清理、面板全部照常。
-- 只問兩種檔：**讀得到 30 個字以上的文件**、**有長相指紋的 PNG 截圖**。其他不問。
-- **送出去之前先過濾**：名字像機密的（`.env`、`id_rsa`、`*.key`、`credentials`、`token`、
-  `secret`、`password`、`錢包`…）與內容像機密的（`BEGIN PRIVATE KEY`、`AKIA…`、`ghp_…`、
-  `sk-…`、身分證字號、信用卡號）**一律不送**，並記一句「看起來像機密，沒送出去」。
-  `doctor` 講得出有幾個檔因為這樣沒送。
-- **一次一個、每個最多 60 秒**。文件最多送 2000 字，截圖縮到長邊 1344 的灰階 PNG。
-- **同樣的內容只問一次**（快取鍵是內容的 sha256 ＋ 提示詞版本）：複製出來的第二份直接命中，
-  改過內容的重問。
-- **連續失敗 3 次就這一輪停**，記成最近出錯（種類 `model`），離開碼 **2**。下一輪再試。
-- Ctrl+C 可以停，停在哪裡就是哪裡，**不會留下半筆**。
+- **With no model configured it does nothing** (`model.baseUrl` or `model.name` empty, or the key's
+  environment variable empty): it says how to configure one and exits **0** — that is not a failure, it is
+  simply not connected. Scanning, cleanup and the panel all carry on.
+- It only asks about two kinds of file: **documents with at least 30 characters of text**, and **PNG
+  screenshots with a visual fingerprint**. Nothing else.
+- **Filtered before anything is sent**: names that look like secrets (`.env`, `id_rsa`, `*.key`,
+  `credentials`, `token`, `secret`, `password`, wallets…) and contents that look like secrets
+  (`BEGIN PRIVATE KEY`, `AKIA…`, `ghp_…`, `sk-…`, national id numbers, credit card numbers) are **never
+  sent**, and a note is recorded saying it looked like a secret and was not sent.
+  `doctor` says how many files were held back for that reason.
+- **One at a time, 60 seconds each.** A document sends at most 2000 characters; a screenshot is scaled to a
+  greyscale PNG with its long edge at most 1344.
+- **The same contents are only asked about once** (the cache key is the sha256 of the contents plus the prompt
+  version): a second copy hits the cache, and changed contents get asked again.
+- **Three failures in a row end the round**, recorded as the last error (kind `model`), exit code **2**. The
+  next round tries again.
+- Ctrl+C stops it wherever it is, **with no half-written records**.
 
-模型講的是**意見**，不是事實：面板上一律寫「模型認為：⋯⋯（信心 ⋯）」並附證據，
-**不會**因為它說了就自動打勾、改名或搬檔。`tools/demo-setup.mjs --seed-model` 預先塞進去的
-答案會標「示範答案」。
+What the model says is an **opinion**, not a fact: the panel always writes "The model thinks: … (confidence …)"
+with the evidence, and **nothing** is ticked, renamed or moved because it said so. Answers seeded by
+`tools/demo-setup.mjs --seed-model` are marked "[demo answer]".
 
-### `rename`：替沒取名的檔改名（P3）
+### `rename`: rename the files that have no real name (P3)
 
-**沒有自動改名的路徑。** `rename` 只列，`--apply` 才動檔案，而且每一次都留紀錄、`--undo` 改得回去。
+**There is no automatic renaming path.** `rename` only lists; `--apply` is what touches a file, and every one
+is recorded so `--undo` puts it back.
 
-- 只提議 `naming` 是 untitled／generic 的檔。**使用者自己取的名字（named）永遠不碰。**
-- 模型信心「低」的不列（那通常是「看不出來」）。模型還沒看過的先跑 `think`。
-- 建議的名字會**過一層清理**：去掉路徑分隔符號、控制字元與方向字元、前後的空白與點、
-  Windows 保留名稱，上限 80 個碼位；**副檔名一律沿用原本的**（模型說 `x.pdf`、原本是 `.txt` → `x.txt`）。
-  洗完是空的就不提議。
-- **不覆蓋任何檔**：目標名字已經有人用（**含只差大小寫**）→ 自動變成 `⋯-2`、`⋯-3`⋯⋯（到 99）。
-- 只在**同一個資料夾**裡改名，不搬家。
-- 這幾種不改，而且講得出原因：十分鐘內還在變動的、在一份還沒套用的清理計畫裡的、
-  在隔離區裡的、受保護的檔名。
-- 一次最多 100 個；多的會講「還有 N 個，再跑一次」。
-- `--undo` 時原本的名字被別的檔佔走 → 放回來的那一份加序號，**而且會印出它叫什麼**。
-- 改到一半被砍：下一次跑 `rename` 會先收尾（看檔案實際在哪決定那一筆是改好了還是沒改到），
-  不會重複改。
+- It only suggests files whose `naming` is untitled or generic. **A name you chose yourself (named) is never
+  touched.**
+- Suggestions the model is "low" confidence about are not listed (that usually means "cannot tell"). For files
+  the model has not read yet, run `think` first.
+- The suggested name is **sanitised**: path separators, control and direction characters, leading and trailing
+  spaces and dots, Windows reserved names, and a limit of 80 code points. **The extension is always the one
+  the file already had** (the model says `x.pdf`, the file was `.txt` → `x.txt`). If sanitising leaves
+  nothing, nothing is suggested.
+- **Nothing is overwritten**: if the target name is taken (**including taken by a name that differs only in
+  case**) it becomes `…-2`, `…-3` and so on, up to 99.
+- It renames **within the same folder**; it never moves a file.
+- These are not renamed, and it says why: files that changed in the last ten minutes, files in a plan that has
+  not been applied, files in quarantine, and protected filenames.
+- 100 at a time at most; beyond that it says "N more, run it again".
+- If the old name has been taken by another file at `--undo` time, the one being put back gets a suffix **and
+  the CLI prints what it is called**.
+- Killed halfway through: the next `rename` tidies up first (deciding from where the file actually is whether
+  that record is done or not done), and does not rename twice.
 
-- `--apply <編號> --to <新名字>`：自己指名這一個檔要叫什麼（一次只能一個）。
-  跟建議不一樣的話，**課名那一段的寫法會被記住**（P5，見下面的 `learned`）。
-- **不給編號的 `--apply` 會跳過「你上次退過」的那幾個**（P5），並印出它們的編號 ——
-  指名編號還是做得到，退貨不是禁止。
+- `--apply <id> --to <new name>`: name this one file yourself (one at a time).
+  If it differs from the suggestion, **the wording of the course part is remembered** (P5, see `learned`).
+- **`--apply` with no ids skips the ones you turned down last time** (P5) and prints their ids — naming an id
+  still works, turning something down is not a ban.
 
-離開碼：沒有東西可以改是 **0**（那不是失敗）；編號打錯、旗標看不懂、唯讀模式是 **1**；
-有檔案沒改成是 **3**。
+Exit codes: nothing to rename is **0** (that is not a failure); a bad id, an unknown flag, or read-only mode is
+**1**; some files not renamed is **3**.
 
-### `file`：把同一堂課的檔歸成結構化資料夾（P4）
+### `file`: put a course together into a structured folder (P4)
 
-**沒有自動歸檔的路徑。** `file` 只列，`--apply` 才搬檔案，而且每一次都留紀錄、`--undo` 搬得回去。
+**There is no automatic filing path.** `file` only lists; `--apply` is what moves a file, and every one is
+recorded so `--undo` moves it back.
 
-- 搬去 `<filed>/課程/<課名>/<類型>/`。`filed` 是設定檔的歸檔資料夾（預設 `~/Documents/Filed`），
-  **只搬到那棵樹底下**，不會往上跳。類型是模型那六個欄位裡的 `kind`：
-  講義／作業／考試／筆記／程式／報告／表單／對話／其他，認不得的一律進「其他」。
-- 主題（`topic`）**不進路徑**：太細會變成一堆只有一個檔的資料夾。它記在紀錄裡。
-- 只提議模型看得出是哪一堂課的檔：信心「低」的不列，課程是「看不出來」的不列。
-  **已經有名字的檔照樣會列** —— 取好名字跟歸不歸得了類是兩回事。
-- 課名會**過跟改名同一層清理**（路徑分隔符號、控制字元、Windows 保留名稱），上限 40 個字；
-  洗完是空的就不提議。模型回 `../../etc` 也只會在 `filed` 底下變成一個普通的資料夾名。
-- **同一堂課只長一個資料夾**：比對前會把全形、空白、大小寫折起來（`作業系統 ` 與 `作業系統`、
-  `ＯＳ` 與 `OS` 是同一堂）。已經有那個資料夾就用既有的，真的要建才用第一次出現的寫法。
-- **不覆蓋任何檔**：目標資料夾已經有同名的（含只差大小寫）→ 自動變成 `⋯-2`⋯⋯（到 99）。
-- 這幾種不搬，而且講得出原因：十分鐘內還在變動的、在一份還沒套用的清理計畫裡的、
-  在隔離區裡的、受保護的檔名、捷徑與硬鏈結、已經在 `filed` 底下的。
-- **`filed` 在另一顆碟**（rename 回 EXDEV）：這一項失敗並講原因，其他項照做。
-  **不會**用複製＋刪除頂替 —— 那等於刪檔。
-- 一次最多 100 個；多的會講「還有 N 個，再跑一次」。
-- **搬進去的東西不再被清理提議** —— 前提是 `filed` 不在 `cleanup.roots` 底下（預設就是這樣：
-  歸檔在 `~/Documents/Filed`、清理只看 `~/Downloads`）。把 `filed` 設成 `~/Downloads/Filed`
-  這種在清理範圍裡的位置，掃描還是走得到它，整理好的檔過一陣子又會被列成候選 ——
-  `doctor` 會對這種設法出聲。
-- `--undo` 會搬回**原本的資料夾**（就算那個資料夾不在清理範圍裡，例如從桌面搬進來的）。
-  原位已經有同名的檔 → 放回來的那一份加序號，**而且會印出它叫什麼**；
-  原本的資料夾不見了 → 在清理範圍內幫你建回來（範圍外就不建，並講清楚）。
-- **不刪空資料夾**：搬完之後原本的子資料夾空了也留著。這個專案只搬不刪。
-- 搬到一半被砍：下一次跑任何指令（`file`、`doctor`、`pet` 開機）都會先收尾 ——
-  看檔案實際在哪決定那一筆是搬好了、沒搬到，還是要人工確認，不會重複搬。
+- Files go to `<filed>/Courses/<course>/<kind>/`. `filed` is the filing folder from the config file
+  (`~/Documents/Filed` by default), and **files only ever move inside that tree**; nothing goes up out of it.
+  The kind is the `kind` field of the model's six: Lecture / Homework / Exam / Notes / Code / Report / Form /
+  Chat / Other, and anything unrecognised becomes Other.
+- The `topic` **does not go in the path**: too fine-grained, and it would produce a pile of folders with one
+  file each. It is kept in the record.
+- It only suggests files the model can place: "low" confidence is not listed, and neither is a course of
+  "Unknown". **Files that already have a good name are still listed** — having a name and belonging somewhere
+  are two different things.
+- The course name goes through **the same sanitiser as renaming** (path separators, control characters,
+  Windows reserved names) with a limit of 40 characters. If sanitising leaves nothing, nothing is suggested.
+  A model answering `../../etc` only produces an ordinary folder name under `filed`.
+- **One folder per course**: before comparing, full-width characters, spaces and case are folded together
+  (`Operating Systems ` and `Operating Systems`, `ＯＳ` and `OS`, are the same course). An existing folder is
+  reused; the first spelling seen is only used when one really has to be created.
+- **Nothing is overwritten**: if the target folder already holds that name (including one differing only in
+  case) it becomes `…-2` and so on, up to 99.
+- These are not moved, and it says why: files that changed in the last ten minutes, files in a plan that has
+  not been applied, files in quarantine, protected filenames, symlinks and hard links, and anything already
+  under `filed`.
+- **`filed` on another drive** (rename returns EXDEV): that item fails and says why, and the others carry on.
+  It does **not** fall back to copy-then-delete — that is deleting.
+- 100 at a time at most; beyond that it says "N more, run it again".
+- **What has been filed is not suggested for cleanup again** — as long as `filed` is not under
+  `cleanup.roots`, which is the default (filing to `~/Documents/Filed`, cleanup looking only at
+  `~/Downloads`). Put `filed` somewhere inside the cleanup scope, like `~/Downloads/Filed`, and the scan still
+  reaches it, so filed material turns up as a candidate again later — `doctor` speaks up about that setting.
+- `--undo` moves a file back to **the folder it came from** (even a folder outside the cleanup scope, the
+  Desktop for instance). If something with that name is already there, the one being put back gets a suffix
+  **and the CLI prints what it is called**; if the original folder is gone, it is recreated inside the cleanup
+  scope (outside it, it is not recreated, and it says so).
+- **Empty folders are not deleted**: a subfolder left empty by the move stays. This project moves, it does not
+  delete.
+- Killed halfway through: the next command of any kind (`file`, `doctor`, `pet` starting up) tidies up first —
+  it decides from where the file actually is whether that record is done, not done, or needs a human, and does
+  not move it twice.
 
-- `--apply <編號⋯> --course <課名> [--kind <類型>]`：自己指名要歸到哪。
-  跟建議不一樣的話**會被記住**（P5，見下面的 `learned`），下一次同一堂課的檔直接用你的寫法。
-- **不給編號的 `--apply` 會跳過「你上次退過」的那幾個**（P5），並印出它們的編號 ——
-  指名編號還是做得到，退貨不是禁止。
+- `--apply <id…> --course <course> [--kind <kind>]`: say where it should go yourself.
+  If that differs from the suggestion **it is remembered** (P5, see `learned`), and the next file from the
+  same course uses your wording straight away.
+- **`--apply` with no ids skips the ones you turned down last time** (P5) and prints their ids — naming an id
+  still works, turning something down is not a ban.
 
-離開碼：沒有東西可以整理是 **0**（那不是失敗）；編號打錯、旗標看不懂、唯讀模式是 **1**；
-有檔案沒搬成是 **3**。
+Exit codes: nothing to file is **0** (that is not a failure); a bad id, an unknown flag, or read-only mode is
+**1**; some files not moved is **3**.
 
-### `learned`：它從你的修改學到什麼（P5）
+### `learned`: what it learned from your changes (P5)
 
-**只從你真的做過的動作學**：`rename --apply` 與 `file --apply` 帶的值，以及那兩個的 `--undo`。
-不從掃描、不從模型、不從猜測學。學到的東西**只改建議**，永遠不會自己動檔案。
+**It only learns from something you actually did**: the values you passed to `rename --apply` and
+`file --apply`, and the `--undo` of either. Not from scanning, not from the model, not from guessing. What it
+learns **only changes suggestions**; it never moves a file by itself.
 
-- 只學「**你送的值跟我們建議的不一樣**」的那一下。照單全收（不帶 `--to`／`--course`／`--kind`）
-  什麼都不記 —— 那不是新資訊，記了只會把「用過幾次」灌水。已經學過之後，你按下它自己填好的
-  寫法也不算新資訊。
-- **一次就學會**，不用改三次。那是明確的指名，不是統計。第二個同一堂課的檔，清單上就是新寫法
-  （後面標「照你上次改的寫」）。
-- 學三種東西：
-  - **課名怎麼稱呼**（`作業系統` → `OS`）。改名與歸檔共用同一條，改名那邊**只換課名那一段**：
-    `作業系統_排程` 變 `OS_排程`，名字裡沒有那一段的完全不受影響。
-  - **這一堂課的類型**（作業系統的「筆記」你都改成「講義」）。**不是全域的** ——
-    全域會把資料結構一起帶歪。
-  - **你退過的建議**（`--undo` 那一下）。清單照樣列它，但**不給編號的 `--apply` 不會做到它**，
-    那一列會標 `⟲ 你上次退過這個建議`。重新做一次成功，標記就消失。
-- 同一個鍵**只有一條**，**最後一次贏**（`times` 加一）。又改回模型的說法也算一次，建議就變回去。
-- 學到的課名**存之前洗一次、用之前再洗一次**（跟改名同一層清理）。
-  你自己打 `--course ../../etc`：這一次照 P4 搬進 `Filed/課程/etc/`（跳不出那棵樹），
-  但**不會被記住** —— 洗過之後跟你打的不一樣，那就不是你指名的寫法。
-- **既有的資料夾不會被搬動或改名**。學到 `OS` 之前搬進 `課程/作業系統/` 的檔留在原地，
-  之後的檔進 `課程/OS/`；清單上會講一句「你之前把它叫作業系統，那個資料夾還在」。
-  要不要合併是你自己的事 —— 這個專案只搬不刪。
-- **上限 500 條**。滿了丟掉最舊、最少用的（`times` 小、`at` 舊的先走），
-  而且 `learned` 會告訴你丟掉幾條。剛學到的那一條一定留著。
-- **唯讀模式（`CONTEXTBOX_READONLY=1`）一個字都不學**，`--forget`／`--forget-all` 也不做（離開碼 1）。
-  `learned` 本身照樣列得出來。
-- **資料表不見了**（舊的資料庫、被人砍掉）→ 當成什麼都沒學過：`learned` 說「還沒學到任何東西」，
-  `rename`／`file` 照常出建議，不會噴堆疊。
-- 清單上**沒有路徑、沒有檔名、沒有檔案內容**：只有課名、類型，以及歸檔那一種的
-  「`課程/<課名>/<類型>`」。退掉的**改名**建議只會寫「你上次退掉了一個改名建議」——
-  那個摘要是真的檔名，不印出來（要忘掉它用那一行的編號就夠了）。
-- 類型**打錯字不會被學起來**：`--kind 講議`（少一點的「講義」）這一次照 P4 進「其他」，
-  但不會讓這一堂課之後的「筆記」全部變「其他」。
+- It only learns from the moment **the value you sent differs from the one suggested**. Accepting a suggestion
+  unchanged (no `--to` / `--course` / `--kind`) records nothing — that is not new information, and recording
+  it would only inflate the "used N times" count. Once it has learned, clicking the wording it filled in for
+  you is not new information either.
+- **Once is enough**; you do not have to change it three times. That is an explicit instruction, not a
+  statistic. The second file from the same course is listed with the new wording (marked "the way you changed
+  it last time").
+- It learns three things:
+  - **What a course is called** (`Operating Systems` → `OS`). Renaming and filing share this, and on the
+    renaming side **only the course part changes**: `Operating Systems_Scheduling` becomes `OS_Scheduling`,
+    and names without that part are untouched.
+  - **The kind for that course** (you keep changing Operating Systems "Notes" to "Lecture"). **Not globally**
+    — globally would drag Data Structures along with it.
+  - **Suggestions you turned down** (the `--undo`). The list still shows them, but **`--apply` with no ids
+    does not do them**, and the row is marked `⟲ You turned this suggestion down last time`. Do it
+    successfully once and the mark goes.
+- There is **one entry per key**, and **the last one wins** (`times` goes up by one). Changing back to what the
+  model said also counts as one, and the suggestion changes back with it.
+- A learned course name is **sanitised on the way in and again on the way out** (the same sanitiser as
+  renaming). Type `--course ../../etc` yourself and this time it files into `Filed/Courses/etc/` as P4 says
+  (never leaving that tree), but **it is not remembered** — the sanitised form is not what you typed, so that
+  was not the wording you asked for.
+- **Existing folders are neither moved nor renamed.** Files filed into `Courses/Operating Systems/` before it
+  learned `OS` stay there and later ones go to `Courses/OS/`; the list says "You used to call it Operating
+  Systems; that folder is still there, untouched". Whether to merge them is your call — this project moves, it
+  does not delete.
+- **The cap is 500 entries.** When it is full the oldest and least used go first (low `times`, old `at`), and
+  `learned` tells you how many were dropped. The one just learned is always kept.
+- **Read-only mode (`CONTEXTBOX_READONLY=1`) learns nothing**, and does not do `--forget` or `--forget-all`
+  either (exit code 1). `learned` itself still lists.
+- **If the table is gone** (an old database, or someone deleted it) it behaves as though nothing had ever been
+  learned: `learned` says it has not learned anything yet, `rename` and `file` still make suggestions, and
+  nothing throws a stack trace.
+- The list carries **no path, no filename and no file contents**: only the course, the kind, and for filing
+  the `Courses/<course>/<kind>` string. A turned-down **rename** suggestion only says you turned a rename
+  suggestion down last time — the summary behind it is a real filename and is not printed (the id on that row
+  is all you need to forget it).
+- **A typo in the kind is not learned**: `--kind Lectrue` files into Other this time as P4 says, but it does
+  not turn every later "Notes" for that course into "Other".
 
-離開碼：列出來（含「什麼都沒學過」）是 **0**；編號打錯、旗標看不懂、唯讀模式要忘是 **1**。
+Exit codes: listing (including "nothing learned yet") is **0**; a bad id, an unknown flag, or forgetting in
+read-only mode is **1**.
 
-### 環境變數
+### Environment variables
 
-| 變數 | 用途 |
+| Variable | What it does |
 |---|---|
-| `CONTEXTBOX_CONFIG` | 設定檔路徑（預設 `~/.contextbox/config.json`） |
-| `CONTEXTBOX_DB` | 資料庫路徑（預設 `~/.contextbox/data.db`） |
-| `CONTEXTBOX_QUARANTINE` | 隔離區路徑（預設 `~/.contextbox/quarantine`） |
-| `CONTEXTBOX_TOKEN_PATH` | 鑰匙檔路徑（預設 `~/.contextbox/token`） |
-| `CONTEXTBOX_TOKEN` | **直接指定面板的鑰匙**（優先於鑰匙檔）。至少 16 個字元，太短的當成沒設定。自己指定的話，沙盒與真實環境可以共用同一把，網址也就固定下來、加得了書籤 |
-| `CONTEXTBOX_READONLY=1` | 唯讀模式：只說會做什麼，不建計畫、不搬、不刪，**也不自動收尾**（第三輪 R3-9） |
-| `CONTEXTBOX_PORT` | `pet`／`open` 的 port（預設 7391；`0` ＝ 讓系統挑一個空的，`pet` 會把實際的 port 記下來給 `open` 用） |
-| `CONTEXTBOX_RESCAN_MS` | `pet` 全部重掃一次的間隔，毫秒（預設 30 分鐘；最小 100） |
-| `CONTEXTBOX_SCAN_TIMEOUT_MS` | `pet` 的背景掃描最多跑多久，毫秒（預設 10 分鐘；最小 100）。超過就殺掉、記成最近出錯 |
-| `CONTEXTBOX_THINK_MS` | `pet` 多久讓模型看一輪，毫秒（預設 10 分鐘；最小 100）。沒設定模型時整段不啟用 |
-| `CONTEXTBOX_OPENER` | `open` 用來打開網址的程式（預設看作業系統：`xdg-open`、`open`、`start`） |
+| `CONTEXTBOX_CONFIG` | where the config file is (default `~/.contextbox/config.json`) |
+| `CONTEXTBOX_DB` | where the database is (default `~/.contextbox/data.db`) |
+| `CONTEXTBOX_QUARANTINE` | where quarantine is (default `~/.contextbox/quarantine`) |
+| `CONTEXTBOX_TOKEN_PATH` | where the key file is (default `~/.contextbox/token`) |
+| `CONTEXTBOX_TOKEN` | **the panel's key, given directly** (beats the key file). At least 16 characters; anything shorter counts as unset. Supply your own and the sandbox and the real thing can share one, so the address stays the same and can be bookmarked |
+| `CONTEXTBOX_READONLY=1` | read-only mode: it only says what it would do — no plans, no moves, no deletes, **and no tidying up either** (round three, R3-9) |
+| `CONTEXTBOX_PORT` | the port for `pet` and `open` (default 7391; `0` lets the system pick a free one, and `pet` records the real port for `open`) |
+| `CONTEXTBOX_RESCAN_MS` | how often `pet` rescans everything, in milliseconds (default 30 minutes; minimum 100) |
+| `CONTEXTBOX_SCAN_TIMEOUT_MS` | how long `pet`'s background scan may run, in milliseconds (default 10 minutes; minimum 100). Beyond that it is killed and recorded as the last error |
+| `CONTEXTBOX_THINK_MS` | how often `pet` lets the model read a round, in milliseconds (default 10 minutes; minimum 100). With no model configured, none of it runs |
+| `CONTEXTBOX_OPENER` | the program `open` uses to open an address (default per OS: `xdg-open`, `open`, `start`) |
 
-`test/smoke-cleanup.md` 用這幾個把整份 smoke 關在沙盒裡；測試 spawn CLI 時也一定要給假的 `HOME`，
-`pet` 一律 `CONTEXTBOX_PORT=0`（不佔 7391），`open` 一律給 `CONTEXTBOX_OPENER`（不真的開瀏覽器）。
+`test/smoke-cleanup.md` uses these to keep the whole smoke run inside a sandbox. Tests that spawn the CLI must
+always give the child a fake `HOME`; `pet` always runs with `CONTEXTBOX_PORT=0` (never taking 7391), and `open`
+always gets a `CONTEXTBOX_OPENER` (so no real browser opens).
 
-### 每個清理指令之前先收尾
+### Every cleanup command tidies up first
 
-`cleanup scan`／`list`／`apply`／`undo`／`release`／`quarantine` 與 `doctor` 一開始、`pet` 開機與每一輪背景重掃之前，
-先做兩件事（第二輪 R2-1a／R2-5）：
+At the start of `cleanup scan` / `list` / `apply` / `undo` / `release` / `quarantine` and `doctor`, and when
+`pet` starts up and before each background rescan, two things happen (round two, R2-1a / R2-5):
 
-- **結掉搬到一半中斷的紀錄**（核心的 `recoverInterrupted`）。搬移被砍在 rename 與寫完紀錄之間（kill -9、斷電、
-  Ctrl+C）的那一項，只看檔案證據判斷：檔在隔離區、指紋對得上 → 記成已經在隔離區；還在原位 → 記成沒搬；
-  說不準的維持「狀態不明」。**不搬任何檔**。以前單檔計畫被砍在這一刻，`undo` 找不到它、`quarantine` 說隔離區是空的，
-  檔對使用者來說就是不見了。
-- **自動放棄放了超過 60 分鐘、從沒開始的計畫**（核心的 `releaseStalePlans`，跟 `release` 一樣：候選不動）。
-  開始過的（有任何搬移紀錄）不動：只能做完或放回。
+- **Close out records of a move that was interrupted** (the core's `recoverInterrupted`). For an item killed
+  between the rename and the record being written (kill -9, a power cut, Ctrl+C), it judges from the file
+  evidence only: the file is in quarantine and the fingerprint matches → recorded as in quarantine; still in
+  place → recorded as not moved; anything uncertain stays "state unknown". **No file is moved.** Before this,
+  a single-file plan killed at that instant was invisible: `undo` could not find it and `quarantine` said
+  quarantine was empty, so as far as the user was concerned the file was gone.
+- **Automatically drop plans older than 60 minutes that never started** (the core's `releaseStalePlans`, the
+  same as `release`: candidates are untouched). Plans that did start (any move record at all) are left alone —
+  they can only be finished or put back.
 
-另一個清理動作正在跑（清理鎖被佔著）的時候，收尾這一次略過，指令照跑；收尾本身出錯只印一行警告，指令照跑。
+While another cleanup action is running (the cleanup lock is held), this tidying up is skipped and the command
+carries on; if the tidying up itself fails it prints one warning line and the command carries on.
 
-第三輪再加三條：
+Round three added three more:
 
-- **唯讀模式（`CONTEXTBOX_READONLY=1`）整個收尾都不做**（R3-9）。上面那兩件事都會寫資料庫 ——
-  一個純列表的 `cleanup list`、甚至純診斷的 `doctor`，不可以把使用者放著的待處理計畫作廢。
-  `doctor` 在唯讀模式會多印一行「唯讀模式：不會自動收尾」，底下那些數字才不會被當成「已經收過尾」的樣子。
-- **`apply <id>`／`undo <id>` 指名的那一份不會被這一次的收尾作廢**（R3-6b）。以前 `cleanup apply <放了兩小時的 id>`
-  會先自動放棄它，再印「已經放棄了…這次什麼都沒做」、回 **0** —— 包裝這支 CLI 的腳本會判定「清理完成」。
-  指名的那一次，收尾只放棄**比它更舊**的計畫（更精確地說：建立時間比它早五分鐘以上的）。
-- **收不動的紀錄不會每次都重試**（R3-11）。「說不準」的搬移紀錄（兩邊指紋都對不上）核心刻意維持「狀態不明」，
-  永遠收不掉。以前只要有這種紀錄，每一個清理指令與 `pet` 的每一輪都會去拿清理寫鎖、對那些檔重算一次 SHA-256。
-  現在記住那一列當時的樣子（隔離區那份與原位那份的大小與 mtime），兩邊都沒變就不再試；
-  檔案一變動（或出現新的紀錄）就照常再試。
+- **Read-only mode (`CONTEXTBOX_READONLY=1`) does none of it** (R3-9). Both of those write to the database —
+  a `cleanup list` that only lists, or even a purely diagnostic `doctor`, must not invalidate a pending plan
+  the user left there. In read-only mode `doctor` prints an extra line saying it does not tidy up, so the
+  numbers below it are not mistaken for a tidied-up state.
+- **The plan you named is not invalidated by this run's tidying up** (R3-6b). `cleanup apply <an id two hours
+  old>` used to drop it automatically first, then print "already dropped… nothing happened this time" and
+  return **0** — a script wrapping this CLI would read that as "cleanup finished". When an id is named, the
+  tidying up only drops plans **older than it** (more precisely, created more than five minutes before it).
+- **A record that cannot be closed out is not retried every time** (R3-11). The core deliberately leaves an
+  "uncertain" move record (neither fingerprint matches) as "state unknown" forever. Any such record used to
+  make every cleanup command and every `pet` round take the cleanup write lock and recompute SHA-256 over
+  those files. It now remembers how that row looked (the size and mtime of the quarantine copy and of the copy
+  in place) and does not try again while neither has changed; as soon as a file changes (or a new record
+  appears) it tries again as usual.
 
 ---
 
-## 離開碼是契約
+## Exit codes are a contract
 
-**右鍵選單與腳本靠離開碼判斷成敗**，畫面上印 ✓ 卻回非零，Windows 會跳錯誤視窗。
+**Context menus and scripts decide success from the exit code.** Print ✓ on screen and return non-zero and
+Windows pops up an error box.
 
-| 碼 | 意思 |
+| Code | Meaning |
 |---|---|
-| 0 | 成功，**包含「沒有東西要清」、唯讀試跑** |
-| 1 | 使用者輸入錯：沒有這個 plan、參數看不懂、確認碼錯、**要的動作跟現在的狀態衝突（CONFLICT）** |
-| 2 | 後端錯：資料庫打不開、另一個清理動作正在跑、`pet` 沒在跑、port 被別的程式佔用 |
-| 3 | **有檔案沒搬成功／沒放回**（含一個都沒成功） |
+| 0 | It worked, **including "nothing to clean up" and a read-only dry run** |
+| 1 | Bad input: no such plan, an argument that makes no sense, a wrong confirmation token, **or an action that conflicts with the current state (CONFLICT)** |
+| 2 | Backend failure: the database will not open, another cleanup action is running, `pet` is not running, the port is taken by something else |
+| 3 | **Some files did not move, or did not come back** (including none of them) |
 
-判準：**1 ＝ 要換個做法；2 ＝ 這個動作根本沒執行，等一下重試通常會過；3 ＝ 執行了但沒有全部成功。**
-呼叫端據此決定要不要自動重試 —— CONFLICT 重試一百次也一樣，所以是 1 不是 2；3 要人去看那幾個檔。
+The rule: **1 means change what you are asking for; 2 means the action did not run at all and retrying later
+usually works; 3 means it ran but did not entirely succeed.** Callers decide from that whether to retry
+automatically — a CONFLICT is the same on the hundredth try, so it is 1 and not 2, and a 3 needs a person to
+look at those files.
 
-逐一對照：
+One by one:
 
-| 情況 | 離開碼 |
+| Situation | Exit code |
 |---|---|
-| 全部成功；沒有東西要清（Downloads 很乾淨）；唯讀試跑 | 0 |
-| `cleanup apply <已經套用過的計畫>`：冪等，印同樣的結果，不會搬第二次 | 0 |
-| `cleanup apply <已經復原過的計畫>`：印「這份已經復原過了」，**不印一排 ✘** | 0 |
-| 預設清理超過 1000 個檔：這次先清 1000 個，講清楚「剩下 N 個下次再清」 | 0 |
-| `pet`：那個 port 上已經有一個真的 pet 在跑（印同一個帶鑰匙的網址，並用瀏覽器打開） | 0 |
-| `cleanup undo <做到一半中斷的計畫>`：已經搬的全部放回 | 0 |
-| `cleanup undo`：搬走的全部放回，就算計畫的 `status` 是 `partial`（離開碼只看逐項） | 0 |
-| 沒有這個 plan id（**唯讀模式的 `apply <不存在的 id>` 也是**） | 1 |
-| `--skip`／`--also` 的編號對不上、不到 4 碼；參數看不懂；不認得的子指令 | 1 |
-| `cleanup undo` 不給 id，但沒有任何還能復原的計畫 | 1 |
-| `cleanup undo <還沒開始的計畫>`（改用 `release`）；`cleanup release <已經開始的計畫>`（改用 `undo` 或 `apply`） | 1 |
-| `quarantine --empty --yes` 沒給 token、token 不對或過期（**唯讀模式也是**） | 1 |
-| `cleanup dismiss`（還沒有這個指令） | 1 |
-| 勾的檔被一份還沒套用的計畫佔著（CONFLICT，見下面「卡住的計畫」） | 1 |
-| 另一個清理動作正在跑；資料庫打不開 | 2 |
-| `open`：pet 沒在跑，或那個埠上回應的證明不了是你的 pet（都不印帶鑰匙的網址） | 2 |
-| `pet`：那個 port 已經被佔用，而且用它的不是真的 pet（不印網址） | 2 |
-| 有檔案沒搬成（`failed`）、搬到一半中斷（`unknown`），或這次沒有處理到（`cancelled`） | 3 |
-| `cleanup apply <partial／error 的計畫>`：原樣回傳，離開碼照逐項（上面那一列） | 3 |
-| `cleanup undo`：有檔案沒放回（還在隔離區、已經清空、狀態不明） | 3 |
-| `cleanup apply`／`quarantine --empty --yes` 做到一半，清理鎖被另一個清理動作接走，**而且這一次真的動到了東西** | 3 |
-| 同上，但這一次**一個檔都還沒動到**（鎖本來就被別人拿著） | 2 |
+| Everything worked; nothing to clean up (Downloads is tidy); a read-only dry run | 0 |
+| `cleanup apply <a plan already applied>`: idempotent, prints the same results, moves nothing a second time | 0 |
+| `cleanup apply <a plan already undone>`: prints "this one has already been undone", **without a row of ✘** | 0 |
+| A default cleanup of more than 1000 files: this run clears 1000 and says plainly "N left for next time" | 0 |
+| `pet`: a real pet is already running on that port (prints the same address with the key, and opens a browser) | 0 |
+| `cleanup undo <a plan interrupted partway>`: everything already moved comes back | 0 |
+| `cleanup undo`: everything that moved comes back, even when the plan's `status` is `partial` (the exit code follows the per-item results) | 0 |
+| No such plan id (**including read-only mode's `apply <a nonexistent id>`**) | 1 |
+| A `--skip` / `--also` id that matches nothing or is shorter than 4; an argument that makes no sense; an unknown subcommand | 1 |
+| `cleanup undo` with no id, and no plan can be undone | 1 |
+| `cleanup undo <a plan that never started>` (use `release`); `cleanup release <a plan that has started>` (use `undo` or `apply`) | 1 |
+| `quarantine --empty --yes` with no token, or a wrong or expired one (**including read-only mode**) | 1 |
+| `cleanup dismiss` (no such command yet) | 1 |
+| The ticked files are held by a plan that has not been applied (CONFLICT, see "Plans in the way") | 1 |
+| Another cleanup action is running; the database will not open | 2 |
+| `open`: the pet is not running, or whatever answers on that port cannot prove it is your pet (neither prints the address with the key) | 2 |
+| `pet`: that port is taken, and not by a real pet (no address is printed) | 2 |
+| Files that did not move (`failed`), were interrupted partway (`unknown`), or were not handled this time (`cancelled`) | 3 |
+| `cleanup apply <a partial/error plan>`: returned as-is, and the exit code follows the per-item results (the row above) | 3 |
+| `cleanup undo`: some files did not come back (still in quarantine, already purged, state unknown) | 3 |
+| `cleanup apply` or `quarantine --empty --yes` gets partway and another cleanup action takes the lock, **and this run really did touch something** | 3 |
+| The same, but this run **touched nothing at all** (the lock was already held by someone else) | 2 |
 
-**「做到一半被接走」不可以回 2**（第三輪 R3-3b）。2 的意思是「這個動作根本沒執行」，
-而那時候檔已經在隔離區了（清空那條更嚴重：已經永久刪掉幾個）。每晚的腳本拿到 2 會判定「什麼都沒發生」
-然後重試。判準是**這一次有沒有真的動到東西**（`cleanup_journal` 有沒有多出紀錄）：有就是 3，
-完全沒有才是 2。
+**"Interrupted partway" must not return 2** (round three, R3-3b). A 2 means "the action did not run at all",
+and by then the files are already in quarantine (worse for emptying: some are already permanently deleted). A
+nightly script reading 2 concludes nothing happened and retries. The test is **whether this run really touched
+anything** (whether `cleanup_journal` gained a record): if it did it is 3, and only if it did not is it 2.
 
 ---
 
-## 畫面長什麼樣
+## What it looks like
 
 ### `cleanup list`
 
@@ -316,270 +376,354 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
   Also clear some ☐ ones: node cli.mjs cleanup apply --also <id>
 
 1 more needs your eyes:
-  備份.tar  65 KB  — This file is too large for this tool to handle. Whether to keep it is your call.
+  backup.tar  65 KB  — This file is too large for this tool to handle. Whether to keep it is your call.
 ```
 
-這一段是 CLI 真的印的（`test/repo.test.mjs` 照這個例子擺一個 Downloads、真的跑一次 `cleanup list`，只把編號換成範例的，整段逐行比）。
-例如 `node cli.mjs cleanup apply --skip e2dc` 不清 smoke-assets.zip，`--also c136` 多清 smoke-old.bin。
+This is what the CLI really prints (`test/repo.test.mjs` lays out a Downloads folder like this example, runs
+`cleanup list` for real, swaps only the ids for the example ones, and compares the whole thing line by line).
+For instance `node cli.mjs cleanup apply --skip e2dc` leaves smoke-assets.zip alone, and `--also c136` clears
+smoke-old.bin as well.
 
-- **每一列都要有 reason 與 evidence。** 沒有原因就不該出現在清單裡（spec §6）。
-- 頁尾「會清掉打勾的 N 個」用後端的 `defaultCheckedCount`，是**全部**打勾的，不是畫面上列出來的那幾個。
-- 受保護的檔（`.ini`、`.lnk`、`.pem`…）與太大、算不出指紋的檔**不會**是候選；太大的列在「需要你自己看一眼」。
-- 檔名裡的控制字元與換行一律換成「·」再印 —— 檔名是不可信的輸入，不可以讓它偽造一行畫面（稽核 RC14）。
-  U+2028／U+2029 與 bidi 控制字元（U+061C、U+200E、U+200F、U+202A–202E、U+2066–2069）也換：
-  名字裡夾一個 U+202E 的 `invoice<U+202E>fdp.exe`，原樣印出來看起來是 PDF，其實是執行檔（第三波 C5）。
+- **Every row has a reason and evidence.** With no reason it should not be on the list at all (spec §6).
+- The footer's "clears the N ticked files" uses the backend's `defaultCheckedCount`, which is **all** the
+  ticked ones, not just the ones shown on screen.
+- Protected files (`.ini`, `.lnk`, `.pem`…) and files too large to fingerprint are **not** candidates; the
+  large ones are listed under "needs your eyes".
+- Control characters and newlines in a filename are printed as "·" — a filename is untrusted input and must
+  not be able to forge a line of output (audit RC14).
+  U+2028 / U+2029 and the bidi controls (U+061C, U+200E, U+200F, U+202A–202E, U+2066–2069) are replaced too:
+  a name containing U+202E, `invoice<U+202E>fdp.exe`, prints as a PDF but is an executable (third wave, C5).
 
 ### `cleanup apply`
 
 ```
-計畫 56b024f0-9138-4fec-a37c-af7269b2edfe
-  ✔ smoke-report.pdf　34 B
-  ✔ smoke-assets.zip　19 B
-  ✘ 素材包.zip　19 B　—— 這個檔案十分鐘內還在變動，先不搬。等一下再試一次。
+Plan 9923e5b9-792b-43eb-9dd8-f4f13255a03f
+  ✔ smoke-report.pdf  34 B
+  ✘ smoke-assets.zip  19 B  — The file changed, or is still downloading. Scan again and build a new plan.
 
-搬進隔離區 2 個，53 B。
-後悔的話：node cli.mjs cleanup undo 56b024f0-9138-4fec-a37c-af7269b2edfe
+Moved 1 file (34 B) to quarantine.
+Changed your mind? node cli.mjs cleanup undo 9923e5b9-792b-43eb-9dd8-f4f13255a03f
 
-⚠ 上面 ✘ 的沒搬成。原檔都還在原位，沒有任何東西被刪除。
+⚠ The ✘ files above did not move. Every original is still where it was — nothing was deleted.
 ```
 
-逐項結果**照後端的 `outcome` 全部種類印**，不自己推算：
+Per-item results are printed **for every kind of `outcome` the backend gives**, never inferred:
 
-| `outcome` | 印成 |
+| `outcome` | Printed as |
 |---|---|
-| `moved` | `✔ 檔名` |
-| `skipped` | `－ 檔名`（你略過了） |
-| `failed` | `✘ 檔名 —— 原因` |
-| `restored` | `↩ 檔名`，註明「已經放回」 |
-| `purged` | 檔名，註明「已清空」 |
-| `pending` | 檔名，註明「還沒做」 |
-| `cancelled` | 檔名，註明「not handled: the plan stopped or was dropped; the file never moved」 |
-| `unknown` | 檔名，註明「狀態不明」與原因（搬到一半中斷，說不準檔案現在在原位還是在隔離區） |
+| `moved` | `✔ name  size` |
+| `skipped` | `- name  size  (you skipped it)` |
+| `failed` | `✘ name  size  — reason` |
+| `restored` | `↩ name  size  (put back as …)` |
+| `purged` | `⌫ name  size  (emptied)` |
+| `pending` | `○ name  size  (not done yet)` |
+| `cancelled` | `⊘ name  size  (not handled: the plan stopped or was dropped; the file never moved)` |
+| `unknown` | `? name  size  — state unknown: …` and the reason (interrupted mid-move; no telling whether the file is in place or in quarantine) |
 
-- 有 ✘、「狀態不明」或「沒有處理」的時候**離開碼是 3**，已經搬成功的**仍然可以 undo**。
-  **離開碼只看逐項，不看計畫的 `status`**（第二輪 R2-1）：逐項都搬了就是 0。
-- `cancelled` 有兩種：計畫放棄了，或計畫跑過、這一項從來沒碰過（例如套用中途被接走）。兩種都沒有任何搬移紀錄，
-  檔本來就在原位，所以不說「原因不明」。
-- 「原檔都還在原位」**只在每一個沒成功的都是 `failed` 時才說**。有 `unknown` 的話不可以這樣說 ——
-  檔案可能已經在隔離區（稽核 RC17）。那一列的原因是核心給的：
-
-  ```
-  搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。
-  ```
-
-  （**不會叫你「再套用一次把它接完」**：`partial`／`error` 的計畫再套用是原樣回傳，
-  而 rename 之後驗證沒過、又搬不回去的那種 journal 刻意停在 `started`，再套用也不會動它。
-  那一項要用 `doctor` 看、`undo` 放回。）最後一行印：
+- When there is a ✘, a "state unknown" or a "not handled", **the exit code is 3**, and whatever did move
+  **can still be undone**.
+  **The exit code follows the per-item results, not the plan's `status`** (round two, R2-1): every item moved
+  means 0.
+- `cancelled` has two causes: the plan was dropped, or the plan ran and this item was never touched (the lock
+  was taken mid-apply, for instance). Neither has any move record and the file is where it always was, so it
+  does not say "cause unknown".
+- "Every original is still where it was" **is only said when every unsuccessful item is `failed`.** With an
+  `unknown` it must not be said — the file may already be in quarantine (audit RC17). The reason on that row
+  comes from the core:
 
   ```
-  ⚠ 有 1 個interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check。
+  Interrupted mid-move, so there is no telling whether the file is where it was or in quarantine. “Undo” puts back whatever is in quarantine; you can also run node cli.mjs doctor to check.
   ```
-- 一個都沒搬成的時候不印任何 ✔、不給復原指令。
-- 預設清理一次最多 1000 個檔，超過的這次先不收，最後一行講「剩下 N 個下次再清」，離開碼 0。
-- 唯讀模式（`CONTEXTBOX_READONLY=1`）：印「唯讀模式：會清掉 N 個檔案」與清單，**不建計畫、不搬**，離開碼 0。
-  `apply <已經套用過的計畫>`（`applied`／`partial`／`error`）的 N 是 0：真的套用也是原樣回傳（見下一條），
-  `partial`／`error` 的另外講「Applying again does not retry what failed」與怎麼重試。
-- `apply <已經放棄的計畫>`：印「已經放棄了（有人放棄了它，或建立之後超過一小時沒有套用、自動放棄）」，
-  不動任何檔案，離開碼 0。自動放棄見「每個清理指令之前先收尾」。
-- **計畫是一次性的**（第二輪 R2-3）：`applied`／`partial`／`error` 的計畫再 `apply <id>` **一個檔都不會動**，
-  **不會重試**失敗的那幾個 —— 使用者可能剛把其中的檔放回來，遲到的重送不可以再把它搬走。
-  做到一半中斷的 `proposed` 計畫（見「卡住的計畫」）`apply <id>` 才會接著做完。
 
-  這一次什麼都沒做，畫面就要說出來（第三輪 R3-2b／R3-15）。逐項結果照印（那是這份計畫現在的樣子），
-  但**不印「搬進隔離區 N 個」、不印「後悔的話：…」**（那會讓人以為剛剛真的清了），改印：
+  (**It does not tell you to "apply again to finish it off"**: applying a `partial` or `error` plan again
+  returns it as-is, and a journal deliberately left at `started` — where the verification after the rename
+  failed and it could not be moved back — is not touched by applying again either. That item is one for
+  `doctor` to look at and `undo` to put back.) The last line prints:
 
   ```
-  這份計畫先前已經跑過了，這次什麼都沒做（沒有搬動、也沒有刪除任何檔案）。
+  ⚠ 1 file interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check.
+  ```
+- When nothing moved at all it prints no ✔ and offers no undo command.
+- A default cleanup takes at most 1000 files at a time; the rest wait, the last line says "N left for next
+  time", and the exit code is 0.
+- Read-only mode (`CONTEXTBOX_READONLY=1`): it prints "Read-only mode: this would clean up N files" and the
+  list, **builds no plan and moves nothing**, exit code 0.
+  For `apply <a plan already applied>` (`applied` / `partial` / `error`) that N is 0: applying it for real also
+  returns it as-is (see the next point), and for `partial` / `error` it additionally explains
+  "Applying again does not retry what failed" and how to retry.
+- `apply <a plan already dropped>`: it prints "was dropped (someone dropped it, or it sat unapplied for over an
+  hour and was dropped automatically)", touches no file, exit code 0. Automatic dropping is under "Every
+  cleanup command tidies up first".
+- **A plan runs once** (round two, R2-3): applying an `applied` / `partial` / `error` plan again with
+  `apply <id>` **moves no file at all** and **does not retry** the ones that failed — the user may have just
+  put some of those files back, and a late re-send must not move them away again.
+  Only a `proposed` plan interrupted partway (see "Plans in the way") is carried on by `apply <id>`.
+
+  When a run does nothing, the screen has to say so (round three, R3-2b / R3-15). The per-item results are
+  still printed (that is what the plan looks like now), but it **does not print "Moved N files to quarantine"
+  and does not print "Changed your mind?"** — those would suggest a cleanup just happened. Instead:
+
+  ```
+  This plan had already run, so nothing happened this time — no file was moved and nothing was deleted.
   Applying again does not retry what failed — a plan runs once. To clean again: node cli.mjs cleanup scan, then node cli.mjs cleanup apply, which builds a new plan from the current list.
-  先前搬進隔離區的 1 個還在裡面，要放回原位：node cli.mjs cleanup undo <id>
+  The 1 file moved to quarantine earlier is still there. To put it back: node cli.mjs cleanup undo <id>
   ```
 
-  離開碼照逐項（全部搬成 0；有 `failed`／`unknown`／`cancelled` 3）。
-  **這一次不算「一次成功的清理」**：寵物本來為一個還沒解決的套用錯誤擔心的，重送舊計畫不可以把它清掉
-  （以前會，任何一次重送都把一個一直壞著的錯標成「好了」）。
-- **做到一半被另一個清理動作打斷**（第三輪 R3-3b）：清理鎖被接走的時候，逐項結果與計畫 id 照常印，
-  最後講「被另一個清理動作打斷，做到一半就停了」、已經搬進隔離區幾個、以及兩條路（再跑一次接著做、
-  或 `undo` 放回）。離開碼見「離開碼是契約」。
+  The exit code follows the per-item results (all moved → 0; any `failed` / `unknown` / `cancelled` → 3).
+  **This does not count as one successful cleanup**: if the pet was worried about an unresolved apply error,
+  re-sending an old plan must not clear that (it used to, so any re-send marked a permanently broken error as
+  fixed).
+- **Interrupted partway by another cleanup action** (round three, R3-3b): when the cleanup lock is taken away,
+  the per-item results and the plan id are printed as usual, and the end says "⚠ Another cleanup action
+  interrupted this one, so it stopped partway", how many are already in quarantine, and the two ways on
+  (running `cleanup apply <id>` again picks up where it stopped, or `cleanup undo <id>` puts back what already
+  moved). For the exit code see "Exit codes are a contract".
 
 ### `cleanup undo`
 
 ```
-放回原位 2 個檔案。
-  ↩ smoke-report.pdf
-  ↩ 素材包.zip　→ 原位置已經有同名檔案，放回來的這份叫 素材包.zip.restored（沒有覆蓋任何檔案）
+Undoing the most recent cleanup: plan 9923e5b9-792b-43eb-9dd8-f4f13255a03f (18s ago)
+Put 1 file back.
+  ↩ smoke-report.pdf  → a file of that name was already there, so this one is called smoke-report.pdf.restored (nothing was overwritten)
+  - smoke-assets.zip  (never moved in the first place; it is where it always was)
 ```
 
-- 只列**真的放回去**的；數字跟 ↩ 的行數一定對得上。
-- 不講資料夾名：放回的範圍是**清理範圍 ∪ `watch`，只算現在存在的資料夾**（第三波 C4）。舊版 CLI 用 `watch` 清理過，
-  桌面上的檔可能還在隔離區 —— 放回原位不會擴大清理範圍，所以只有 `undo` 用這個範圍；`apply` 與清空還是只看 `cleanup.roots`。
-  兩個都不在的資料夾放不回去（那一項印「沒放回」，離開碼 3）。`cleanup.roots` 或 `watch` 裡有一個資料夾不見了
-  （外接碟拔掉），那一個略過，不影響放回其他資料夾的檔。
-- **做到一半中斷的計畫**（還是 `proposed`，但已經有檔在隔離區）也可以 `undo`：放回已經搬的那些，
-  沒搬的本來就在原位。全部放回 0，有沒放回的 3。搬到一半被砍在 rename 之後的那一項，收尾會先把它記成
-  已經在隔離區，所以不給 id 的 `undo` 也找得到它（第二輪 R2-1a）。
-- 有沒放回來的（隔離區的檔被改過、已經清空…），另外列「沒放回：檔名 —— 原因」，離開碼 3。
-  訊息分三種：全部放回、部分放回、一個都沒放回 —— **一個都沒放回時不可以說「都放回來了」**（稽核 RC9）。
-- **離開碼只看逐項，不看計畫的 `status`**（第二輪 R2-1，稽核 A-exp2）：3 只給真的有檔沒放回
-  （還在隔離區、已經清空、狀態不明）。套用時就沒搬成、原檔後來被刪掉的那一項不算沒放回。
-  核心回 `partial` 但逐項看沒有任何搬走的檔留在隔離區時（例如隔離區裡那個位置的內容對不上、沒有動它），
-  照印核心的原因，離開碼 0。
-- 逐項結果**不講「之後不會再被提議」**：原位置被佔時放回來的那份改名成 `.restored`，是另一個檔，
-  重掃後會以重複檔的身分被預設勾起來。要講就得講全（放回原位的才不會、而且除非出現新的理由），
-  那一句只在「卡住的計畫」建議 undo 的時候講一次。
-- 不給 id：復原最近一份還能復原（隔離區裡還有它的檔）的計畫。一份都沒有 → 離開碼 1。
+- It only lists what **really went back**; the number always matches the ↩ rows.
+- It does not name folders: the scope files go back to is **the cleanup scope ∪ `watch`, counting only folders
+  that exist now** (third wave, C4). An older CLI cleaned using `watch`, so a file from the Desktop may still
+  be in quarantine — putting a file back does not widen the cleanup scope, which is why only `undo` uses this
+  scope; `apply` and emptying still look only at `cleanup.roots`.
+  A file whose folder is in neither cannot go back (that row prints "not put back", exit code 3). If one
+  folder in `cleanup.roots` or `watch` is missing (an external drive unplugged), that one is skipped and the
+  files going back to other folders are unaffected.
+- **A plan interrupted partway** (still `proposed`, but with files already in quarantine) can be undone too:
+  what moved comes back, and what did not was never out of place. All back → 0, anything not back → 3. For an
+  item killed just after the rename, the tidying-up records it as already in quarantine first, so `undo` with
+  no id finds it as well (round two, R2-1a).
+- Anything that did not come back (the quarantine copy was modified, it has been purged…) is listed separately
+  as "not put back: name — reason", exit code 3.
+  There are three messages: everything back, some back, none back — **and when none came back it must not say
+  they all did** (audit RC9).
+- **The exit code follows the per-item results, not the plan's `status`** (round two, R2-1, audit A-exp2): a 3
+  is only for files that really did not come back (still in quarantine, already purged, state unknown). An
+  item that never moved at the apply, or whose original was deleted afterwards, does not count as not back.
+  When the core says `partial` but per item nothing that moved is left in quarantine (the quarantine slot's
+  contents do not match, say, so it was not touched), it prints the core's reason and exits 0.
+- Per-item results **do not say "it will not be suggested again"**: a file put back under a `.restored` name
+  when its old place was taken is a different file, and after a rescan it is ticked again as a duplicate.
+  Saying it properly means saying all of it (only a file back in its own place, and only until a new reason
+  turns up), which is said once, in the `undo` suggestion under "Plans in the way".
+- With no id: it undoes the most recent plan that can still be undone (its files are still in quarantine).
+  None at all → exit code 1.
 
-### 卡住的計畫
+### Plans in the way
 
-建計畫時勾的檔被一份**還沒套用**的計畫佔著（只有 `proposed` 的計畫會佔住檔案；套用過的不會），
-印出那一份與裡面的檔，給兩條路。**離開碼 1**（CONFLICT：重試一百次也一樣，要換個做法）。
+When the files you ticked are held by a plan that **has not been applied** (only a `proposed` plan holds files;
+an applied one does not), it prints that plan and its files and offers two ways on. **Exit code 1** (CONFLICT:
+the same on the hundredth try, so change what you are asking for).
 
-那一份**還沒開始**（沒有任何 journal，跟核心 `releasePlan` 同一個判斷）：
+That plan **never started** (no journal at all, the same test as the core's `releasePlan`):
 
 ```
-這個檔案已有待處理的清理計畫。
+This file already belongs to a pending cleanup plan.
 
-擋住的是一份還沒套用的計畫 5c1e…（3 分鐘前建立），裡面有 2 個檔：
+In the way is a plan that was never applied, 5c1e… (created 3 min ago), holding 2 files:
   …
+
 Two choices:
   Carry on with that plan: node cli.mjs cleanup apply 5c1e…
   Drop that plan (nothing moves; its files stay candidates): node cli.mjs cleanup release 5c1e…
 ```
 
-「放棄那一份」是 **`release`**（放棄那份計畫，檔案不動），**不是 `undo`** —— 對一份已經搬過的計畫按 undo
-會把檔案放回去；對一份還沒開始的計畫按 undo，CLI 回 1 並叫你改用 `release`。
+"Drop that plan" is **`release`** (drop the plan, move no file), **not `undo`** — undo on a plan that already
+moved files puts them back; undo on a plan that never started returns 1 and tells you to use `release`.
 
-那一份**做到一半中斷了**（套用時按了 Ctrl+C、當機、被砍：計畫停在 `proposed`，但已經有檔在隔離區）。
-這種**不能 release**（核心會拒絕：已經開始搬了，不能假裝沒發生過），release 不行就只剩兩條路：
+That plan **was interrupted partway** (Ctrl+C during the apply, a crash, killed: the plan is still `proposed`,
+but files are already in quarantine). This kind **cannot be released** (the core refuses: it has started
+moving files, and there is no pretending otherwise), so with release ruled out there are two ways on:
 
 ```
-這個檔案已有待處理的清理計畫。
+This file already belongs to a pending cleanup plan.
 
-擋住的是一份做到一半中斷的計畫 5c1e…（3 分鐘前建立），裡面 300 個檔已經有 20 個在隔離區：
+In the way is a plan interrupted partway, 5c1e… (created 3 min ago): of its 300 files, 20 are already in quarantine:
   …
+
 This plan has started moving files, so it cannot be dropped (release). Two choices:
   Put back what already moved: node cli.mjs cleanup undo 5c1e…
     Files put back are not suggested again unless a new reason turns up; one renamed on the way back counts as a new file.
   Finish it: node cli.mjs cleanup apply 5c1e…
 ```
 
-對這種計畫跑 `cleanup release` 也是回 1，並印同樣這兩條路。
+Running `cleanup release` on that kind also returns 1 and prints the same two ways on.
 
-undo 底下那一句是實話，不是安撫：放回原位的檔，候選記成「已復原」，重掃時同一個檔、同一種理由不會再變回候選
-（核心的 `upsertCandidate`）；只有出現新的理由（例如之後變成重複檔、規則改版）才會再被提議。
-改名成 `.restored` 放回的那份在資料庫裡是另一個檔，照規則重新評估。
+The sentence under undo is the truth, not reassurance: a file put back is recorded as restored, and a rescan
+does not turn the same file with the same reason back into a candidate (the core's `upsertCandidate`); only a
+new reason (it later becomes a duplicate, the rules change) brings it back. A file put back under a
+`.restored` name is a different file in the database and is judged by the rules from scratch.
 
 ### `cleanup quarantine --empty`
 
 ```
-這些檔案已隔離七天。再次確認後會永久刪除，無法復原。
-會永久刪除 1 個檔案，25 B。
-確定的話跑：node cli.mjs cleanup quarantine --empty --yes c3544f10-4440-4112-b17a-86955bcbd879
+These files have been in quarantine for seven days. Confirm again and they are deleted for good.
+This will permanently delete 1 file, 19 B.
+If you are sure, run: node cli.mjs cleanup quarantine --empty --yes 80d5b71a-bb89-456d-b941-d7a81c92238a
 ```
 
-- 沒有滿七天的：印「還沒有滿七天的檔案。最早的那個還要等 N 天。」，離開碼 0。
-- **二次確認要人真的再打一次。** 這是整個專案唯一會刪檔的路徑。
-- 帶 `--yes <token>` 的那一次**不再產生新的預覽**，直接確認那一個 token。
-  沒給 token、token 不對或過期（五分鐘）→ 離開碼 1，什麼都不刪。
-- 唯讀模式：`--empty` 只講滿七天的有幾個，不產生 token；`--empty --yes <token>` 一樣先驗 token
-  （錯的、過期的 → 1），對的才印「唯讀模式：不會刪任何檔案」、回 0。什麼都不刪。
-- **刪到一半被另一個清理動作打斷**（第三輪 R3-3b）：已經刪掉的**救不回來**，所以一定要講出刪了幾個：
+- Nothing seven days old yet: it prints "No file is seven days old yet. The oldest has N days to go." and
+  exits 0.
+- **The second confirmation has to be typed again.** This is the only path in the whole project that deletes a
+  file.
+- The run carrying `--yes <token>` **does not produce a new preview**; it confirms that one token.
+  No token, a wrong one, or an expired one (five minutes) → exit code 1 and nothing is deleted.
+- Read-only mode: `--empty` only says how many are old enough and produces no token;
+  `--empty --yes <token>` still checks the token first (wrong or expired → 1), and only for a good one prints
+  that read-only mode deletes nothing and returns 0. Nothing is deleted either way.
+- **Interrupted partway by another cleanup action** (round three, R3-3b): what is already deleted **cannot be
+  recovered**, so the count has to be said out loud:
 
   ```
-  刪掉 3 個，12 B。
+  Deleted 3 files, 12 B.
 
-  ⚠ 被另一個清理動作打斷，刪到一半就停了（清理鎖被另一個清理動作接走了，這一步先停在這裡。…）。
-  刪掉的救不回來了。剩下的要接著刪：再跑一次 node cli.mjs cleanup quarantine --empty --yes <同一個確認碼>（確認碼過期的話重新預覽：node cli.mjs cleanup quarantine --empty）。
+  ⚠ Interrupted by another cleanup action and stopped partway (another cleanup action took the cleanup lock, so this step stops here. …).
+  What was deleted cannot be brought back. To carry on with the rest: run node cli.mjs cleanup quarantine --empty --yes <the same token> again (if the token has expired, preview again: node cli.mjs cleanup quarantine --empty).
   ```
 
-  離開碼 3（執行了，但沒全部做完）。同一個確認碼在五分鐘內重送會**從停下來的那一項接著刪**，總數含之前刪掉的。
+  Exit code 3 (it ran, but did not finish). Re-sending the same token within five minutes **carries on from
+  where it stopped**, and the total includes what was already deleted.
 
-### `doctor`（在既有的輸出上加的幾段）
+### `doctor` (the blocks this section adds)
+
+A real run in a sandbox holding an interrupted plan and a folder the scan could not open (paths shortened, the
+plan id replaced by `5c1e…`):
 
 ```
-設定檔    /home/alice/.contextbox/config.json
-資料庫    /home/alice/.contextbox/data.db
-清理範圍（只有這裡面的檔會被清）
+ContextBox check
+
+Config      /home/alice/.contextbox/config.json
+Database    /home/alice/.contextbox/data.db
+Read-only   off
+
+Watched folders (screenshots and intake)
   ✓  /home/alice/Downloads
-隔離區    /home/alice/.contextbox/quarantine
-          12 個檔案，458 MB，其中有滿七天可以清空的
-待清候選  6 個；另外 3 個讀不到或搬不動、60 個太大，這個工具不處理（用 cleanup list 看是哪些）
+Cleanup scope (only files in here are ever cleaned)
+  ✓  /home/alice/Downloads
+Files to    /home/alice/Documents/Filed (created when you accept the first suggestion)
+
+Watcher     ✗ never ran. To keep an eye on things, open a terminal and run `node cli.mjs watch`.
+Quarantine  /home/alice/.contextbox/quarantine
+            2 files, 28 B, the oldest is not yet seven days old
+Candidates  5
 Interrupted 1 plan stopped partway (killed mid-apply, a crash, or Ctrl+C):
-            5c1e… (created 3 min ago): 300 files, 20 already in quarantine
+            5c1e… (created 0s ago): 7 files, 2 already in quarantine
               Put back what already moved: node cli.mjs cleanup undo 5c1e…
               Finish it: node cli.mjs cleanup apply 5c1e…
-掃描問題  上次掃描回報了 1 個問題：
-          ⚠ 資料夾「舊專案」打不開（沒有權限），裡面的檔這次沒有掃到。
-最近出錯  5 分鐘前（2026/9/19 14:03:11）：路徑含有捷徑，無法安全處理。
-          寵物還在為它擔心：這是清理（套用）出的錯，之後還沒有成功的清理（套用）。
+Scan issues The last scan reported 2 problems:
+          ⚠ 1 folder inside “Downloads” could not be opened (no permission?), so the files in it were not scanned.
+          ⚠ 1 known files in “Downloads” could not be read this time (no permission, or a disk error), so they are still treated as present.
+Last error  none
 ```
 
-- 「讀不到或搬不動」與「太大」**照全部**分開算（後端的 `needsHumanCounts`），
-  不是只數 `cleanup list` 列出來的前 50 個（第三波 C7）。
-- **中斷計畫**（第二輪 R2-5）：還是 `proposed`、但已經有搬移紀錄的計畫。它佔著它的檔（預設清理會撞 CONFLICT），
-  已經搬的在隔離區；列出 id、裡面幾個已經在隔離區，與兩條路（放回、做完）。還沒開始的計畫不列在這裡。
-  以前沒有任何指令會把它的 id 印出來。
-- **掃描問題**（第二輪 R2-10）：最近一次完整掃描回報的問題（保險絲、打不開的資料夾），不帶完整路徑。
-  `pet` 的背景重掃以前只印到最小化視窗的 stderr，沒有人看得到。下一次掃描沒問題就不列。
-  **第三輪 R3-12 起，寵物也看得到**：有掃描問題、或有清理資料夾不存在的時候，`GET /pet/state` 回
-  `worried` 與「清理資料夾好像不見了，先看一下 doctor。」（多個資料夾講數量），並在 `scanProblems` 裡帶那幾句話。
-  以前這件事只有跑 `doctor` 的人看得到 —— 常駐在系統匣的使用者會一直被告知「沒事，在發呆」，
-  而工具其實一個檔都沒在掃。寵物的那句**訊息本身不放問題原文**（檔名、資料夾名只出現在 `scanProblems` 裡）。
-- **唯讀模式**（第三輪 R3-9）：「唯讀模式」那一行底下多兩句「不會自動收尾」（見「每個清理指令之前先收尾」）。
-  唯讀的 `doctor` 一個字都不會寫進資料庫。
-- **最近出錯**底下那一行跟寵物用同一個判斷（核心的 `errorStillActive`）：錯分種類（掃描、清理、復原、清空），
-  **同一種**動作之後成功過才說「之後…已經成功過，寵物不會再為它擔心」；不然說「寵物還在為它擔心」。
-  掃描成功不會蓋掉一直壞著的套用（第二輪 R2-10）。
-- 清理範圍在 OneDrive 裡（路徑有一層叫 OneDrive，或在 OneDrive 環境變數那個資料夾底下）：那一行底下加一句
-  「⚠ 這個資料夾在 OneDrive 裡：搬進隔離區等於在雲端與所有裝置上刪掉這個檔…」（第二輪 R2-11）。
-- 開了 `cleanup.screenshots`：清理範圍底下講出哪一個是截圖資料夾、那底下只清截圖。
+With something to report, the last error block looks like this instead:
 
-### `pet` 與 `open`
+```
+Last error  0s ago (20/09/2026, 18:18:00): This cleanup moved nothing: No permission to move this file. Check the permissions and try again.
+            The pet is still worried: this came from a cleanup, and there has been no successful one since.
+```
 
-`pet` 啟動 server（port 7391）與清理監看，印出**帶鑰匙**的網址 `http://127.0.0.1:7391/?k=…`。
-不帶 `?k=` 的網址打開是 401（本機其他程式拿不到鑰匙，稽核 RC16）。
+- The "could not be read or moved" and "too large" counts are worked out over **everything** (the backend's
+  `needsHumanCounts`), not just the first 50 rows `cleanup list` shows (third wave, C7).
+- **Interrupted plans** (round two, R2-5): plans still `proposed` but with move records. Such a plan holds its
+  files (a default cleanup hits CONFLICT) and what already moved is in quarantine; it lists the id, how many
+  are already in quarantine, and the two ways on (put back, finish). Plans that never started are not listed
+  here. Before this, no command printed that id at all.
+- **Scan issues** (round two, R2-10): the problems the last full scan reported (fuses, folders it could not
+  open), without full paths. `pet`'s background rescan used to print these only to the stderr of a minimised
+  window, where nobody saw them. A clean scan clears the block.
+  **From round three, R3-12, the pet sees them too**: with a scan problem, or a cleanup folder that does not
+  exist, `GET /pet/state` returns `worried` and "a cleanup folder seems to have gone missing; have a look at
+  doctor" (with a count when there are several), carrying those sentences in `scanProblems`. Before, only
+  someone running `doctor` found out — a user with it sitting in the system tray was told "all fine, just
+  idling" while the tool was in fact scanning nothing. The pet's **message itself carries no detail** from the
+  problem (filenames and folder names only appear in `scanProblems`).
+- **Read-only mode** (round three, R3-9): two extra lines under the "Read-only" line saying it does not tidy
+  up (see "Every cleanup command tidies up first"). A read-only `doctor` writes nothing at all to the
+  database.
+- The line under **Last error** uses the same test as the pet (the core's `errorStillActive`): errors have
+  kinds (a scan, a cleanup, an undo, emptying quarantine), and only a later success **of the same kind** makes
+  it say the pet has stopped worrying; otherwise it says the pet is still worried. A successful scan does not
+  paper over an apply that is permanently broken (round two, R2-10).
+- A cleanup scope inside OneDrive (a path with a OneDrive component, or under the folder a OneDrive
+  environment variable points at) gets an extra line under it: "⚠ This folder is inside OneDrive: moving a file to quarantine deletes it in the cloud and on every device…" (round two, R2-11).
+- With `cleanup.screenshots` on, the cleanup scope says which one is the screenshots folder and that only
+  screenshots are cleaned there.
 
-那個 port 已經被佔了：先用跟 `open` 同一個判斷問那個埠上是不是真的 pet（見下面），**是才印網址**（第三波之二）。
+### `pet` and `open`
 
-- 是真的 pet：說「已經有一個 ContextBox 在跑了」，印出同一個帶鑰匙的網址，**並用瀏覽器打開**，離開碼 0
-  （第二輪 R2-9：Windows 的捷徑開的是最小化視窗，pet 開著時再點一次捷徑，以前視窗一閃就沒了，面板打不開）。
-- 不是（回應的不是 ContextBox、證明不了是你的 pet、或是問不到回應）：**不印網址**，
-  叫你看看那個埠被誰佔著、或用 `CONTEXTBOX_PORT` 換一個埠，離開碼 2。
+`pet` starts the server (port 7391) and the cleanup watcher, and prints the address **with the key in it**,
+`http://127.0.0.1:7391/?k=…`. That address without `?k=` is a 401 (no other local program can get the key,
+audit RC16).
 
-`pet` 一啟動就全部掃一次，之後每 30 分鐘（`CONTEXTBOX_RESCAN_MS`）再掃一次，每一輪之前先收尾（見「每個清理指令之前先收尾」，
-`pet` 自己做，不靠掃描子行程）。**全量掃描開子行程跑**
-（`cleanup scan --json`，pet 內部用：stdout 只有一行 JSON 結果，problem 照樣印到 stderr，也存起來給 `doctor`），server 不會被卡住 ——
-一千個檔要掃將近二十秒，這段時間 `/health` 照樣馬上回（第三波 C2）。同時間最多一個掃描子行程，
-`pet` 結束時一起收掉；子行程沒交代結果就死掉（被砍、當掉）會記成最近出錯，`pet` 不會跟著掛，下一輪照掃。
-**子行程有逾時**（第二輪 R2-10）：超過 10 分鐘（`CONTEXTBOX_SCAN_TIMEOUT_MS`）還沒結束（清理範圍在斷線的網路碟上，
-readdir 卡住）就殺掉，記成掃描的錯「背景掃描逾時（資料夾可能卡住了）」，下一輪照常。以前就安靜地再也不重掃。
-開機掃描掃完會印「開機掃描：掃了 N 個檔案，M 個可以清。」。`pet` 結束時會清掉它記下來的 port。
+If that port is already taken, it first asks — with the same test `open` uses (below) — whether a real pet is
+on it, and **only then prints the address** (third wave, part two).
 
-`open` 用預設瀏覽器打開那個帶鑰匙的網址。頁面載入後會把 `k` 從網址列拿掉。
-**只把網址交給真的 pet**（第三波 C3、第二輪 R2-9）：帶一個每次都不同的 nonce（32 個 hex）問 `/health?nonce=`
-（不帶鑰匙問：還不知道對方是誰），真的 pet 回 `proof` ＝ HMAC-SHA256（key 是鑰匙、訊息是「它實際監聽的埠號:nonce」）。
-`open` 用**要連的那個埠號**自己算一次來比，對得上才打開。算得出來的只有手上有鑰匙的那一個：
+- It is a real pet: it says ContextBox is already running, prints the same address with the key, **and opens a
+  browser**, exit code 0 (round two, R2-9: the Windows shortcut opens a minimised window, so clicking the
+  shortcut again while the pet was running used to flash a window and open no panel).
+- It is not (the answer is not ContextBox, it cannot prove it is your pet, or nothing answers): it **does not
+  print the address**, tells you to see what is holding that port or to pick another one with
+  `CONTEXTBOX_PORT`, and exits 2.
 
-- 形狀可以模仿，所以不看形狀就交鑰匙；以前另外看「記下來的 pid 還活著」，冒牌只要剛好有一個活著的 pid 就拿到鑰匙，
-  直接跑 `node core/server.ts`（不記 pid）的真 server 反而一定被拒絕 —— 現在不看 pid。
-- **埠號綁在證明裡**：冒牌把 nonce 轉給另一個埠上的真 pet、再把 proof 原封不動交回來，算的埠號對不上，一樣不交鑰匙。
+`pet` scans everything once at startup and again every 30 minutes (`CONTEXTBOX_RESCAN_MS`), tidying up before
+each round (see "Every cleanup command tidies up first" — `pet` does it itself, not via the scan child
+process). **A full scan runs in a child process** (`cleanup scan --json`, used internally by pet: stdout is one
+line of JSON, problems still go to stderr and are stored for `doctor`), so the server never blocks — a
+thousand files take nearly twenty seconds, and `/health` answers instantly throughout (third wave, C2). There
+is at most one scan child at a time and it is cleaned up when `pet` exits; a child that dies without reporting
+(killed, crashed) is recorded as the last error, `pet` survives, and the next round scans as usual.
+**The child has a timeout** (round two, R2-10): more than 10 minutes (`CONTEXTBOX_SCAN_TIMEOUT_MS`) without
+finishing — a cleanup scope on a disconnected network drive, where readdir hangs — and it is killed and
+recorded as a scan error, "the background scan timed out (the folder may be stuck)", with the next round
+carrying on as usual. Before this it simply never rescanned again, silently.
+When the startup scan finishes it prints "Startup scan: looked at N files; M can be cleaned up." `pet` clears
+the port it recorded when it exits.
 
-- pet 沒在跑（那個埠沒有回應）：不印帶鑰匙的網址、不打開瀏覽器，離開碼 2。
-  （之後佔住那個埠的不管是誰，貼過去就拿到鑰匙；pet 起來會自己印。）
-- 那個埠上回應的不是 ContextBox、或證明不了是你的 pet（冒牌、別的帳號的、舊版的 pet）：**連網址都不印**，不打開，離開碼 2。
-- 打不開瀏覽器（沒有 `xdg-open` 之類的）：印網址，叫你自己貼，離開碼 0。
+`open` opens that address with the key in your default browser. The page removes the `k` from the address bar
+once it has loaded.
+**It only hands the address to a real pet** (third wave C3, round two R2-9): it sends a fresh nonce (32 hex
+characters) to `/health?nonce=` (without the key — it does not yet know who is answering), and a real pet
+answers with a `proof` = HMAC-SHA256 keyed by the key over "the port it is really listening on:nonce".
+`open` computes the same thing using **the port it is about to connect to** and compares. Only the holder of
+the key can produce it:
+
+- A shape can be imitated, so it does not hand over the key on shape alone. It used to also require a live
+  recorded process id, so an impostor that happened to have one got the key, while a real server started
+  directly with `node core/server.ts` (which records nothing) was always refused. The pid is no longer looked
+  at.
+- **The port is bound into the proof**: an impostor that forwards the nonce to a real pet on another port and
+  hands the proof back unchanged computes against the wrong port, and still gets no key.
+
+- The pet is not running (nothing answers on that port): it does not print the address with the key, does not open a browser, exit code 2.
+  (Whoever takes that port afterwards would get the key from a pasted address; `pet` prints it itself when it
+  starts.)
+- Whatever answers on that port is not ContextBox, or cannot prove it is your pet (an impostor, another
+  account's, an older pet): **it does not even print the address**, does not open anything, exit code 2.
+- The browser will not open (no `xdg-open` or equivalent): it prints the address for you to paste, exit
+  code 0.
 
 ---
 
-## 給 A／B 的約定
+## The agreement with A and B
 
-**1. `--skip`／`--also` 收的是清單上印的編號，不是檔名。** 檔名會重複，編號不會；
-編號對不上就整個不做（離開碼 1），不可以猜。
+**1. `--skip` and `--also` take the ids printed on the list, not filenames.** Filenames repeat, ids do not; an
+id that matches nothing means the whole thing is refused (exit code 1), never guessed.
 
-**2. `cleanup apply` 不給 plan-id 的話，行為是「用清單上打 ✔ 的建一個新計畫再套用」**，
-不是「套用最近那個計畫」。要重送既有計畫請明確給 id ——
-重送已套用的計畫是**冪等**的：印同樣的結果、離開碼 0，不會搬第二次（CLI 逾時後被腳本重試是正常的）。
+**2. `cleanup apply` with no plan-id means "build a new plan from the ✔ rows and apply it"**, not "apply the
+most recent plan". To re-send an existing plan, name its id — re-sending an applied plan is **idempotent**: the
+same results, exit code 0, nothing moved a second time (a script retrying after a CLI timeout is normal).
 
-**3. 計畫是一次性的。** 套用過的計畫（全部成功、部分失敗、全部失敗）不再佔住檔案；
-`partial`／`error` 的計畫再 `apply <id>` 原樣回傳，不重試（第二輪 R2-3）。
-失敗的那幾個還是候選：要重試就 `cleanup scan` 重掃，再 `cleanup apply` 收進新的計畫。重試 ＝ 新計畫。
-例外只有做到一半中斷的 `proposed` 計畫：它還沒跑完，`apply <id>` 會接著做完。
+**3. A plan runs once.** An applied plan (all succeeded, partly failed, all failed) no longer holds its files;
+applying a `partial` / `error` plan again with `apply <id>` returns it as-is and retries nothing (round two,
+R2-3).
+The files that failed are still candidates: to retry them, `cleanup scan` again and then `cleanup apply` to
+take them into a new plan. Retrying means a new plan.
+The one exception is a `proposed` plan interrupted partway: it has not finished, so `apply <id>` carries it on.

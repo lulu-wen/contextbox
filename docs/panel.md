@@ -1,68 +1,141 @@
-# 面板與寵物
+---
+layout: default
+title: The panel and the pet
+---
 
-頁面（`node cli.mjs pet` 印出來的那個網址）現在實際上長什麼樣、按鍵做什麼、哪些是模擬哪些是真的。
-README 只講到「開面板」，細節在這裡；`test/repo.test.mjs` 會比對這一份跟實作有沒有對上。
+What the page actually looks like (the address `node cli.mjs pet` prints), what the keys do, and which parts
+are simulated and which are real. The README only gets as far as "open the panel"; the detail is here, and
+`test/repo.test.mjs` checks this file against the implementation.
 
+## Two halves
 
-頁面分成**兩塊**：「檔案管理」（預設）與「基本資料」，用上面那兩顆分頁切換。
-切換走的是網址上的 `#`（`#files`／`#facts`），**同一頁、不重新載入、不用再帶一次鑰匙**；
-上次在哪一塊記在 `localStorage`（讀不到就用預設，例如私密視窗）。
-基本資料那一塊的欄位進度條與分區導覽（`#g0`、`#g1`…）只在那一塊出現；
-點分區導覽只是捲到那一區，不會把你踢回檔案管理。
-檔案管理那一塊有「打開清理面板」與「復原最近動作」兩顆按鈕，開的就是可頌貓底下那兩個面板。
+The page has **two halves**: Files (the default) and Your details, switched by the two tabs at the top.
 
-首頁右下角會載入 `core/assets/quaso_v8.glb`。點擊可頌貓開關對話，
-右側設定可選擇轉一圈、暫停動畫或跳躍；點擊外部或按 Escape 可關閉對話。
-模型由 `core/assets/pet-viewer.js` 顯示；更新 server 程式後請重啟，再用 server 印出來的網址（或 `node cli.mjs open`）重新打開。
-頁面載入後會把網址上的鑰匙拿掉，所以直接按瀏覽器的重新整理會拿到 401。
-要在另一個瀏覽器打開、或想加書籤，就用 `node cli.mjs open` 印出來的那一行完整網址 ——
-鑰匙本身是固定的（存在 `~/.contextbox/token`，只有第一次會產生），所以那個網址一直有效。
-想自己指定一把（沙盒與真實環境共用、換機器不用重拿）就設環境變數 `CONTEXTBOX_TOKEN`（至少 16 個字元）。
-Windows 與 macOS 都可按 **D** 切換四份待清範例（`core/assets/demo-candidates.json`），
-按 **O** 切換後端離線模擬；再按同一鍵即可取消。輸入欄位、選單及中文組字時不觸發。
-模擬按鈕不顯示在網頁上，範例也不會自動啟用。
-Quaso 下方常駐兩個小圖示：垃圾桶中央顯示候選數量，有候選時閃爍，
-點擊開啟清理面板；返回箭頭開啟復原面板。發現候選不再自動展開大對話。
-示範啟用時數字為示範候選，否則讀取本機候選；滑鼠停留可查看來源與完整數量。
-頁面已載入後，後端斷線會切到 worried、暫停待機動畫，並在寵物旁顯示斷線圖示泡泡。
-點擊泡泡才展開連線提示與「重試連線」；點擊外部可關閉，恢復連線後泡泡自動消失。
-每 5 秒自動檢查，也可手動重試；連線恢復後保留清單並恢復正常狀態。
-若 server 從未啟動，瀏覽器無法載入本機頁面，仍須先啟動 server。
-測試 worried 可保持 server 開啟，按 O，或在帶鑰匙的網址後面加上 `&mockBackend=offline` 再打開
-（`http://127.0.0.1:7391/?k=…&mockBackend=offline`，鑰匙用 `node cli.mjs open` 印出來的那一把）。模擬期間重試維持離線，
-再按 O 後會重新檢查真正的後端；頁面資料 API 在模擬期間不送出。
-可逐項勾選、確認模擬清理、復原或略過；「重新示範」可重跑流程。
-取消 D 模擬會保留目前範例清單，重新啟用可繼續操作。模擬清理不移動真實檔案；
-操作紀錄存於本機資料庫的獨立 `cleanup_demo_history` 表，關掉分頁再用 `node cli.mjs open` 打開、或重啟 server 之後都還在。
-按「完成本次清理」關閉面板後，仍可使用返回箭頭開啟「復原最近動作」，
-依資料庫實際筆數列出歷史（每頁 20 筆），可勾選多次清理並復原每次全部檔案。
-復原成功的紀錄立即從列表移除，筆數只計算尚可復原的動作；
-資料庫保留已復原標記以防止重複執行。
-「重新示範」只重置範例清單，不清除操作紀錄。既有記憶體示範不會追溯補登。
-清理面板每一列（候選、需要你查看、連拍的每一張、改名建議、歸檔建議）都有一顆**「看內容」**，
-點開在同一列底下展開，再點收起。內容走 `GET /cleanup/preview/:itemId`：
-文字來自掃描時抽好的 `file_texts`（最多 2000 字，截斷會講「還有更多」），
-圖是既有的縮圖端點（`/cleanup/thumb/…`，長邊 ≤ 480，用帶 token 的 api 取回 blob，網址上沒有鑰匙）。
-兩者都沒有時照樣給大小、最後修改與「為什麼被列出來」，讓你自己判斷要不要留；
-還沒被讀到內容的檔說「還沒讀到這個檔的內容」，**不會現場去讀**。
-點了才抓，同一個檔只抓一次。示範模式沒有這顆按鈕（那時候畫面上是假的清單）。
+Switching uses the fragment in the address (`#files` / `#facts`): **same page, no reload, no second key**.
 
-沒開 D 的時候是本機模式，清理面板與「復原最近動作」接的是真的清理 API：會把監看資料夾（`cleanup.roots`）裡
-勾選的檔搬進隔離區，七天內可以復原（CLI 的對應指令見 [docs/cli.md](docs/cli.md)）。
-頁面上可頌貓的狀態由頁面自己看 `/health`（候選數、監看有沒有在跑、連不連得上）決定；
-後端的 `GET /pet/state` 頁面只讀它的 `burst.newGroups` —— 連拍截圖有**新的一組**時，
-可頌貓才主動問一句「這幾張看起來是同一批，要留最新的就好嗎？」（同一組問過就不再彈）。
-狀態本身仍然不讀它。
-前端 3D 顯示使用隨專案保存的 Three.js 0.180.0（MIT），是下述零外部依賴規則的例外；
-後端仍無外部依賴，仍不需 `npm install`，頁面不連外部 CDN。
+Which half you were on last is kept in `localStorage` (if that cannot be read — a private window, say — it
+falls back to the default).
 
-## 面板裡的五個小標籤
+The field progress bar and the section jumps (`#g0`, `#g1`, …) in Your details appear only there;
+using a section jump scrolls to that group and does not throw you back to Files.
 
-清理面板裡有五區：**可以清理／連拍／建議的名字／歸檔／它學到的**。
-以前五區疊在同一條捲軸上，要滑到很下面才看得到歸檔建議；現在一次只顯示一區。
+Files has two buttons, "Open cleanup panel" and "Undo recent actions", which open the two panels under the
+croissant cat.
 
-- 預設停在「可以清理」
-- 標籤上的數字是那一區有幾筆；**0 筆的標籤看得到但點不下去**（使用者要知道有這個功能）
-- **動作按鈕跟著區塊走**：在「歸檔」那一區只會看到「整理」與「復原整理」
-- 現在這一區變空了（做完了）就自己跳到第一個有東西的
-- **示範模式（按 D）整條標籤不顯示** —— 那時只有清理那一區是真的
+## The cat
+
+The bottom right of the home page loads `core/assets/quaso_v8.glb`. Click the cat to toggle its speech
+bubble; the settings on the right offer a spin, a pause or a jump. Click outside or press Escape to close it.
+
+The model is drawn by `core/assets/pet-viewer.js`; after you update the server, restart it and reopen the
+page from the address the server prints (or `node cli.mjs open`).
+## Getting back in
+
+The page removes the key from the address bar once it has loaded, so pressing reload gives you 401.
+
+To open it in another browser, or to bookmark it, use the full address `node cli.mjs open` prints —
+the key itself is stable (it lives in `~/.contextbox/token` and is generated once), so that address keeps
+working. To supply your own instead (shared between the sandbox and the real thing, and portable between
+machines), set `CONTEXTBOX_TOKEN` (at least 16 characters).
+## The two hidden keys
+
+On Windows and macOS alike, **D** swaps in four sample candidates (`core/assets/demo-candidates.json`) and
+**O** simulates the backend being offline; press the same key again to turn it off. Neither fires while you
+are typing in a field, in a menu, or composing text.
+
+Nothing on the page advertises these keys, and the sample list never turns on by itself.
+## The two icons
+
+Two small icons sit under Quaso: a bin with the candidate count in the middle, blinking when there is
+something there, which opens the cleanup panel; and a back arrow, which opens the undo panel. Finding
+candidates no longer pops the big speech bubble open on its own.
+
+With the sample list on, the number is the sample count; otherwise it is the local one. Hover for the source
+and the full count.
+## When the backend goes away
+
+If the backend goes away after the page has loaded, the cat turns worried, pauses its idle animation, and
+shows a disconnected bubble next to itself.
+
+The connection message and the "retry" button only appear when you click that bubble; clicking outside closes
+it, and the bubble disappears on its own once the connection is back.
+
+It checks every 5 seconds, and you can retry by hand; when the connection returns, the list is kept and
+everything goes back to normal.
+
+If the server never started at all, the browser cannot load the local page, so you still have to start the
+server first.
+
+To see the worried state, leave the server running and press O, or add `&mockBackend=offline` to the address
+with the key in it (`http://127.0.0.1:7391/?k=…&mockBackend=offline`, with the key from `node cli.mjs open`).
+
+While that is simulated, retrying stays offline; pressing O again rechecks the real backend. The page's data
+API sends nothing while the simulation is on.
+
+You can tick items one by one, confirm a simulated cleanup, undo it or skip it; "Run the demo again" restarts
+the flow.
+
+Turning D off keeps the current sample list, so turning it back on carries on where you were. A simulated
+cleanup moves no real file;
+the record of what you did goes into a separate `cleanup_demo_history` table in the local database, so it
+survives closing the tab and reopening with `node cli.mjs open`, and it survives restarting the server.
+
+After "Finish this cleanup" closes the panel, the back arrow still opens "Undo recent actions",
+which lists the history from what is actually in the database (20 per page); you can tick several cleanups
+and put back every file from each of them.
+
+A record you successfully undo leaves the list at once, and the count only includes actions that can still be
+undone;
+the database keeps a flag saying it was undone, so it cannot run twice.
+
+"Run the demo again" only resets the sample list; it does not clear the record of what you did. Demo runs that
+only ever existed in memory are not backfilled.
+
+Every row in the cleanup panel — a candidate, something that needs your eye, each frame of a burst, a rename
+suggestion, a filing suggestion — has a **"View contents"** button.
+
+It expands under that row and collapses when you click it again. The contents come from
+`GET /cleanup/preview/:itemId`:
+text from the `file_texts` the scan already extracted (2000 characters at most; a truncated one says there is
+more),
+and images from the existing thumbnail endpoint (`/cleanup/thumb/…`, long edge ≤ 480, fetched as a blob
+through the token-carrying api, with no key in the URL).
+
+When there is neither, it still gives you the size, the last-modified time and "why this was listed", so you
+can decide for yourself;
+a file whose contents have not been read yet says so, and **it is not read on the spot**.
+
+It fetches when you click, once per file. Demo mode has no such button (the list on screen is a fixture
+there).
+
+With D off the page is in local mode, and the cleanup panel and "Undo recent actions" are wired to the real cleanup API:
+ticked files in the watched folders (`cleanup.roots`) move to quarantine, and can be put back
+within seven days (the matching CLI commands are in [the CLI reference](cli.html)).
+
+The cat's mood is worked out by the page itself from `/health` (candidate count, whether the watcher is
+running, whether anything answers).
+
+From the backend's `GET /pet/state` the page reads only `burst.newGroups` — when there is a **new** group of
+burst screenshots,
+the cat asks "these look like one batch, keep just the newest?" of its own accord (once per group).
+
+The mood itself is still not read from there.
+
+The 3D view uses a copy of Three.js 0.180.0 (MIT) kept in this repo, the one exception to the zero-dependency
+rule below;
+the backend still has no dependencies, there is still no `npm install`, and the page loads nothing from a CDN.
+
+## The five section tabs in the panel
+
+The cleanup panel has five sections: **Cleanup / Bursts / Suggested names / Filing / Learned**.
+
+They used to be stacked on one scrollbar, so the filing suggestions were a long way down. Now you see one at
+a time.
+
+- It opens on "Cleanup"
+- The number on a tab is how many rows that section has; **a tab showing 0 is visible but not clickable**
+  (you should know the feature exists)
+- **The action buttons follow the section**: in Filing you only see "File" and "Undo filing"
+- When the section you are on empties out because you finished it, it moves to the first one that still has
+  something
+- **Demo mode (press D) hides the tab strip entirely** — only the cleanup section is real there

@@ -1,0 +1,34 @@
+title: ContextBox
+description: >-
+  A local assistant that reads your files, tells you what they are, and puts them
+  where they belong. Nothing leaves your machine, nothing is deleted, and nothing
+  moves until you approve it.
+
+# A theme that ships with GitHub Pages, so nothing here needs `gem install`.
+theme: jekyll-theme-minimal
+
+# kramdown gives us `{:toc}` and the markdown="span" attribute the User Guide uses.
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  toc_levels: 2..3
+
+# Both of these ship with GitHub Pages; neither needs a Gemfile.
+#   jemoji                 turns :information_source: into an emoji
+#   jekyll-relative-links  makes a link to another .md resolve to its page
+plugins:
+  - jemoji
+  - jekyll-relative-links
+
+# Notes for whoever maintains the site, not pages in it.
+exclude:
+  - images/README.md
+
+# **layout 只能用主題真的有的那幾個。** jekyll-theme-minimal 只有 default 與 post，
+# 寫 page 的話 Jekyll 找不到版型，整頁就是沒有 <head>、沒有 CSS 的裸 HTML（稽核 2026-09-20）。
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

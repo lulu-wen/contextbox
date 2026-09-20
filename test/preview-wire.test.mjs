@@ -592,15 +592,18 @@ describe('P6 文件', () => {
     assert.match(md, /#files/)
     assert.match(md, /#facts/)
     assert.match(md, /localStorage/)
-    assert.match(md, /看內容/)
-    assert.match(md, /不重新載入/)
+    // 面板說明英文化（2026-09-20）：同一個性質，換成文件現在真的寫的字
+    assert.match(md, /View contents/)
+    assert.match(md, /no reload/)
   })
 
   test('docs/DEMO.md 的面板那一節帶了一句', () => {
     const md = readFileSync(join(REPO, 'docs/DEMO.md'), 'utf8')
-    const at = md.indexOf('## 4. 打開寵物與面板')
+    // DEMO 英文化（2026-09-20）：還是那一節、還是那兩件事（看內容、檔案管理那一塊）
+    const at = md.indexOf('## 4. Open the pet and the panel')
+    assert.ok(at > 0, 'docs/DEMO.md 找不到面板那一節')
     const section = md.slice(at, md.indexOf('\n## ', at + 5))
-    assert.match(section, /看內容/)
-    assert.match(section, /檔案管理/)
+    assert.match(section, /View contents/)
+    assert.match(section, /\*\*Files\*\*/)
   })
 })
