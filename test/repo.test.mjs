@@ -250,7 +250,11 @@ describe('docs/api 的範例跟產生器現在的輸出，欄位一模一樣（R
  */
 function routeCodes() {
   const codes = new Map(Object.entries(HTTP_FOR_CODE))
-  for (const f of ['server.ts', 'cleanup-routes.ts', 'cleanup-demo-history.ts']) {
+  // **每一支 route 都要看**（稽核 2026-09-20，B-11）：以前只掃這三支，
+  // 所以 P3／P4／P5 三條線自己 fail(…) 出去的 code 完全不在檢查範圍裡 ——
+  // 加一個沒寫進文件的 429 也照樣全綠。
+  for (const f of ['server.ts', 'cleanup-routes.ts', 'cleanup-demo-history.ts',
+    'rename-routes.ts', 'filing-routes.ts', 'learn-routes.ts']) {
     const src = readFileSync(join(REPO, 'core', f), 'utf8')
     const found = [
       ...src.matchAll(/send\((\d{3}),\s*\{[^}\n]*?code:\s*(['"`])([A-Z_]+)\2/g),

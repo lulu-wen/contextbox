@@ -751,3 +751,24 @@ describe('稽核 ・ 「同一個建議」的折法與記在哪一列', () => {
     assert.equal(loadLearned(s.db).rejected('item-2', 'Courses/OS/Notes'), false, '別的檔不受影響')
   })
 })
+
+describe('稽核 ・ 滿了的時候先丟退過貨的，不要丟掉使用者教過的（2026-09-20）', () => {
+  test('三種共用一個上限時，rejected 先走', async t => {
+    const s = box(t)
+    const learn = await import('../core/learn.ts')
+    const old = '2020-01-01T00:00:00.000Z'
+    // 先塞滿：一半是使用者教過的課名，一半是 undo 留下的退貨標記
+    const half = Math.floor(PREF_MAX / 2)
+    for (let i = 0; i < half; i++) learn.learnCourse(s.db, `Course ${i}`, `C${i}`, `C${i}`, old)
+    for (let i = 0; i < PREF_MAX - half; i++) learn.rememberRejected(s.db, `item-${i}`, `Courses/X/Notes`, old)
+    assert.equal(s.db.prepare('SELECT count(*) n FROM preferences').get().n, PREF_MAX)
+    const coursesBefore = s.db.prepare(`SELECT count(*) n FROM preferences WHERE kind='course'`).get().n
+
+    // 再學一條新的課名 → 要擠掉的是退過貨的那一種
+    learn.learnCourse(s.db, 'Brand New Course', 'BNC', 'BNC', new Date().toISOString())
+    assert.equal(s.db.prepare('SELECT count(*) n FROM preferences').get().n, PREF_MAX, '上限要守住')
+    assert.equal(s.db.prepare(`SELECT count(*) n FROM preferences WHERE kind='course'`).get().n,
+      coursesBefore + 1, '使用者教過的課名一條都不可以被擠掉')
+    assert.equal(loadLearned(s.db).course('Brand New Course'), 'BNC')
+  })
+})

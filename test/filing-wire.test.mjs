@@ -15,7 +15,8 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import * as server from '../core/server.ts'
 import { COURSES_DIR } from '../core/filing.ts'
@@ -293,5 +294,31 @@ describe('其他', () => {
     assert.equal(existsSync(join(s.dir, '壞人')), false)
     mkdirSync(join(s.dir, '不該被碰的'), { recursive: true })
     assert.deepEqual(readdirSync(join(s.dir, '不該被碰的')), [])
+  })
+})
+
+describe('稽核 A-2 ・ 動檔案的入口要把三種都收一次（2026-09-20）', () => {
+  test('改名停在 started 的檔被歸檔 → 那筆改名不可以從此收不掉', async t => {
+    const s = fixture(t)
+    const { api } = await serve(t, s)
+    const name = '未命名文件 (3).txt'
+    const itemId = s.idOf(name)
+
+    // 做出「改名做到一半被砍」：renames 停在 started，檔案其實已經改好了
+    const renameId = randomUUID()
+    s.db.prepare(
+      `INSERT INTO renames (id,item_id,from_name,to_name,dir,source,status,error,at,undone_at)
+       VALUES (?,?,?,?,?, 'model','started',NULL,?,NULL)`
+    ).run(renameId, itemId, name, 'Operating Systems_Deadlock.txt', s.downloads, new Date().toISOString())
+    renameSync(join(s.downloads, name), join(s.downloads, 'Operating Systems_Deadlock.txt'))
+
+    // 使用者在面板按「整理」。**這一下必須順手把那筆改名收成 done** ——
+    // 不收的話檔案被搬去 filed，之後改名收尾在原資料夾兩個名字都找不到，判 failed（「請人工確認」），
+    // 而「它本來叫什麼」就只剩資料庫裡那一列，CLI 與面板都看不到。
+    const r = await api('POST', '/file/apply', { items: [{ itemId }] })
+    assert.equal(r.status, 200, JSON.stringify(r.json))
+
+    const row = s.db.prepare('SELECT * FROM renames WHERE id=?').get(renameId)
+    assert.equal(row.status, 'done', `那筆改名要被收成 done，實際是 ${row.status}／${row.error}`)
   })
 })

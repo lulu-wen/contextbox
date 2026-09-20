@@ -14,6 +14,7 @@
 import { CleanupError } from './cleanup-journal.ts'
 import { statusFor, type RouteCtx } from './cleanup-routes.ts'
 import { applyRenames, renameSuggestions, undoRenames, type RenameScope } from './rename.ts'
+import { settleMoves } from './settle.ts'
 
 /** 認得的路徑與方法。已知的路徑用錯方法回 405，不是 404（RC24）。 */
 const KNOWN: [RegExp, string[]][] = [
@@ -101,12 +102,18 @@ function route(ctx: RouteCtx): boolean {
   if (p === '/rename/apply' && method === 'POST') {
     // **只接明確指名的**：沒有「全部」這種捷徑（不變量 1）。沒帶 items 就是 BAD_BODY。
     const body = bodyOf(ctx, BODY_KEYS.apply)
+    // 動檔案之前**三種都收一次**（稽核 A-2）：改名收到一半的檔照樣歸得了檔，
+    // 而歸檔搬走之後，那筆改名就再也收不掉了。
+    settleMoves(ctx.db)
     send(200, applyRenames(ctx.db, body.items, scopeOf(ctx)))
     return true
   }
 
   if (p === '/rename/undo' && method === 'POST') {
     const body = bodyOf(ctx, BODY_KEYS.undo)
+    // 動檔案之前**三種都收一次**（稽核 A-2）：改名收到一半的檔照樣歸得了檔，
+    // 而歸檔搬走之後，那筆改名就再也收不掉了。
+    settleMoves(ctx.db)
     send(200, undoRenames(ctx.db, { ids: body.ids, last: body.last }, scopeOf(ctx)))
     return true
   }

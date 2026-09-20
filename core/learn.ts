@@ -246,8 +246,13 @@ function upsert(db: DatabaseSync, kind: PrefKind, k: string, v: string, at: stri
 function prune(db: DatabaseSync, keep: string, at: string): void {
   const n = (db.prepare('SELECT count(*) AS n FROM preferences').get() as { n: number }).n
   if (n <= PREF_MAX) return
+  // **退過貨的先丟**（稽核 2026-09-20）：三種偏好共用同一個上限，而 rejected 那一種
+  // 每按一次 undo 就多一列、times 永遠是 1，所以它會把使用者真的教過的課名與類型擠掉。
+  // 兩者的價值差很多：課名是「我要這樣叫它」，退貨只是「這一個建議這次不要」——
+  // 而且建議一變，退貨的標記本來就對不上任何東西了。
   const doomed = db.prepare(
-    'SELECT id FROM preferences WHERE id <> ? ORDER BY times ASC, at ASC, id ASC LIMIT ?'
+    `SELECT id FROM preferences WHERE id <> ?
+      ORDER BY (kind = 'rejected') DESC, times ASC, at ASC, id ASC LIMIT ?`
   ).all(keep, n - PREF_MAX) as { id: string }[]
   if (!doomed.length) return
   db.prepare(`DELETE FROM preferences WHERE id IN (${doomed.map(() => '?').join(',')})`)
