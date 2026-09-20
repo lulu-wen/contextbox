@@ -833,3 +833,58 @@ describe('沒有 PNG 的資料夾，掃描不可以因此變慢很多', () => {
     assert.ok(s.problems.length <= 1, `最多一條總結：${JSON.stringify(s.problems)}`)
   })
 })
+
+// ═══ S7 連拍成員要進得了候選清單（2026-09-21）═══════════════════
+//
+// 使用者回報「burst 還是沒辦法打勾」。面板的規矩是**不在候選清單上就不給勾**
+// （勾得起卻建不了計畫，是更糟的體驗）。而連拍候選寫進資料庫時帶的是
+// BURST_RULE_VERSION，候選清單的查詢卻只認 CLEANUP_RULE_VERSION ——
+// 兩邊各自合理，湊起來就是「連拍區的勾選框永遠勾不動」，整個 P0 在畫面上是死的。
+
+describe('S7 連拍成員要出現在候選清單上，不然畫面上勾不動', () => {
+  test('**成員在清單上、留下的那張不在**', t => {
+    const s = sandbox(t)
+    // **每張要略有不同**：三張一模一樣的話它們同時也是「完全重複檔」，
+    // 留下的那張會以 duplicate 身分上清單 —— 那是對的，但就測不到這裡要測的東西。
+    put(s.downloads, 'a.png', shot({ w: 300, h: 200, badge: 1 }), SETTLED + 3 * MIN)
+    put(s.downloads, 'b.png', shot({ w: 300, h: 200, badge: 2 }), SETTLED + 2 * MIN)
+    put(s.downloads, 'c.png', shot({ w: 300, h: 200, badge: 3 }), SETTLED + 1 * MIN)
+    s.scan()
+    const groups = call(s, 'GET', '/cleanup/bursts').body.groups
+    assert.equal(groups.length, 1, '前提：三張成一組')
+    const listed = call(s, 'GET', '/cleanup/candidates?limit=1000').body.candidates
+    const ids = new Set(listed.map(c => c.itemId))
+    for (const m of groups[0].members) {
+      assert.ok(ids.has(m.itemId), `${m.name} 不在候選清單上 —— 面板會把它的勾選框停用`)
+    }
+    assert.ok(!ids.has(groups[0].keep.itemId),
+      '留下的那張**不可以**在清單上：它本來就不該被清掉')
+  })
+
+  test('/health 的數字要算進連拍成員（清單看得到、徽章卻沒數到就是兩套算法）', t => {
+    const s = sandbox(t)
+    put(s.downloads, 'a.png', shot({ w: 300, h: 200, badge: 1 }), SETTLED + 2 * MIN)
+    put(s.downloads, 'b.png', shot({ w: 300, h: 200, badge: 2 }), SETTLED + 1 * MIN)
+    s.scan()
+    const listed = call(s, 'GET', '/cleanup/candidates?limit=1000').body.candidates.length
+    const badge = routes.healthSnapshot(s.db, { roots: [s.downloads], quarantine: s.quarantine })
+      .pendingCandidates
+    assert.ok(listed > 0, '前提：清單上有東西')
+    assert.equal(badge, listed, '徽章與清單必須是同一套篩選條件')
+  })
+
+  test('**舊版本的候選還是不可以列出來**（這才是版本過濾存在的理由）', t => {
+    const s = sandbox(t)
+    put(s.downloads, 'a.png', shot({ w: 300, h: 200, badge: 1 }), SETTLED + 2 * MIN)
+    put(s.downloads, 'b.png', shot({ w: 300, h: 200, badge: 2 }), SETTLED + 1 * MIN)
+    s.scan()
+    const before = call(s, 'GET', '/cleanup/candidates?limit=1000').body.candidates.length
+    assert.ok(before > 0, '前提：清單上有東西')
+    // 把所有候選的版本改成一個不存在的舊版本 —— 一筆都不該再列出來
+    s.db.prepare(`UPDATE cleanup_candidates SET rule_version='ancient-0'`).run()
+    assert.equal(call(s, 'GET', '/cleanup/candidates?limit=1000').body.candidates.length, 0,
+      '放寬版本過濾的時候，不可以連舊版本一起放進來')
+    assert.equal(routes.healthSnapshot(s.db, { roots: [s.downloads], quarantine: s.quarantine })
+      .pendingCandidates, 0)
+  })
+})

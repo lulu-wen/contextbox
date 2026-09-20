@@ -218,6 +218,21 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
  */
 export const BURST_RULE_VERSION = 'burst-1'
 
+/**
+ * **現在還算數的規則版本，全部。**
+ *
+ * 候選清單一定要用版本過濾（舊版的 proposed 列會永久活著，見 collect 的說明），
+ * 但過濾的時候不可以只寫 CLEANUP_RULE_VERSION —— 連拍的候選帶的是 BURST_RULE_VERSION，
+ * 漏掉它的話那幾個檔永遠不在清單上，而面板規定「不在清單上就不給勾」：
+ * 結果是連拍區的勾選框**永遠勾不動**，整個功能在畫面上是死的
+ * （2026-09-21 使用者回報「burst 還是沒辦法打勾」，實機重現）。
+ *
+ * 兩個版本號分開是刻意的：連拍規則要能自己改版而不作廢一般候選。
+ * 以後再加第三條線，記得也加進這裡。
+ */
+export const CURRENT_RULE_VERSIONS: readonly string[] =
+  Object.freeze([CLEANUP_RULE_VERSION, BURST_RULE_VERSION])
+
 /** 可以進清理計畫的候選版本。 */
 export const PLANNABLE_RULE_VERSIONS = [CLEANUP_RULE_VERSION, BURST_RULE_VERSION]
 

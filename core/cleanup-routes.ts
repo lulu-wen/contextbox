@@ -24,7 +24,7 @@ import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
 import {
-  KIND_CONFIDENCE, CLEANUP_KINDS, CLEANUP_RULE_VERSION, PARTIAL_EXT,
+  KIND_CONFIDENCE, CLEANUP_KINDS, CURRENT_RULE_VERSIONS, PARTIAL_EXT,
 } from './cleanup-rules.ts'
 import {
   RETENTION_MS, applyPlan, undoPlan, checkedPath, type ExecOptions,
@@ -513,7 +513,7 @@ function collect(db: DatabaseSync, scope: CleanupScope): Collected {
      -- proposed 列會永久活著 —— 那代表**調降規則信心永遠不會生效**
      -- （max 取的是「這個檔歷史上拿過的最高分」），而且同一個 kind
      -- 會在 reasons 裡出現兩次、舊版的 id 也會被送去 apply。
-     WHERE c.status='proposed' AND c.rule_version = ?
+     WHERE c.status='proposed' AND c.rule_version IN (${RULE_VERSIONS_SQL})
        -- **跟 B 的 createPlan 用同一組條件**（檔案狀態白名單、理由與證據不可以是空的）。
        -- 上一版寫 NOT IN ('quarantined','missing','error')，放進了 'new'（十分鐘內還在變動）——
        -- 列得出來、建計畫卻回 STALE（結構化隨機測試抓到）。
@@ -531,7 +531,7 @@ function collect(db: DatabaseSync, scope: CleanupScope): Collected {
      -- 卡片標題每次重掃都會亂跳（實測 12 次 6:6）。最後補 item_id，
      -- 預設清理一次只收前 1000 個檔，是哪 1000 個也要每次都一樣。
      ORDER BY c.confidence DESC, c.kind, c.item_id`
-  ).all(CLEANUP_RULE_VERSION) as (CandRow & ItemRow)[]
+  ).all() as (CandRow & ItemRow)[]
 
   const byItem = new Map<string, Group>()
   // 每個檔判一次：out（範圍外、檔名就拒收）、shot（截圖資料夾底下，只收截圖類）、all
@@ -587,13 +587,14 @@ function brokenForHuman(db: DatabaseSync, m: Scope): Collected['needsHuman'] {
   const broken = db.prepare(
     `SELECT i.id, i.path, i.name, i.bytes, i.mtime, i.status, i.error, i.sha256, i.last_seen_at,
             EXISTS (SELECT 1 FROM cleanup_candidates c WHERE c.item_id = i.id
-                      AND c.status='proposed' AND c.rule_version = ? AND c.kind IN (${SHOT_KINDS_SQL})) AS shot_kind
+                      AND c.status='proposed' AND c.rule_version IN (${RULE_VERSIONS_SQL})
+                      AND c.kind IN (${SHOT_KINDS_SQL})) AS shot_kind
        FROM file_items i
       WHERE (i.status='error' OR i.error IS NOT NULL) AND i.status NOT IN ('quarantined','missing')
         AND (i.status IN ('error','candidate')
              OR EXISTS (SELECT 1 FROM cleanup_candidates c WHERE c.item_id = i.id
-                          AND c.status='proposed' AND c.rule_version = ?))`
-  ).all(CLEANUP_RULE_VERSION, CLEANUP_RULE_VERSION) as (ItemRow & { shot_kind: number })[]
+                          AND c.status='proposed' AND c.rule_version IN (${RULE_VERSIONS_SQL})))`
+  ).all() as (ItemRow & { shot_kind: number })[]
   const out: Collected['needsHuman'] = []
   for (const { shot_kind, ...b } of broken) {
     if (!underAny(b.path, m.pre)) continue
@@ -603,6 +604,9 @@ function brokenForHuman(db: DatabaseSync, m: Scope): Collected['needsHuman'] {
   }
   return out
 }
+
+/** SQL 裡還算數的規則版本。值是程式裡的常數（不是輸入），直接組字串沒有注入問題。 */
+const RULE_VERSIONS_SQL = CURRENT_RULE_VERSIONS.map(v => `'${v.replace(/'/g, "''")}'`).join(',')
 
 /** SQL 裡的截圖類清單。值是程式裡的常數（不是輸入），直接組字串沒有注入問題。 */
 const SHOT_KINDS_SQL = SCREENSHOT_KINDS.map(k => `'${k.replace(/'/g, "''")}'`).join(',')
@@ -615,7 +619,8 @@ const SHOT_KINDS_SQL = SCREENSHOT_KINDS.map(k => `'${k.replace(/'/g, "''")}'`).j
  */
 function collectCounts(db: DatabaseSync, scope: CleanupScope): { pending: number; needsHuman: number } {
   const m = scopeMatcher(scope)
-  const listed = `c.item_id = i.id AND c.status='proposed' AND c.rule_version = ?
+  const listed = `c.item_id = i.id AND c.status='proposed'
+                  AND c.rule_version IN (${RULE_VERSIONS_SQL})
                   AND trim(c.reason) <> '' AND trim(c.evidence) <> ''`
   const items = db.prepare(
     `SELECT i.id, i.path, i.name, i.bytes, i.sha256,
@@ -623,7 +628,7 @@ function collectCounts(db: DatabaseSync, scope: CleanupScope): { pending: number
        FROM file_items i
       WHERE i.status IN (${PLANNABLE_STATUSES}) AND i.error IS NULL
         AND EXISTS (SELECT 1 FROM cleanup_candidates c WHERE ${listed})`
-  ).all(CLEANUP_RULE_VERSION, CLEANUP_RULE_VERSION) as (ItemRow & { shot_kind: number })[]
+  ).all() as (ItemRow & { shot_kind: number })[]
   let pending = 0, tooLarge = 0
   for (const i of items) {
     if (!underAny(i.path, m.pre) || execRefusesName(i.name)) continue
