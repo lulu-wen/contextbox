@@ -73,6 +73,11 @@ node cli.mjs doctor
 { "cleanup": { "roots": ["D:\\Downloads"] } }
 ```
 
+> ⚠️ **清理範圍跟隔離區要在同一顆碟。** 隔離區預設在 `%USERPROFILE%\.contextbox\quarantine`（多半是 C:），
+> 把清理範圍設到 `D:\` 之後每一次清理都是跨磁碟搬移 —— 這個專案**不做「複製再刪除」**（那等於刪檔），
+> 所以那些檔會逐項失敗並講原因。要清 D 槽的話，把隔離區也移過去：
+> `$env:CONTEXTBOX_QUARANTINE = "D:\.contextbox\quarantine"`（同一個視窗設，或設成使用者層的環境變數）。
+
 **不是 `watch`** —— `watch` 是截圖功能的監看資料夾，改它不會改到清理範圍。
 你的 Downloads 真的在 OneDrive 裡、也確定要清它，才自己把那個路徑寫進 `cleanup.roots`。
 

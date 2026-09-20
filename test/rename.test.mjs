@@ -781,6 +781,30 @@ describe('紀錄', () => {
 
 // ═══ 最後一輪稽核補的（2026-09-20）═══════════════════════════
 
+describe('稽核 ・ 復原也是改名，一樣要看清理計畫（2026-09-20）', () => {
+  test('改完名之後那個檔被排進一份計畫 → undo 要拒絕，訊息跟 apply 那邊一樣', t => {
+    // 200 天沒動的壓縮檔：改完名之後重掃就會變成清理候選
+    const s = sandbox(t, { '未命名文件 (3).zip': 'x'.repeat(500) }, { days: 200 })
+    const itemId = s.idOf('未命名文件 (3).zip')
+    s.db.prepare(`INSERT INTO model_views
+      (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
+      VALUES (?,?,'text','作業系統','死結','筆記','作業系統_死結','四個必要條件','高','假模型','v1',?,0)`)
+      .run('k-' + itemId, itemId, new Date().toISOString())
+
+    const r = applyRenames(s.db, [{ itemId, to: '作業系統_死結.zip' }], s.scope)
+    assert.equal(r.results[0].ok, true, r.results[0].why)
+    s.scan()                       // 重掃：它現在是「作業系統_死結.zip」，而且是舊檔
+    createPlan(s.db)               // 使用者按了「準備清理」，計畫還沒套用
+
+    const back = undoRenames(s.db, { ids: [r.results[0].id] }, s.scope)
+    assert.equal(back.results[0].ok, false, '復原也是改名，計畫的快照會對不上')
+    assert.match(back.results[0].why, /清理計畫/)
+    assert.equal(existsSync(join(s.downloads, '作業系統_死結.zip')), true, '檔案不可以被動')
+    assert.equal(s.db.prepare('SELECT status FROM renames WHERE id=?').get(r.results[0].id).status, 'done',
+      '紀錄要留著 —— 計畫處理完之後還復原得回去')
+  })
+})
+
 describe('稽核 ・ 收尾不可以蓋掉「已經成功」的紀錄', () => {
   /**
    * 真的重現那個競態：收尾先 SELECT 出 status='started' 的列，**再**一列一列 UPDATE。

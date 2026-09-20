@@ -425,7 +425,11 @@ function staleCutoffMs(skipPlanId) {
  * 2 ＝ 這個動作根本沒執行，等一下重試通常會過；3 ＝ 執行了但沒有全部成功。**
  * 呼叫端據此決定要不要重試：CONFLICT 重試一百次也一樣，所以不是 2。
  */
-const INPUT_ERRORS = new Set(['NOT_FOUND', 'BAD_BODY', 'CONFLICT', 'CONFIRMATION_REQUIRED', 'CONFIRMATION_EXPIRED'])
+// READ_ONLY 也是 1（稽核 2026-09-20）：唯讀是使用者自己開的開關，**重試一百次也一樣** ——
+// 那正是「要換個做法」，不是「等一下會過」。docs/cli.md 三處都寫 1，程式卻回 2。
+const INPUT_ERRORS = new Set([
+  'NOT_FOUND', 'BAD_BODY', 'CONFLICT', 'CONFIRMATION_REQUIRED', 'CONFIRMATION_EXPIRED', 'READ_ONLY',
+])
 function exitFor(e) {
   if (!(e instanceof CleanupError)) return EXIT.backend
   if (INPUT_ERRORS.has(e.code)) return EXIT.badInput

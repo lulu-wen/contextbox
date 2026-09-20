@@ -806,6 +806,12 @@ function undoOne(db: DatabaseSync, row: RenameRow, scope: RenameScope): UndoOutc
   if (!underSomeRoot(scope.roots, join(dir, row.to_name))) {
     return no('那個資料夾現在不在設定的清理資料夾裡，先不動它。')
   }
+  // **在一份還沒處理完的清理計畫裡的檔不可以改名 —— 復原也是改名**（稽核 2026-09-20）。
+  // apply 那一邊擋了，undo 這一邊漏掉：改回原名之後，那份計畫的快照對不上磁碟上的檔名，
+  // 之後 apply 那一項就永遠是 error。訊息跟 apply 那邊一字不差。
+  if (heldByPlan(db, row.item_id)) {
+    return no('它在一份還沒處理完的清理計畫裡，先把那一份做完或放棄。')
+  }
   let before
   try { before = checkFile(join(dir, row.to_name)) } catch (e) { return no(cleanupProblem(e)) }
 

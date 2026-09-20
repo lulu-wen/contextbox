@@ -218,13 +218,19 @@ describe('node cli.mjs rename', () => {
     assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
   })
 
-  test('唯讀模式：不改，離開碼非零', t => {
+  test('唯讀模式：不改，離開碼 1（不是 2）', t => {
+    // 稽核 2026-09-20：docs/cli.md 三處都寫「唯讀模式是 1」，程式卻回 2。
+    // 2 的定義是「這個動作根本沒執行，等一下重試通常會過」—— 唯讀是使用者自己開的開關，
+    // 重試一百次也一樣，那是 1（要換個做法）。
     const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK }, { readonly: true })
     b.seed({ '未命名文件 (3).txt': { suggestedName: '作業系統_死結' } })
     const r = b.run('rename', '--apply')
-    assert.notEqual(r.code, 0, r.out)
+    assert.equal(r.code, 1, `離開碼要是 1：${r.out}`)
     assert.match(r.out, /唯讀/)
     assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+
+    const undo = b.run('rename', '--undo')
+    assert.equal(undo.code, 1, `復原也一樣：${undo.out}`)
   })
 
   test('信心低的不列、不改', t => {
