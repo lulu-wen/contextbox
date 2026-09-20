@@ -17,6 +17,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync, realpathSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { spawn } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { start } from '../core/server.ts'
@@ -370,5 +371,90 @@ describe('cli.mjs 的 pet 真的把 readonly 傳成 getter', () => {
       'server 又用 ?? 直接接 opts.readonly 了，getter 會被當成真值')
     assert.ok(/typeof opts\.readonly === 'function'/.test(server),
       'server 沒有解開 getter')
+  })
+})
+
+// ═══ 6 ・ **真的跑 `node cli.mjs pet`**，設定面板要有東西 ═══════
+//
+// 上面幾節都是測試自己叫 start()、自己把參數給齊，所以呼叫端漏傳什麼它們永遠看不見。
+// 2026-09-20 使用者在自己的機器上打開 Settings，看到的是
+// 「This server was started without a config file」——寵物明明讀了設定檔，
+// 卻沒告訴 server 讀的是哪一份（roots／readonly 都傳齊了 ＝ server 不會自己去讀）。
+// 只有真的把寵物生出來才抓得到這種洞，所以這一節生真的行程。
+
+describe('真的寵物起來之後，/settings 是有東西的', () => {
+  let dir, home, cfgFile, child, port, token, out
+
+  before(async () => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-pet-settings-')))
+    home = join(dir, 'home')
+    mkdirSync(join(home, '.contextbox'), { recursive: true })
+    mkdirSync(join(dir, 'Downloads'), { recursive: true })
+    cfgFile = join(home, '.contextbox', 'config.json')
+    writeFileSync(cfgFile, configText(dir, { readonly: true }))
+
+    out = ''
+    child = spawn(process.execPath, [join(REPO, 'cli.mjs'), 'pet'], {
+      env: {
+        ...process.env,
+        HOME: home, USERPROFILE: home,
+        CONTEXTBOX_CONFIG: cfgFile,
+        CONTEXTBOX_DB: join(home, '.contextbox', 'data.db'),
+        CONTEXTBOX_QUARANTINE: join(home, '.contextbox', 'quarantine'),
+        CONTEXTBOX_TOKEN_PATH: join(home, '.contextbox', 'token'),
+        CONTEXTBOX_PORT: '0',
+      },
+    })
+    child.stdout.on('data', d => { out += d })
+    child.stderr.on('data', d => { out += d })
+    const t0 = Date.now()
+    let m = null
+    while (!(m = /127\.0\.0\.1:(\d+)\/\?k=([A-Za-z0-9_-]+)/.exec(out))) {
+      if (child.exitCode !== null) throw new Error(`pet 結束了（${child.exitCode}）：\n${out}`)
+      if (Date.now() - t0 > 30_000) throw new Error(`等不到 pet 起來：\n${out}`)
+      await new Promise(r => setTimeout(r, 40))
+    }
+    port = Number(m[1])
+    token = m[2]
+  })
+
+  after(async () => {
+    if (child && child.exitCode === null) {
+      const done = new Promise(r => child.once('exit', r))
+      child.kill('SIGTERM')
+      await done
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const get = async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/settings`, { headers: { 'x-contextbox-token': token } })
+    return [r.status, await r.json()]
+  }
+
+  test('**不可以是「這個 server 沒有設定檔」** —— 寵物讀了，就要講出來讀的是哪一份', async () => {
+    const [status, body] = await get()
+    assert.equal(status, 200, `Settings 一片空白就是這裡回了 500：${JSON.stringify(body)}`)
+    assert.ok(!/without a config file/i.test(JSON.stringify(body)), JSON.stringify(body))
+  })
+
+  test('五個可改的欄位都在，而且值是這台機器真的設定檔裡的那些', async () => {
+    const [, body] = await get()
+    assert.equal(body.editable.readonly, true, '設定檔裡寫的是唯讀，面板就要顯示唯讀')
+    assert.equal(body.editable.model.keyEnv, 'CONTEXTBOX_MODEL_KEY')
+    assert.equal(body.editable.cleanup.screenshots, false)
+    assert.ok('baseUrl' in body.editable.model && 'name' in body.editable.model)
+  })
+
+  test('改了之後**真的寫進寵物讀的那一份檔**，而且當場生效', async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/settings`, {
+      method: 'PATCH',
+      headers: { 'x-contextbox-token': token, 'content-type': 'application/json' },
+      body: JSON.stringify({ readonly: false }),
+    })
+    assert.equal(r.status, 200, await r.text())
+    assert.equal(JSON.parse(readFileSync(cfgFile, 'utf8')).readonly, false, '寫到別的檔去了')
+    const [, body] = await get()
+    assert.equal(body.editable.readonly, false)
   })
 })

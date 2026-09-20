@@ -1974,6 +1974,10 @@ switch (cmd) {
       // 歸檔（P4）搬進去的那棵樹。不傳的話 server 會用它自己的預設，
       // 與 pet 印出來的「歸檔到……」就可能不是同一個資料夾。
       filed: config.filed,
+      // **設定面板要改的是哪一份檔。** 上面那幾個都傳齊了 ＝ server 不會自己去讀設定檔，
+      // 不給它路徑的話 `/settings` 只會回「這個 server 沒有設定檔」——面板上就是一片空的
+      // （2026-09-20 使用者在自己的機器上看到的就是這個）。寵物明明讀了，就要講出來讀的是哪一份。
+      configPath: cfgPath,
       onSettingsSaved: settingsSaved,
     })
     let port
