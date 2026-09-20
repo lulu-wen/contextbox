@@ -314,21 +314,30 @@ if (flag('--seed-model') && !live) {
 }
 
 // ── 印出怎麼跑 ────────────────────────────────────────────────
-const env = [
-  `export HOME="${home}"`,
-  `export CONTEXTBOX_CONFIG="${cfgPath}"`,
-  `export CONTEXTBOX_DB="${join(dir, 'data.db')}"`,
-  `export CONTEXTBOX_QUARANTINE="${join(dir, 'quarantine')}"`,
-  `export CONTEXTBOX_TOKEN_PATH="${join(dir, 'token')}"`,
-  'export CONTEXTBOX_PORT=0',
+//
+// **貼進去就要能動**，所以 Windows 印 PowerShell 的寫法，別的印 POSIX shell 的。
+// Windows 上家目錄是 %USERPROFILE%（Node 的 homedir() 讀的是它，不是 HOME），
+// 沙盒要框得住就得連它一起換掉。
+const isWindows = process.platform === 'win32'
+const pairs = [
+  ['HOME', home],
+  ...(isWindows ? [['USERPROFILE', home]] : []),
+  ['CONTEXTBOX_CONFIG', cfgPath],
+  ['CONTEXTBOX_DB', join(dir, 'data.db')],
+  ['CONTEXTBOX_QUARANTINE', join(dir, 'quarantine')],
+  ['CONTEXTBOX_TOKEN_PATH', join(dir, 'token')],
+  ['CONTEXTBOX_PORT', '0'],
 ]
+const env = pairs.map(([k, v]) => isWindows ? `$env:${k} = "${v}"` : `export ${k}="${v}"`)
 
 console.log(`demo 沙盒做好了：${dir}`)
 console.log('')
 console.log('Downloads 裡放了：')
 for (const f of files) console.log(`  ${f.name}　—— ${f.what}（${f.days} 天沒動）`)
 console.log('')
-console.log('把這幾行貼進終端機（只影響這個視窗，不會動到你真的設定）：')
+console.log(isWindows
+  ? '把這幾行貼進 PowerShell（只影響這個視窗，不會動到你真的設定）：'
+  : '把這幾行貼進終端機（只影響這個視窗，不會動到你真的設定）：')
 console.log('')
 for (const line of env) console.log('  ' + line)
 console.log('')
@@ -348,6 +357,10 @@ if (live) {
   }
 }
 
+console.log('')
+console.log(isWindows
+  ? '（用 cmd.exe 的話把 $env:X = "Y" 換成 set X=Y，不要加引號。）'
+  : '（Windows 的 PowerShell 是 $env:X = "Y"；那台機器上跑這支程式會直接印成那個樣子。）')
 console.log('')
 console.log('然後照著跑：')
 console.log(`  cd ${REPO}`)

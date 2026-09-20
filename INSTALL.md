@@ -24,9 +24,40 @@ node tools/demo-setup.mjs --dir /tmp/contextbox-demo --seed-model
 
 ## Windows
 
+### 先跑 demo（不碰你自己的檔，五分鐘）
+
 ```powershell
-winget install OpenJS.NodeJS
+winget install OpenJS.NodeJS          # 要 Node 24 以上；裝完**重開一個 PowerShell 視窗**
+node --version                        # 確認看到 v24 或更新
+
 git clone https://github.com/lulu-wen/contextbox
+cd contextbox
+
+node tools/demo-setup.mjs --dir $env:TEMP\contextbox-demo --seed-model
+```
+
+它會印出**要貼的環境變數**（在 Windows 上會直接印成 PowerShell 的寫法，
+`$env:USERPROFILE` 也會一起換掉 —— 那才是 Windows 的家目錄）。
+**把那幾行原封不動貼回同一個視窗**，然後：
+
+```powershell
+node cli.mjs cleanup scan     # 掃一遍
+node cli.mjs cleanup list     # 三張連拍截圖會被歸成一組
+node cli.mjs cleanup apply    # 搬進隔離區（不是刪除）
+node cli.mjs rename           # 沒取名的檔，模型建議的名字
+node cli.mjs file             # 同一堂課的檔歸到 課程/<課名>/<類型>/
+node cli.mjs pet              # 開面板（網址會印出來，鑰匙已經帶在裡面）
+```
+
+**整個沙盒都在 `%TEMP%\contextbox-demo`，刪掉那個資料夾就什麼都沒留下。**
+逐步畫面與每一行預期輸出在 [docs/DEMO.md](docs/DEMO.md)；要現場真的問模型改用
+`--live-model`（見 [docs/接模型.md](docs/接模型.md)）。
+
+用 `cmd.exe` 的話，環境變數那幾行要換成 `set NAME=值`（不要加引號）。
+
+### 真的裝來用
+
+```powershell
 cd contextbox
 node cli.mjs doctor
 ```
