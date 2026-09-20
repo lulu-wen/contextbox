@@ -329,6 +329,9 @@ const pairs = [
   ['CONTEXTBOX_PORT', '0'],
 ]
 const env = pairs.map(([k, v]) => isWindows ? `$env:${k} = "${v}"` : `export ${k}="${v}"`)
+// Windows 上常常是在 Git Bash 裡跑（process.platform 還是 win32，但 $env: 那個寫法貼下去不會動），
+// 所以兩種都印。
+const bashEnv = pairs.map(([k, v]) => `export ${k}="${v.split('\\').join('/')}"`)
 
 console.log(`demo 沙盒做好了：${dir}`)
 console.log('')
@@ -358,9 +361,15 @@ if (live) {
 }
 
 console.log('')
-console.log(isWindows
-  ? '（用 cmd.exe 的話把 $env:X = "Y" 換成 set X=Y，不要加引號。）'
-  : '（Windows 的 PowerShell 是 $env:X = "Y"；那台機器上跑這支程式會直接印成那個樣子。）')
+if (isWindows) {
+  console.log('在 Git Bash（或 MSYS／Cygwin）裡的話，改貼這幾行：')
+  console.log('')
+  for (const line of bashEnv) console.log('  ' + line)
+  console.log('')
+  console.log('（cmd.exe 則是 set X=Y，不要加引號。）')
+} else {
+  console.log('（Windows 上跑這支程式會直接印成 PowerShell 與 Git Bash 兩種寫法。）')
+}
 console.log('')
 console.log('然後照著跑：')
 console.log(`  cd ${REPO}`)
