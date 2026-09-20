@@ -447,23 +447,11 @@ function moveTo(from: string, to: string, before: { dev: number; ino: number }):
  * 檔案就在我們手上、位置也剛更新過，那就不是 missing。
  */
 function followFiled(db: DatabaseSync, itemId: string, dir: string, name: string): string {
-  const was = db.prepare('SELECT path FROM file_items WHERE id=?').get(itemId) as { path: string } | undefined
+  // 被丟下的那一列由 followFile 自己收（稽核 2026-09-20 之後兩條線共用同一份判斷）。
   const nowId = followFile(db, itemId, dir, name)
+  // 歸檔專屬的那一半：filed 不在掃描範圍裡，被標成 missing 的那一列永遠不會有人把它接回來。
+  // 檔案就在我們手上、位置也剛更新過，那就不是 missing。
   db.prepare(`UPDATE file_items SET status='kept', error=NULL WHERE id=? AND status='missing'`).run(nowId)
-  // followFile 改道跟著別人那一列走的時候，**舊那列要收掉**：檔案已經不在它記的位置了。
-  // 改名（P3）不收也沒事 —— 舊位置在清理範圍裡，下一次掃描就會把它標成不見了。
-  // 歸檔不一樣：舊位置可能在 filed 底下（復原就是這樣），而 filed 不在掃描範圍裡，
-  // **永遠沒有人會來收它**。留著的話 namesTaken 會以為那個名字還被佔住，
-  // 下一次同名的檔就被無故加成 -2。
-  if (nowId !== itemId && was) {
-    let stillThere = true
-    try { lstatSync(was.path) } catch { stillThere = false }
-    if (!stillThere) {
-      db.prepare(
-        `UPDATE file_items SET status='missing' WHERE id=? AND status IN (${RENAMABLE_STATUSES.map(() => '?').join(',')})`
-      ).run(itemId, ...RENAMABLE_STATUSES)
-    }
-  }
   return nowId
 }
 
@@ -735,20 +723,27 @@ export function recoverInterruptedFilings(db: DatabaseSync): { recovered: number
   for (const row of rows) {
     const there = (path: string) => { try { lstatSync(path); return true } catch { return false } }
     try {
+      // **每一個 UPDATE 都要再確認一次那一列還是 started**（稽核 2026-09-20，跟改名同一條）。
+      // 收尾不拿鎖，另一個行程的 apply 可能已經把它 commit 成 done —— 蓋掉的話那一筆
+      // 其實搬好了卻被講成 failed，undo 永遠拒絕；蓋成 reverted 更糟，undo 會回「已經復原過了」。
+      let changed = 0
       if (there(join(row.to_dir, row.to_name))) {
         transaction(db, () => {
-          const nowId = followFiled(db, row.item_id, row.to_dir, row.to_name)
-          if (nowId !== row.item_id) db.prepare('UPDATE filings SET item_id=? WHERE id=?').run(nowId, row.id)
-          db.prepare(`UPDATE filings SET status='done' WHERE id=?`).run(row.id)
+          changed = db.prepare(`UPDATE filings SET status='done' WHERE id=? AND status='started'`)
+            .run(row.id).changes
+          if (changed) {
+            const nowId = followFiled(db, row.item_id, row.to_dir, row.to_name)
+            if (nowId !== row.item_id) db.prepare('UPDATE filings SET item_id=? WHERE id=?').run(nowId, row.id)
+          }
         })
       } else if (there(join(row.from_dir, row.name))) {
-        db.prepare(`UPDATE filings SET status='reverted', undone_at=?, error=? WHERE id=?`)
-          .run(new Date().toISOString(), '整理中斷，檔案還在原本的資料夾，沒有搬。', row.id)
+        changed = db.prepare(`UPDATE filings SET status='reverted', undone_at=?, error=? WHERE id=? AND status='started'`)
+          .run(new Date().toISOString(), '整理中斷，檔案還在原本的資料夾，沒有搬。', row.id).changes
       } else {
-        db.prepare(`UPDATE filings SET status='failed', error=? WHERE id=?`)
-          .run('整理中斷，原位與新位置現在都找不到這個檔，請人工確認。', row.id)
+        changed = db.prepare(`UPDATE filings SET status='failed', error=? WHERE id=? AND status='started'`)
+          .run('整理中斷，原位與新位置現在都找不到這個檔，請人工確認。', row.id).changes
       }
-      recovered++
+      if (changed) recovered++
     } catch (e: any) {
       try {
         db.prepare(`UPDATE filings SET error=? WHERE id=? AND status='started'`)

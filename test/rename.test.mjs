@@ -22,7 +22,7 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  existsSync, readFileSync, readdirSync, renameSync, symlinkSync, linkSync,
+  existsSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, linkSync,
   utimesSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -776,5 +776,112 @@ describe('紀錄', () => {
     assert.equal(rows[0].status, 'done')
     assert.ok(!('dir' in rows[0]), '紀錄列表不可以帶資料夾')
     assert.ok(!JSON.stringify(rows).includes(s.downloads))
+  })
+})
+
+// ═══ 最後一輪稽核補的（2026-09-20）═══════════════════════════
+
+describe('稽核 ・ 收尾不可以蓋掉「已經成功」的紀錄', () => {
+  /**
+   * 真的重現那個競態：收尾先 SELECT 出 status='started' 的列，**再**一列一列 UPDATE。
+   * 另一個行程（持鎖的 apply）可能在這中間把同一列 commit 成 done。
+   * 這裡用 Proxy 在 SELECT 回來的那一刻把那一列改成 done —— 跟「另一個行程剛剛 commit 完」一樣。
+   */
+  function settleWithRaceAfterSelect(db, flip) {
+    return new Proxy(db, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop)
+        if (prop !== 'prepare') return typeof v === 'function' ? v.bind(target) : v
+        return sql => {
+          const stmt = target.prepare(sql)
+          if (!/SELECT \* FROM renames WHERE status='started'/.test(sql)) return stmt
+          return new Proxy(stmt, {
+            get(st, p) {
+              const f = Reflect.get(st, p)
+              if (p !== 'all') return typeof f === 'function' ? f.bind(st) : f
+              return (...args) => { const rows = st.all(...args); flip(); return rows }
+            },
+          })
+        }
+      },
+    })
+  }
+
+  test('SELECT 之後那一列被別的行程 commit 成 done → 收尾不可以蓋掉它', t => {
+    const s = one(t)
+    const id = randomUUID()
+    const to = '作業系統_死結.txt'
+    renameSync(join(s.downloads, s.name), join(s.downloads, to))
+    s.db.prepare(
+      `INSERT INTO renames (id,item_id,from_name,to_name,dir,source,status,error,at,undone_at)
+       VALUES (?,?,?,?,?, 'model','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, to, s.downloads, new Date().toISOString())
+
+    // 「另一個行程」在我們 SELECT 完之後把整筆 commit 完：renames 寫 done，
+    // file_items 也跟著改名（那正是 applyRenames 在同一個交易裡做的事）
+    const flip = () => {
+      s.db.prepare(`UPDATE renames SET status='done' WHERE id=?`).run(id)
+      s.db.prepare('UPDATE file_items SET path=?, name=?, naming=? WHERE id=?')
+        .run(join(s.downloads, to), to, 'named', s.itemId)
+    }
+    recoverInterruptedRenames(settleWithRaceAfterSelect(s.db, flip))
+
+    const row = s.db.prepare('SELECT * FROM renames WHERE id=?').get(id)
+    assert.equal(row.status, 'done', '已經成功的那一筆不可以被收尾蓋成別的狀態')
+    assert.equal(row.error, null, '也不可以留下「請人工確認」這種話')
+    assert.equal(row.undone_at, null)
+    // 而且復原還要做得到（被蓋成 reverted 的話 undo 會回「本來就已經復原過了」，檔案卻沒動）
+    const back = undoRenames(s.db, { ids: [id] }, s.fileScope)
+    assert.equal(back.results[0].ok, true, back.results[0].why)
+    assert.equal(existsSync(join(s.downloads, s.name)), true)
+  })
+
+  test('原位那一種也一樣：檔案還在原名、但那一列已經被寫成 done', t => {
+    const s = one(t)
+    const id = randomUUID()
+    s.db.prepare(
+      `INSERT INTO renames (id,item_id,from_name,to_name,dir,source,status,error,at,undone_at)
+       VALUES (?,?,?,?,?, 'model','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, '作業系統_死結.txt', s.downloads, new Date().toISOString())
+    const flip = () => s.db.prepare(`UPDATE renames SET status='done' WHERE id=?`).run(id)
+    recoverInterruptedRenames(settleWithRaceAfterSelect(s.db, flip))
+    const row = s.db.prepare('SELECT * FROM renames WHERE id=?').get(id)
+    assert.equal(row.status, 'done')
+    assert.equal(row.undone_at, null, '不可以寫上假的復原時間')
+  })
+
+  test('真的停在 started 的照樣收得掉（上面兩條不可以把收尾擋死）', t => {
+    const s = one(t)
+    const id = randomUUID()
+    renameSync(join(s.downloads, s.name), join(s.downloads, '作業系統_死結.txt'))
+    s.db.prepare(
+      `INSERT INTO renames (id,item_id,from_name,to_name,dir,source,status,error,at,undone_at)
+       VALUES (?,?,?,?,?, 'model','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, '作業系統_死結.txt', s.downloads, new Date().toISOString())
+    assert.equal(recoverInterruptedRenames(s.db).recovered, 1)
+    assert.equal(s.db.prepare('SELECT status FROM renames WHERE id=?').get(id).status, 'done')
+  })
+})
+
+describe('稽核 ・ 改名之後 file_items 換了一列，紀錄要跟著換', () => {
+  test('目標路徑上已經有一列（missing）→ renames.item_id 指到活著的那一列，undo 放得回原名', t => {
+    const s = one(t)
+    const target = '作業系統_死結.txt'
+    // 使用者以前有一個同名檔，被刪掉之後掃描標成 missing —— 那一列還佔著那個 path
+    s.put(target, OS_DEADLOCK)
+    s.scan()
+    const ghostId = s.idOf(target)
+    rmSync(join(s.downloads, target))
+    s.scan()
+    assert.equal(s.db.prepare('SELECT status FROM file_items WHERE id=?').get(ghostId).status, 'missing')
+
+    const r = applyRenames(s.db, [{ itemId: s.itemId, to: target }], s.fileScope)
+    assert.equal(r.results[0].ok, true, r.results[0].why)
+    const rec = s.db.prepare('SELECT * FROM renames WHERE id=?').get(r.results[0].id)
+    assert.equal(rec.item_id, ghostId, '紀錄要指到那個路徑上活著的那一列')
+
+    const back = undoRenames(s.db, { ids: [r.results[0].id] }, s.fileScope)
+    assert.equal(back.results[0].ok, true, back.results[0].why)
+    assert.equal(existsSync(join(s.downloads, s.name)), true, '要放得回原名')
   })
 })

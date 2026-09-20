@@ -527,6 +527,18 @@ export function followFile(db: DatabaseSync, itemId: string, dir: string, name: 
   const other = db.prepare('SELECT id FROM file_items WHERE path=?').get(path) as { id: string } | undefined
   if (other && other.id !== itemId) {
     db.prepare('UPDATE file_items SET naming=?, naming_why=? WHERE id=?').run(nm.state, nm.why, other.id)
+    // **被丟下的那一列要收掉**（稽核 2026-09-20）：檔案已經不在它記的位置了。
+    // 留著的話 namesTaken 會以為那個名字還被佔住 —— 復原的時候原名被自己的幽靈列佔走，
+    // 放回來的檔就被無故加成 -2。掃描遲早會把它標成 missing，但復原是「現在」就要對。
+    const was = db.prepare('SELECT path, status FROM file_items WHERE id=?').get(itemId) as
+      { path: string; status: string } | undefined
+    if (was && was.path !== path) {
+      let stillThere = true
+      try { lstatSync(was.path) } catch { stillThere = false }
+      if (!stillThere && (RENAMABLE_STATUSES as readonly string[]).includes(was.status)) {
+        db.prepare(`UPDATE file_items SET status='missing' WHERE id=?`).run(itemId)
+      }
+    }
     return other.id
   }
   db.prepare('UPDATE file_items SET path=?, name=?, naming=?, naming_why=? WHERE id=?')
@@ -661,7 +673,12 @@ function renameOne(
   }
   taken.add(to.toLowerCase())
   transaction(db, () => {
-    followFile(db, itemId, dir, to)
+    // **回傳值要用**（稽核 2026-09-20）：目標路徑上已經有一列（掃描先收過、或那一列是 missing）時，
+    // followFile 會改跟著那一列走。丟掉回傳值的話 renames 還指著舊那一列，
+    // 而舊那一列的 path 是已經不存在的舊名字 —— undo 會找不到檔，放不回原名。
+    // 歸檔（P4）那一邊早就這樣做了，改名這邊漏掉。
+    const nowId = followFile(db, itemId, dir, to)
+    if (nowId !== itemId) db.prepare('UPDATE renames SET item_id=? WHERE id=?').run(nowId, id)
     db.prepare(`UPDATE renames SET status='done' WHERE id=?`).run(id)
   })
   // ── 學（P5）────────────────────────────────────────────────
@@ -847,21 +864,30 @@ export function recoverInterruptedRenames(db: DatabaseSync): { recovered: number
   for (const row of rows) {
     const there = (name: string) => { try { lstatSync(join(row.dir, name)); return true } catch { return false } }
     try {
+      // **每一個 UPDATE 都要再確認一次那一列還是 started**（稽核 2026-09-20）。
+      // 收尾不拿鎖（applyRenames 是在鎖裡面呼叫它的，拿了會自己 BUSY），
+      // 所以另一個行程的 apply 可能在我們 SELECT 之後就把那一列 commit 成 done 了。
+      // 不擋的話會把一筆**其實成功了**的改名蓋成 failed／reverted：之後 undo 永遠拒絕，
+      // 更糟的是蓋成 reverted 時 undo 會回「本來就已經復原過了」——檔案根本沒動，卻回報成功。
+      let changed = 0
       if (there(row.to_name)) {
         transaction(db, () => {
+          changed = db.prepare(`UPDATE renames SET status='done' WHERE id=? AND status='started'`)
+            .run(row.id).changes
           // 掃描已經把新名字收成另一列的話，這一筆要改跟著那一列走，不然之後復原找不到檔
-          const nowId = followFile(db, row.item_id, row.dir, row.to_name)
-          if (nowId !== row.item_id) db.prepare('UPDATE renames SET item_id=? WHERE id=?').run(nowId, row.id)
-          db.prepare(`UPDATE renames SET status='done' WHERE id=?`).run(row.id)
+          if (changed) {
+            const nowId = followFile(db, row.item_id, row.dir, row.to_name)
+            if (nowId !== row.item_id) db.prepare('UPDATE renames SET item_id=? WHERE id=?').run(nowId, row.id)
+          }
         })
       } else if (there(row.from_name)) {
-        db.prepare(`UPDATE renames SET status='reverted', undone_at=?, error=? WHERE id=?`)
-          .run(new Date().toISOString(), '改名中斷，檔案還在原位，沒有改。', row.id)
+        changed = db.prepare(`UPDATE renames SET status='reverted', undone_at=?, error=? WHERE id=? AND status='started'`)
+          .run(new Date().toISOString(), '改名中斷，檔案還在原位，沒有改。', row.id).changes
       } else {
-        db.prepare(`UPDATE renames SET status='failed', error=? WHERE id=?`)
-          .run('改名中斷，新舊兩個名字現在都找不到，請人工確認。', row.id)
+        changed = db.prepare(`UPDATE renames SET status='failed', error=? WHERE id=? AND status='started'`)
+          .run('改名中斷，新舊兩個名字現在都找不到，請人工確認。', row.id).changes
       }
-      recovered++
+      if (changed) recovered++
     } catch (e: any) {
       // 收不掉要留下線索：以前整個吞掉，使用者只看到「上一次改名還沒收尾」卻永遠收不完
       try {

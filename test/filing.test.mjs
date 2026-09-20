@@ -851,3 +851,118 @@ describe('稽核 ・ 寫入順序與收尾', () => {
     assert.ok(!out.endsWith('.'), out)
   })
 })
+
+describe('稽核 ・ 收尾不可以蓋掉「已經成功」的整理紀錄（2026-09-20）', () => {
+  /** 在收尾的 SELECT 與 UPDATE 之間插手：另一個行程剛把同一列 commit 成 done。 */
+  function settleWithRaceAfterSelect(db, flip) {
+    return new Proxy(db, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop)
+        if (prop !== 'prepare') return typeof v === 'function' ? v.bind(target) : v
+        return sql => {
+          const stmt = target.prepare(sql)
+          if (!/SELECT \* FROM filings WHERE status='started'/.test(sql)) return stmt
+          return new Proxy(stmt, {
+            get(st, p) {
+              const f = Reflect.get(st, p)
+              if (p !== 'all') return typeof f === 'function' ? f.bind(st) : f
+              return (...args) => { const rows = st.all(...args); flip(); return rows }
+            },
+          })
+        }
+      },
+    })
+  }
+
+  test('SELECT 之後那一列被別的行程 commit 成 done → 收尾不動它，復原照樣做得到', t => {
+    const s = one(t)
+    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    mkdirSync(dir, { recursive: true })
+    const id = randomUUID()
+    s.db.prepare(
+      `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
+       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
+    renameSync(join(s.downloads, s.name), join(dir, s.name))
+
+    const flip = () => {
+      s.db.prepare(`UPDATE filings SET status='done' WHERE id=?`).run(id)
+      s.db.prepare('UPDATE file_items SET path=? WHERE id=?').run(join(dir, s.name), s.itemId)
+    }
+    recoverInterruptedFilings(settleWithRaceAfterSelect(s.db, flip))
+
+    const row = s.db.prepare('SELECT * FROM filings WHERE id=?').get(id)
+    assert.equal(row.status, 'done', '已經搬好的那一筆不可以被蓋成 failed／reverted')
+    assert.equal(row.error, null)
+    assert.equal(row.undone_at, null)
+    const back = undoFilings(s.db, { ids: [id] }, s.fileScope)
+    assert.equal(back.results[0].ok, true, back.results[0].why)
+    assert.equal(existsSync(join(s.downloads, s.name)), true, '要搬得回原本的資料夾')
+  })
+
+  test('**最難看的那一種**：收尾兩次 lstat 之間檔案剛好被搬走 → 不可以把成功的那一筆寫成「請人工確認」', t => {
+    // 收尾先看新位置、再看原位。renameSync 是原子的，但**兩次 lstat 之間**可以插進一整個 apply：
+    // 第一次看的時候還沒搬（新位置沒有），第二次看的時候已經搬走了（原位也沒有）——
+    // 於是它判「兩邊都找不到、請人工確認」。那一筆其實搬得好好的。
+    const s = one(t)
+    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    mkdirSync(dir, { recursive: true })
+    const id = randomUUID()
+    s.db.prepare(
+      `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
+       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
+
+    // 在第一次 lstat（看新位置，還沒搬 → 不存在）之後，讓「另一個行程」把檔案搬走並 commit 成 done
+    const real = fs.lstatSync
+    let seen = 0
+    t.mock.method(fs, 'lstatSync', (...args) => {
+      const out = (() => { try { return real(...args) } catch (e) { throw e } })
+      if (seen === 0 && String(args[0]) === join(dir, s.name)) {
+        seen = 1
+        try { return real(...args) } catch (e) {
+          renameSync(join(s.downloads, s.name), join(dir, s.name))
+          s.db.prepare(`UPDATE filings SET status='done' WHERE id=?`).run(id)
+          s.db.prepare('UPDATE file_items SET path=? WHERE id=?').run(join(dir, s.name), s.itemId)
+          throw e
+        }
+      }
+      return out()
+    })
+    syncBuiltinESMExports()
+    try { recoverInterruptedFilings(s.db) }
+    finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+
+    const row = s.db.prepare('SELECT * FROM filings WHERE id=?').get(id)
+    assert.equal(row.status, 'done', '搬成功的不可以被寫成 failed')
+    assert.ok(!row.error, `不可以留下「請人工確認」：${row.error}`)
+    assert.equal(existsSync(join(dir, s.name)), true)
+    const back = undoFilings(s.db, { ids: [id] }, s.fileScope)
+    assert.equal(back.results[0].ok, true, back.results[0].why)
+  })
+
+  test('另一種順序：apply 在收尾 SELECT 之後才 commit（檔案已經在新位置）', t => {
+    const s = one(t)
+    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    mkdirSync(dir, { recursive: true })
+    const id = randomUUID()
+    s.db.prepare(
+      `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
+       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
+
+    // 「另一個行程」在收尾 SELECT 完之後把檔案搬走並 commit 成 done
+    const flip = () => {
+      renameSync(join(s.downloads, s.name), join(dir, s.name))
+      s.db.prepare(`UPDATE filings SET status='done' WHERE id=?`).run(id)
+      s.db.prepare('UPDATE file_items SET path=? WHERE id=?').run(join(dir, s.name), s.itemId)
+    }
+    recoverInterruptedFilings(settleWithRaceAfterSelect(s.db, flip))
+
+    const row = s.db.prepare('SELECT * FROM filings WHERE id=?').get(id)
+    assert.equal(row.status, 'done', '搬成功的不可以被寫成 failed')
+    assert.ok(!row.error, `不可以留下「請人工確認」：${row.error}`)
+    const back = undoFilings(s.db, { ids: [id] }, s.fileScope)
+    assert.equal(back.results[0].ok, true, back.results[0].why)
+  })
+})
