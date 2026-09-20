@@ -155,13 +155,13 @@ export class Facts {
       if (mode === 'compose') {
         return { key: kd, action: 'compose' as const, label: def.label }
       }
-      if (hits.length === 0) {
-        return { key: kd, action: 'missing' as const, label: def.label }
-      }
       if (!canAutofill(kd)) {
         return { key: kd, action: 'confirm-each-time' as const, label: def.label,
-                 value: hits[0].value, sensitivity: def.sensitivity,
-                 source: hits[0].source_ref }
+                 value: hits[0]?.value, sensitivity: def.sensitivity,
+                 source: hits[0]?.source_ref }
+      }
+      if (hits.length === 0) {
+        return { key: kd, action: 'missing' as const, label: def.label }
       }
       if (mode === 'pick' && hits.length > 1) {
         return { key: kd, action: 'pick' as const, label: def.label,

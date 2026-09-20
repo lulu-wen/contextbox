@@ -655,7 +655,7 @@ can still be undone.
 
 #### The pet
 
-The croissant cat in the bottom right is `core/assets/quaso_v8.glb`, drawn with a copy of Three.js 0.180.0
+The croissant cat in the bottom right is `core/assets/quaso_v10.glb`, drawn with a copy of Three.js 0.180.0
 that ships in this repo. The page loads nothing from a CDN.
 
 * Click it to toggle its speech bubble; click outside or press Escape to close.

@@ -482,7 +482,7 @@ describe('R2-4／R2-8 pet 把放回範圍與截圖資料夾交給 server；CLI �
   test('R2-8 截圖資料夾：CLI 的 list、apply 與 pet 的 /cleanup/candidates 都只收截圖，proposal.zip 不列不搬', async t => {
     const s = sandbox(t, { config: { cleanup: { screenshots: true } } })
     // Linux 的截圖資料夾是 ~/Pictures/Screenshots（macOS 是桌面，同一套規則）
-    const shots = join(s.home, 'Pictures', 'Screenshots')
+    const shots = process.platform === 'darwin' ? join(s.home, 'Desktop') : join(s.home, 'Pictures', 'Screenshots')
     s.put('proposal.zip', 120, 'p', shots)
     s.put('Screenshot from 2026-05-01 10-00-00.png', 120, 's', shots)
     s.put('proposal2.zip', 120, 'p2')                 // 同樣的舊壓縮檔，放在 Downloads
@@ -852,13 +852,17 @@ describe('R2-9 open／pet 用 /health 的 proof 認 pet（綁埠號），不看 
     const s = sandbox(t)
     const srvFile = join(s.home, 'srv.mjs')
     writeFileSync(srvFile, `import { start } from ${JSON.stringify(pathToFileURL(join(REPO, 'core', 'server.ts')).href)}\n`
-      + 'const { ready } = start({ port: 0 })\nconsole.log(await ready)\n')
+      + 'const { ready } = start({ port: 0 })\nprocess.stdout.write("TEST_PORT=" + (await ready) + "\\n")\n')
     const child = spawn(process.execPath, [srvFile], { env: s.env() })
     s.stops.push(async () => { if (child.exitCode === null) { child.kill(); await new Promise(r => child.once('exit', r)) } })
-    let out = ''
+    let out = '', err = ''
     child.stdout.on('data', d => { out += d })
-    await until(() => /^\d+$/m.test(out), () => `server 沒起來：${out}`)
-    const port = /^(\d+)$/m.exec(out)[1]
+    child.stderr.on('data', d => { err += d })
+    await until(() => {
+      assert.equal(child.exitCode, null, `server 提前結束：${out}\n${err}`)
+      return /^TEST_PORT=\d+\r?\n/m.test(out)
+    }, () => `server 沒起來：${out}\n${err}`)
+    const port = /^TEST_PORT=(\d+)\r?\n/m.exec(out)[1]
     assert.equal(meta(s, 'watch_pid'), null, '前提：沒有 META.pid')
     const r = await runAsync(s, ['open'], { CONTEXTBOX_PORT: port })
     assert.equal(r.code, 0, r.out)

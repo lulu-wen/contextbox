@@ -24,8 +24,12 @@ croissant cat.
 
 ## The cat
 
-The bottom right of the home page loads `core/assets/quaso_v8.glb`. Click the cat to toggle its speech
-bubble; the settings on the right offer a spin, a pause or a jump. Click outside or press Escape to close it.
+The bottom right of the home page loads `core/assets/quaso_v10.glb`. Click the cat to toggle its speech
+bubble; click outside or press Escape to close it.
+
+**The animation follows the pet's state** — idle, found, thinking, cleaning, restoring, happy, worried —
+rather than anything you pick. The gear button (or the **S** key) shows or hides the "Pet state" line, which
+names the state the cat is in right now.
 
 The model is drawn by `core/assets/pet-viewer.js`; after you update the server, restart it and reopen the
 page from the address the server prints (or `node cli.mjs open`).
@@ -44,10 +48,12 @@ On Windows and macOS alike, **D** swaps in four sample candidates (`core/assets/
 are typing in a field, in a menu, or composing text.
 
 Nothing on the page advertises these keys, and the sample list never turns on by itself.
-## The two icons
+## The three icons
 
-Two small icons sit under Quaso: a bin with the candidate count in the middle, blinking when there is
-something there, which opens the cleanup panel; and a back arrow, which opens the undo panel. Finding
+Three small icons sit under Quaso: a **bin** with the candidate count in the middle, blinking when there is
+something there, which opens the cleanup panel; a **back arrow** with the number of still-undoable actions in
+its corner, which opens the undo panel; and a **gear**, which shows or hides the "Pet state" line (same as
+pressing **S**). Finding
 candidates no longer pops the big speech bubble open on its own.
 
 With the sample list on, the number is the sample count; otherwise it is the local one. Hover for the source

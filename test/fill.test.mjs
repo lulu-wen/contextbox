@@ -180,7 +180,7 @@ describe('forForm 回的五種指示', () => {
       'work[].company',        // pick
       'identity.national_id',  // confirm-each-time
       'writing.cover_letter',  // compose
-      'person.birthdate',      // missing
+      'person.name.family',    // missing（非敏感欄位）
       'no.such.key',           // unknown
     ]
     const plan = F.forForm(keys)
@@ -202,9 +202,6 @@ describe('forForm 回的五種指示', () => {
   })
 
   test('敏感欄位就算庫裡沒值，也該回 confirm-each-time 而不是 missing',
-    { todo: '現在回 missing（core/facts.ts:158 的空值判斷排在 161 的敏感判斷前面）。'
-          + '差別在於 missing 等於對網頁承認「我沒有這筆」，'
-          + '一頁塞 75 個隱藏欄位就能問出你有沒有身心障礙身分。見 openIssues。' },
     () => {
       const F = fresh()
       const r = planOf(F, ['person.disability'])['person.disability']
@@ -607,8 +604,6 @@ describe('schema/factKeys.ts 註冊表', () => {
   })
 
   test('一條別名都不准撞到別的 key',
-    { todo: '「成績」同時掛在 schema/factKeys.ts:240 的 education[].gpa '
-          + '和 :305 的 language[].score 上。見 openIssues。' },
     () => {
       assert.deepEqual(撞到的別名().map(x => `${x.alias}: ${x.first} vs ${x.second}`), [])
     })
