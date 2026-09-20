@@ -88,10 +88,24 @@ describe('modelOpinionLines', () => {
     assert.equal(l.seeded, true)
   })
 
-  test('欄位是空的：填「看不出來」「低」，不留一句半截的話', () => {
+  test('欄位是空的 → 當成「看不出來」，而且講成人話（不留一句半截的話）', () => {
+    // `Unknown / Unknown (confidence low)` 長得像壞掉。它其實是這個作品最該被看見的行為：
+    // 模型不知道的時候會說不知道，而不是硬猜一個課名（2026-09-20，使用者看到那一行問「這是什麼意思」）。
     const l = modelOpinionLines(opinion({ course: '', topic: '   ', confidence: '', evidence: '' }))
-    assert.equal(l.head, 'The model thinks: Unknown / Unknown (confidence low)')
+    assert.match(l.head, /could not tell what this is/)
+    assert.ok(!/Unknown \/ Unknown/.test(l.head), l.head)
     assert.match(l.note, /The model gave no evidence/)
+  })
+
+  test('真的有看法的照舊講課名與信心', () => {
+    const l = modelOpinionLines(opinion({ course: 'Operating Systems', topic: 'Deadlock', confidence: 'high' }))
+    assert.equal(l.head, 'The model thinks: Operating Systems / Deadlock (confidence high)')
+  })
+
+  test('說不出來、但信心寫 high（模型自己前後矛盾）→ 一樣講「看不出來」', () => {
+    // 實測會發生：`Unknown / Unknown (confidence high)`。轉述那句話只會讓人看不懂。
+    const l = modelOpinionLines(opinion({ course: 'Unknown', topic: 'Unknown', confidence: 'high' }))
+    assert.match(l.head, /could not tell what this is/)
   })
 
   test('沒有看法（null、舊版後端沒有這一欄、不是物件）→ null，畫面上什麼都不加', () => {

@@ -745,9 +745,17 @@ export function modelOpinionLines(m) {
   const confidence = pick(m.confidence, 'low')
   const evidence = safeName(String(m.evidence ?? '').trim())
   const seeded = m.seeded === true
+  // **「看不出來」要講成人話。** `Unknown / Unknown (confidence low)` 長得像壞掉，
+  // 但它其實是這個作品最該被看見的行為之一：模型不知道的時候會說不知道，而不是硬猜一個課名。
+  // **信心是多少都一樣**：說不出是哪一堂課就是說不出來。
+  // 模型有時候會回「Unknown（信心 high）」—— 那是它自己前後矛盾，不是我們要轉述的東西。
+  const noIdea = /^(unknown|看不出來|未知)$/i.test(course)
   return {
     seeded,
-    head: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`,
+    head: `${seeded ? '[demo answer] ' : ''}`
+      + (noIdea
+        ? 'The model looked and could not tell what this is, so it is not suggesting anything for it.'
+        : `The model thinks: ${course} / ${topic} (confidence ${confidence})`),
     note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
       + "This is the model's opinion, not a fact — nothing gets renamed or moved because it said so.",
   }

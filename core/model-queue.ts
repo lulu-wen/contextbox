@@ -379,9 +379,11 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
     if (stop || cursor >= items.length) return false
     const item = items[cursor++]
     if (opts.signal?.aborted) { result.cancelled = true; return false }
-    index++
+    // **自己的號碼要當場抄下來**：`index` 是四條線共用的，等這個檔問完（十幾秒後）
+    // 再去讀它，讀到的是別人跑到哪裡 —— 畫面上就會印出四行 [20/20]（實際發生了）。
+    const myIndex = ++index
     const step = (p: Partial<RoundProgress>): void => {
-      const full = { index, total: result.total, name: item.name, source: item.source, ...p } as RoundProgress
+      const full = { index: myIndex, total: result.total, name: item.name, source: item.source, ...p } as RoundProgress
       result.steps.push(full)
       try { opts.onProgress?.(full) } catch { /* 印壞了不可以讓這一輪掛掉 */ }
     }

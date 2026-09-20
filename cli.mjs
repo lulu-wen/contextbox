@@ -1170,8 +1170,14 @@ function thinkLine(p) {
   const what = p.source === 'image' ? 'screenshot' : 'document'
   if (p.outcome === 'asked' || p.outcome === 'cached') {
     const who = p.outcome === 'cached' ? ' (same contents were asked before; reusing that answer)' : ''
-    return `  ✔ ${head}  — The model thinks: ${shown(p.course || 'Unknown')} / ${shown(p.topic || 'Unknown')}`
-      + ` (confidence ${shown(p.confidence || 'low')})${who}`
+    // 「看不出來」講成人話 —— `Unknown / Unknown (confidence low)` 看起來像壞掉，
+    // 但那正是它該有的行為：不知道就說不知道
+    // 信心是多少都一樣：說不出是哪一堂課就是說不出來（模型有時候會回「Unknown（high）」）
+    const noIdea = /^(unknown|看不出來|未知)$/i.test(String(p.course ?? '').trim())
+    return noIdea
+      ? `  ✔ ${head}  — could not tell what this is (so nothing is suggested for it)${who}`
+      : `  ✔ ${head}  — The model thinks: ${shown(p.course || 'Unknown')} / ${shown(p.topic || 'Unknown')}`
+        + ` (confidence ${shown(p.confidence || 'low')})${who}`
   }
   if (p.outcome === 'skipped') return `  - ${head}  — ${shown(p.why ?? 'not sent')}`
   return `  ✘ ${head} (${what})  — ${shown(p.why ?? 'no answer')}`
