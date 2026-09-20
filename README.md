@@ -4,6 +4,11 @@
 
 Nothing leaves your machine unless you decide it should. Nothing moves until you say so. Nothing is ever deleted.
 
+![The cleanup panel, with the pet watching from the corner](docs/images/Ui.png)
+
+*Every row says what it is and why it is listed. Nothing is ticked because a model felt confident — and
+"Clean up" means "move to quarantine", where it stays recoverable for seven days.*
+
 ---
 
 ## The problem
