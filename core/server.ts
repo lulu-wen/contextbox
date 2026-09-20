@@ -28,6 +28,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { open, DEFAULT_DB } from './db.ts'
 import { Facts } from './facts.ts'
+import { getPetMessage } from './pet-state.ts'
 import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
@@ -159,6 +160,7 @@ const PET_ASSETS = new Map([
   ['/assets/cleanup-real-state.js', ['assets/cleanup-real-state.js', 'text/javascript; charset=utf-8']],
   ['/assets/demo-candidates.json', ['assets/demo-candidates.json', 'application/json; charset=utf-8']],
   ['/assets/pet-state.js', ['assets/pet-state.js', 'text/javascript; charset=utf-8']],
+  ['/assets/pet-messages.js', ['pet-state.ts', 'text/javascript; charset=utf-8']],
   ...['three.module.js', 'three.core.js', 'GLTFLoader.js', 'BufferGeometryUtils.js'].map(name =>
     [`/assets/vendor/${name}`, [`assets/vendor/${name}`, 'text/javascript; charset=utf-8']]),
 ] as [string, [string, string]][])
@@ -292,7 +294,9 @@ export function start(opts: {
         return send(405, { error: '素材只供讀取。', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
       }
       try {
-        const data = readFileSync(new URL(asset[0], import.meta.url))
+        const data = url.pathname === '/assets/pet-messages.js'
+          ? Buffer.from(`export ${getPetMessage.toString()}`)
+          : readFileSync(new URL(asset[0], import.meta.url))
         res.writeHead(200, { ...baseHeaders(), 'content-type': asset[1],
           'content-length': data.length, 'x-content-type-options': 'nosniff',
           'cross-origin-resource-policy': 'same-origin' })

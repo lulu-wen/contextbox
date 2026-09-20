@@ -15,6 +15,12 @@ const VALID_STATES = new Set([
 let baseState = 'idle'
 let transientState = null
 let transientTimer = null
+let messageData = {}
+export function getPetMessageData() { return messageData }
+export function setPetMessageData(data) {
+  messageData = { ...messageData, ...data }
+  document.dispatchEvent(new CustomEvent('quaso:messagechange'))
+}
 
 function currentState() {
   return transientState ?? baseState

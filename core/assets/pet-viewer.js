@@ -5,16 +5,67 @@ const stage = document.getElementById('quaso-stage')
 const status = document.getElementById('quaso-status')
 const dialog = document.getElementById('quaso-dialog')
 const retry = document.getElementById('quaso-retry')
+const dots = document.getElementById('quaso-dialog-dots')
+const content = document.getElementById('quaso-dialog-content')
+const collapse = document.getElementById('quaso-dialog-collapse')
+const pet = document.getElementById('quaso')
+let mode = 'hidden', dismissed = false
+const collapsible = () => pet.dataset.petState === 'found'
+  && /^(找到 \d+ 個可能可以清理的檔案！|這次先處理其中 \d+ 個。)/u.test(status.textContent.trim())
+function setDialogMode(next) {
+  mode = next === 'collapsed' && !collapsible() ? 'expanded' : next
+  dialog.dataset.mode = mode
+  if (dialog.hidden !== (mode === 'hidden')) dialog.hidden = mode === 'hidden'
+  dots.hidden = mode !== 'collapsed'
+  content.hidden = mode !== 'expanded'
+  collapse.hidden = !collapsible()
+  stage.setAttribute('aria-expanded', String(mode === 'expanded'))
+}
+// Flash once per entry into worried; message refreshes do not restart it.
+let wasWorried = false
+function updateWorriedDialog() {
+  const worried = pet.dataset.petState === 'worried'
+  if (worried !== wasWorried) {
+    dialog.classList.toggle('worried-flash', worried)
+    if (worried) {
+      dismissed = false
+      setDialogMode('expanded')
+    }
+    wasWorried = worried
+  }
+}
+dialog.addEventListener('animationend', event => {
+  if (event.animationName === 'quaso-worried-flash') dialog.classList.remove('worried-flash')
+})
+let messageKey = `${pet.dataset.petState}:${collapsible()}`
+const observer = new MutationObserver(() => {
+  updateWorriedDialog()
+  const key = `${pet.dataset.petState}:${collapsible()}`
+  if (key !== messageKey) {
+    messageKey = key
+    dismissed = false
+    setDialogMode(collapsible() ? 'collapsed' : 'expanded')
+  } else if (dialog.hidden || dismissed) setDialogMode('hidden')
+  else setDialogMode(mode === 'hidden' ? (collapsible() ? 'collapsed' : 'expanded') : mode)
+})
+observer.observe(status, { childList: true, subtree: true, characterData: true })
+observer.observe(pet, { attributes: true, attributeFilter: ['data-pet-state'] })
+observer.observe(dialog, { attributes: true, attributeFilter: ['hidden'] })
+dots.onclick = () => setDialogMode('expanded')
+collapse.onclick = () => { setDialogMode('collapsed'); dots.focus() }
+document.getElementById('quaso-dialog-close').onclick = () => { dismissed = true; setDialogMode('hidden'); stage.focus() }
+setDialogMode(collapsible() ? 'collapsed' : dialog.hidden ? 'hidden' : 'expanded')
+updateWorriedDialog()
+window.addEventListener('pagehide', () => observer.disconnect(), { once: true })
 retry.onclick = () => location.reload()
 document.addEventListener('quaso:notice', event => {
   status.textContent = event.detail.message
   showDialog(true)
 })
 function showDialog(open) {
-  dialog.hidden = !open
-  stage.setAttribute('aria-expanded', String(open))
+  setDialogMode(open ? 'expanded' : 'hidden')
 }
-stage.onclick = () => showDialog(dialog.hidden)
+stage.onclick = () => { dismissed = false; setDialogMode(collapsible() ? 'collapsed' : 'expanded') }
 document.addEventListener('click', event => {
   if (!document.getElementById('quaso').contains(event.target)
     && !document.getElementById('cleanup-panel')?.contains(event.target)
@@ -105,9 +156,13 @@ async function init() {
   const walkEnd = new THREE.Vector3()
   let walkDuration = 0, walkHeading = 0, walkStartHeading = 0
   let foundPhase = 'out', foundFinished = null, foundTimer = null
-  const foundOrigin = new THREE.Vector2()
-  const foundTravel = new THREE.Vector2()
   let jumpStartScreenY = 0
+  function iconPosition(id) {
+    const rect = stage.getBoundingClientRect()
+    const icon = document.getElementById(id).getBoundingClientRect()
+    return new THREE.Vector2(icon.left + icon.width / 2 - rect.left - rect.width / 2,
+      icon.top - 78 - rect.top - rect.height / 2)
+  }
 
   function start(state) {
     const clip = findClip(clipForState(state))
@@ -130,24 +185,14 @@ async function init() {
     action.setLoop(THREE.LoopRepeat, Infinity)
     action.clampWhenFinished = false
     if (state === 'found') {
-      model.updateWorldMatrix(true, true)
-      animatedBounds.setFromObject(model, true).getCenter(cameraTarget)
-      screenPosition.copy(cameraTarget).project(referenceCamera)
-      const stageRect = stage.getBoundingClientRect()
-      foundOrigin.set(screenPosition.x * stageRect.width / 2, -screenPosition.y * stageRect.height / 2)
-      const targetRect = document.getElementById('quaso-cleanup-alert').getBoundingClientRect()
-      const dx = targetRect.left + targetRect.width / 2 - (stageRect.left + stageRect.width / 2 + foundOrigin.x)
-      const dy = targetRect.top + targetRect.height / 2 - (stageRect.top + stageRect.height / 2 + foundOrigin.y)
-      const distance = Math.hypot(dx, dy)
-      const travel = Math.min(45, distance * 0.5)
-      foundTravel.set(dx, dy).multiplyScalar(distance > 0 ? travel / distance : 0)
+      const origin = iconPosition('quaso-history-open')
+      const destination = iconPosition('quaso-cleanup-alert')
+      const dx = destination.x - origin.x, dy = destination.y - origin.y
       const worldPerPixel = 2 * cameraOffset.length() * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / 220
       walkStart.copy(pivot.position)
       walkEnd.copy(walkStart)
-      if (distance > 0) {
-        walkEnd.x += dx / distance * travel * worldPerPixel
-        walkEnd.y -= dy / distance * travel * worldPerPixel
-      }
+      walkEnd.x += dx * worldPerPixel
+      walkEnd.y -= dy * worldPerPixel
       walkDuration = clip.duration
       // Turn toward the icon using the model's visible front orientation.
       walkHeading = dx < 0 ? -Math.PI / 2 : Math.PI / 2
@@ -163,7 +208,6 @@ async function init() {
         phaseAction.clampWhenFinished = true
         phaseAction.play()
         if (phase === 'jump') {
-          // Sample the jump's first pose, not the preceding walk pose.
           mixer.update(0)
           model.updateWorldMatrix(true, true)
           animatedBounds.setFromObject(model, true).getCenter(cameraTarget)
@@ -199,20 +243,84 @@ async function init() {
   }
 
   function request(state, immediate = false) {
-    if (reducedMotion) {
-      return
+    if (reducedMotion) return
+
+    const isOperation =
+      state === 'cleaning' ||
+      state === 'restoring'
+
+    // 新操作開始：
+    // 上一次操作還沒播放的 happy 已經過期，直接丟掉。
+    if (isOperation) {
+      // queue 裡移除所有舊 happy
+      for (let i = queue.length - 1; i >= 0; i--) {
+        if (queue[i] === 'happy') {
+          queue.splice(i, 1)
+        }
+      }
+
+      // 如果 happy 還在 1 秒 transition 中，也取消
+      if (pendingState === 'happy') {
+        if (transitionTimer) {
+          clearTimeout(transitionTimer)
+          transitionTimer = null
+        }
+
+        pendingState = null
+      }
+
+      // 如果 happy 已經真的在播放，
+      // 新操作可以直接打斷它。
+      if (displayedState === 'happy') {
+        protectedRun = false
+        start(state)
+        return
+      }
     }
+
+    // worried 最高優先
     if (state === 'worried') {
       queue.length = 0
-    } else if (protectedRun || protectedStates.has(pendingState)) {
-      if ((queue.at(-1) ?? pendingState ?? displayedState) !== state) queue.push(state)
+
+      if (transitionTimer) {
+        clearTimeout(transitionTimer)
+        transitionTimer = null
+      }
+
+      pendingState = null
+      start(state)
       return
     }
-    if (transitionTimer) clearTimeout(transitionTimer)
+
+    // cleaning / restoring 等 protected animation
+    // 至少完整播放一次。
+    if (protectedRun || protectedStates.has(pendingState)) {
+      if (
+        (queue.at(-1) ?? pendingState ?? displayedState) !== state
+      ) {
+        queue.push(state)
+      }
+
+      return
+    }
+
+    if (transitionTimer) {
+      clearTimeout(transitionTimer)
+    }
+
     pendingState = state
-    const run = () => { transitionTimer = null; pendingState = null; start(state) }
-    if (immediate || state === 'worried') run()
-    else transitionTimer = setTimeout(run, 1000)
+
+    const run = () => {
+      transitionTimer = null
+      pendingState = null
+      start(state)
+    }
+
+    if (immediate) {
+      run()
+    } else {
+      transitionTimer = setTimeout(run, 1000)
+    }
   }
   let previous = performance.now(), elapsed = 0
   document.addEventListener('quaso:statechange', event => {
@@ -245,18 +353,16 @@ async function init() {
     animatedBounds.setFromObject(model, true).getCenter(cameraTarget)
     screenPosition.copy(cameraTarget).project(referenceCamera)
     const stageBounds = stage.getBoundingClientRect()
-    let offsetX = screenPosition.x * stageBounds.width / 2
-    let offsetY = -screenPosition.y * stageBounds.height / 2
+    const origin = iconPosition('quaso-history-open')
+    let offsetX = origin.x + screenPosition.x * stageBounds.width / 2
+    let offsetY = origin.y - screenPosition.y * stageBounds.height / 2
     if (displayedState === 'found') {
-      // Use screen coordinates for navigation; turning/model root motion must
-      // not redirect the walk toward a different icon.
+      const destination = iconPosition('quaso-cleanup-alert')
       const progress = Math.min(elapsed / walkDuration, 1)
       const fraction = foundPhase === 'jump' ? 1 : foundPhase === 'back' ? 1 - progress : progress
-      offsetX = foundOrigin.x + foundTravel.x * fraction
-      offsetY = foundOrigin.y + foundTravel.y * fraction
-      if (foundPhase === 'jump') {
-        offsetY -= (screenPosition.y - jumpStartScreenY) * stageBounds.height / 2
-      }
+      offsetX = THREE.MathUtils.lerp(origin.x, destination.x, fraction)
+      offsetY = THREE.MathUtils.lerp(origin.y, destination.y, fraction)
+      if (foundPhase === 'jump') offsetY -= (screenPosition.y - jumpStartScreenY) * stageBounds.height / 2
     }
     if (canvas.hasAttribute('popover')) {
       canvas.style.left = `${stageBounds.left + offsetX}px`

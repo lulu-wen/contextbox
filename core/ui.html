@@ -139,6 +139,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
 </style>
 <style>
   #quaso { position: fixed; inset: auto 20px 16px auto; z-index: 50; width: 220px;
+    display: grid; justify-items: center;
     margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; color: inherit; }
   #quaso [hidden] { display: none !important; }
   #quaso-stage { display: block; width: 220px; height: 220px; padding: 0;
@@ -148,55 +149,61 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #quaso-stage canvas[popover] { position: fixed; inset: auto; width: 220px; height: 220px;
     margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; }
   #quaso-stage canvas::backdrop { background: transparent; pointer-events: none; }
-  #quaso-dialog { position: absolute; bottom: 100%; right: 0; width: 220px;
+  #quaso-dialog { position: absolute; top: 68px; left: 50%;
+    transform: translate(-50%, -100%); width: 220px; box-sizing: border-box; max-width: calc(100vw - 24px);
     padding: 12px; border: 1px solid #dfd7ca; border-radius: 16px;
     background: #fffaf0; color: #514637; box-shadow: 0 4px 18px #0000000d; }
   #quaso-dialog-row { display: flex; align-items: center; gap: 8px; }
   #quaso-status { flex: 1; margin: 0; font-size: 14px; }
-  #quaso-connection-warning { position: absolute; bottom: 100%; right: 0; width: 220px;
-    padding: 12px; border: 1px solid #dfd7ca; border-radius: 16px;
-    background: #fffaf0; box-shadow: 0 4px 18px #0000000d; }
-  #quaso-connection-warning button { padding: 6px 10px; border: 1px solid #dfd7ca;
-    border-radius: 10px; background: #fffaf0; color: #514637; cursor: pointer; }
-  #quaso-connection-warning p { margin: 0 0 8px; color: #985628; font-size: 13px; }
-  #quaso-tools #quaso-worried { right: 0; top: 18px; color: #a65c32; animation-delay: -.8s; }
+  #quaso-dialog[data-mode="collapsed"] { width: 48px; height: 48px; padding: 0; border-radius: 50%; }
+  #quaso-dialog #quaso-dialog-dots { width: 100%; height: 100%; padding: 0; border: 0;
+    border-radius: 50%; background: transparent; font-size: 24px; }
+  #quaso-dialog-dots span { display: inline-block; animation: quaso-dot 1.2s ease-in-out infinite; }
+  #quaso-dialog-dots span:nth-child(2) { animation-delay: .15s; }
+  #quaso-dialog-dots span:nth-child(3) { animation-delay: .3s; }
+  #quaso-dialog-content { position: relative; padding-top: 24px; }
+  #quaso-dialog-close { position: absolute; right: 0; top: -8px; }
+  #quaso-dialog-collapse { display: block; margin: 8px 0 0 auto; }
+  @keyframes quaso-dot { 0%, 80%, 100% { opacity: .4; } 40% { opacity: 1; transform: translateY(-3px); } }
+  @media (prefers-reduced-motion: reduce) { #quaso-dialog-dots span { animation: none; } }
   #quaso-dialog button { border: 1px solid #dfd7ca; border-radius: 10px;
     padding: 6px 10px; background: #fffaf0; color: #514637; cursor: pointer; }
-  #quaso-tools #quaso-settings-toggle { left: -8px; top: 140px; animation-delay: -2.5s; }
-  #quaso-settings-toggle span { font-size: 30px; line-height: 1; }
-  #quaso-tools { position: absolute; inset: 0; pointer-events: none; }
-  #quaso-tools button { position: absolute; display: grid; place-items: center;
+  #quaso-settings-toggle .quaso-gear { font-size: 30px; line-height: 1; }
+  .pet-state-debug { margin-top: 8px; text-align: center; }
+  #quaso-tools { display: grid; grid-template-columns: repeat(3, 52px); justify-content: space-between;
+    justify-self: stretch; padding: 0 8px; }
+  #quaso-tools button { position: relative; display: grid; place-items: center;
     width: 52px; height: 52px; padding: 0; border: 1px solid #ddccb4; border-radius: 50%;
     color: #80552c; background: radial-gradient(circle at 30% 22%, #fff, #fff5e5dd 65%);
     box-shadow: inset 0 2px 5px #fff, 0 5px 14px #62452118; cursor: pointer;
-    pointer-events: auto; animation: quaso-float 3.8s ease-in-out infinite;
+    pointer-events: auto;
     transition: top 1.5s cubic-bezier(.45, 0, .9, 1), filter .3s ease; }
-  #quaso-tools::after { content: ''; position: absolute; left: -18px; right: -4px; top: 210px;
-    height: 1px; background: #c9c3ba; opacity: 0; pointer-events: none; }
-  #quaso[data-pet-state="worried"] #quaso-tools::after { opacity: .65; }
-  #quaso-tools #quaso-cleanup-alert { left: -18px; top: 42px; }
-  #quaso-tools #quaso-history-open { right: -4px; top: 124px; animation-delay: -1.6s; }
+  #quaso-tools #quaso-cleanup-alert { grid-column: 1; grid-row: 1; }
+  #quaso-tools #quaso-history-open { grid-column: 2; grid-row: 1; }
+  #quaso-tools #quaso-settings-toggle { grid-column: 3; grid-row: 1; }
   #quaso-tools button:hover { background: #ffedcb; animation-play-state: paused; }
   #quaso-tools button:focus-visible { animation-play-state: paused; }
   #quaso-tools button:focus-visible { outline: 2px solid #a26b2f; outline-offset: 3px; }
   #quaso-tools svg { width: 38px; height: 38px; }
+  #quaso-history-count { position: absolute; right: -5px; top: -5px; min-width: 18px;
+    padding: 2px 4px; border-radius: 12px; background: #80552c; color: white; font: 700 12px/18px system-ui; }
   #quaso-candidate-count { position: absolute; top: 23px; left: 0; right: 0;
     font: 700 12px/16px system-ui; text-align: center; pointer-events: none; }
   #quaso-tools #quaso-cleanup-alert.attention {
-    animation: quaso-float 3.8s ease-in-out infinite, quaso-pulse 1.5s ease-in-out infinite; }
-  #quaso[data-pet-state="worried"] #quaso-tools #quaso-worried {
-    animation: quaso-float 3.8s ease-in-out -.8s infinite, quaso-offline-pulse 1.5s ease-in-out infinite;
+    animation: quaso-pulse 1.5s ease-in-out infinite; }
+  #quaso[data-pet-state="worried"] #quaso-dialog {
+    border-color: #dc6262; background: #fff1f1;
+    box-shadow: 0 0 18px #dc454580, 0 0 5px #dc454560;
   }
-  #quaso[data-pet-state="worried"] #quaso-tools button:not(#quaso-worried) {
-    filter: grayscale(1);
-    opacity: .5;
-    cursor: not-allowed;
-    animation: none;
-    top: 158px;
+  #quaso[data-pet-state="worried"] #quaso-dialog.worried-flash {
+    animation: quaso-worried-flash .7s ease-in-out 3;
   }
-  @keyframes quaso-offline-pulse {
-    0%, 100% { background: #fff5e5; box-shadow: 0 0 0 0 #c66a3b00; }
-    50% { background: #ffd3b4; box-shadow: 0 0 0 5px #c66a3b30; }
+  #quaso[data-pet-state="worried"] #quaso-tools button {
+    filter: grayscale(1); opacity: .5; cursor: not-allowed; animation: none;
+  }
+  @keyframes quaso-worried-flash {
+    0%, 100% { background: #fff1f1; box-shadow: 0 0 18px #dc454580, 0 0 5px #dc454560; }
+    50% { background: #ffd1d1; box-shadow: 0 0 30px #dc4545cc, 0 0 8px #dc454599; }
   }
   @keyframes quaso-float {
     0%, 100% { transform: translateY(0); }
@@ -211,7 +218,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   @media (prefers-reduced-motion: reduce) {
     #quaso-tools button { transition: none; }
     #quaso-tools button, #quaso-tools #quaso-cleanup-alert.attention,
-    #quaso[data-pet-state="worried"] #quaso-tools #quaso-worried,
+    #quaso[data-pet-state="worried"] #quaso-dialog.worried-flash,
     #quaso-stage.found-hop { animation: none; }
     #quaso-cleanup-alert.attention { background: #ffe6b8; }
   }
@@ -234,6 +241,15 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   .cleanup-file p { margin: 6px 0 0 28px; font-size: 13px; line-height: 1.5; }
   .cleanup-file .evidence { color: #796c5b; }
+  .cleanup-file-row { display: flex; align-items: center; gap: 12px; }
+  .cleanup-file-row label { flex: 1; min-width: 0; }
+  .cleanup-file-size, .cleanup-file-row button { flex-shrink: 0; white-space: nowrap; }
+  .cleanup-file details { margin: 10px 0 0 28px; }
+  .cleanup-file details summary { cursor: pointer; list-style: none; }
+  .cleanup-file details summary::after { content: ' ›'; }
+  .cleanup-file details[open] summary::after { content: ' ⌄'; }
+  .cleanup-file details summary::-webkit-details-marker { display: none; }
+  .cleanup-file details p { margin-left: 0; }
   #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
   #cleanup-summary { font-weight: 600; }
@@ -269,29 +285,19 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
 
 <aside id="quaso" aria-label="Quaso 寵物">
   <div id="quaso-dialog" hidden>
+    <button id="quaso-dialog-dots" type="button" aria-label="展開清理提案訊息" hidden><span aria-hidden="true">.</span><span aria-hidden="true">.</span><span aria-hidden="true">.</span></button>
+    <div id="quaso-dialog-content">
+    <button id="quaso-dialog-close" type="button" aria-label="隱藏訊息">×</button>
     <div id="quaso-dialog-row">
-      <p id="quaso-status" role="status">今天吃可頌了嗎？</p>
+      <p id="quaso-status" role="status"></p>
     </div>
     <button id="quaso-retry" type="button" hidden>重新載入</button>
-  </div>
-  <div id="quaso-connection-warning" role="region" aria-label="連線中斷提示" hidden>
-    <p>連不上本機服務，請啟動 server 後重試。</p>
-    <button id="quaso-connection-retry" type="button">重試連線</button>
+    <button id="quaso-dialog-collapse" type="button" aria-label="收合訊息" hidden>−</button>
+    </div>
   </div>
   <button id="quaso-stage" type="button" aria-label="與可頌貓對話"
     aria-expanded="false" aria-controls="quaso-dialog"></button>
-  <div class="pet-state-debug">
-    Pet State: <strong id="pet-state-text">idle</strong>
-  </div>
   <div id="quaso-tools" aria-label="寵物快捷操作">
-    <button id="quaso-settings-toggle" type="button" aria-label="設定" title="設定"><span aria-hidden="true">⚙</span></button>
-    <button id="quaso-worried" type="button" aria-label="警告，點擊查看提示" title="警告，點擊查看提示"
-      aria-expanded="false" aria-controls="quaso-connection-warning" hidden>
-      <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-        <path d="M20 9v14" stroke-width="7"/>
-        <circle cx="20" cy="32" r="3.5" fill="currentColor" stroke="none"/>
-      </svg>
-    </button>
     <button id="quaso-cleanup-alert" type="button" aria-label="查看候選檔案" title="查看候選檔案"
       aria-haspopup="dialog" aria-controls="cleanup-panel">
       <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -301,10 +307,17 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     </button>
     <button id="quaso-history-open" type="button" aria-label="復原最近動作" title="復原最近動作"
       aria-haspopup="dialog" aria-controls="cleanup-history-panel">
+      <span id="quaso-history-count" aria-hidden="true">…</span>
       <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M16 10l-8 8 8 8M9 18h14a9 9 0 0 1 0 18h-3" transform="translate(0 -3)"/>
       </svg>
     </button>
+    <button id="quaso-settings-toggle" type="button" aria-label="設定" title="設定">
+      <span class="quaso-gear" aria-hidden="true">⚙</span>
+    </button>
+  </div>
+  <div class="pet-state-debug">
+    Pet State: <strong id="pet-state-text">idle</strong>
   </div>
 </aside>
 <dialog id="cleanup-panel" aria-labelledby="cleanup-title">
@@ -320,10 +333,16 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <div class="cleanup-select-actions">
     <button id="cleanup-select-all" type="button">全部勾選</button>
     <button id="cleanup-select-none" type="button">全部取消</button>
+    <button id="cleanup-select-page" type="button">本頁全選</button>
+    <button id="cleanup-unselect-page" type="button">取消本頁全選</button>
   </div>
 
   <div id="cleanup-list"></div>
-  <div id="cleanup-needs-human" class="cleanup-note"></div>
+  <div class="cleanup-actions" aria-label="清理清單分頁">
+    <button id="cleanup-prev" type="button">上一頁</button>
+    <span id="cleanup-page" aria-live="polite"></span>
+    <button id="cleanup-next" type="button">下一頁</button>
+  </div>
   <p id="cleanup-summary" aria-live="polite"></p>
   <p id="cleanup-space-note" class="cleanup-note">清理會模擬移入可復原的隔離區；不等於釋放磁碟空間。</p>
   <div id="cleanup-result" role="status" hidden></div>
@@ -356,6 +375,14 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
 </dialog>
 <script type="module" src="/assets/cleanup-demo.js"></script>
 <script type="module">
+  import { getPetMessage } from '/assets/pet-messages.js'
+  import { getPetState, getPetMessageData } from '/assets/pet-state.js'
+  function renderPetMessage() {
+    document.getElementById('quaso-status').textContent = getPetMessage(getPetState(), getPetMessageData())
+  }
+  document.addEventListener('quaso:statechange', renderPetMessage)
+  document.addEventListener('quaso:messagechange', renderPetMessage)
+  renderPetMessage()
   import('/assets/pet-viewer.js').catch(() => {
     document.getElementById('quaso-dialog').hidden = false
     document.getElementById('quaso-stage').setAttribute('aria-expanded', 'true')
