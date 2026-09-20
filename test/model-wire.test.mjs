@@ -25,6 +25,8 @@ import {
 } from '../core/model-store.ts'
 import { PROMPT_VERSION, imagePayload, textPayload } from '../core/model.ts'
 import { SECRET_WHY } from '../core/model-guard.ts'
+import { load } from '../core/config.ts'
+import { reloadInto } from '../core/live-config.ts'
 import { modelOpinionLines } from '../core/assets/cleanup-real-state.js'
 import { GOOD_VIEW, completion, startFakeModel } from './helpers/fake-model.mjs'
 
@@ -904,5 +906,102 @@ describe('稽核 ・ 換了提示詞之後（2026-09-20）', () => {
       at: new Date().toISOString(), seeded: 0,
     })
     assert.equal(pendingItems(s.db, [s.downloads]).length, 0)
+  })
+})
+
+// ═══ 稽核 ・ 一輪跑到一半，面板把模型關掉 ══════════════════════
+
+describe('稽核 verify:correctness-3 ・ 一輪跑到一半設定被改掉（2026-09-20）', () => {
+  /**
+   * `thinkRound` 進門時看一次 `modelEnabled(config)`，之後每一個檔卻是**當場**讀
+   * `config.model.*`。面板存檔走的是 `reloadInto()`，它**原地**蓋掉同一個 config 物件
+   * （core/live-config.ts 刻意如此，不然 cli.mjs 抓著的那一份看不到新值）。
+   *
+   * 所以使用者在一輪跑到一半按下「儲存」把模型關掉時，剩下的每一個檔都會被
+   * `askModel` 判成「The model is not configured」，記成一列 ok=0 —— 那是**誣賴**：
+   * 模型沒有答不出來，是使用者自己把它關了。後果是 model_calls 多出幾列垃圾、
+   * doctor 的 failed 被灌水、畫面上跳一句「連三次答不出來」。
+   */
+  const fourLectures = () => {
+    const files = {}
+    for (let i = 0; i < 4; i++) files[`講義${i}.txt`] = OS_CH6 + `（第 ${i} 份，內容不一樣）`
+    return files
+  }
+
+  test('模型被關掉之後就地收工：不記失敗、不報「連三次失敗」、剩下的檔留著下一輪', async t => {
+    const s = sandbox(t, fourLectures())
+    const config = cfg([s.downloads], '')
+    // 第一個請求一送到，就把 baseUrl 清空 —— 這正是 reloadInto 對這個物件做的事
+    const fake = await startFakeModel(t, ({ req }) => {
+      if (req.method === 'POST') config.model.baseUrl = ''
+      return false
+    })
+    config.model.baseUrl = fake.baseUrl
+    withKey(t, FAKE_KEY)
+    const errors = []
+    const r = await thinkRound({
+      db: s.db, config, roots: [s.downloads], onError: msg => errors.push(msg),
+    })
+
+    assert.equal(r.asked, 1, '關掉之前問完的那一個要算數')
+    assert.equal(r.failed, 0, '使用者把模型關掉不是「模型答不出來」')
+    assert.equal(r.stopped, null, '不可以報「連三次失敗」')
+    assert.deepEqual(errors, [], 'onError 不可以被叫到')
+    assert.equal(r.cancelled, false, '這不是 Ctrl+C —— cancelled 會讓 CLI 換一套說法、也會跳過 sweepModel')
+    assert.equal(s.db.prepare('SELECT count(*) n FROM model_calls WHERE ok=0').get().n, 0,
+      'model_calls 多了幾列誣賴使用者的失敗')
+    assert.equal(fake.requests.filter(q => q.method === 'POST').length, 1, '關掉之後還在送')
+    // 沒問到的那三個檔還在待問清單上（沒被標成「問不到」）
+    assert.equal(pendingItems(s.db, [s.downloads], 50).length, 3, '剩下的檔要留給下一輪')
+  })
+
+  test('keyEnv 被指到一個沒設的環境變數，效果一樣（金鑰那一半也要擋）', async t => {
+    const s = sandbox(t, fourLectures())
+    const config = cfg([s.downloads], '')
+    const fake = await startFakeModel(t, ({ req }) => {
+      if (req.method === 'POST') config.model.keyEnv = 'CONTEXTBOX_KEY_THAT_IS_NOT_SET'
+      return false
+    })
+    config.model.baseUrl = fake.baseUrl
+    withKey(t, FAKE_KEY)
+    const errors = []
+    const r = await thinkRound({
+      db: s.db, config, roots: [s.downloads], onError: msg => errors.push(msg),
+    })
+    assert.equal(r.failed, 0)
+    assert.equal(r.stopped, null)
+    assert.deepEqual(errors, [])
+    assert.equal(s.db.prepare('SELECT count(*) n FROM model_calls WHERE ok=0').get().n, 0)
+  })
+
+  test('真的走一次 reloadInto（面板存檔那條路）：結果一樣', async t => {
+    const s = sandbox(t, fourLectures())
+    const cfgFile = join(s.dir, 'config.json')
+    const base = {
+      watch: [], filed: join(s.dir, 'Filed'), readonly: false, pdfPages: 3, maxBytes: 8 << 20,
+      cleanup: { roots: [s.downloads], screenshots: false },
+      model: { baseUrl: '', name: 'fake-model', keyEnv: KEY_ENV },
+    }
+    let config = null
+    const fake = await startFakeModel(t, ({ req }) => {
+      if (req.method !== 'POST') return false
+      // 面板存檔做的兩件事：寫檔 + reloadInto 原地蓋回同一個物件
+      writeFileSync(cfgFile, JSON.stringify(base, null, 2) + '\n')
+      reloadInto(config, cfgFile)
+      return false
+    })
+    writeFileSync(cfgFile, JSON.stringify({ ...base, model: { ...base.model, baseUrl: fake.baseUrl } }, null, 2) + '\n')
+    config = load(cfgFile).config
+    withKey(t, FAKE_KEY)
+    const errors = []
+    const r = await thinkRound({
+      db: s.db, config, roots: [s.downloads], onError: msg => errors.push(msg),
+    })
+    assert.equal(config.model.baseUrl, '', '前提：reloadInto 真的原地蓋掉了同一個物件')
+    assert.equal(r.asked, 1)
+    assert.equal(r.failed, 0)
+    assert.equal(r.stopped, null)
+    assert.deepEqual(errors, [])
+    assert.equal(s.db.prepare('SELECT count(*) n FROM model_calls WHERE ok=0').get().n, 0)
   })
 })

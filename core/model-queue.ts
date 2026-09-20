@@ -379,6 +379,15 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
     if (stop || cursor >= items.length) return false
     const item = items[cursor++]
     if (opts.signal?.aborted) { result.cancelled = true; return false }
+    // **設定被改成「模型關掉」了就地收工**（2026-09-20 稽核 verify:correctness-3）。
+    // 進門那一次 `modelEnabled(config)` 只擋得住「這一輪開始時就沒設定」；面板存檔走的是
+    // `reloadInto()`，它**原地**蓋掉這裡拿著的同一個 config（core/live-config.ts 刻意如此）。
+    // 使用者在一輪跑到一半清掉模型網址，剩下的檔就會一個一個被 askModel 判成
+    // 「The model is not configured」：model_calls 多出幾列 ok=0、doctor 的 failed 被灌水、
+    // 畫面上跳一句「連三次答不出來」—— 全都在誣賴一個「我把模型關掉」的動作。
+    // 不寫 `result.cancelled`：那一個的意思是「使用者按了 Ctrl+C」，會跳過 sweepModel、
+    // 也會讓 CLI 的 think 換一套說法。這裡只是收工，檔留著下一輪再問。
+    if (!modelEnabled(config)) { stop = true; return false }
     // **自己的號碼要當場抄下來**：`index` 是四條線共用的，等這個檔問完（十幾秒後）
     // 再去讀它，讀到的是別人跑到哪裡 —— 畫面上就會印出四行 [20/20]（實際發生了）。
     const myIndex = ++index

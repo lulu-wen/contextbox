@@ -1549,9 +1549,16 @@ export function createSettings(api) {
         }
         failed = true
         message = hideKeys(error?.message || 'Could not save your settings. Nothing in the file changed.')
-        // 使用者把金鑰本人貼進 keyEnv 的那一次：**那一格就地清掉**。
+        // 使用者把金鑰本人貼進 keyEnv 的那一次：**那一格換回檔案裡存著的名字**。
         // 這是唯一一個「使用者打的字不留」的例外 —— 留著等於把金鑰留在畫面上（今天早上那件事）。
-        if (edited && edited.model.keyEnv && !envVarName(edited.model.keyEnv)) edited.model.keyEnv = ''
+        // 為什麼是回填而不是清空（2026-09-20 稽核 verify:contract-8）：清空之後 edited 就跟 data
+        // 不一樣了，而 patch() 正是拿這兩份比出來的 —— 下一次按儲存會夾帶 `keyEnv: ""`，
+        // 使用者的 CONTEXTBOX_OTHER_KEY 從設定檔裡消失，keySet 變 false，
+        // 而面板還說「已儲存：金鑰環境變數。已生效」。他從頭到尾沒改過那一欄。
+        // 回填存著的那個名字一樣把金鑰趕下畫面，但**不製造一筆使用者沒做的修改**。
+        if (edited && edited.model.keyEnv && !envVarName(edited.model.keyEnv)) {
+          edited.model.keyEnv = data?.editable.model.keyEnv ?? ''
+        }
         return { ok: false, message, restart: [] }
       }
       // 後端回的是套用後的整份設定（契約如此）。萬一沒回，就拿剛才送出去的那一份頂著，

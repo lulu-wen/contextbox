@@ -48,6 +48,9 @@ const learned = createLearned((path, init) => window.api(path, init))
 const settings = createSettings((path, init) => window.api(path, init))
 // 正在送 PATCH /settings。這段期間「儲存」要按不下去：連按兩下就是送兩次寫檔。
 let settingsSaving = false
+// 這一次 render() 是**背景輪詢**叫的（refreshSuggestions 發現別的區變了）。
+// 設定區看這個旗子決定要不要讓開，見 renderSettings —— 別的呼叫端一律照常重畫。
+let pollRedraw = false
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
@@ -805,8 +808,28 @@ function settingCheck(field, caption, checked, hint) {
 /** 唯讀區的一行「名稱：值」。值是路徑，一律 uiSafeName。 */
 const shownLine = (caption, value) => paragraph(caption + ': ' + uiSafeName(value))
 
+/**
+ * 使用者現在正握著設定區嗎：游標就在裡面某一格，或是打了字還沒按儲存。
+ *
+ * 用在「要不要讓輪詢重畫這一區」那個判斷上。**輪詢期間這一區的內容本來就不會變** ——
+ * `settings.load()` 只在打開面板那一刻跑一次，`busy` 與 `settingsSaving` 在 refreshSuggestions
+ * 的守門條件下一定是 false —— 所以讓開不會漏掉任何新消息。
+ */
+function settingsHeldByUser(box) {
+  if (isDemo() || !settings.view) return false
+  const active = document.activeElement
+  if (active && active !== document.body && box.contains(active)) return true
+  return Object.keys(settings.patch()).length > 0
+}
+
 function renderSettings() {
   const box = $('cleanup-settings')
+  // **輪詢重畫的時候，正在被使用者動的設定區要讓開**（2026-09-20 稽核）。
+  // 這一支開頭就是 replaceChildren，等於把使用者正在打字的那個 input 換成一個新的。
+  // 字不會不見（重畫是從 edited 出來的，oninput 每一鍵都寫進去了），掉的是焦點、游標位置、
+  // 選取範圍，以及注音打到一半還沒上屏的字 —— 慢慢敲一串網址的人每五秒被踢出輸入框一次。
+  // 只擋輪詢那一條：按儲存、開面板、切分頁那幾條照樣重畫，不然 400 的紅字貼不上去。
+  if (pollRedraw && settingsHeldByUser(box)) return
   box.replaceChildren()
   const save = $('cleanup-settings-save')
   save.hidden = true
@@ -1775,7 +1798,12 @@ async function refreshSuggestions() {
     await filings.load()
     await learned.load()
   } catch { return }             // 讀不到就維持畫面上的樣子
-  if (suggestionSignature() !== before) render()
+  // 標記「這一次是輪詢叫的」：設定區靠它決定要不要讓開（renderSettings）。
+  // render() 是同步的，所以 finally 一定在它跑完之後才把旗子放下。
+  if (suggestionSignature() !== before) {
+    pollRedraw = true
+    try { render() } finally { pollRedraw = false }
+  }
 }
 
 /** 那四區現在的內容（換了才重畫）。 */

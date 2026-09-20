@@ -155,6 +155,22 @@ describe('模型網址', () => {
     }
   })
 
+  test('**讀不懂的網址不可以被原樣印回去**（那一格常被貼進金鑰）', () => {
+    // 2026-09-20 稽核：keyEnv 那一欄早就只講規則、不回放值了（同一支檔 383-386 行），
+    // baseUrl 這一欄卻還在 `The model URL ${raw} could not be read` 裡把整串原文印出去。
+    // 而「貼錯格子」正是那天早上 doctor 把使用者的金鑰印到終端機的那一個動作。
+    // 這一行是根，下游（settings.ts 的 scrub、cli 的 showProblems）每一層都只是在補它。
+    const key = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    for (const raw of [key, '  ' + key + '  ', 'not a url ' + key]) {
+      const r = normalize({ model: { baseUrl: raw } })
+      const all = r.problems.join(' / ')
+      assert.ok(!all.includes(key), `problems 把整串印出來了：${all}`)
+      assert.ok(!all.includes(key.slice(0, 16)), `連半截都不可以留：${all}`)
+      assert.ok(r.problems.some(p => /model URL/.test(p)), '還是要講那一欄讀不懂')
+      assert.equal(r.config.model.baseUrl, '')
+    }
+  })
+
   test('網址裡的帳號密碼要拿掉', () => {
     const r = normalize({ model: { baseUrl: 'https://user:pw@api.example.com/v1' } })
     assert.ok(!r.config.model.baseUrl.includes('pw'), '不要把密碼留在設定裡')
@@ -204,6 +220,21 @@ describe('讀檔', () => {
     assert.equal(r.config.watch.length > 0, true)
     assert.equal(readFileSync(p, 'utf8'), '{ 這不是 JSON', '不可以覆蓋掉')
   })
+
+  test('**JSON 壞掉的那一句不可以把檔案內容貼出來**', () => {
+    // V8 的 JSON SyntaxError 會附上出錯位置前後約十個位元組的原文
+    //（`Unexpected token 's', "sk-live-9f"... is not valid JSON`）。
+    // 設定檔第一行就是金鑰的時候 —— 貼錯地方、或者存成了 .env 的樣子 —— 那十個位元組就是它，
+    // 而 load() 的 problems 會被 doctor／think／watch 整段印到終端機上。
+    const key = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    const p = join(tmp(), 'config.json')
+    writeFileSync(p, key + '\n')
+    const r = load(p)
+    const all = r.problems.join(' / ')
+    assert.ok(!all.includes('sk-live'), `問題訊息帶著檔案內容：${all}`)
+    assert.ok(/could not be read/.test(all), '還是要講這份檔讀不懂')
+    assert.equal(readFileSync(p, 'utf8'), key + '\n', '不可以覆蓋掉')
+  })
 })
 
 describe('路徑展開', () => {
@@ -232,6 +263,23 @@ describe('唯讀模式', () => {
     process.env.CONTEXTBOX_READONLY = '1'
     try { assert.equal(normalize({}).config.readonly, true) }
     finally { delete process.env.CONTEXTBOX_READONLY }
+  })
+
+  test('**環境變數壓過檔案的時候要講出來**', () => {
+    // 以前這裡第一行就 return true，什麼都不講：面板把打勾取消、存檔成功、
+    // 回「Read-only mode. It is in effect now.」，而唯讀其實還開著。
+    // 使用者以為自己關掉了保護，下一次清理卻什麼都不做，而沒有任何一句話說得出為什麼。
+    process.env.CONTEXTBOX_READONLY = '1'
+    try {
+      const clash = normalize({ readonly: false })
+      assert.equal(clash.config.readonly, true, '安全開關還是以環境變數為準')
+      assert.ok(clash.problems.some(p => /CONTEXTBOX_READONLY/.test(p)),
+        '沒說是誰壓著它：' + clash.problems.join(' / '))
+      // 沒有衝突的兩種情況不要囉嗦
+      for (const raw of [{}, { readonly: true }]) {
+        assert.ok(!normalize(raw).problems.some(p => /CONTEXTBOX_READONLY/.test(p)), JSON.stringify(raw))
+      }
+    } finally { delete process.env.CONTEXTBOX_READONLY }
   })
 
   test('正常的 true／false', () => {

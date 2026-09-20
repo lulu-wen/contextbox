@@ -101,7 +101,7 @@ function fakeApi(opts) {
     }
     if (path.startsWith('/cleanup/plans?')) return { total: 0, offset: 0, limit: 20, operations: [] }
     if (path === '/cleanup/bursts') return { groups: [] }
-    if (path.startsWith('/rename/suggestions')) return { items: [] }
+    if (path.startsWith('/rename/suggestions')) return { items: opts.renames ?? [] }
     if (path.startsWith('/file/suggestions')) return { items: [] }
     if (path.startsWith('/learned')) return { items: [], evicted: { count: 0, at: null } }
     if (path === '/settings' && method === 'GET') {
@@ -459,8 +459,10 @@ describe('後端說這一欄不行（400 BAD_SETTING）', () => {
     assert.equal(fieldError(ui, 'model.baseUrl'), undefined, '修好了還掛著紅字會讓人以為又失敗了')
   })
 
-  test('使用者自己把金鑰貼進 keyEnv：退回來之後那一格就地清掉', async t => {
+  test('使用者自己把金鑰貼進 keyEnv：退回來之後那一格換回存著的名字', async t => {
     // 這是唯一一個「使用者打的字不留」的例外 —— 留著就等於把金鑰留在畫面上（今天早上那件事）。
+    // 2026-09-20 稽核 verify:contract-8 把「清空」改成「回填存著的那個名字」：
+    // 清空會讓 patch() 以為使用者改了這一欄，下一次儲存就把他的變數名洗掉。
     const ui = await openSettings(t, { patchError: {
       status: 400, code: 'BAD_SETTING',
       error: 'That field wants the name of an environment variable. Nothing was written.',
@@ -468,7 +470,7 @@ describe('後端說這一欄不行（400 BAD_SETTING）', () => {
     } })
     typeInto(field(ui, 'model.keyEnv'), FAKE_KEY)
     await ui.click('cleanup-settings-save')
-    assert.equal(field(ui, 'model.keyEnv').value, '')
+    assert.equal(field(ui, 'model.keyEnv').value, 'CONTEXTBOX_MODEL_KEY')
     assert.match(fieldError(ui, 'model.keyEnv').textContent, /NAME of an environment variable/)
     assert.ok(!box(ui).textContent.includes(FAKE_KEY), box(ui).textContent)
   })
@@ -505,5 +507,147 @@ describe('後端說這一欄不行（400 BAD_SETTING）', () => {
     assert.match(box(ui).textContent, /Could not write your config file/)
     assert.ok(!/Saved:/.test(box(ui).textContent))
     assert.equal(field(ui, 'model.name').value, 'Qwen3.5-27B')
+  })
+})
+
+// ═══ 稽核 ・ 400 之後那一格被清空，下一次存把使用者的變數名洗掉 ═══
+
+describe('稽核 verify:contract-8 ・ 被退回來之後，keyEnv 不可以變成「使用者改過」（2026-09-20）', () => {
+  /**
+   * 400 之後把 keyEnv 那一格清空，是為了「不要把貼進去的金鑰留在畫面上」。
+   * 問題是清空之後 `edited` 跟 `data` 就不一樣了 —— `patch()` 是拿這兩份比出來的，
+   * 於是**下一次按儲存會夾帶 `keyEnv: ""`**，而後端收得下空字串（會退回預設）。
+   * 結果：使用者的 `CONTEXTBOX_OTHER_KEY` 從設定檔裡消失、keySet 變成 false，
+   * 而面板還說「已儲存：模型名稱、金鑰環境變數。已生效」—— 一個他從來沒改過的欄位。
+   */
+  const pastedKey = () => ({
+    status: 400, code: 'BAD_SETTING',
+    error: 'That field wants the name of an environment variable. Nothing was written.',
+    fields: { 'model.keyEnv': 'model.keyEnv must be the NAME of an environment variable (something starting with CONTEXTBOX_), not the key itself.' },
+  })
+
+  test('貼了金鑰被退回來 → 那一格回到**檔案裡存著的名字**，不是空白', async t => {
+    const ui = await openSettings(t, {
+      patchError: pastedKey(),
+      settings: SETTINGS({ editable: {
+        readonly: false,
+        model: { baseUrl: 'http://127.0.0.1:8000/v1', name: 'Qwen3-VL-8B', keyEnv: 'CONTEXTBOX_OTHER_KEY' },
+        cleanup: { screenshots: false },
+      } }),
+    })
+    typeInto(field(ui, 'model.keyEnv'), FAKE_KEY)
+    await ui.click('cleanup-settings-save')
+    assert.equal(field(ui, 'model.keyEnv').value, 'CONTEXTBOX_OTHER_KEY',
+      '清空等於替使用者做了一個他沒做的修改；回填存著的那個名字一樣把金鑰趕下畫面')
+    assert.ok(!box(ui).textContent.includes(FAKE_KEY), box(ui).textContent)
+  })
+
+  test('退回來之後改別欄再存：patch 裡**完全沒有** keyEnv，檔案裡那個名字原封不動', async t => {
+    const opts = {
+      patchError: pastedKey(),
+      settings: SETTINGS({ editable: {
+        readonly: false,
+        model: { baseUrl: 'http://127.0.0.1:8000/v1', name: 'Qwen3-VL-8B', keyEnv: 'CONTEXTBOX_OTHER_KEY' },
+        cleanup: { screenshots: false },
+      } }),
+    }
+    const ui = await openSettings(t, opts)
+    typeInto(field(ui, 'model.keyEnv'), FAKE_KEY)
+    await ui.click('cleanup-settings-save')
+
+    // 使用者放棄那一格，改一欄不相干的再存一次
+    opts.patchError = null
+    typeInto(field(ui, 'model.name'), 'Qwen3.5-27B')
+    await ui.click('cleanup-settings-save')
+
+    const sent = JSON.parse(patches(opts).at(-1).body)
+    assert.deepEqual(sent, { model: { name: 'Qwen3.5-27B' } }, '夾帶了使用者沒改的欄位')
+    assert.equal(opts.settings.editable.model.keyEnv, 'CONTEXTBOX_OTHER_KEY',
+      '使用者的環境變數名字被洗掉了，而他從頭到尾沒碰那一欄')
+    assert.equal(box(ui).byClass('cleanup-setting-result').at(-1).textContent,
+      'Saved: model name. It is in effect now.', '存好的那句話不可以把沒改的欄位算進去')
+  })
+
+  test('keyEnv 打成不是變數名的字、而 400 講的是別欄：那一格也回到存著的名字', async t => {
+    const opts = { patchError: {
+      status: 400, code: 'BAD_SETTING',
+      error: 'Bad setting. Nothing was written.',
+      fields: { 'model.baseUrl': 'That address is not safe to send your files to.' },
+    } }
+    const ui = await openSettings(t, opts)
+    typeInto(field(ui, 'model.baseUrl'), 'http://8.8.8.8/v1')
+    typeInto(field(ui, 'model.keyEnv'), 'contextbox model key')
+    await ui.click('cleanup-settings-save')
+    assert.equal(field(ui, 'model.keyEnv').value, 'CONTEXTBOX_MODEL_KEY')
+
+    opts.patchError = null
+    await ui.click('cleanup-settings-save')
+    const sent = JSON.parse(patches(opts).at(-1).body)
+    assert.ok(!('keyEnv' in (sent.model ?? {})), '打錯字被收掉之後不可以變成一筆「修改」：' + JSON.stringify(sent))
+  })
+})
+
+// ═══ 稽核 ・ 背景輪詢不可以把正在打字的那一格抽掉 ═════════════
+
+describe('稽核 ・ 五秒一次的輪詢重畫，設定區要讓開（2026-09-20）', () => {
+  /**
+   * `refreshSuggestions()`（五秒一輪）發現連拍／改名／歸檔／學到的那四區變了就叫 `render()`，
+   * 而 `render()` 一路叫到 `renderSettings()`，那一支開頭就是 `box.replaceChildren()` ——
+   * 使用者正在打的那個輸入框整個被換成一個新的。
+   *
+   * 字本身不會不見（重畫是從 `edited` 出來的，oninput 每一鍵都寫進去了），
+   * 掉的是**焦點、游標位置、選取範圍、以及注音打到一半還沒上屏的字**：
+   * 一個正在慢慢敲 `http://127.0.0.1:8000/v1` 的人，每五秒就被踢出輸入框一次。
+   */
+  const suggestion = () => [{
+    itemId: 'it-1', name: '未命名文件 (3).txt', suggested: '作業系統_死結.txt',
+    folder: 'Downloads', confidence: 'high', evidence: '文件裡寫著「作業系統 第 6 章 死結」',
+  }]
+
+  test('別區有新東西而輪詢重畫時，正在打字的那一格不可以被換掉', async t => {
+    const opts = {}
+    const ui = await openSettings(t, opts)
+    const input = field(ui, 'model.baseUrl')
+    typeInto(input, 'http://127.0.0.1:80')
+    input.focus()
+    assert.equal(ui.doc.activeElement, input, '前提：游標在這一格裡')
+
+    // 背景那一輪問完模型，「建議的名字」多了一筆 —— 這正是 refreshSuggestions 重畫的理由
+    opts.renames = suggestion()
+    await ui.poll()
+
+    assert.equal(field(ui, 'model.baseUrl'), input, '正在打字的輸入框被整個換掉了（游標會跳走）')
+    assert.equal(ui.doc.activeElement, input, '焦點掉了')
+    assert.equal(input.value, 'http://127.0.0.1:80')
+    // 讓開的只有設定那一區，別區照樣跟上
+    assert.match(ui.$('cleanup-renames').textContent, /作業系統_死結/)
+  })
+
+  test('游標不在設定區裡的時候照常重畫 —— 不然存好那句話貼不上去', async t => {
+    const opts = {}
+    const ui = await openSettings(t, opts)
+    typeInto(field(ui, 'model.name'), 'Qwen3.5-27B')
+    ui.doc.body.focus()
+    opts.renames = suggestion()
+    await ui.poll()
+    // 重畫過（元素換新了），而且打到一半的字還在（畫的是 edited）
+    assert.equal(field(ui, 'model.name').value, 'Qwen3.5-27B')
+    await ui.click('cleanup-settings-save')
+    assert.match(box(ui).textContent, /Saved: model name/)
+  })
+
+  test('存檔那一刻照樣重畫（那時焦點在「儲存」按鈕上，不在框裡）', async t => {
+    const opts = { patchError: {
+      status: 400, code: 'BAD_SETTING',
+      error: 'That address is not safe to send your files to. Nothing was written.',
+      fields: { 'model.baseUrl': 'That address is not safe to send your files to.' },
+    } }
+    const ui = await openSettings(t, opts)
+    const input = field(ui, 'model.baseUrl')
+    typeInto(input, 'http://8.8.8.8/v1')
+    input.focus()
+    ui.$('cleanup-settings-save').focus()
+    await ui.click('cleanup-settings-save')
+    assert.ok(fieldError(ui, 'model.baseUrl'), '按下儲存之後那一句話一定要貼得上去')
   })
 })

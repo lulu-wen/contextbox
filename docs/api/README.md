@@ -61,7 +61,7 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | HTTP | code | 什麼時候 | 呼叫端該做什麼 |
 |---|---|---|---|
 | 400 | `BAD_BODY` | body 看不懂；帶了這條路徑不認得的欄位（`candidateID`、`skippedIDs`…）；欄位型別不對（`candidateIds: null`、`confirmed: "true"`）；計畫 id 的 `%xx` 壞掉；分頁參數不對；略過清單有不屬於這份計畫的 id | 改請求再送 |
-| 400 | `BAD_SETTING` | `PATCH /settings`：白名單以外的鍵（`cleanup.roots`、`watch`…）、型別不對（`readonly: "true"`）、或這次改的欄位 `normalize()` 不收（明文 http 打到外網的 `model.baseUrl`、不是 `CONTEXTBOX_` 開頭的 `model.keyEnv`）。**設定檔一個位元組都沒動**；`fields` 是「欄位路徑 → 為什麼」 | 把 `fields` 顯示在對應的輸入框旁邊，改了再送 |
+| 400 | `BAD_SETTING` | `PATCH /settings`：白名單以外的鍵（`cleanup.roots`、`watch`…）、型別不對（`readonly: "true"`）、字串欄位超過 512 字元、或這次改的欄位 `normalize()` 不收（明文 http 打到外網的 `model.baseUrl`、不是 `CONTEXTBOX_` 開頭的 `model.keyEnv`、環境變數 `CONTEXTBOX_READONLY=1` 壓著時的 `readonly: false`）。**設定檔一個位元組都沒動**；`fields` 是「欄位路徑 → 為什麼」（詳見「設定」那一節） | 把 `fields` 顯示在對應的輸入框旁邊，改了再送 |
 | 401 | （沒有） | token 不對或沒帶 | 重新拿 token |
 | 403 | `READ_ONLY` | 唯讀模式：不建計畫、不搬檔 | 告訴使用者，不要重試 |
 | 403 | （沒有） | Origin 不在白名單、Host 不對、`GET /` 被 fetch 或 iframe 拿 | 不要重試 |
@@ -75,8 +75,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | 410 | `CONFIRMATION_EXPIRED` | 清空的預覽 token 過期（五分鐘） | 重新預覽 |
 | 413 | `BODY_TOO_LARGE` | body 超過 1 MB | 送少一點 |
 | 428 | `CONFIRMATION_REQUIRED` | 清空時沒帶 `confirmed`、帶的是 `false`、或 token 不是預覽發的 | 先打一次不帶 token 的預覽 |
-| 500 | `BAD_CONFIG` | 清理資料夾或大小上限沒設好；`/settings`：這台 server 啟動時沒有設定檔可改（`start()` 沒給 `configPath`，它自己也沒讀過設定檔） | 顯示「後端出狀況」，不要自動重試 |
-| 500 | `WRITE_FAILED` | `PATCH /settings` 寫不出去（權限、磁碟滿），或設定檔現在的內容讀不懂（壞掉的 JSON、不是物件）所以不敢覆蓋 | 顯示原因，請使用者看一眼設定檔；**設定檔沒有被動過** |
+| 500 | `BAD_CONFIG` | 清理資料夾或大小上限沒設好；`/settings`：這台 server 啟動時沒有設定檔可改（`start()` 沒給 `configPath`，它自己也沒讀過設定檔；詳見「設定」那一節） | 顯示「後端出狀況」，不要自動重試 |
+| 500 | `WRITE_FAILED` | `PATCH /settings` 寫不出去（權限、磁碟滿），或設定檔現在的內容讀不懂（壞掉的 JSON、不是物件）所以不敢覆蓋（詳見「設定」那一節） | 顯示原因，請使用者看一眼設定檔；**設定檔沒有被動過** |
 | 500 | `UNSAFE_PATH` | 隔離區或檔案的路徑不安全（捷徑、硬鏈結、不是資料夾） | 同上 |
 | 500 | `UNSAFE_JOURNAL` | 搬移紀錄對不上 | 同上 |
 | 500 | `UNSAFE_FILE` | 清空時檔案太大或認不出身分 | 同上 |
@@ -139,6 +139,8 @@ node -e "import('node:http').then(h=>h.createServer((q,s)=>{const f='docs/api/'+
 | `health.json` | `GET /health`　**不帶 token** |
 | `health-with-token.json` | `GET /health`　帶 token |
 | `pet-state.json` | `GET /pet/state` |
+| `settings.json` | `GET /settings` |
+| `settings-patch.json` | `PATCH /settings`　存成功的那一種（一欄立刻生效、一欄要重開） |
 | `cleanup-scan.json` | `POST /cleanup/scan` |
 | `cleanup-candidates.json` | `GET /cleanup/candidates` |
 | `cleanup-plans-create.json` | `POST /cleanup/plans` |
@@ -388,9 +390,10 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 
 ```json
 { "groups": [ { "id": "…", "level": "similar",
-  "keep":    { "itemId": "…", "name": "螢幕擷取 3.png", "bytes": 512000, "thumb": "/cleanup/thumb/…" },
+  "keep":    { "itemId": "…", "name": "螢幕擷取 3.png", "bytes": 512000, "thumb": "/cleanup/thumb/…", "model": null },
   "members": [ { "itemId": "…", "name": "螢幕擷取 1.png", "bytes": 511000, "level": "similar",
-                 "thumb": "/cleanup/thumb/…", "boxes": [ { "x": 0.25, "y": 0.5, "w": 0.1, "h": 0.2 } ] } ] } ] }
+                 "thumb": "/cleanup/thumb/…", "boxes": [ { "x": 0.25, "y": 0.5, "w": 0.1, "h": 0.2 } ],
+                 "model": null } ] } ] }
 ```
 
 | 欄位 | 意思 |
@@ -401,6 +404,7 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 | `members[]` | 被提議清掉的那幾張。每一張有自己的 `level`：同一組裡可能有 `same` 也有 `similar` |
 | `members[].boxes` | 差異處的外框，**0–1 的相對座標**（`x`／`y` 是左上角，`w`／`h` 是寬高）。模組算出來的是原圖座標，接線層換算過。`same` 的是空陣列 |
 | `thumb` | 縮圖的相對路徑，一定是 `/cleanup/thumb/<itemId>`（不帶查詢字串）。頁面只認這個樣子，別的一律改回來 |
+| `model` | 模型對這一張的看法（P2），欄位跟候選清單的 `model` 一模一樣；沒接模型、還沒問到是 `null`。**`keep` 跟每一個 `members[]` 各自有一份**。跟候選清單那一節同一條規矩：**那是意見不是事實**，畫面要寫「模型認為⋯⋯」，不可以因為它講了就自動打勾 |
 
 - **沒有路徑、沒有原圖**：回給畫面的只有檔名、大小、縮圖與外框
 - 成員本身就是 `GET /cleanup/candidates` 上的檔（`kind` 是 `screenshot-noise`、`rule_version` 是 `burst-1`），
@@ -617,3 +621,90 @@ UI 不要自己把檔加回清單 —— 從後端重新載入。
 用的是**套過偏好之後的建議**（跟 `suggestions` 回的一樣），不是模型的原話。
 給了而且跟建議不一樣 → 那一下會被記住（成功搬動／改名之後才記）。
 `undo` 成功 → 那個建議記成「退過貨」；同一個建議重新做一次成功 → 那個標記消失。
+
+## 設定（P6，兩條都要 token）
+
+面板「Settings」那一區就是這兩條。**它們改的是設定檔本身**（`~/.contextbox/config.json`，
+回應裡的 `path` 會告訴你是哪一份），不是這個 server 的記憶體 —— 所以下一次開機也算數。
+
+**兩條都要 token，`GET` 也要。** 開網頁那張 session cookie（`GET /?k=…` 那一次種下的）
+**開不了這兩條**：cookie 只證明「這個瀏覽器開過那張頁」，而設定是寫入路徑，不為它破例。
+沒帶 token 就是 401，跟其他路徑同一句話、一樣沒有 `code`。
+
+**這台 server 有沒有設定檔可改，是啟動的時候決定的。** `start()` 的 `roots`／`maxBytes`／`readonly`
+全部給齊時，server 這一輩子不會去讀任何設定檔 —— 它跑的是呼叫端給的值。那時候若還讓
+`/settings` 去改 `~/.contextbox/config.json`，面板會顯示「已儲存」而跑著的那一隻完全不理那份檔。
+所以呼叫端要明講 `configPath`（pet 傳的就是它自己 `load()` 拿到的 `path`）；
+兩個都沒有 → 兩條都回 500 `BAD_CONFIG`，**不猜、不建檔**。
+
+**唯讀模式不擋這兩條。** 唯讀講的是「不搬你的檔」，不是「不准你關掉唯讀」——
+關不掉的開關是陷阱。（`DELETE /learned` 那條 403 `READ_ONLY` 不一樣：那條動的是使用者的資料。）
+
+### `GET /settings`
+
+現在的設定長什麼樣。**不寫檔、不建檔** —— 讀一頁設定不可以順手在使用者的機器上生出一份檔。
+設定檔還不存在時照預設值回，`problems` 是空的。範例：`settings.json`。
+
+| 欄位 | 意思 |
+|---|---|
+| `path` | 改的是哪一份檔。家目錄底下的縮成 `~/…`（這一頁本來就要講得出設定檔在哪，所以它跟 `shown` 底下那幾個路徑一樣照給） |
+| `editable.readonly` | 唯讀模式 |
+| `editable.model.baseUrl` | 模型端點。空字串＝完全不接模型（規則照樣跑） |
+| `editable.model.name` | 模型名字 |
+| `editable.model.keyEnv` | **金鑰放在哪個環境變數**的名字（`CONTEXTBOX_` 開頭），不是金鑰 |
+| `editable.cleanup.screenshots` | 截圖資料夾要不要加進清理範圍（那底下只清截圖類） |
+| `keySet` | `editable.model.keyEnv` 那個環境變數現在有沒有東西。**只有有沒有，沒有內容** |
+| `shown.watch`、`shown.filed`、`shown.cleanupRoots`、`shown.quarantine` | 這一版只顯示、不給改的路徑（一律 `~/…`）。改它們要自己動設定檔 |
+| `shown.pdfPages`、`shown.maxBytes` | 同上，讀幾頁 PDF、讀得動多大的檔 |
+| `problems` | `normalize()` 對**現在這份檔案**的意見，跟 `doctor` 印的是同一批句子。沒意見是空陣列 |
+| `live` | 存了**立刻**生效的欄位 |
+| `restart` | 存得下去，但要**重開寵物**才算數的欄位 |
+
+`live` 與 `restart` 加起來剛好就是可以改的那五欄 —— 面板每一欄都要說得出它什麼時候生效，
+一律說「已生效」或一律說「要重開」都是騙人。
+
+### `PATCH /settings`
+
+`PATCH /settings { readonly?, model?: { baseUrl?, name?, keyEnv? }, cleanup?: { screenshots? } }`
+→ `{ saved: true, settings, restartNeeded }`。範例：`settings-patch.json`。
+
+**只送你要改的那幾欄。** 沒帶的欄位原樣留著，設定檔裡**這條路不認得的鍵也原樣留著**
+（手加的 `comment`、還沒做的功能留下的鍵）：合併是逐鍵疊上去的，不是拿 `normalize()`
+的輸出整份覆蓋。寫檔是同目錄的暫存檔 + `rename`，所以中途斷電讀到的要嘛是舊的那一份、
+要嘛是完整的新的那一份。
+
+| 欄位 | 意思 |
+|---|---|
+| `saved` | 存成功恆為 `true`（失敗走 400／500，不會回 `saved: false`） |
+| `settings` | **寫完之後重讀一次檔**得到的那一份，形狀跟 `GET /settings` 一模一樣。UI 拿它整頁重畫 —— 不要拿自己送出去的值當結果 |
+| `restartNeeded` | 這一次真的改到、而且要重開寵物才算數的欄位（`restart` ∩ 這次送的）。沒有就是空陣列 |
+
+**改得動的就這五欄**：`readonly`、`model.baseUrl`、`model.name`、`model.keyEnv`、
+`cleanup.screenshots`。白名單以外的鍵（`watch`、`filed`、`cleanup.roots`、`pdfPages`、`maxBytes`…）
+一律 400 `BAD_SETTING`，**不是安靜忽略** —— 安靜忽略等於面板騙人。
+
+被拒絕的時候：
+
+| 狀態 | 什麼時候 | 呼叫端該做什麼 |
+|---|---|---|
+| 400 `BAD_SETTING` | 白名單以外的鍵；型別不對（`readonly: "true"`、`model.name: 123`）；**這次改的那一欄** `normalize()` 不收（明文 http 打到外網的 `model.baseUrl`、網址裡帶帳號密碼、不是 `CONTEXTBOX_` 開頭的 `model.keyEnv`）。**設定檔一個位元組都沒動** | `fields` 是「欄位路徑 → 為什麼」，把每一句貼在對應的輸入框旁邊；使用者打的字**不要清掉** |
+| 500 `BAD_CONFIG` | 這台 server 啟動時沒有設定檔可改（見上面那一段） | 顯示「這台後端沒有設定可以改」，不要自動重試 |
+| 500 `WRITE_FAILED` | 寫不出去（權限、磁碟滿），或設定檔**現在的內容**讀不懂（壞掉的 JSON、不是物件）所以不敢覆蓋 —— 沒改到的鍵要原樣抄回去，而那時我們根本不知道那些鍵是什麼 | 顯示原因，請使用者看一眼設定檔。**設定檔沒有被動過** |
+| 401 | 沒帶 token（session cookie 不算） | 重新拿 token |
+
+**「這一欄被丟掉了」跟「這一欄只是被整理過」不一樣，只有前者會被擋下來。**
+`https://api.example.com/v1/` 的尾斜線會被拿掉、主機名大小寫會被正規化 —— 值變了，
+但沒有人有意見，那是整理，照存。反過來，`cleanup.screenshots: true` 會讓
+`normalize()` 多講一句「歸檔的檔之後又會被列成清理候選」，那是**後果**的提醒不是拒絕，
+值原樣收下，那句話會出現在回應的 `settings.problems` 裡。
+
+**這次沒碰的那幾欄本來就壞掉，不會擋住這一次的儲存**（`filed` 指到一個檔案、`cleanup.roots`
+整條壞掉）—— 不然使用者就永遠關不掉唯讀，也永遠修不好那份檔。
+
+**金鑰永遠不出這條 HTTP。** 回的只有 `keyEnv` 的名字與 `keySet`，
+而且每一句要回給呼叫端的話（`problems`、400 的 `fields`）都先把「看起來像金鑰的值」
+換成 `[not shown]` 再送。使用者把金鑰貼進 `model.keyEnv` 或 `model.baseUrl` 是很日常的誤會
+（那兩格的標題長得就像在問金鑰），2026-09-20 早上 `doctor` 真的整串印出去過一次。
+
+**兩個面板同時開得起來**：寫入前會**當下重讀**設定檔，不是拿啟動時載進記憶體的那一份，
+所以一個改 `readonly`、一個改 `model.name`，後存的那個不會把前一個蓋掉。

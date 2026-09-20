@@ -3,10 +3,10 @@ import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync,
-  statSync, chmodSync, rmSync, existsSync, realpathSync,
+  statSync, lstatSync, chmodSync, rmSync, existsSync, realpathSync, symlinkSync,
 } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { readSettings, applyPatch, EDITABLE } from '../core/settings.ts'
 import { start } from '../core/server.ts'
 
@@ -90,6 +90,45 @@ describe('讀設定', () => {
     assert.ok(!JSON.stringify(s).includes(secret), `problems 把金鑰印出來了：${s.problems.join(' / ')}`)
     assert.ok(s.problems.some(x => /model URL/.test(x)), '還是要講那一欄讀不懂')
     assert.equal(s.editable.model.baseUrl, '')
+  })
+
+  test('**貼進來的金鑰前後有空白，一樣一個字都不可以帶**', () => {
+    // 上面那條只測了「不多不少剛好一串」。但從瀏覽器輸入框貼過去的東西前後幾乎一定帶空白，
+    // 而 normalize 是**先 trim 再把值印進句子**（config.ts:391）—— secretsOf 只收原字串的話
+    // 兩邊就對不上，scrub 什麼都換不掉，金鑰原封不動出現在 GET /settings 的回應裡。
+    // 2026-09-20 稽核實測：同一把假金鑰，只差前面兩個空白，一個被遮一個沒被遮。
+    const secret = 'bsa_' + 'q'.repeat(40)
+    for (const [l, r] of [['  ', '  '], [' ', ' '], ['\t', ''], ['', '\n'], ['\r\n', '\r\n'], [' ', '']]) {
+      const s = readSettings(box({ model: { baseUrl: l + secret + r } }), NO_ENV, {})
+      assert.ok(!JSON.stringify(s).includes(secret), `${JSON.stringify(l + '…' + r)} 這一種空白沒擋住：${s.problems.join(' / ')}`)
+      assert.ok(s.problems.some(x => /model URL/.test(x)), '還是要講那一欄讀不懂')
+    }
+  })
+
+  test('**金鑰被當成主機名也要遮**（`http://<金鑰>` 這個形狀）', () => {
+    // normalize 讀得懂 `http://sk-live-…` 這一串：它是一個合法網址，主機名就是整把金鑰。
+    // 於是走的不是「讀不懂」那一句，而是 config.ts:285 的「不安全」那一句 —— 那一句會把
+    // protocol + hostname 印出來，而 URL 解析器**會把主機名轉小寫**。只比原字串的 scrub
+    // 因此對不上，整把金鑰（小寫版，一樣能用）就出去了。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    for (const raw of ['http://' + secret, '  http://' + secret + '  ', 'HTTP://' + secret]) {
+      const s = readSettings(box({ model: { baseUrl: raw } }), NO_ENV, {})
+      const all = JSON.stringify(s)
+      assert.ok(!all.includes(secret.toLowerCase()), `${raw} 沒擋住：${s.problems.join(' / ')}`)
+      assert.ok(!all.includes(secret), `${raw} 沒擋住：${s.problems.join(' / ')}`)
+      assert.ok(s.problems.some(x => /not safe/.test(x)), '還是要講那一欄不能用')
+    }
+  })
+
+  test('**設定檔本身讀不懂的時候，也不可以把檔案內容貼回來**', () => {
+    // V8 的 JSON SyntaxError 訊息會把出錯位置前後約十個位元組的**原文**附上
+    //（`Unexpected token 's', "sk-live-9f"... is not valid JSON`）。
+    // 使用者把金鑰直接存成 config.json、或設定檔第一行就是 `sk-…`，那十個位元組就是金鑰開頭。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    const s = readSettings(box(secret + '\n'), NO_ENV, {})
+    const all = JSON.stringify(s)
+    assert.ok(!all.includes('sk-live'), `回應裡帶著金鑰開頭：${all}`)
+    assert.ok(s.problems.some(x => /could not be read/.test(x)), '還是要講這份檔讀不懂')
   })
 
   test('JSON 壞掉：照預設顯示，並且明講讀不懂', () => {
@@ -214,6 +253,23 @@ describe('存到一半的壞值：拒絕、檔案一個位元組都不動', () =
     assert.equal(json(ok).model.keyEnv, 'CONTEXTBOX_OTHER_KEY')
   })
 
+  test('keyEnv 被清成空字串 → 400，不可以靜靜退回預設（2026-09-20 稽核 verify:contract-8）', () => {
+    // config.ts:393 對空字串的規矩是「當成沒這個鍵，用預設 CONTEXTBOX_MODEL_KEY」——
+    // 讀一份手改過的檔時那是對的，但**存**的時候不是：面板 400 之後會把那一格清掉，
+    // 下一次儲存就夾著 `keyEnv: ""` 上來，於是使用者的 CONTEXTBOX_OTHER_KEY 從檔案裡消失，
+    // keySet 變 false，而畫面說「已儲存」。這一欄要嘛是個變數名，要嘛就別送。
+    const p = box({ model: { keyEnv: 'CONTEXTBOX_OTHER_KEY' } })
+    const before = bytes(p)
+    for (const empty of ['', '   ']) {
+      const r = applyPatch(p, { model: { keyEnv: empty } }, NO_ENV, {})
+      assert.equal(r.ok, false, JSON.stringify(empty) + ' 不可以被收下')
+      assert.equal(r.code, 'BAD_SETTING')
+      assert.match(r.fields['model.keyEnv'], /cannot be empty/)
+      assert.deepEqual(bytes(p), before, '被拒絕的 patch 不可以動到檔案')
+    }
+    assert.equal(json(p).model.keyEnv, 'CONTEXTBOX_OTHER_KEY')
+  })
+
   test('**keyEnv 被填成金鑰本人：回應一個字都不帶它**（2026-09-20 真的發生過）', () => {
     // 那一欄要的是「環境變數的名字」，但很容易被讀成「把金鑰放這裡」。
     // 今天早上 doctor 把使用者貼進去的金鑰整串印出來了 —— 於是它進了終端機、截圖，
@@ -228,6 +284,28 @@ describe('存到一半的壞值：拒絕、檔案一個位元組都不動', () =
     assert.ok(!all.includes('x'.repeat(10)), all)
     assert.match(r.fields['model.keyEnv'], /not the key itself/i)
     assert.deepEqual(bytes(p), before)
+  })
+
+  test('**使用者把金鑰貼進 model.baseUrl：400 那一句話也一個字都不可以帶它**', () => {
+    // 成對的另一半在「讀設定」那一節。這一條守的是**被拒絕的 PATCH**：normalize 讀不懂
+    // 那串網址時印的是使用者打的整串原文，而那句話會進 400 的 fields、回到瀏覽器、
+    // 貼在輸入框旁邊、被截圖 —— 跟 2026-09-20 早上 doctor 那件事是同一個坑。
+    // 2026-09-20 的突變測試證明這裡完全沒被釘住：只把這一處的 say() 拿掉，全套 2815 條照樣全綠。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    for (const raw of [secret, '  ' + secret + '  ', ' ' + secret + ' ', '\t' + secret + '\n',
+                       'http://' + secret, '  HTTP://' + secret + '  ']) {
+      const p = box({})
+      const before = bytes(p)
+      const r = applyPatch(p, { model: { baseUrl: raw } }, NO_ENV, {})
+      assert.equal(r.ok, false, raw + ' 應該被拒絕')
+      assert.equal(r.code, 'BAD_SETTING')
+      const all = JSON.stringify(r)
+      assert.ok(!all.includes(secret), `${JSON.stringify(raw)} 把金鑰印出來了：${all}`)
+      assert.ok(!all.includes(secret.toLowerCase()), `${JSON.stringify(raw)} 把小寫版印出來了：${all}`)
+      assert.ok(!all.includes(secret.slice(0, 16)), `連前半截都不可以留：${all}`)
+      assert.ok(/model URL/.test(r.fields['model.baseUrl']), '遮掉之後還是要講得出哪裡不行')
+      assert.deepEqual(bytes(p), before)
+    }
   })
 
   test('網址裡的帳號密碼：normalize 會靜靜拿掉，那不可以當成「存好了」', () => {
@@ -275,6 +353,103 @@ describe('**被整理過的值要收，被丟掉的值才擋**', () => {
     const r = applyPatch(p, { cleanup: { screenshots: true } }, NO_ENV, {})
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.equal(json(p).cleanup.screenshots, true)
+    assert.ok(r.settings.problems.some(x => /cleanup candidates/.test(x)),
+      '後果還是要講：' + JSON.stringify(r.settings.problems))
+  })
+})
+
+// ══ 比較基準：normalize **收下**的值，不是檔案裡的舊值 ══════
+
+describe('**檔案裡本來就是壞的，不可以因此就放行**', () => {
+  // 2026-09-20 稽核（correctness-1／contract-6 各自獨立找到同一條）。
+  // 訊號 2 原本是「把這一欄退回**檔案裡已經有的那個值**再 normalize 一次」。
+  // 舊值也壞的時候，兩邊生出**逐位元組一樣**的句子，於是互相抵銷、blame 變空、
+  // 一個 normalize 明明拒絕掉的值被當成「只是被整理過」寫進檔案。
+  // normalize 有三句話完全不帶使用者的值（looksLikeAKey、CONTEXTBOX_ 開頭、帳號密碼），
+  // 它們一碰就撞。當初的測試只跑過「壞 → 好」，所以這條活了下來。
+
+  test('**檔案裡已經有一把金鑰，再貼一把新的還是要擋**（不然新金鑰會被寫進檔案）', () => {
+    const oldKey = 'sk-old-' + 'a'.repeat(30)
+    const newKey = 'sk-live-' + 'Z'.repeat(30)
+    const p = box({ model: { keyEnv: oldKey } })
+    const before = bytes(p)
+    const r = applyPatch(p, { model: { keyEnv: newKey } }, NO_ENV, {})
+    assert.equal(r.ok, false, '這是不變量 2：金鑰不可以進設定檔')
+    assert.equal(r.code, 'BAD_SETTING')
+    assert.match(r.fields['model.keyEnv'], /not the key itself/i)
+    const all = JSON.stringify(r)
+    assert.ok(!all.includes(newKey) && !all.includes(oldKey), all)
+    assert.ok(!readFileSync(p, 'utf8').includes(newKey), '新金鑰被寫進設定檔了')
+    assert.deepEqual(bytes(p), before)
+  })
+
+  test('keyEnv 那一句「要 CONTEXTBOX_ 開頭」也不帶值，所以也會撞', () => {
+    const p = box({ model: { keyEnv: 'FOO' } })
+    const before = bytes(p)
+    const r = applyPatch(p, { model: { keyEnv: 'OPENAI_API_KEY' } }, NO_ENV, {})
+    assert.equal(r.ok, false)
+    assert.match(r.fields['model.keyEnv'], /CONTEXTBOX_/)
+    assert.deepEqual(bytes(p), before)
+  })
+
+  test('**網址裡本來就有帳號密碼，換一組新的還是要擋**（不然密碼會被寫進檔案）', () => {
+    const p = box({ model: { baseUrl: 'https://old:oldpw@api.example.com/v1' } })
+    const before = bytes(p)
+    const r = applyPatch(p, { model: { baseUrl: 'https://alice:Sup3rSecretPassw0rd@api.example.com/v1' } }, NO_ENV, {})
+    assert.equal(r.ok, false)
+    assert.match(r.fields['model.baseUrl'], /username and password/)
+    assert.ok(!readFileSync(p, 'utf8').includes('Sup3rSecretPassw0rd'), '密碼被寫進設定檔了')
+    assert.deepEqual(bytes(p), before)
+  })
+
+  test('**同一台不安全的主機換一個路徑還是要擋**（那一句只印 protocol + hostname）', () => {
+    const p = box({ model: { baseUrl: 'http://evil.example/a' } })
+    const before = bytes(p)
+    const r = applyPatch(p, { model: { baseUrl: 'http://evil.example/b' } }, NO_ENV, {})
+    assert.equal(r.ok, false)
+    assert.match(r.fields['model.baseUrl'], /not safe/)
+    assert.deepEqual(bytes(p), before)
+  })
+
+  test('對照：本來就髒的檔案，合法但**被整理過**的值照樣存得進去', () => {
+    // 基準線換成「normalize 收下的值」之後還要成立的另一半 —— 不然使用者永遠存不進一個合法網址。
+    // normalize 對自己的輸出是冪等的，所以只是被整理的值，兩邊的句子一樣、blame 還是空的。
+    for (const [asked, canonical] of [
+      ['https://api.example.com/v1/', 'https://api.example.com/v1'],
+      ['HTTPS://API.EXAMPLE.COM/v1', 'https://api.example.com/v1'],
+      ['https://api.example.com:443/v1', 'https://api.example.com/v1'],
+    ]) {
+      const p = box({ model: { baseUrl: 'http://evil.example/a' }, filed: homedir() })
+      const r = applyPatch(p, { model: { baseUrl: asked } }, NO_ENV, {})
+      assert.equal(r.ok, true, asked + ' 只是被整理，不該擋：' + JSON.stringify(r))
+      assert.equal(json(p).model.baseUrl, asked, 'normalize 只用來驗，不用來寫')
+      assert.equal(r.settings.editable.model.baseUrl, canonical)
+    }
+  })
+
+  test('對照：model.name 的前後空白，在一份髒檔案上也還是「整理」', () => {
+    const p = box({ model: { keyEnv: 'FOO' }, cleanup: { roots: ['/'] } })
+    const r = applyPatch(p, { model: { name: '  qwen3-27b  ' } }, NO_ENV, {})
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(json(p).model.name, '  qwen3-27b  ')
+    assert.equal(json(p).model.keyEnv, 'FOO', '沒改到的欄位原樣留著，連壞的也是')
+  })
+
+  test('對照：值原樣收下、只是「後果」有意見的那一句，跟別的欄位一起送也不可以擋', () => {
+    // 這一條釘的是另一個候選修法（把那一欄從基準線裡**刪掉**）會弄壞的東西：
+    // `cleanup.screenshots` 不在檔案裡就等於 false，刪掉它等於偷偷換掉預設值，
+    // 「歸檔資料夾之後又會被列成清理候選」那一句會變成憑空多出來的罪名。
+    // 現在靠 Object.is 短路擋著，但基準線不該有這種脆弱處 —— 這裡一次送兩欄，
+    // 讓 baseUrl 那一欄真的走到基準線那一行，而 screenshots 的後果句在兩邊都在。
+    const filed = join(homedir(), 'Pictures', 'Screenshots', 'Filed')
+    const p = box({ filed, cleanup: { roots: [join(homedir(), 'Downloads')], screenshots: false } })
+    const r = applyPatch(p, {
+      cleanup: { screenshots: true },
+      model: { baseUrl: 'https://api.example.com/v1/' },
+    }, NO_ENV, {})
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(json(p).cleanup.screenshots, true)
+    assert.equal(json(p).model.baseUrl, 'https://api.example.com/v1/')
     assert.ok(r.settings.problems.some(x => /cleanup candidates/.test(x)),
       '後果還是要講：' + JSON.stringify(r.settings.problems))
   })
@@ -421,6 +596,122 @@ describe('寫檔被打斷也不可以留下半截的 config.json', () => {
       assert.deepEqual(bytes(p), before, raw + ' 被蓋掉了 —— 沒改到的鍵要原樣抄回去，而我們根本不知道那些鍵是什麼')
     }
   })
+
+  test('**讀不懂的那一句也要過 say()：家目錄不可以出現在 WRITE_FAILED 裡**',
+    { skip: process.getuid?.() === 0 && 'root 不受權限限制' }, () => {
+    // 這條路上每一句話都經過 say()（homeless + scrub），就這一句沒有 —— 於是使用者的
+    // OS 帳號名整串出現在面板上，而同一頁上面兩行寫的是 `~/.contextbox/config.json`。
+    // 設定頁是使用者最可能截圖貼給別人看的一頁（cleanup-real-state.js:1349）。
+    const d = join(FAKE_HOME, 'writefail')
+    mkdirSync(d, { recursive: true })
+    const p = join(d, 'config.json')
+    writeFileSync(p, '{"readonly":false}\n')
+    chmodSync(p, 0o000)
+    try {
+      const r = applyPatch(p, { readonly: true }, NO_ENV, {})
+      assert.equal(r.ok, false)
+      assert.equal(r.code, 'WRITE_FAILED')
+      assert.ok(!r.error.includes(FAKE_HOME), `WRITE_FAILED 帶著家目錄絕對路徑：${r.error}`)
+      assert.match(r.error, /could not be read/, '還是要講得出哪一步不行')
+    } finally { chmodSync(p, 0o600) }
+  })
+
+  test('**WRITE_FAILED 也不可以把檔案內容貼回來**', () => {
+    // 同一句話的另一半漏洞：JSON 解析錯誤的訊息會附上出錯位置前後約十個位元組的原文。
+    // 設定檔第一行就是金鑰的時候（貼錯地方、或者存成了 .env 的樣子），那十個位元組就是它。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    const p = box(secret + '\n')
+    const before = bytes(p)
+    const r = applyPatch(p, { readonly: true }, NO_ENV, {})
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'WRITE_FAILED')
+    assert.ok(!r.error.includes('sk-live'), `WRITE_FAILED 帶著檔案內容：${r.error}`)
+    assert.deepEqual(bytes(p), before)
+  })
+})
+
+// ══ 設定檔是捷徑（dotfiles） ═══════════════════════════════
+
+describe('**config.json 是捷徑的時候，要寫進捷徑指到的那個檔**', () => {
+  // 2026-09-20 稽核（correctness-4／security-12）。`renameSync` **不跟著最後一段的捷徑走**，
+  // 所以 `ln -s ~/dotfiles/contextbox.json ~/.contextbox/config.json` 這種裝法會被
+  // 一次儲存悄悄拆掉：readRaw 順著捷徑讀、寫入卻蓋在捷徑本身上，面板照樣說「已儲存」。
+  // 之後 dotfiles repo 裡那一份永遠停在存檔前，下一次 `chezmoi apply` 反而把面板改的全部倒掉。
+
+  /** link → target 的一組。回 { link, target }。 */
+  function linked(name, targetBody, mk) {
+    const d = join(root, 'link' + n++)
+    mkdirSync(join(d, 'dotfiles'), { recursive: true })
+    const target = join(d, 'dotfiles', name)
+    if (targetBody !== undefined) writeFileSync(target, JSON.stringify(targetBody, null, 2) + '\n')
+    const link = join(d, 'config.json')
+    mk(target, link)
+    return { link, target }
+  }
+
+  test('絕對路徑的捷徑：捷徑還在，值進了正本，沒碰到的鍵也還在', () => {
+    const { link, target } = linked('contextbox.json', { readonly: false, comment: '手加的' },
+      (t, l) => symlinkSync(t, l))
+    const r = applyPatch(link, { readonly: true }, NO_ENV, {})
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(lstatSync(link).isSymbolicLink(), true, '捷徑被換成一般檔了')
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).readonly, true, '值沒進正本')
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).comment, '手加的')
+    assert.equal(statSync(target).mode & 0o777, 0o600)
+    assert.deepEqual(readdirSync(dirname(target)), ['contextbox.json'], '暫存檔沒收乾淨')
+  })
+
+  test('相對路徑的捷徑（dotfiles 幾乎都是這一種）', () => {
+    const { link, target } = linked('contextbox.json', { readonly: false },
+      (t, l) => symlinkSync(join('dotfiles', basename(t)), l))
+    assert.equal(applyPatch(link, { readonly: true }, NO_ENV, {}).ok, true)
+    assert.equal(lstatSync(link).isSymbolicLink(), true)
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).readonly, true)
+  })
+
+  test('捷徑指到捷徑（兩層）也要一路走到底', () => {
+    const { link, target } = linked('contextbox.json', { readonly: false }, (t, l) => {
+      const mid = join(dirname(l), 'middle.json')
+      symlinkSync(t, mid)
+      symlinkSync(mid, l)
+    })
+    assert.equal(applyPatch(link, { readonly: true }, NO_ENV, {}).ok, true)
+    assert.equal(lstatSync(link).isSymbolicLink(), true)
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).readonly, true)
+  })
+
+  test('斷掉的捷徑：把正本補出來，不是把捷徑換掉', () => {
+    // realpathSync 對斷掉的捷徑會丟例外，所以不能只靠它 —— 而這正是
+    // 「dotfiles 還沒 checkout」的那一刻，第一次儲存應該要把檔案生在 repo 裡。
+    const { link, target } = linked('contextbox.json', undefined, (t, l) => symlinkSync(t, l))
+    assert.equal(existsSync(target), false, '前提：正本還不存在')
+    assert.equal(applyPatch(link, { readonly: true }, NO_ENV, {}).ok, true)
+    assert.equal(lstatSync(link).isSymbolicLink(), true)
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).readonly, true)
+  })
+
+  test('被拒絕的儲存不可以動到捷徑，也不可以動到正本', () => {
+    const { link, target } = linked('contextbox.json', { readonly: false }, (t, l) => symlinkSync(t, l))
+    const before = bytes(target)
+    const r = applyPatch(link, { model: { baseUrl: 'http://8.8.8.8/v1' } }, NO_ENV, {})
+    assert.equal(r.ok, false)
+    assert.equal(lstatSync(link).isSymbolicLink(), true)
+    assert.deepEqual(bytes(target), before)
+  })
+
+  test('對照：捷徑是**資料夾**的那一種裝法本來就沒事（stow 的預設）', () => {
+    // 稽核的範圍修正：整個 ~/.contextbox 是捷徑的話，dirname() 就穿過去了，
+    // rename 的最後一段是真的檔案 —— 這一種一直都是對的，不可以修壞它。
+    const d = join(root, 'linkdir' + n++)
+    mkdirSync(join(d, 'dotfiles', 'contextbox'), { recursive: true })
+    const realDir = join(d, 'dotfiles', 'contextbox')
+    writeFileSync(join(realDir, 'config.json'), JSON.stringify({ readonly: false }, null, 2) + '\n')
+    const linkDir = join(d, '.contextbox')
+    symlinkSync(realDir, linkDir)
+    assert.equal(applyPatch(join(linkDir, 'config.json'), { readonly: true }, NO_ENV, {}).ok, true)
+    assert.equal(lstatSync(linkDir).isSymbolicLink(), true)
+    assert.equal(JSON.parse(readFileSync(join(realDir, 'config.json'), 'utf8')).readonly, true)
+  })
 })
 
 // ══ 唯讀模式 ═══════════════════════════════════════════════
@@ -438,6 +729,87 @@ describe('唯讀模式下能不能改設定', () => {
     const p = box({ readonly: true, model: {} })
     assert.equal(applyPatch(p, { model: { name: 'qwen3' } }, NO_ENV, {}).ok, true)
     assert.equal(json(p).readonly, true, '沒叫它關就不要關')
+  })
+
+  test('**CONTEXTBOX_READONLY=1 壓著的時候，取消打勾不可以回「已生效」**', () => {
+    // 環境變數贏過檔案（config.ts:169 第一行就 return true）。以前這裡會存成功、
+    // 面板印「Read-only mode. It is in effect now.」，而唯讀根本沒關掉。
+    // 誠實的做法是講出來是誰壓著它，不是假裝存好了。
+    const p = box({ readonly: true })
+    const before = bytes(p)
+    process.env.CONTEXTBOX_READONLY = '1'
+    try {
+      const r = applyPatch(p, { readonly: false }, NO_ENV, {})
+      assert.equal(r.ok, false, '環境變數壓著的時候不可以假裝存好了')
+      assert.match(r.fields.readonly, /CONTEXTBOX_READONLY/)
+      assert.deepEqual(bytes(p), before)
+      // 界內成對：同一個環境下，別的欄位照樣改得動（不變量 5）
+      const p2 = box({ readonly: false, model: {} })
+      assert.equal(applyPatch(p2, { model: { name: 'qwen3' } }, NO_ENV, {}).ok, true, '別的欄位不可以被連坐')
+      // 界內成對：叫它「開著」跟環境變數說的一樣，那就沒有衝突
+      assert.equal(applyPatch(box({ readonly: false }), { readonly: true }, NO_ENV, {}).ok, true)
+    } finally { delete process.env.CONTEXTBOX_READONLY }
+  })
+})
+
+// ══ 這一輪稽核順手補的幾條 ═════════════════════════════════
+
+describe('面板存檔的其他邊界', () => {
+  test('**restartNeeded 只列真的變了的欄位**', () => {
+    // 面板拿這個清單印「要重開寵物才生效」。送來但沒改到的欄位也列進去的話，
+    // 使用者被叫去重開一次什麼都沒變的寵物 —— 面板每按一次儲存就叫一次。
+    const p = box({ cleanup: { screenshots: true } })
+    const r = applyPatch(p, { cleanup: { screenshots: true }, model: { name: 'qwen3' } }, NO_ENV, {})
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.deepEqual(r.restartNeeded, [], '沒變的欄位不可以叫使用者重開')
+    // 成對：真的變了就要列
+    assert.deepEqual(applyPatch(p, { cleanup: { screenshots: false } }, NO_ENV, {}).restartNeeded,
+      ['cleanup.screenshots'])
+  })
+
+  test('**什麼都沒改的那一次不可以動到檔案**', () => {
+    // 空的 patch 一樣算一次儲存（不是錯），但它現在會把整份檔案重寫一遍 ——
+    // 使用者自己排的版跟縮排就這樣沒了，而且白換一個 inode。
+    const text = '{\n      "readonly": false,\n  "comment": "我自己排的版"\n}\n'
+    const p = box(text)
+    const r = applyPatch(p, {}, NO_ENV, {})
+    assert.equal(r.ok, true, '什麼都沒改也算一次儲存，不是錯')
+    assert.equal(readFileSync(p, 'utf8'), text, '沒改任何欄位卻把檔案重排版了')
+  })
+
+  test('**字串欄位有長度上限**（面板不可以寫出一份幾 MB 的 config.json）', () => {
+    // 型別對就收的話，一個貼歪的剪貼簿（整份文件、整個 base64）就變成一份幾 MB 的設定檔，
+    // 而每一次啟動、每一次 doctor、每一次面板讀取都要重新解析它。
+    for (const patch of [
+      { model: { name: 'q'.repeat(513) } },
+      { model: { keyEnv: 'CONTEXTBOX_' + 'A'.repeat(513) } },
+      { model: { baseUrl: 'https://api.example.com/' + 'a'.repeat(513) } },
+    ]) {
+      const p = box({})
+      const before = bytes(p)
+      const r = applyPatch(p, patch, NO_ENV, {})
+      assert.equal(r.ok, false, JSON.stringify(patch).slice(0, 60) + ' 應該被拒絕')
+      assert.equal(r.code, 'BAD_SETTING')
+      assert.match(Object.values(r.fields)[0], /too long/)
+      assert.deepEqual(bytes(p), before)
+    }
+    // 界內成對：剛好到上限要收得下
+    assert.equal(applyPatch(box({}), { model: { name: 'q'.repeat(512) } }, NO_ENV, {}).ok, true)
+  })
+
+  test('**top-level `__proto__` 要回 400，不是安靜忽略**', () => {
+    // `bad['__proto__'] = '…'` 在一般物件上會走進 __proto__ 的 setter，而那個 setter
+    // **只收物件**：塞一個字串進去等於什麼都沒發生，Object.keys(bad).length 還是 0，
+    // 於是這次 PATCH 退化成一個空的 patch，回 200 saved:true。
+    // JSON.parse 會把 `__proto__` 做成自有屬性，所以這條從 HTTP 真的進得來。
+    const p = box({ readonly: false })
+    const before = bytes(p)
+    const r = applyPatch(p, JSON.parse('{"__proto__":{"readonly":true}}'), NO_ENV, {})
+    assert.equal(r.ok, false, '白名單以外的鍵一律 400，不是安靜忽略')
+    assert.equal(r.code, 'BAD_SETTING')
+    assert.equal(typeof r.fields['__proto__'], 'string')
+    assert.match(r.fields['__proto__'], /cannot be changed here/)
+    assert.deepEqual(bytes(p), before)
   })
 })
 
@@ -621,6 +993,24 @@ describe('PATCH /settings', () => {
     assert.equal(after.readonly, true)
     assert.equal(after.model.name, 'after')
     assert.equal(after.comment, '手加的')
+  })
+
+  test('**被退回的那一次，金鑰不出這條 HTTP**（貼進端點那一格的情況）', async () => {
+    // 不變量 2 包含**失敗**的那一次。函式那一條在上面，這一條走整條線
+    //（server → JSON → 瀏覽器），因為外洩是發生在回應本體上，不是在回傳值上。
+    // 2026-09-20 的突變測試：只把 400 那一處的 scrub 拿掉，全套 2815 條照樣全綠。
+    const secret = 'sk-live-9f3aQxR7ZtLm42PdV8bKcY6w'
+    for (const raw of [secret, '  ' + secret + '  ', 'http://' + secret]) {
+      const before = bytes(CFG)
+      const r = await patch({ model: { baseUrl: raw } })
+      assert.equal(r.status, 400, raw)
+      const text = await r.text()
+      assert.ok(!text.includes(secret), '400 的回應裡帶著金鑰：' + text)
+      assert.ok(!text.includes(secret.toLowerCase()), '400 的回應裡帶著小寫版金鑰：' + text)
+      assert.ok(!text.includes(secret.slice(0, 16)), '400 的回應裡帶著半截金鑰：' + text)
+      assert.equal(JSON.parse(text).code, 'BAD_SETTING')
+      assert.deepEqual(bytes(CFG), before)
+    }
   })
 
   test('唯讀開著也改得動設定（關不掉的開關是陷阱）', async () => {

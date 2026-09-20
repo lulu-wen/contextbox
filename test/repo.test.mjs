@@ -30,6 +30,8 @@ import { open as openDb } from '../core/db.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan, undoPlan } from '../core/cleanup-exec.ts'
+// 這三支本來長在這一支裡；設定那條線的文件守門（test/docs-settings.test.mjs）要用同一套「算不算有講到」的判斷，所以搬出去共用（自我測試還留在這裡）
+import { fieldSet, sectionOf, undocumentedFields } from './helpers/markdown.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 // tools/ 也要看（稽核 2026-09-20）：這條檢查宣稱守整個專案，但漏掉 tools/ ——
@@ -174,18 +176,6 @@ test('起 server 或載入設定的測試檔，第一個 import 一定是 isolat
 
 // ═══ RC20 ・ docs/api 的範例是產生器寫的 ═══════════════════════
 
-/**
- * 一份 JSON 的**欄位集合**：每一個 key 的路徑。陣列的元素合併成 `[]`。值不管。
- * 例：`{ a: { b: 1 }, items: [{ x: 1 }, { y: 2 }] }` → a、a.b、items、items[].x、items[].y
- */
-function fieldSet(v, at = '', out = new Set()) {
-  if (Array.isArray(v)) { for (const x of v) fieldSet(x, at + '[]', out); return out }
-  if (v && typeof v === 'object') {
-    for (const [k, x] of Object.entries(v)) { const p = at ? `${at}.${k}` : k; out.add(p); fieldSet(x, p, out) }
-  }
-  return out
-}
-
 describe('docs/api 的範例跟產生器現在的輸出，欄位一模一樣（RC20）', () => {
   // 以前範例是手寫的：/health 的欄位改了名、409 PLAN_ALREADY_APPLIED 根本不存在，
   // C 照著範例寫 UI。現在範例一律由 tools/gen-api-examples.mjs 從真的 server 產生，
@@ -269,51 +259,6 @@ function routeCodes() {
   return codes
 }
 
-/**
- * markdown 的一節：從 `heading` 開頭的那一行，切到下一個**同級或更高一級**的標題為止。
- * 程式碼區塊裡的 `# 註解` 不算標題。找不到回空字串。
- *
- * 第三波 D5：上一版只切起點（`md.slice(md.indexOf(…))`），會一路吃到檔尾 ——
- * 後面幾節講到的欄位都被當成「這一節有講」。
- */
-function sectionOf(md, heading) {
-  const level = /^#+/.exec(heading)?.[0].length ?? 0
-  const lines = md.split('\n')
-  let start = -1, fence = false
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s*```/.test(lines[i])) { fence = !fence; continue }
-    if (fence) continue
-    const h = /^(#+)\s/.exec(lines[i])
-    if (!h) continue
-    if (start < 0) { if (lines[i].startsWith(heading)) start = i; continue }
-    if (h[1].length <= level) return lines.slice(start, i).join('\n')
-  }
-  return start < 0 ? '' : lines.slice(start).join('\n')
-}
-
-/**
- * /health 的欄位裡，`section` 沒講到的（第三波 D5）。算「有講到」的只有三種：
- *   - 完整路徑用反引號寫出來：`quarantine.canEmptyAt`
- *   - 父欄位＋子欄位出現在同一行：「`quarantine` 底下的 `total`」
- *   - 物件欄位（`watcher`）：它底下任何一個有講到就算
- * 上一版只要 README **任何地方**出現 `total`、`items` 就算有講 —— `quarantine.total`
- * 這種新欄位會被候選清單那一節的 `total` 蓋過去。
- */
-function undocumentedHealthFields(section, health) {
-  const paths = [...fieldSet(health)].map(p => p.replaceAll('[]', ''))
-  const lines = section.split('\n')
-  const tick = s => '`' + s + '`'
-  const documented = p => {
-    if (section.includes(tick(p))) return true
-    if (paths.some(q => q.startsWith(p + '.') && documented(q))) return true
-    const cut = p.lastIndexOf('.')
-    if (cut < 0) return false
-    const parent = tick(p.slice(0, cut)), child = tick(p.slice(cut + 1))
-    return lines.some(l => l.includes(parent) && l.includes(child))
-  }
-  return [...new Set(paths)].filter(p => !documented(p))
-}
-
 describe('docs/api/README.md 的錯誤表（RC20）', () => {
   const md = readFileSync(join(REPO, 'docs', 'api', 'README.md'), 'utf8')
   /** markdown 的每一張表：{ header, rows } */
@@ -363,7 +308,7 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     const h = JSON.parse(readFileSync(join(REPO, 'docs', 'api', 'health-with-token.json'), 'utf8'))
     const section = sectionOf(md, '## `GET /health`')
     assert.ok(section.length > 100, '找不到 /health 那一節')
-    assert.deepEqual(undocumentedHealthFields(section, h), [], 'README 的 /health 那一節沒講到這些欄位')
+    assert.deepEqual(undocumentedFields(section, h), [], 'README 的 /health 那一節沒講到這些欄位')
     assert.match(section, /lastQuarantinedAt/, '舊欄位 lastQuarantinedAt 拿掉了，README 要講')
   })
 
@@ -377,11 +322,11 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     extra.quarantine.total = 3
     extra.watcher.restarts = 0
     extra.brandNew = { x: 1 }
-    assert.deepEqual(undocumentedHealthFields(section, extra).sort(),
+    assert.deepEqual(undocumentedFields(section, extra).sort(),
       ['brandNew', 'brandNew.x', 'quarantine.total', 'watcher.restarts'])
     // 「父欄位＋子欄位」同一行才算；分在兩行不算
-    assert.deepEqual(undocumentedHealthFields('`quarantine` 底下的 `total` 是總數', { quarantine: { total: 1 } }), [])
-    assert.deepEqual(undocumentedHealthFields('`quarantine` 是隔離區\n`total` 是總數', { quarantine: { total: 1 } }),
+    assert.deepEqual(undocumentedFields('`quarantine` 底下的 `total` 是總數', { quarantine: { total: 1 } }), [])
+    assert.deepEqual(undocumentedFields('`quarantine` 是隔離區\n`total` 是總數', { quarantine: { total: 1 } }),
       ['quarantine.total'])
   })
 

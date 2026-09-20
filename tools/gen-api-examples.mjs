@@ -21,7 +21,7 @@
  * 家目錄在 import 任何 core 模組**之前**就換成暫存的（core/config.ts 在載入時就算好路徑），
  * server 的每一個路徑都明確給，port 用 0。行程結束時整個暫存資料夾刪掉。
  */
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, realpathSync, readdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync, realpathSync, readdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,6 +58,11 @@ process.env.USERPROFILE = HOME
 for (const k of ['CONTEXTBOX_CONFIG', 'CONTEXTBOX_DB', 'CONTEXTBOX_QUARANTINE', 'CONTEXTBOX_TOKEN_PATH', 'CONTEXTBOX_READONLY']) {
   delete process.env[k]
 }
+// 設定那兩條的範例要**每次都一樣**：跑產生器的人自己有沒有設金鑰，不可以決定 `keySet` 是 true 還 false。
+// 這個值只用來讓 `keySet` 穩定是 true，**它本身永遠不會進任何一份範例** ——
+// `/settings` 只回「那個環境變數有沒有東西」，回不出裡面是什麼（core/settings.ts 的 view()）。
+process.env.CONTEXTBOX_MODEL_KEY = 'example-key-not-a-real-one'
+const CFG = join(BOX, 'config.json')
 
 const { start } = await import('../core/server.ts')
 const { META } = await import('../core/cleanup-routes.ts')
@@ -92,7 +97,7 @@ put('照片.jpg', 'SMOKE 同一張照片\n', 0)
 put('照片 (1).jpg', 'SMOKE 同一張照片\n', 0)
 
 // ── server ─────────────────────────────────────────────────
-const S = start({ port: 0, db: DB, token: TOKEN, roots: [DL], quarantine: Q, maxBytes: MAX_BYTES, readonly: false })
+const S = start({ port: 0, db: DB, token: TOKEN, roots: [DL], quarantine: Q, maxBytes: MAX_BYTES, readonly: false, configPath: CFG })
 const port = await S.ready
 
 /** 打一次 server。回 { status, headers, body }。body 是 JSON 就解析，不是就原樣。 */
@@ -278,6 +283,59 @@ const RO = start({ port: 0, db: DB, token: TOKEN, roots: [DL], quarantine: Q, ma
 const roPort = await RO.ready
 recordError('唯讀模式', 'POST /cleanup/plans', await expect(403, 'POST', '/cleanup/plans', { body: {}, to: roPort }))
 RO.server.close()
+
+// ── 12 ・ 設定（2026-09-20）：讀一次、存一次、每一種拒絕各一次 ─────
+// 設定檔到這裡才寫：上面每一條 route 的 opts 都給齊了（needCfg 是 false），server 從頭到尾
+// 沒讀過它，所以它不會改變前面任何一份範例 —— 只有 `/settings` 這兩條看得到它。
+// 「手加的鍵原樣留著」是這條路的不變量，所以底稿裡就放一個 `comment`：
+// 存完之後再讀一次檔，它還要在。
+const CFG_TEXT = JSON.stringify({
+  comment: 'Hand-written keys are copied through untouched.',
+  watch: [DL],
+  filed: join(HOME, 'Documents', 'Filed'),
+  model: { baseUrl: 'https://api.example.com/v1', name: 'example-model', keyEnv: 'CONTEXTBOX_MODEL_KEY' },
+  readonly: false,
+  pdfPages: 3,
+  maxBytes: 20 * 1024 * 1024,
+  cleanup: { roots: [DL], screenshots: false },
+}, null, 2) + '\n'
+writeFileSync(CFG, CFG_TEXT)
+
+files['settings.json'] = (await expect(200, 'GET', '/settings')).body
+// 一次改兩欄，一欄立刻生效、一欄要重開 —— `restartNeeded` 是空陣列的範例教不出這件事
+files['settings-patch.json'] = (await expect(200, 'PATCH', '/settings', {
+  body: { model: { name: 'example-model-v2' }, cleanup: { screenshots: true } },
+})).body
+if (!JSON.parse(readFileSync(CFG, 'utf8')).comment) throw new Error('存完之後手加的 comment 不見了')
+writeFileSync(CFG, CFG_TEXT)   // 下面幾個拒絕的範例要從同一份乾淨的檔出發
+
+recordError('改一個白名單以外的鍵', 'PATCH /settings',
+  await expect(400, 'PATCH', '/settings', { body: { watch: ['/somewhere/else'] } }))
+recordError('值 normalize 不收（keyEnv 不是 CONTEXTBOX_ 開頭）', 'PATCH /settings',
+  await expect(400, 'PATCH', '/settings', { body: { model: { keyEnv: 'OPENAI_API_KEY' } } }))
+// 使用者把**金鑰本人**貼進那一格。這一份範例的用處就是讓呼叫端看見：拒絕的句子裡
+// 沒有他貼的那一串，一個字都沒有（core/settings.ts 的 scrub 與 config.ts:377 那一段）
+recordError('把金鑰本人貼進 keyEnv 那一格', 'PATCH /settings',
+  await expect(400, 'PATCH', '/settings', { body: { model: { keyEnv: 'paste-of-something-that-should-never-go-here' } } }))
+recordError('型別不對', 'PATCH /settings',
+  await expect(400, 'PATCH', '/settings', { body: { readonly: 'true' } }))
+if (readFileSync(CFG, 'utf8') !== CFG_TEXT) throw new Error('被拒絕的儲存動到了設定檔')
+
+// 設定檔現在讀不懂：**不敢覆蓋**（沒改到的鍵要原樣抄回去，而我們不知道那些鍵是什麼）
+writeFileSync(CFG, '{ this is not json\n')
+recordError('設定檔現在的內容讀不懂，所以不敢覆蓋', 'PATCH /settings',
+  await expect(500, 'PATCH', '/settings', { body: { readonly: true } }))
+writeFileSync(CFG, CFG_TEXT)
+
+// 啟動時沒給 configPath、自己也沒讀過設定檔的 server：這兩條沒有東西可以給
+const NOCFG = start({ port: 0, db: DB, token: TOKEN, roots: [DL], quarantine: Q, maxBytes: MAX_BYTES, readonly: false })
+const noCfgPort = await NOCFG.ready
+recordError('這台 server 啟動時沒有設定檔可改', 'GET /settings',
+  await expect(500, 'GET', '/settings', { to: noCfgPort }))
+NOCFG.server.close()
+
+recordError('session cookie 開得了網頁，開不了設定', 'GET /settings',
+  await expect(401, 'GET', '/settings', { token: null, headers: { cookie: 'cb=whatever' } }))
 
 files['errors.json'] = errors
 

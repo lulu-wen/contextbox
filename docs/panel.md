@@ -134,9 +134,9 @@ The 3D view uses a copy of Three.js 0.180.0 (MIT) kept in this repo, the one exc
 rule below;
 the backend still has no dependencies, there is still no `npm install`, and the page loads nothing from a CDN.
 
-## The five section tabs in the panel
+## The six section tabs in the panel
 
-The cleanup panel has five sections: **Cleanup / Bursts / Suggested names / Filing / Learned**.
+The cleanup panel has six sections: **Cleanup / Bursts / Suggested names / Filing / Learned / Settings**.
 
 They used to be stacked on one scrollbar, so the filing suggestions were a long way down. Now you see one at
 a time.
@@ -148,3 +148,18 @@ a time.
 - When the section you are on empties out because you finished it, it moves to the first one that still has
   something
 - **Demo mode (press D) hides the tab strip entirely** — only the cleanup section is real there
+
+**Settings is not a list, so it behaves differently from the other five.** It carries no count ("Settings0"
+reads like your settings were wiped), it is always clickable, and it takes no part in the jumping rule above
+— being thrown onto the Settings page when everything else empties would hide the "nothing to clean up right
+now" line that belongs on Cleanup.
+
+What it changes is the config file itself, five fields of it: read-only mode, the model endpoint, the model
+name, the name of the environment variable holding the key, and whether screenshots are included in cleanup.
+The first four are re-read on every request, so saving them is enough; the fifth is worked out when the pet
+starts, so it says so and keeps running with the old value until you restart. The folders are shown on the
+same page but not editable here — where the scanner points deserves more than a text box.
+
+**The key box wants the NAME of an environment variable, never the key.** The page says so under the box,
+and it only ever tells you whether that variable has something in it. The key is not written to the config
+file, not rendered on the page and not sent back in any response.

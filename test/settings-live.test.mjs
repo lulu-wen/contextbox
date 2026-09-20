@@ -7,9 +7,15 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
  *   - 「讓 readonly 立即生效」那一列：cli.mjs 改傳 getter，route 那邊自己解
  *   - 「唯讀模式下能不能改設定」那一列：唯讀講的是「不搬你的檔」，不是「不准你關掉唯讀」
  *
- * 這一支只管「存下去之後生不生效」，**不管存的那條路**（PATCH /settings 是另一個人在寫）。
- * 所以這裡不 import core/settings.ts：改設定的動作用「寫設定檔 + 叫 onSettingsSaved」模擬，
- * 那正是那條 route 存完檔要做的最後一件事。route 進來之後，只有驅動的方式要換，期望值都一樣。
+ * 這一支只管「存下去之後生不生效」，**不管存的那條路**（PATCH /settings 當時是另一個人在寫）。
+ * 驅動的方式因此是「寫設定檔 + 叫 onSettingsSaved」，那正是那條 route 存完檔要做的最後一件事。
+ *
+ * **但白名單那幾條守門例外，它們一定要看 core/settings.ts 的 EDITABLE**（稽核 2026-09-20）。
+ * 寫這一支的時候 core/settings.ts 還不存在，所以下面第 3 節拿 live-config.ts 的
+ * SETTINGS_WHITELIST 當「面板改得動的欄位」。route 落地之後那份名單就不再是**寫入**的依據了 ——
+ * applyPatch 認的是 EDITABLE。實測：把 `cleanup.roots` 加進 EDITABLE（它連 LEAF_TYPE 都沒有，
+ * 等於完全沒有型別關卡就寫得進設定檔），這一支從頭到尾一條都沒紅 —— 那幾條「之後有人開路徑類
+ * 欄位就要紅」的守門，守的是一份沒有人拿去做決定的名單。
  */
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,6 +31,8 @@ import { load, normalize } from '../core/config.ts'
 import {
   reloadInto, LIVE_SETTINGS, RESTART_SETTINGS, SETTINGS_WHITELIST, FROZEN_AT_STARTUP,
 } from '../core/live-config.ts'
+// **寫入那條路真正認的名單。** 下面守門一律照它跑，SETTINGS_WHITELIST 只負責跟它對帳
+import { EDITABLE } from '../core/settings.ts'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DAY = 86400_000
@@ -238,11 +246,23 @@ describe('哪些欄位立即生效，是算出來的，不是宣告的', () => {
     ],
   }
 
+  test('**兩份名單是同一份東西** —— 改得動的（EDITABLE）與生不生效的（SETTINGS_WHITELIST）', () => {
+    // 為什麼要對帳：下面每一條守門都是「白名單多一欄就要紅」，而真的決定「哪一欄寫得進
+    // 設定檔」的是 core/settings.ts 的 EDITABLE（applyPatch 的 leavesOf 拿它擋）。
+    // live-config.ts 的 SETTINGS_WHITELIST 只被面板拿去分「立即生效／要重開」。
+    // 兩份分開放各有道理（一份講寫入、一份講生效），但**它們必須逐欄一樣**：
+    // 只加 EDITABLE 不加 SETTINGS_WHITELIST，那一欄寫得進去卻沒有人說得出它生不生效；
+    // 反過來則是面板承諾了一欄根本存不下去的設定。
+    assert.deepEqual([...EDITABLE].sort(), [...SETTINGS_WHITELIST].sort(),
+      'core/settings.ts 的 EDITABLE 跟 core/live-config.ts 的 SETTINGS_WHITELIST 不一樣了 —— '
+      + '兩邊要一起改，不然「改得動」與「生不生效」會各講各的')
+  })
+
   test('白名單就是規格那五欄，而且每一欄都被歸過類', () => {
-    assert.deepEqual([...SETTINGS_WHITELIST].sort(), [
+    assert.deepEqual([...EDITABLE].sort(), [
       'cleanup.screenshots', 'model.baseUrl', 'model.keyEnv', 'model.name', 'readonly',
-    ], '白名單跟規格 Step 1 最後一列對不上')
-    for (const f of SETTINGS_WHITELIST) {
+    ], '寫入那條路認的欄位跟規格 Step 1 最後一列對不上')
+    for (const f of EDITABLE) {
       const live = LIVE_SETTINGS.includes(f)
       const restart = RESTART_SETTINGS.includes(f)
       assert.ok(live !== restart,
@@ -254,9 +274,9 @@ describe('哪些欄位立即生效，是算出來的，不是宣告的', () => {
     // 這一條是給之後改白名單的人的。判準不是「這一欄叫什麼名字」，是**它會不會動到
     // cli.mjs 啟動時抓走的那一票**（CLEAN_ROOTS、SHOTS、admitOpts、start() 的那幾個值）。
     // 動到了卻宣告立即生效，寵物就會半套地跟上 —— 那比完全不跟上更危險。
-    for (const f of SETTINGS_WHITELIST) {
+    for (const f of EDITABLE) {
       const pair = TRY_VALUES[f]
-      assert.ok(pair, `白名單多了 ${f}，但這裡沒有給它兩個值 —— 不知道它會動到什麼，先補上再說`)
+      assert.ok(pair, `寫得進設定檔的欄位多了 ${f}，但這裡沒有給它兩個值 —— 不知道它會動到什麼，先補上再說`)
       const moves = frozenShape(pair[0]) !== frozenShape(pair[1])
       if (moves) {
         assert.ok(RESTART_SETTINGS.includes(f),
@@ -308,9 +328,13 @@ describe('哪些欄位立即生效，是算出來的，不是宣告的', () => {
       '啟動時抓走的清理範圍變寬了，而 screenshotsDir 還是啟動時的 null —— 那個資料夾底下會照全部規則清')
   })
 
-  test('之後有人把路徑類欄位加進白名單，這一條要紅', t => {
+  test('之後有人把路徑類欄位變成存得進去的，這一條要紅', t => {
+    // **看 EDITABLE，不是 SETTINGS_WHITELIST**（稽核 2026-09-20）：這一條在乎的是
+    // 「使用者按了儲存，那個新的資料夾會不會真的被寫進設定檔」，而擋這件事的是
+    // applyPatch 手上的 EDITABLE。照舊名單看的話，只改 core/settings.ts 就能讓
+    // cleanup.roots 寫得進去，而這一條照樣不吭聲 —— 實測過，整支一條都沒紅。
     const PATH_FIELDS = ['watch', 'filed', 'cleanup.roots', 'cleanup.screenshotsDir']
-    const added = SETTINGS_WHITELIST.filter(f => PATH_FIELDS.includes(f))
+    const added = EDITABLE.filter(f => PATH_FIELDS.includes(f))
     if (!added.length) return       // 這一版沒開路徑類欄位，下面那段是給開的人看的
 
     // 開了就得先讓 reloadInto 原地改那些陣列（splice），不然 cli.mjs 的 CLEAN_ROOTS
@@ -326,7 +350,7 @@ describe('哪些欄位立即生效，是算出來的，不是宣告的', () => {
     writeFileSync(file, configText(dir, { cleanup: { roots: [join(dir, 'Other')], screenshots: false } }))
     reloadInto(cfg, file)
     assert.equal(cfg.cleanup.roots, CLEAN_ROOTS,
-      `白名單收進了 ${added.join('、')}，那 reloadInto 必須原地改 cleanup.roots（splice），`
+      `存得進去的欄位收進了 ${added.join('、')}，那 reloadInto 必須原地改 cleanup.roots（splice），`
       + '不可以換成新陣列 —— cli.mjs 的 CLEAN_ROOTS 與 start({ roots }) 抓的是啟動時那一個。'
       + '同一輪也要處理 cleanup.screenshotsDir，見 core/live-config.ts 的 FROZEN_AT_STARTUP。')
   })
