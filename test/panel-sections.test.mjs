@@ -82,18 +82,26 @@ async function open(t, opts = {}) {
   return ui
 }
 
-const tabs = ui => ui.$('cleanup-tabs').all('BUTTON')
+async function selectSection(ui, label) {
+  const select = ui.$('cleanup-tabs')
+  const option = tabNamed(ui, label)
+  assert.ok(option && !option.disabled, `Section unavailable: ${label}`)
+  select.value = option.value
+  await select.onchange()
+}
+const tabs = ui => ui.$('cleanup-tabs').all('OPTION')
 const tabNamed = (ui, text) => tabs(ui).find(b => b.textContent.startsWith(text))
 const shown = (ui, key) => ui.$('cleanup-sec-' + key).hidden === false
 
 describe('面板裡的小標籤', () => {
-  test('五個標籤都在，各自帶數量；預設停在「可以清理」', async t => {
+  test('五個清單標籤都在，各自帶數量；「設定」沒有數字；預設停在「可以清理」', async t => {
     const ui = await open(t, {
       candidates: [candidate()], renames: [renameItem()], filings: [filingItem()],
     })
+    // 「設定」（2026-09-20）不是一份清單，所以不帶數字 ——「Settings0」看起來像設定被清空了
     assert.deepEqual(tabs(ui).map(b => b.textContent),
-      ['Cleanup1', 'Bursts0', 'Suggested names1', 'Filing1', 'Learned0'])
-    assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
+      ['Cleanup (1)', 'Bursts (0)', 'Suggested names (1)', 'Filing (1)', 'Learned (0)', 'Settings'])
+    assert.equal(ui.$('cleanup-tabs').value, tabNamed(ui, 'Cleanup').value)
     assert.equal(shown(ui, 'clean'), true)
     assert.equal(shown(ui, 'filings'), false, '一次只顯示一區')
   })
@@ -102,7 +110,7 @@ describe('面板裡的小標籤', () => {
     const ui = await open(t, {
       candidates: [candidate()], renames: [renameItem()], filings: [filingItem()],
     })
-    await tabNamed(ui, 'Filing').onclick()
+    await selectSection(ui, 'Filing')
     assert.equal(shown(ui, 'filings'), true)
     assert.equal(shown(ui, 'clean'), false)
     assert.equal(shown(ui, 'renames'), false)
@@ -122,13 +130,13 @@ describe('面板裡的小標籤', () => {
   test('現在這一區變空了 → 跳到第一個有東西的', async t => {
     const ui = await open(t, { candidates: [], renames: [renameItem()] })
     // 沒有候選：不會停在空的「可以清理」
-    assert.equal(tabNamed(ui, 'Suggested names').getAttribute('aria-selected'), 'true')
+    assert.equal(ui.$('cleanup-tabs').value, tabNamed(ui, 'Suggested names').value)
     assert.equal(shown(ui, 'renames'), true)
   })
 
   test('全部都空 → 留在「可以清理」，那一區會講「目前沒有待清檔案」', async t => {
     const ui = await open(t, {})
-    assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
+    assert.equal(ui.$('cleanup-tabs').value, tabNamed(ui, 'Cleanup').value)
     assert.equal(shown(ui, 'clean'), true)
     assert.match(ui.$('cleanup-list').textContent, /Nothing to clean up right now/)
   })
@@ -151,12 +159,12 @@ describe('背景問完模型之後，面板自己抓回來', () => {
     const back = { candidates: [candidate()], renames: [] }
     const ui = await mountPanel(t, { api: fakeApi(back), fetch: demoFetch })
     await ui.click('quaso-cleanup-alert')
-    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names0', '前提：一開始沒有建議')
+    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names (0)', '前提：一開始沒有建議')
 
     back.renames = [renameItem()]   // 背景那一輪問完了，後端現在有建議
     await ui.poll()                 // 輪詢跑一次
 
-    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names1',
+    assert.equal(tabNamed(ui, 'Suggested names').textContent, 'Suggested names (1)',
       '面板要自己跟上，不可以等使用者關掉重開')
   })
 
@@ -166,7 +174,7 @@ describe('背景問完模型之後，面板自己抓回來', () => {
       fetch: demoFetch,
     })
     await ui.click('quaso-cleanup-alert')
-    await tabNamed(ui, 'Suggested names').onclick()
+    await selectSection(ui, 'Suggested names')
     const boxes = ui.$('cleanup-renames').all('INPUT')
     assert.ok(boxes.length >= 1, ui.$('cleanup-renames').textContent)
     boxes[0].checked = true

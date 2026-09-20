@@ -70,7 +70,7 @@ test('section counts exclude needsHuman and burst members from Cleanup', () => {
   })
   const code = source.match(/function sectionCounts\(\) \{[\s\S]*?\n\}/)[0]
   const counts = vm.runInContext(code + '\nsectionCounts()', context)
-  assert.deepEqual({ ...counts }, { clean: 1, bursts: 1, renames: 2, filings: 0, learned: 1 })
+  assert.deepEqual({ ...counts }, { clean: 1, bursts: 1, renames: 2, filings: 0, learned: 1, settings: 0 })
 })
 
 function problemHarness() {

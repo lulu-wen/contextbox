@@ -1,0 +1,44 @@
+{
+  "saved": true,
+  "settings": {
+    "path": "~/.contextbox/config.json",
+    "editable": {
+      "readonly": false,
+      "model": {
+        "baseUrl": "https://api.example.com/v1",
+        "name": "example-model-v2",
+        "keyEnv": "CONTEXTBOX_MODEL_KEY"
+      },
+      "cleanup": {
+        "screenshots": true
+      }
+    },
+    "keySet": true,
+    "shown": {
+      "watch": [
+        "~/Downloads"
+      ],
+      "filed": "~/Documents/Filed",
+      "cleanupRoots": [
+        "~/Downloads",
+        "~/Pictures/Screenshots"
+      ],
+      "quarantine": "~/.contextbox/quarantine",
+      "pdfPages": 3,
+      "maxBytes": 20971520
+    },
+    "problems": [],
+    "live": [
+      "readonly",
+      "model.baseUrl",
+      "model.name",
+      "model.keyEnv"
+    ],
+    "restart": [
+      "cleanup.screenshots"
+    ]
+  },
+  "restartNeeded": [
+    "cleanup.screenshots"
+  ]
+}

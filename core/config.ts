@@ -166,7 +166,17 @@ function ranged(v: unknown, lo: number, hi: number, dflt: number, name: string, 
  * 而且退回的方向是「把保護關掉」—— readonly:"true" 靜靜變成 false。
  */
 function readonlyOf(v: unknown, problems: string[]): boolean {
-  if (process.env.CONTEXTBOX_READONLY === '1') return true
+  if (process.env.CONTEXTBOX_READONLY === '1') {
+    // 環境變數贏過檔案。以前這裡直接 return true 而且一句話都不講 —— 2026-09-20 稽核：
+    // 面板把唯讀的打勾取消、存檔成功、印「Read-only mode. It is in effect now.」，
+    // 而唯讀其實還開著，下一次清理照樣什麼都不做，沒有任何一句話說得出為什麼。
+    // 只有檔案**明講** false 才算衝突；沒寫、或本來就是 true，就不用囉嗦。
+    if (v === false) {
+      problems.push('CONTEXTBOX_READONLY=1 in the environment keeps read-only on, so the readonly setting in the config file has no effect. '
+        + 'Unset that environment variable to be able to turn read-only off.')
+    }
+    return true
+  }
   if (v === undefined || typeof v === 'boolean') return v === true
   problems.push(`readonly must be true or false (you wrote ${JSON.stringify(v)}). `
     + 'It is a safety switch, so anything unreadable counts as on.')
@@ -274,7 +284,15 @@ function checkBaseUrl(raw: string, problems: string[]): string {
   if (!raw) return ''
   let u: URL
   try { u = new URL(raw) }
-  catch { problems.push(`The model URL ${raw} could not be read, so it was ignored.`); return '' }
+  catch {
+    // **不回放值**（2026-09-20 稽核）：這一格跟 keyEnv 一樣容易被讀成「把金鑰放這裡」，
+    // 而讀不懂的時候這裡原本印的是使用者打的**整串原文** —— 那句話會進 doctor 的終端機輸出、
+    // 進面板 400 的 fields、進他截的圖。keyEnv 那一欄在下面 100 行早就只講規則了，這裡跟上。
+    // 下游 settings.ts 的 scrub() 是第二層，不是第一層。
+    problems.push('The model URL could not be read, so it was ignored. It has not been printed here in case it is a key; '
+      + 'model.baseUrl takes an address like https://api.example.com/v1.')
+    return ''
+  }
   if (u.protocol === 'https:' || (u.protocol === 'http:' && isPrivateHost(u.hostname))) {
     if (u.username || u.password) {
       problems.push('Do not put a username and password in the model URL; they were removed. Put the key in an environment variable.')
@@ -470,7 +488,15 @@ export function load(path: string = CONFIG_PATH): Loaded {
 
   if (existsSync(path)) {
     try { raw = JSON.parse(readFileSync(path, 'utf8')) }
-    catch (e: any) { problems.push(`The config file could not be read (${e.message}), so defaults are used this time. The file was not overwritten.`) }
+    catch (e: any) {
+      // 解析錯誤的訊息會附上出錯位置前後約十個位元組的**檔案原文**
+      //（`Unexpected token 's', "sk-live-9f"... is not valid JSON`）。設定檔第一行就是金鑰的
+      // 時候 —— 貼錯地方、或者存成了 .env 的樣子 —— 那十個位元組就是它，而這些句子
+      // doctor／think／watch 都會整段印到終端機上。讀檔錯誤（權限、裝置）講得出原因就好，
+      // 那不是檔案內容。
+      const why = e instanceof SyntaxError ? 'it is not valid JSON' : e.message
+      problems.push(`The config file could not be read (${why}), so defaults are used this time. The file was not overwritten.`)
+    }
   } else {
     try {
       mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })

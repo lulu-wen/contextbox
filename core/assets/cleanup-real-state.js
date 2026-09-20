@@ -745,9 +745,17 @@ export function modelOpinionLines(m) {
   const confidence = pick(m.confidence, 'low')
   const evidence = safeName(String(m.evidence ?? '').trim())
   const seeded = m.seeded === true
+  // **「看不出來」要講成人話。** `Unknown / Unknown (confidence low)` 長得像壞掉，
+  // 但它其實是這個作品最該被看見的行為之一：模型不知道的時候會說不知道，而不是硬猜一個課名。
+  // **信心是多少都一樣**：說不出是哪一堂課就是說不出來。
+  // 模型有時候會回「Unknown（信心 high）」—— 那是它自己前後矛盾，不是我們要轉述的東西。
+  const noIdea = /^(unknown|看不出來|未知)$/i.test(course)
   return {
     seeded,
-    head: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`,
+    head: `${seeded ? '[demo answer] ' : ''}`
+      + (noIdea
+        ? 'The model looked and could not tell what this is, so it is not suggesting anything for it.'
+        : `The model thinks: ${course} / ${topic} (confidence ${confidence})`),
     note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
       + "This is the model's opinion, not a fact — nothing gets renamed or moved because it said so.",
   }
@@ -1314,5 +1322,255 @@ export function createPreviews(api, { createUrl, revokeUrl } = {}) {
       failed = new Map()
       inflight.clear()
     },
+  }
+}
+
+// -- 面板裡改設定（2026-09-20）-------------------------------
+//
+// 使用者：「我們要讓 client 可以在 panel 裡面輸入 config 的相關參數，像是 read only 或是 model 等等」。
+//
+// 這是**寫使用者設定檔**的第一條路徑，所以這一段的每一條規矩都有一個「不然會怎樣」：
+//   · 後端回什麼都只挑**認得的欄位**畫（view()）—— 多回一個 `key` 也上不了畫面
+//   · `model.keyEnv` 要的是「環境變數的**名字**」。2026-09-20 早上 doctor 真的把使用者
+//     貼進這一欄的金鑰印出來了，所以這裡不回顯任何不像變數名字的東西
+//   · 400 的時候使用者打的字一個都不動（edited 不碰）—— 打了一長串網址被清空會讓人不想再試
+
+/** 金鑰在畫面上換成這個。長度也不留（留著等於告訴別人那是什麼等級的金鑰）。 */
+export const HIDDEN_VALUE = '[hidden]'
+
+/**
+ * 後端送來的自由文字（problems、逐欄的錯誤訊息）裡，看起來像金鑰的東西換成 `[hidden]`。
+ *
+ * 兩關：
+ *   · 有金鑰前綴的（sk-、hf_、ghp_、xoxb- 這一類）＋後面一長串
+ *   · 32 個字元以上、**大小寫混用又帶數字**的一整串 —— 人取的名字不長這樣，隨機產生的金鑰才會
+ *
+ * 為什麼要有這一關：normalize() 自己的訊息是不回顯金鑰的，但「後端回什麼」不該由面板來假設。
+ * 設定頁是使用者最可能截圖貼給別人看的一頁。
+ */
+export function hideKeys(s) {
+  return safeName(s)
+    .replace(/\b(?:sk|pk|rk|hf|ghp|gho|ghu|ghs|glpat|xox[abpsr])[-_][A-Za-z0-9._~+/=-]{12,}/gi, HIDDEN_VALUE)
+    .replace(/[A-Za-z0-9+/=_-]{32,}/g, m =>
+      /[a-z]/.test(m) && /[A-Z]/.test(m) && /[0-9]/.test(m) ? HIDDEN_VALUE : m)
+}
+
+/** 環境變數名字的形狀：識別字，而且不會長到 64 個字元。 */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+
+/**
+ * 「可以放上畫面的環境變數名字」。不是名字就回 null —— 那一格就空著，旁邊講一句話。
+ *
+ * 不用 config.ts 的 CONTEXTBOX_ 前綴來擋：前綴是後端的規矩（要不要收），
+ * 這裡管的是「會不會把金鑰印出來」（能不能顯示）。兩件事混在一起的話，
+ * 後端哪天放寬前綴，這一關就會跟著漏。
+ */
+export function envVarName(v) {
+  const s = String(v ?? '').trim()
+  return ENV_NAME.test(s) && hideKeys(s) === s ? s : null
+}
+
+/** 面板可以改的五欄。白名單以外的東西連送都不送。 */
+export const SETTING_FIELDS = ['readonly', 'model.baseUrl', 'model.name', 'model.keyEnv', 'cleanup.screenshots']
+
+/**
+ * 欄位路徑 → 人話。畫面上永遠不出現 cleanup.screenshots 這種字串 ——
+ * 使用者沒看過設定檔，看到欄位路徑只會猜。
+ * live／restart 可能提到這一版不給改的欄位，所以那幾個也給名字。
+ */
+export const SETTING_LABELS = {
+  readonly: 'read-only mode',
+  'model.baseUrl': 'model endpoint',
+  'model.name': 'model name',
+  'model.keyEnv': 'key environment variable',
+  'cleanup.screenshots': 'including screenshots in cleanup',
+  watch: 'the watched folders',
+  filed: 'the filed folder',
+  'cleanup.roots': 'the cleanup folders',
+  pdfPages: 'how many pages it reads out of a PDF',
+  maxBytes: 'the largest file it reads',
+}
+export const settingLabel = path => SETTING_LABELS[path] ?? '“' + safeName(path) + '”'
+
+/**
+ * 存完之後那一句話。**逐欄講實話**（預想表的最後一列）：
+ * 哪幾欄現在就生效、哪幾欄要重開寵物才算數 —— 一律說「已生效」是騙人的。
+ */
+export function settingsSaveMessage(saved, restart = []) {
+  const list = a => a.map(settingLabel).join(', ')
+  const head = saved.length ? 'Saved: ' + list(saved) + '.' : 'Saved.'
+  const need = restart.filter(p => typeof p === 'string' && p)
+  return need.length
+    ? head + ' Restart the pet before ' + list(need) + ' takes effect — until then it keeps running with the old value.'
+    : head + ' It is in effect now.'
+}
+
+const settingStrings = v => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x) : []
+const settingCount = (v, dflt) => Number.isFinite(Number(v)) ? Math.floor(Number(v)) : dflt
+
+/**
+ * 面板的「設定」那一區（2026-09-20）。
+ *
+ * 分工跟這支檔其他幾個 store 一樣：這裡只碰後端與字，DOM 全在 cleanup-demo.js。
+ * 差別是它多一份 edited —— 使用者打到一半的字。**後端回來的那一份（data）永遠不被 edited 蓋掉**，
+ * 兩份都留著才算得出「這次到底改了哪幾欄」（只送改過的，見 patch()）。
+ */
+export function createSettings(api) {
+  let data = null, edited = null, fields = {}, problem = null, message = '', failed = false
+
+  /** 只挑**認得的欄位**。後端多回一個 key、token 也到不了畫面上。 */
+  const view = body => {
+    const e = body?.editable ?? {}
+    const s = body?.shown ?? {}
+    return {
+      path: safeName(body?.path ?? ''),
+      editable: {
+        readonly: e.readonly === true,
+        model: {
+          baseUrl: safeName(e.model?.baseUrl ?? ''),
+          name: safeName(e.model?.name ?? ''),
+          // 名字不像名字就空著：後端不該回一把金鑰，但這一頁不靠「後端不該」過日子
+          keyEnv: envVarName(e.model?.keyEnv) ?? '',
+        },
+        cleanup: { screenshots: e.cleanup?.screenshots === true },
+      },
+      // **只有有沒有設，沒有金鑰本身**（預想表「GET 設定」那一列）
+      keySet: body?.keySet === true,
+      shown: {
+        watch: settingStrings(s.watch).map(safeName),
+        filed: safeName(s.filed ?? ''),
+        cleanupRoots: settingStrings(s.cleanupRoots).map(safeName),
+        quarantine: safeName(s.quarantine ?? ''),
+        pdfPages: settingCount(s.pdfPages, 0),
+        maxBytes: settingCount(s.maxBytes, 0),
+      },
+      problems: settingStrings(body?.problems).map(hideKeys),
+      live: settingStrings(body?.live),
+      restart: settingStrings(body?.restart),
+    }
+  }
+
+  const copy = e => ({
+    readonly: e.readonly,
+    model: { baseUrl: e.model.baseUrl, name: e.model.name, keyEnv: e.model.keyEnv },
+    cleanup: { screenshots: e.cleanup.screenshots },
+  })
+
+  return {
+    /** 後端說的那一份（畫唯讀區與 keySet 用的）。讀不到就是 null。 */
+    get view() { return data },
+    /** 使用者現在打到一半的那一份（輸入框畫的是它）。 */
+    get edited() { return edited },
+    /** 讀不到設定時要講的那一句。 */
+    get problem() { return problem },
+    /** 上一次按儲存的結果。 */
+    get message() { return message },
+    get failed() { return failed },
+    /** 某一欄的「哪裡不行」（400 的 fields）。 */
+    fieldError(path) { return fields[path] ?? '' },
+
+    async load() {
+      let body
+      try { body = await api('/settings') }
+      catch (error) {
+        data = null
+        edited = null
+        // 舊版後端沒有這條路由（404／501）。**面板不可以因為多了一區就打不開**
+        problem = error?.status === 404 || error?.status === 501
+          ? 'This pet is running an older build that cannot change settings from here. Edit the config file instead.'
+          : hideKeys(error?.message || 'Could not read your settings.')
+        return null
+      }
+      data = view(body)
+      edited = copy(data.editable)
+      fields = {}
+      problem = null
+      message = ''
+      failed = false
+      return data
+    },
+
+    /** 使用者改了一格。**不重畫** —— 每打一個字就重建輸入框會把游標踢走。 */
+    edit(path, value) {
+      if (!edited || !SETTING_FIELDS.includes(path)) return
+      if (path === 'readonly') edited.readonly = value === true
+      else if (path === 'cleanup.screenshots') edited.cleanup.screenshots = value === true
+      else edited.model[path.slice('model.'.length)] = String(value ?? '')
+    },
+
+    /**
+     * 這次要送的東西：**只有跟檔案裡不一樣的那幾欄**。
+     * 整份送出去的話，另一個面板剛改好的欄位會被這一份的舊值蓋回去。
+     */
+    patch() {
+      if (!data || !edited) return {}
+      const base = data.editable, out = {}
+      if (edited.readonly !== base.readonly) out.readonly = edited.readonly
+      const model = {}
+      for (const k of ['baseUrl', 'name', 'keyEnv']) {
+        if (edited.model[k] !== base.model[k]) model[k] = edited.model[k]
+      }
+      if (Object.keys(model).length) out.model = model
+      if (edited.cleanup.screenshots !== base.cleanup.screenshots) {
+        out.cleanup = { screenshots: edited.cleanup.screenshots }
+      }
+      return out
+    },
+
+    /** 這次改到的欄位路徑（存完那句話要逐欄講）。 */
+    changed() {
+      const p = this.patch()
+      return SETTING_FIELDS.filter(path => path === 'readonly' ? 'readonly' in p
+        : path === 'cleanup.screenshots' ? p.cleanup !== undefined
+        : p.model !== undefined && path.slice('model.'.length) in p.model)
+    },
+
+    /**
+     * 存。**不丟例外**：400 的重點不是「爆掉」，是「把那一句話貼到出問題的那一欄旁邊」，
+     * 而且使用者打的字一個都不動。
+     */
+    async save() {
+      fields = {}
+      const patch = this.patch()
+      const changed = this.changed()
+      if (!changed.length) {
+        failed = false
+        message = 'Nothing to save — none of these have changed.'
+        return { ok: true, message, restart: [] }
+      }
+      let body
+      try { body = await api('/settings', { method: 'PATCH', body: JSON.stringify(patch) }) }
+      catch (error) {
+        const raw = error?.data?.fields
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          for (const [path, why] of Object.entries(raw)) {
+            if (SETTING_FIELDS.includes(path)) fields[path] = hideKeys(why)
+          }
+        }
+        failed = true
+        message = hideKeys(error?.message || 'Could not save your settings. Nothing in the file changed.')
+        // 使用者把金鑰本人貼進 keyEnv 的那一次：**那一格換回檔案裡存著的名字**。
+        // 這是唯一一個「使用者打的字不留」的例外 —— 留著等於把金鑰留在畫面上（今天早上那件事）。
+        // 為什麼是回填而不是清空（2026-09-20 稽核 verify:contract-8）：清空之後 edited 就跟 data
+        // 不一樣了，而 patch() 正是拿這兩份比出來的 —— 下一次按儲存會夾帶 `keyEnv: ""`，
+        // 使用者的 CONTEXTBOX_OTHER_KEY 從設定檔裡消失，keySet 變 false，
+        // 而面板還說「已儲存：金鑰環境變數。已生效」。他從頭到尾沒改過那一欄。
+        // 回填存著的那個名字一樣把金鑰趕下畫面，但**不製造一筆使用者沒做的修改**。
+        if (edited && edited.model.keyEnv && !envVarName(edited.model.keyEnv)) {
+          edited.model.keyEnv = data?.editable.model.keyEnv ?? ''
+        }
+        return { ok: false, message, restart: [] }
+      }
+      // 後端回的是套用後的整份設定（契約如此）。萬一沒回，就拿剛才送出去的那一份頂著，
+      // 不可以退回舊值 —— 檔案裡已經是新的了，畫面退回去會讓人以為沒存成功。
+      data = body?.settings ? view(body.settings) : { ...data, editable: copy(edited) }
+      edited = copy(data.editable)
+      const restart = settingStrings(body?.restartNeeded)
+      failed = false
+      message = settingsSaveMessage(changed, restart)
+      return { ok: true, message, restart }
+    },
+
+    clear() { data = null; edited = null; fields = {}; problem = null; message = ''; failed = false },
   }
 }

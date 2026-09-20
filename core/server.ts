@@ -35,7 +35,8 @@ import { renameRoutes } from './rename-routes.ts'
 import { filingRoutes } from './filing-routes.ts'
 import { learnRoutes } from './learn-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
-import { load as loadConfig } from './config.ts'
+import { load as loadConfig, type Config } from './config.ts'
+import { readSettings, applyPatch } from './settings.ts'
 import { join } from 'node:path'
 import { initDemoHistory, demoHistoryRoutes } from './cleanup-demo-history.ts'
 
@@ -150,6 +151,7 @@ function readBody(req: IncomingMessage): Promise<{ tooLarge: true } | { tooLarge
  * 清理與寵物的路徑在 cleanup-routes.ts 的 KNOWN。
  */
 const OWN_ROUTES: [RegExp, string[]][] = [
+  [/^\/settings$/, ['GET', 'PATCH']],
   [/^\/schema$/, ['GET']],
   [/^\/form\/plan$/, ['POST']],
   [/^\/facts$/, ['GET', 'POST']],
@@ -236,8 +238,15 @@ export function start(opts: {
    * 沒給、而且這一次本來就沒讀設定檔時，用跟 core/config.ts 同一個預設。
    */
   filed?: string
-  /** 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。 */
-  maxBytes?: number; readonly?: boolean
+  /**
+   * 給了就不讀設定檔。測試一定要給 —— 不然一次 apply 就會去讀（甚至建立）使用者真的設定檔。
+   *
+   * `readonly` 也收 getter（2026-09-20）：面板改得動唯讀之後，寵物傳的不可以再是
+   * **啟動當下那個布林值** —— 使用者在面板關掉唯讀，下一次 Clean up 還是被擋，
+   * 要 Ctrl+C 再開一次才算數。cli.mjs 的寵物傳 `() => config.readonly`，
+   * 每個請求在這裡解一次（readonlyNow）。給布林值的呼叫端（測試、舊的用法）行為不變。
+   */
+  maxBytes?: number; readonly?: boolean | (() => boolean)
   /**
    * 復原（放回原位）用的範圍（第二輪 R2-4）。有給就用它；沒給就用 roots ∪ 設定的 watch ——
    * **但只在 server 自己讀了設定的時候**（roots／maxBytes／readonly 有一個沒給）。全部給了的呼叫端
@@ -246,6 +255,30 @@ export function start(opts: {
   restoreRoots?: string[]
   /** 截圖資料夾（config 的 cleanup.screenshotsDir）。沒給：roots 也沒給就用設定的，否則是 null。 */
   screenshotsDir?: string | null
+  /**
+   * `/settings` 要改的那一份設定檔（2026-09-20）。
+   *
+   * **為什麼要呼叫端明講，不自己猜一個。** 上面那幾個 opts 全部給齊時 `needCfg` 是 false，
+   * server 這一輩子沒有讀過任何設定檔 —— 它跑的是呼叫端給的值。那時候若還讓 `/settings`
+   * 去改 `~/.contextbox/config.json`，面板會顯示「已儲存」，而跑著的寵物完全不理那份檔，
+   * 正是這一輪要修掉的那種**沉默地錯**。所以：
+   *   · 有給 → 改這一份（呼叫端等於在說「我的設定就是從這裡讀的」）
+   *   · 沒給、但 server 自己讀了設定檔 → 改它讀的那一份
+   *   · 兩個都沒有 → `/settings` 兩條都回 500 BAD_CONFIG，講清楚原因，**不猜、不建檔**
+   *
+   * pet（cli.mjs 的 `start({…})`）把 roots／maxBytes／readonly 都給齊了，所以它一定要
+   * 傳這一個，值就是它自己 `load()` 拿到的 `path`。
+   */
+  configPath?: string
+  /**
+   * 設定檔真的被 `PATCH /settings` 寫過之後叫一次，參數是寫完後 normalize 過的設定。
+   * 寵物靠它重讀設定檔、**原地**更新它整支 cli.mjs 共用的那一份 config（core/live-config.ts），
+   * 這樣 `readonly`、`model.*` 才會是「存了就生效」而不是「要重開寵物」。
+   *
+   * server 自己不記得設定長什麼樣，這裡只是把事情傳出去，不做任何解讀。
+   * 回呼自己丟例外不會讓那個請求變成失敗 —— 檔案已經寫好了，回 500 是說謊。
+   */
+  onSettingsSaved?: (config: Config) => void
 } = {}) {
   const port = opts.port ?? 7391
   // 給了空的（或只有空白的）token 等於沒給：不可以用空 token 跑起來
@@ -283,6 +316,29 @@ export function start(opts: {
   // 猜一個家目錄底下的位置等於在沒人講過的地方搬使用者的檔。那時 /file/* 回 BAD_CONFIG
   // （空字串會被 filing-routes 的 scopeOf 擋下來），這正是文件寫的那一條 500。
   const filedDir = opts.filed ?? (loaded ? cfg().filed : '')
+  // `/settings` 改的那一份檔。兩個都沒有就是 null —— 那兩條回 500，見上面 configPath 的說明。
+  const settingsPath = opts.configPath ?? (loaded ? loaded.path : null)
+
+  /**
+   * 這一個請求該不該當成唯讀。**不可以寫成 `() => opts.readonly ?? cfg().readonly`**：
+   * 呼叫端給的是 getter 的時候，`??` 看到的是一個 function（不是 nullish），
+   * 整個 thunk 回傳的就是那個 function —— route 那邊 `ctx.readonly()` 拿到 function，
+   * 恆真，於是**全機永遠唯讀**，而且是安靜地唯讀。2026-09-20 改成收 getter 時就差這一步。
+   */
+  const readonlyNow = (): boolean =>
+    typeof opts.readonly === 'function' ? opts.readonly() : (opts.readonly ?? cfg().readonly)
+
+  /**
+   * 面板存完設定了。丟例外**不可以**讓一個已經寫好的檔變成 500 ——
+   * 檔是真的存了，只是有人沒跟上；印出來（跟 /health 自檢同一個做法），
+   * 不要安靜吞掉，也不要回頭騙使用者說沒存到。
+   */
+  const settingsSaved = (saved?: Config) => {
+    try { opts.onSettingsSaved?.(saved as Config) }
+    catch (e: any) {
+      console.error('[contextbox] settings were saved but the running pet could not pick them up:', (e && e.message) || e)
+    }
+  }
 
   /** 這一次 server 活著期間，哪些瀏覽器用對的鑰匙進來過（重開就全部失效）。 */
   const sessions = new Map<string, number>()
@@ -337,7 +393,9 @@ export function start(opts: {
       if (origin && allowed) {
         h['access-control-allow-origin'] = origin
         h['access-control-allow-headers'] = 'content-type, x-contextbox-token'
-        h['access-control-allow-methods'] = 'GET, POST, DELETE, OPTIONS'
+        // PATCH 是設定那條線用的（PATCH /settings，2026-09-20）：漏了它，
+        // 擴充套件那邊的預檢會擋在瀏覽器裡，錯誤訊息還看不出是 CORS
+        h['access-control-allow-methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
       }
       return h
     }
@@ -455,8 +513,10 @@ export function start(opts: {
     // 空的 body 才是「什麼都沒帶」。body 必須是物件（null、陣列、字串都是看不懂）。
     // DELETE 也讀：`DELETE /learned` 的 `{ ids }`／`{ all: true }` 是 body（P5）。
     // 不讀的話它永遠收到空的 body —— 「忘掉這一條」會變成「看不懂送來的資料」。
+    // PATCH 同理（`PATCH /settings`，2026-09-20）：不讀的話每一次儲存都變成空的 patch，
+    // 面板會顯示「已儲存」而設定一個字都沒改。
     let body: any = {}
-    if (req.method === 'POST' || req.method === 'DELETE') {
+    if (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PATCH') {
       let got
       try { got = await readBody(req) }
       catch { return }   // 連線自己斷了，沒有人在等回應
@@ -473,13 +533,33 @@ export function start(opts: {
     }
 
     try {
+      // ── 面板裡改設定（2026-09-20）。**兩條都要 token**：上面鎖 2 已經擋掉沒帶的，
+      // cookie 一個字都不算數 —— 設定是寫入路徑，更不可以為它破例。
+      // 放在最前面：這條完全不碰資料庫，也不需要清理那幾條線先看過一遍。
+      if (url.pathname === '/settings') {
+        if (!settingsPath) {
+          return send(500, { error: 'This server was started without a config file, so there are no settings to show or change.', code: 'BAD_CONFIG' })
+        }
+        const extras = { quarantine: QUARANTINE }
+        if (req.method === 'GET') return send(200, readSettings(settingsPath, process.env, extras))
+        const saved = applyPatch(settingsPath, body, process.env, extras)
+        if (!saved.ok) {
+          // 白名單以外的鍵、normalize 不收的值：400，**檔案一個位元組都沒動**
+          if (saved.code === 'BAD_SETTING') return send(400, { error: saved.error, code: 'BAD_SETTING', fields: saved.fields ?? {} })
+          return send(500, { error: saved.error, code: 'WRITE_FAILED' })
+        }
+        // 寵物要知道自己的設定被改了。**只有這一支** —— 兩份各自 try/catch 的話，
+        // 之後有人改其中一份的行為，另一條路徑會安靜地不一樣。
+        settingsSaved(saved.config)
+        return send(200, { saved: true, settings: saved.settings, restartNeeded: saved.restartNeeded })
+      }
       if (demoHistoryRoutes(F.db, url, req.method ?? 'GET', body, send)) return
       // 改名（P3）。**在清理之前問**：它只認 `/rename/`，認不得就回 false。
       // 跟清理共用 RouteCtx，但不需要 scan／sendBytes（改名不掃描、不送圖）。
       if (renameRoutes({
         db: F.db, roots, quarantine: QUARANTINE,
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
-        readonly: () => opts.readonly ?? cfg().readonly,
+        readonly: readonlyNow,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('rename does not scan') },
       })) return
@@ -489,7 +569,7 @@ export function start(opts: {
         db: F.db, roots, quarantine: QUARANTINE, filed: () => filedDir,
         restoreRoots: () => restoreRootList,
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
-        readonly: () => opts.readonly ?? cfg().readonly,
+        readonly: readonlyNow,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('filing does not scan') },
       })) return
@@ -497,7 +577,7 @@ export function start(opts: {
       // 不需要 roots／filed —— 它只讀寫 preferences 那張表，永遠不碰檔案。
       if (learnRoutes({
         db: F.db, roots, quarantine: QUARANTINE,
-        readonly: () => opts.readonly ?? cfg().readonly,
+        readonly: readonlyNow,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('learned does not scan') },
       })) return
@@ -514,7 +594,7 @@ export function start(opts: {
         filed: () => filedDir,
         // 會動檔案的 route 才需要這兩個，一樣用 thunk —— 唯讀的路徑不該去碰設定檔。
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
-        readonly: () => opts.readonly ?? cfg().readonly,
+        readonly: readonlyNow,
         url, method: req.method ?? 'GET', body, send,
         // 連拍縮圖是灰階 PNG，走不了 JSON 的 send。跟素材同一套 header：
         // 不快取、不嗅探、只准同源用（縮圖是使用者的螢幕內容）。
@@ -574,7 +654,9 @@ export function start(opts: {
       resolve(typeof a === 'object' && a ? a.port : port)
     })
   })
-  return { server, token, port, ready, facts: F }
+  // settingsSaved 也回出去。正常情況叫它的是 `PATCH /settings`；
+  // 回出去是為了測試能不經過 HTTP 直接驗「寵物有沒有跟上」那一段。
+  return { server, token, port, ready, facts: F, settingsSaved }
 }
 
 if (process.argv[1]?.endsWith('server.ts')) {

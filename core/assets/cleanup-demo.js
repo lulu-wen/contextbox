@@ -11,6 +11,7 @@ import {
   folderPhrase, createBursts, applyBurstDefaults, burstGroupLine, burstNote,
   modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
   createLearned, learnedLines,
+  createSettings, settingLabel,
   createPreviews, previewLines, plural,
 } from './cleanup-real-state.js'
 
@@ -43,6 +44,14 @@ const filings = createFilings((path, init) => window.api(path, init))
 // 它學到的事（P5）：使用者改過的課名與類型。示範模式不用它（同上）。
 // **這一區按不出任何會動檔案的事** —— 只看得到與「忘掉」。
 const learned = createLearned((path, init) => window.api(path, init))
+// 設定（2026-09-20）：面板裡改 `~/.contextbox/config.json` 的五個欄位。示範模式不用它（同上）。
+// **只在打開面板那一刻讀一次**，不進輪詢 —— 輪詢重讀會把使用者正在打的字洗掉。
+const settings = createSettings((path, init) => window.api(path, init))
+// 正在送 PATCH /settings。這段期間「儲存」要按不下去：連按兩下就是送兩次寫檔。
+let settingsSaving = false
+// 這一次 render() 是**背景輪詢**叫的（refreshSuggestions 發現別的區變了）。
+// 設定區看這個旗子決定要不要讓開，見 renderSettings —— 別的呼叫端一律照常重畫。
+let pollRedraw = false
 // 上一次 /pet/state 說的「還沒問過的組數」。**只在它變大的時候主動彈**，見 askAboutBursts。
 const burstAsked = new Set()   // 主動問過的連拍組 id（不是數量：數量當高水位會安靜地漏問）
 let currentOperation = null, request = null, health = null, previousCount = 0, healthTimer
@@ -105,6 +114,33 @@ async function cleanOne(s, item) {
     const now = session()
     now.select(item.itemId, false)
     for (const id of before) now.select(id, true)
+    render()
+  }
+}
+
+/**
+ * 只改這一個名字／只歸檔這一個檔。
+ *
+ * 跟 cleanOne 同一個形狀，理由也一樣：清單上有五十列的時候，為了處理一個檔
+ * 而滑到最底下按總按鈕是很糟的體驗（使用者自己講的，2026-09-20）。
+ *
+ * **不是另一條路**：把勾選換成「只有它」，走跟總按鈕一模一樣的 operate('apply') ——
+ * 送的還是後端那條 `/rename/apply`／`/file/apply`，逐項結果、可復原，一個環節都不跳過。
+ *
+ * 做不成的話（那一列還在）把使用者原本的勾選放回去：他可能勾了一堆，只是想先處理這一個。
+ * 注意 store 的 apply() 自己會把 selected 清空並重載，所以這裡是**重新勾回去**，不是還原。
+ */
+async function oneOf(store, operate, item) {
+  if (busy || isDemo()) return
+  const before = new Set(store.selected)
+  for (const id of before) store.select(id, false)
+  store.select(item.itemId, true)
+  render()
+  await operate('apply')
+  // 還在清單上 ＝ 沒做成。做成了的話那一列已經不見了，勾選也不用還
+  if (store.items.some(i => i.itemId === item.itemId)) {
+    store.select(item.itemId, false)
+    for (const id of before) store.select(id, true)
     render()
   }
 }
@@ -597,7 +633,16 @@ function renderRenames() {
     const head = document.createElement('strong')
     head.textContent = lines.head
     label.append(check, head)
-    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    // 一列一顆：不用滑到最底下按總按鈕（使用者自己講的，2026-09-20）
+    const one = document.createElement('button')
+    one.type = 'button'
+    one.className = 'cleanup-one cleanup-one-rename'
+    one.textContent = 'Rename'
+    one.disabled = busy
+    one.onclick = () => oneOf(renames, renameOperate, item)
+    // one 掛在 row 上、**不可以掛進 label**：真瀏覽器裡點 label 底下的按鈕
+    // 會連帶把那個勾選框切掉，按一下「Rename」順便偷偷取消勾選。
+    row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     attachPreview(row, item.itemId)
     box.append(row)
@@ -635,7 +680,15 @@ function renderFilings() {
     const head = document.createElement('strong')
     head.textContent = lines.head
     label.append(check, head)
-    row.append(label, paragraph(lines.why), paragraph(lines.note, 'evidence'))
+    // 一列一顆：不用滑到最底下按總按鈕（使用者自己講的，2026-09-20）
+    const one = document.createElement('button')
+    one.type = 'button'
+    one.className = 'cleanup-one cleanup-one-file'
+    one.textContent = 'File'
+    one.disabled = busy
+    one.onclick = () => oneOf(filings, filingOperate, item)
+    // 同上：掛在 row 上，不可以掛進 label
+    row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
     if (lines.back) row.append(paragraph(lines.back, 'evidence'))
     attachPreview(row, item.itemId)
     box.append(row)
@@ -697,8 +750,206 @@ async function forgetLearned(id) {
   }
 }
 
+// -- 設定那一區（2026-09-20）----------------------------------
+//
+// 使用者：「要讓 client 可以在 panel 裡面輸入 config 的相關參數，像是 read only 或是 model 等等」。
+//
+// 這一區跟別區最大的差別是**它會寫使用者的設定檔**，所以畫面上要守三件事：
+//   1. 每一欄都用人話講它會做什麼，不要把設定檔的欄位名搬上畫面（使用者沒看過那個檔）
+//   2. 改 model.baseUrl 就是「把我的檔案送去另一台主機」—— 那句警告要在**按下去之前**看得到
+//   3. keyEnv 那一欄要的是**環境變數的名字**。2026-09-20 早上使用者真的把金鑰本人貼進去了，
+//      所以這裡只講「有沒有設」，一個字元的金鑰都不畫
+//
+// 全部走 createElement + textContent（跟這支檔其他地方一樣）：後端回來的字、
+// 使用者打的字都是不可信的輸入，沒有一條路通到會解析 HTML 的寫法
+// （那一條線由 audit-0919-ui.test.mjs 的整檔掃描守著，連註解裡都不可以出現那幾個名字）。
+
+/** 這一欄底下的「哪裡不行」。有才畫 —— 空的錯誤框會讓每一欄都看起來像壞的。 */
+function appendFieldError(row, field) {
+  const message = settings.fieldError(field)
+  if (!message) return
+  const p = paragraph(message, 'cleanup-field-error')
+  p.dataset.field = field
+  row.append(p)
+}
+
 /**
- * 面板裡的五個小標籤（P6 之二）。
+ * 一欄文字設定。**oninput 只改 edited，不重畫** —— 每打一個字就重建輸入框，
+ * 游標會跳回開頭，一長串網址根本打不完。
+ */
+function settingText(field, caption, value, hint) {
+  const row = document.createElement('div')
+  row.className = 'cleanup-setting'
+  row.dataset.field = field
+  const label = document.createElement('label')
+  const text = document.createElement('span')
+  text.textContent = caption
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'cleanup-setting-input'
+  input.dataset.field = field
+  input.value = value
+  input.disabled = settingsSaving
+  input.oninput = () => settings.edit(field, input.value)
+  label.append(text, input)
+  row.append(label)
+  if (hint) row.append(paragraph(hint, 'evidence'))
+  appendFieldError(row, field)
+  return row
+}
+
+/** 一欄開關。標籤講的是**它會做什麼**，不是設定檔裡那個鍵叫什麼。 */
+function settingCheck(field, caption, checked, hint) {
+  const row = document.createElement('div')
+  row.className = 'cleanup-setting'
+  row.dataset.field = field
+  const label = document.createElement('label')
+  label.className = 'cleanup-setting-check'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.className = 'cleanup-setting-input'
+  input.dataset.field = field
+  input.checked = checked
+  input.disabled = settingsSaving
+  input.onchange = () => settings.edit(field, input.checked)
+  const text = document.createElement('span')
+  text.textContent = caption
+  label.append(input, text)
+  row.append(label)
+  if (hint) row.append(paragraph(hint, 'evidence'))
+  appendFieldError(row, field)
+  return row
+}
+
+/** 唯讀區的一行「名稱：值」。值是路徑，一律 uiSafeName。 */
+const shownLine = (caption, value) => paragraph(caption + ': ' + uiSafeName(value))
+
+/**
+ * 使用者現在正握著設定區嗎：游標就在裡面某一格，或是打了字還沒按儲存。
+ *
+ * 用在「要不要讓輪詢重畫這一區」那個判斷上。**輪詢期間這一區的內容本來就不會變** ——
+ * `settings.load()` 只在打開面板那一刻跑一次，`busy` 與 `settingsSaving` 在 refreshSuggestions
+ * 的守門條件下一定是 false —— 所以讓開不會漏掉任何新消息。
+ */
+function settingsHeldByUser(box) {
+  if (isDemo() || !settings.view) return false
+  const active = document.activeElement
+  if (active && active !== document.body && box.contains(active)) return true
+  return Object.keys(settings.patch()).length > 0
+}
+
+function renderSettings() {
+  const box = $('cleanup-settings')
+  // **輪詢重畫的時候，正在被使用者動的設定區要讓開**（2026-09-20 稽核）。
+  // 這一支開頭就是 replaceChildren，等於把使用者正在打字的那個 input 換成一個新的。
+  // 字不會不見（重畫是從 edited 出來的，oninput 每一鍵都寫進去了），掉的是焦點、游標位置、
+  // 選取範圍，以及注音打到一半還沒上屏的字 —— 慢慢敲一串網址的人每五秒被踢出輸入框一次。
+  // 只擋輪詢那一條：按儲存、開面板、切分頁那幾條照樣重畫，不然 400 的紅字貼不上去。
+  if (pollRedraw && settingsHeldByUser(box)) return
+  box.replaceChildren()
+  const save = $('cleanup-settings-save')
+  save.hidden = true
+  // 示範模式沒有這一區：那時畫面上是假的清單，掛真的「儲存」會讓人以為示範也在改自己的設定檔
+  if (isDemo()) return
+  const view = settings.view
+  if (!view) {
+    // 讀不到設定不是災難（舊版後端根本沒有這條路由）—— 講一句話就好，別的區照常
+    box.append(paragraph(settings.problem ?? 'Could not read your settings.', 'cleanup-note cleanup-warn'))
+    return
+  }
+  const edited = settings.edited
+  save.hidden = false
+  save.disabled = busy || settingsSaving
+  save.textContent = settingsSaving ? 'Saving…' : 'Save settings'
+
+  box.append(paragraph('What you change here gets written into your config file. Everything else in that file is left exactly as it is.', 'cleanup-note'))
+
+  box.append(settingCheck('readonly',
+    'Read-only — ContextBox looks and suggests but never moves a file',
+    edited.readonly,
+    'Suggestions keep coming. Nothing gets moved, renamed or filed while this is on.'))
+
+  box.append(settingText('model.baseUrl', 'Model endpoint', edited.model.baseUrl,
+    'Leave it empty to run with no model at all — the rules still work.'))
+  // **警告要在按下去之前**：改這一欄就是換一台「我的檔案內容送去哪裡」的主機
+  box.append(paragraph('Careful: this is the address the contents of your files get sent to. Point it at a machine you do not trust and your documents go there. Plain http only makes sense for a machine on your own desk.', 'cleanup-note cleanup-warn'))
+
+  box.append(settingText('model.name', 'Model name', edited.model.name,
+    'The model the endpoint above should use, for example Qwen3-VL-8B.'))
+
+  box.append(settingText('model.keyEnv', 'Key environment variable', edited.model.keyEnv,
+    'This is the NAME of an environment variable, for example CONTEXTBOX_MODEL_KEY — not the key. ContextBox reads the key out of your environment, so never type or paste a key into this box.'))
+  // **只講有沒有設**。金鑰本身、遮起來的金鑰、甚至它有幾個字，一個都不上畫面
+  const savedEnv = view.editable.model.keyEnv
+  box.append(paragraph(!savedEnv ? 'No environment variable is set for the key yet.'
+    : view.keySet ? 'Key found in ' + savedEnv
+    : savedEnv + ' is empty', 'evidence'))
+  if (edited.model.keyEnv !== savedEnv) {
+    // 打了新的名字就講一句 —— 但**不重複那個名字**：使用者剛剛可能貼的就是金鑰本人
+    box.append(paragraph('You changed this box. Save, and it will read the key out of the variable you typed.', 'evidence'))
+  }
+
+  box.append(settingCheck('cleanup.screenshots', 'Include screenshots in cleanup',
+    edited.cleanup.screenshots,
+    'Adds your screenshots folder to the scan. Only screenshots in it ever get proposed, nothing else in that folder.'))
+
+  // 這一版只顯示、不給改的那幾個（掃描範圍指到哪裡是另一種風險，值得自己一輪）
+  const shown = document.createElement('div')
+  shown.className = 'cleanup-setting-shown'
+  const head = document.createElement('strong')
+  head.textContent = 'Folders — shown here, changed in the file'
+  shown.append(head)
+  shown.append(shownLine('Watched folders', view.shown.watch.join('  ·  ') || 'none'))
+  shown.append(shownLine('Filed folder', view.shown.filed || 'none'))
+  shown.append(shownLine('Cleanup folders', view.shown.cleanupRoots.join('  ·  ') || 'none'))
+  shown.append(shownLine('Quarantine', view.shown.quarantine || 'none'))
+  shown.append(shownLine('Pages read out of a PDF', String(view.shown.pdfPages)))
+  shown.append(shownLine('Largest file it reads', bytes(view.shown.maxBytes)))
+  shown.append(paragraph('Those folders are edited in the config file itself: ' + uiSafeName(view.path), 'evidence'))
+  box.append(shown)
+
+  if (view.problems.length) {
+    const warn = document.createElement('div')
+    warn.className = 'cleanup-note cleanup-warn'
+    warn.append(paragraph('Your config file as it stands:'))
+    for (const p of view.problems) warn.append(paragraph(uiSafeName(p)))
+    box.append(warn)
+  }
+  // 逐欄講實話：哪幾欄按下儲存就算數、哪幾欄要重開寵物
+  if (view.live.length) {
+    box.append(paragraph('Takes effect the moment you save: ' + view.live.map(settingLabel).join(', ') + '.', 'evidence'))
+  }
+  if (view.restart.length) {
+    box.append(paragraph('Needs the pet restarted: ' + view.restart.map(settingLabel).join(', ') + '.', 'evidence'))
+  }
+  if (settings.message) {
+    box.append(paragraph(settings.message,
+      settings.failed ? 'cleanup-setting-result cleanup-warn' : 'cleanup-setting-result'))
+  }
+}
+
+/**
+ * 按下「儲存」。**只送改過的那幾欄**（store 的 patch()），沒改就什麼都不送。
+ *
+ * 400 不算爆炸：store 會把逐欄的話收好，這裡只負責重畫 ——
+ * 重畫是從 edited 出來的，所以使用者打的字還在原位。
+ */
+async function saveSettings() {
+  if (busy || settingsSaving || isDemo() || !settings.view) return
+  settingsSaving = true
+  renderSettings()
+  try { await tracked(() => settings.save()) }
+  catch { /* store 自己會把話收好；真的漏出來的例外不可以讓面板卡在「Saving…」 */ }
+  finally {
+    settingsSaving = false
+    // 存成功會換掉唯讀區與 keySet，整個面板重畫一次最省事（別區的內容不受影響）
+    render()
+  }
+}
+$('cleanup-settings-save').onclick = () => saveSettings()
+
+/**
+ * 面板裡的六個小標籤（P6 之二）。
  *
  * **為什麼**：以前五區疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議 ——
  * 使用者自己講的第一句話就是「不然我都要滑到好下面」。
@@ -708,6 +959,10 @@ async function forgetLearned(id) {
  *   · 現在這一區變空了就跳到第一個有東西的；全都空的時候留在「可以清理」（那一區會講「目前沒有待清檔案」）
  *   · 動作按鈕跟著區塊走（data-section）：在歸檔那一區只會看到「整理」與「復原整理」
  *   · **示範模式整條不顯示** —— 那時只有清理那一區是真的
+ *
+ * 「設定」（2026-09-20）是 `always` 的一區：它不是一份清單，沒有數字，而且**永遠點得下去**。
+ * 它也不參加上面那兩條跳轉規則 —— 不然「全都空」的時候使用者會被從「可以清理」彈到設定頁，
+ * 而那一頁不會告訴他「目前沒有待清檔案」。
  */
 const PANEL_SECTIONS = [
   { key: 'clean', label: 'Cleanup' },
@@ -715,20 +970,23 @@ const PANEL_SECTIONS = [
   { key: 'renames', label: 'Suggested names' },
   { key: 'filings', label: 'Filing' },
   { key: 'learned', label: 'Learned' },
+  { key: 'settings', label: 'Settings', always: true },
 ]
 let panelSection = 'clean'
+const alwaysOn = key => PANEL_SECTIONS.some(x => x.key === key && x.always)
 /** 每一顆動作按鈕屬於哪一區（不屬於現在這一區的就收起來）。 */
 const SECTION_BUTTONS = {
   'cleanup-apply': 'clean', 'cleanup-release': 'clean', 'cleanup-putback': 'clean',
   'cleanup-undo': 'clean', 'cleanup-dismiss': 'clean',
   'cleanup-rename': 'renames', 'cleanup-rename-undo': 'renames',
   'cleanup-file': 'filings', 'cleanup-file-undo': 'filings',
+  'cleanup-settings-save': 'settings',
 }
 
-/** 每一區現在有幾筆。空的（0）那一區的標籤會變灰。 */
+/** 每一區現在有幾筆。空的（0）那一區的標籤會變灰（always 的那幾區不看這個數字）。 */
 function sectionCounts() {
   const s = session() ?? backgroundProposal
-  if (isDemo()) return { clean: s ? proposalItems(s).length : 0, bursts: 0, renames: 0, filings: 0, learned: 0 }
+  if (isDemo()) return { clean: s ? proposalItems(s).length : 0, bursts: 0, renames: 0, filings: 0, learned: 0, settings: 0 }
   const inBurst = bursts.memberIds()
   return {
     clean: s ? proposalItems(s).filter(c => !inBurst.has(c.itemId)).length : (health?.pendingCandidates ?? 0),
@@ -736,6 +994,7 @@ function sectionCounts() {
     renames: renames.items.length,
     filings: filings.items.length,
     learned: learned.items.length,
+    settings: 0,
   }
 }
 
@@ -743,19 +1002,19 @@ function sectionCounts() {
 function renderSections() {
   const counts = sectionCounts()
   setPetMessageData({ sectionCounts: counts })
-  // 現在這一區空了就換到第一個有東西的（全空就留在「可以清理」）
-  if (!counts[panelSection]) {
-    panelSection = PANEL_SECTIONS.find(x => counts[x.key])?.key ?? 'clean'
+  // Settings remains selectable even though it has no count.
+  if (!counts[panelSection] && !alwaysOn(panelSection)) {
+    panelSection = PANEL_SECTIONS.find(x => !x.always && counts[x.key])?.key ?? 'clean'
   }
   const select = $('cleanup-tabs')
   select.hidden = isDemo()
   select.replaceChildren()
   if (!isDemo()) {
-    for (const { key, label } of PANEL_SECTIONS) {
+    for (const { key, label, always } of PANEL_SECTIONS) {
       const option = document.createElement('option')
       option.value = key
-      option.textContent = `${label} (${counts[key]})`
-      option.disabled = !counts[key] && key !== panelSection
+      option.textContent = always ? label : `${label} (${counts[key]})`
+      option.disabled = !always && !counts[key] && key !== panelSection
       select.append(option)
     }
   }
@@ -789,6 +1048,7 @@ function render() {
   renderRenames()
   renderFilings()
   renderLearned()
+  renderSettings()
   // 連拍區已經列出來的成員不要在下面再列一次 —— 同一個檔兩個勾選框，使用者不知道該信哪一個。
   // **分頁也不要把它們算進去**，不然會有一頁十格、其中幾格是空的。
   const inBurst = isDemo() ? new Set() : bursts.memberIds()
@@ -948,8 +1208,9 @@ async function openCleanupPanel() {
   // demo 開著走 demo，否則走 createReal，兩者是不同的物件。
   panel.dataset.mode = 'local'
   modeNote()
-  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo', 'cleanup-learned']) $(id).hidden = true
+  for (const id of ['cleanup-apply', 'cleanup-undo', 'cleanup-release', 'cleanup-putback', 'cleanup-dismiss', 'cleanup-reset', 'cleanup-space-note', 'cleanup-bursts', 'cleanup-renames', 'cleanup-rename', 'cleanup-rename-undo', 'cleanup-filings', 'cleanup-file', 'cleanup-file-undo', 'cleanup-learned', 'cleanup-settings-save']) $(id).hidden = true
   $('cleanup-result').hidden = true
+  $('cleanup-settings').replaceChildren()
   $('cleanup-list').replaceChildren(paragraph('Loading candidate files…'))
   $('cleanup-summary').textContent = ''
   if (!panel.open) panel.showModal()
@@ -970,6 +1231,9 @@ async function openCleanupPanel() {
     await filings.load()
     // 它學到的事（P5）。後端沒有這一條就是空的，面板照常
     await learned.load()
+    // 設定（2026-09-20）。**只在這裡讀一次**，不進輪詢 —— 輪詢重讀會把使用者正在打的字洗掉。
+    // 後端沒有這條路由（舊版）就是 view 為 null，那一區講一句話，別的區照常。
+    await settings.load()
     render()
     if (real.pendingPlan && !real.uncertain) result(pendingPlanMessage(real.pendingPlan))
     else if (real.locked) result('The result of the last cleanup was never confirmed. “Try again” reuses that same plan; nothing extra gets moved.')
@@ -1530,7 +1794,11 @@ async function refreshSuggestions() {
     await filings.load()
     await learned.load()
   } catch { return }             // 讀不到就維持畫面上的樣子
-  if (suggestionSignature() !== before && panel.open) render()
+  // Background refresh must preserve unsaved settings edits.
+  if (suggestionSignature() !== before && panel.open) {
+    pollRedraw = true
+    try { render() } finally { pollRedraw = false }
+  }
   updateAlert()
 }
 

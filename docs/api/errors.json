@@ -202,5 +202,72 @@
       "error": "Read-only mode is on: no cleanup plan is created and no file is moved.",
       "code": "READ_ONLY"
     }
+  },
+  "改一個白名單以外的鍵": {
+    "request": "PATCH /settings",
+    "status": 400,
+    "body": {
+      "error": "Nothing was saved and the config file was not changed. See fields for what was wrong.",
+      "code": "BAD_SETTING",
+      "fields": {
+        "watch": "watch cannot be changed here. This page only changes readonly, model.baseUrl, model.name, model.keyEnv, cleanup.screenshots."
+      }
+    }
+  },
+  "值 normalize 不收（keyEnv 不是 CONTEXTBOX_ 開頭）": {
+    "request": "PATCH /settings",
+    "status": 400,
+    "body": {
+      "error": "Nothing was saved and the config file was not changed. See fields for what was wrong.",
+      "code": "BAD_SETTING",
+      "fields": {
+        "model.keyEnv": "The key's environment variable must start with CONTEXTBOX_; using CONTEXTBOX_MODEL_KEY instead."
+      }
+    }
+  },
+  "把金鑰本人貼進 keyEnv 那一格": {
+    "request": "PATCH /settings",
+    "status": 400,
+    "body": {
+      "error": "Nothing was saved and the config file was not changed. See fields for what was wrong.",
+      "code": "BAD_SETTING",
+      "fields": {
+        "model.keyEnv": "model.keyEnv must be the NAME of an environment variable (something starting with CONTEXTBOX_), not the key itself. What you wrote looks like a key — it has not been printed here. Put the name in the config file and the key in the environment, then rotate that key: it has been sitting in a plain file. Using CONTEXTBOX_MODEL_KEY for now."
+      }
+    }
+  },
+  "型別不對": {
+    "request": "PATCH /settings",
+    "status": 400,
+    "body": {
+      "error": "Nothing was saved and the config file was not changed. See fields for what was wrong.",
+      "code": "BAD_SETTING",
+      "fields": {
+        "readonly": "readonly must be true or false."
+      }
+    }
+  },
+  "設定檔現在的內容讀不懂，所以不敢覆蓋": {
+    "request": "PATCH /settings",
+    "status": 500,
+    "body": {
+      "error": "The config file could not be read (Expected property name or '}' in JSON at position 2 (line 1 column 3)). Nothing was changed. Fix that file, or move it aside, first.",
+      "code": "WRITE_FAILED"
+    }
+  },
+  "這台 server 啟動時沒有設定檔可改": {
+    "request": "GET /settings",
+    "status": 500,
+    "body": {
+      "error": "This server was started without a config file, so there are no settings to show or change.",
+      "code": "BAD_CONFIG"
+    }
+  },
+  "session cookie 開得了網頁，開不了設定": {
+    "request": "GET /settings",
+    "status": 401,
+    "body": {
+      "error": "Wrong token. Paste the contents of ~/.contextbox/token into the extension settings."
+    }
   }
 }

@@ -322,6 +322,24 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     color: #514637; background: white; border: 1px solid #efe6d7; border-radius: 8px; }
   /* 連拍那一區的格子只有 150px 寬，展開的內容要比格子寬才看得到 */
   .cleanup-shot .cleanup-preview { width: min(420px, 56vw); }
+  /* 設定那一區（2026-09-20）。一欄一列：說明與「這一欄哪裡不行」都貼在**那一欄的旁邊** ——
+     錯誤跑到整頁最下面的話，使用者只知道存不起來，不知道是哪一格打錯。 */
+  .cleanup-setting { margin: 16px 0; }
+  .cleanup-setting label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+  .cleanup-setting label.cleanup-setting-check { flex-direction: row; align-items: flex-start; gap: 8px; }
+  .cleanup-setting input[type="text"] { font: inherit; padding: 6px 8px; border: 1px solid #e0d6c4;
+    border-radius: 8px; background: #fffdf8; max-width: 460px; }
+  .cleanup-setting input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 2px; }
+  .cleanup-setting p { margin: 4px 0 0; font-weight: 400; }
+  /* 錯誤要比說明更顯眼，但不要像整個面板壞掉 —— 壞的只有這一格 */
+  .cleanup-setting .cleanup-field-error { color: #8a2f13; font-weight: 600; }
+  .cleanup-setting-shown { margin: 18px 0; padding: 10px 12px; border: 1px solid #e9dfce;
+    border-radius: 10px; background: #fffdf8; }
+  .cleanup-setting-shown p { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+  /* 存完那一句話跟著表單走，不去搶上面共用的 #cleanup-result —— 換到別的標籤時
+     「已儲存」還掛在畫面上會讓人以為剛剛清理成功了。 */
+  .cleanup-setting-result { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px;
+    background: #edf3e6; white-space: pre-line; }
   .cleanup-select-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
   #cleanup-result, #cleanup-history-result { padding: 12px; border-radius: 12px; background: #edf3e6; margin: 12px 0; white-space: pre-line; }
   .cleanup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
@@ -540,6 +558,13 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <p id="cleanup-summary" aria-live="polite"></p>
     <p id="cleanup-space-note" class="cleanup-note">Cleanup simulates moving files into a quarantine you can undo. That is not the same as freeing disk space.</p>
   </div>
+  <!-- 設定（2026-09-20）。使用者：「要讓 client 可以在 panel 裡面輸入 config 的相關參數」。
+       這一整區是動態產生的（值從 GET /settings 來），示範模式一個字都不畫 ——
+       那時畫面上是假的清單，掛真的「儲存」會讓人以為示範也在改自己的設定檔。
+       **這裡永遠不會出現金鑰**：keyEnv 欄位要的是環境變數的名字，畫面上只講「有沒有設」。 -->
+  <div class="cleanup-section" id="cleanup-sec-settings" data-section="settings">
+    <div id="cleanup-settings"></div>
+  </div>
   <div id="cleanup-result" role="status" hidden></div>
   <div class="cleanup-actions">
     <button id="cleanup-apply" class="primary" type="button" data-section="clean">Run the simulated cleanup</button>
@@ -550,6 +575,7 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <button id="cleanup-rename-undo" type="button" data-section="renames" hidden>Undo rename</button>
     <button id="cleanup-file" type="button" data-section="filings" hidden>File</button>
     <button id="cleanup-file-undo" type="button" data-section="filings" hidden>Undo filing</button>
+    <button id="cleanup-settings-save" class="primary" type="button" data-section="settings" hidden>Save settings</button>
     <button id="cleanup-dismiss" type="button" data-section="clean">Skip for now</button>
     <button id="cleanup-reset" type="button">Restart the demo</button>
   </div>

@@ -36,6 +36,9 @@ export class FakeEl {
     this.hidden = false; this.disabled = false; this.checked = false; this.type = ''
     this.title = ''; this.className = ''; this.dataset = {}; this.attrs = {}; this.listeners = {}
     this.open = false; this.offsetWidth = 0; this.onclick = null; this.onchange = null; this.isContentEditable = false
+    // 輸入框（設定那一區）。**value 一定要預設成空字串**：undefined 的話，
+    // 「400 之後使用者打的字還在不在」這種測試會連真的壞掉都看不出來（兩邊都是 undefined）。
+    this.value = ''; this.placeholder = ''; this.oninput = null; this.htmlFor = ''
     const set = new Set()
     this.classList = {
       add: c => set.add(c), remove: c => set.delete(c), contains: c => set.has(c),
@@ -57,7 +60,10 @@ export class FakeEl {
   addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn) }
   showModal() { this.open = true }
   close() { if (!this.open) return; this.open = false; for (const f of this.listeners.close ?? []) f({ type: 'close' }) }
-  focus() {}
+  // **真的記下誰有焦點**（2026-09-20）：以前這裡是空的，於是「背景輪詢把使用者正在打字的
+  // 輸入框整個換掉」這種錯，測試裡看起來跟沒事一樣 —— 文字是從 edited 重畫出來的，
+  // 掉的只有焦點與游標，而假 DOM 根本沒有焦點這回事。
+  focus() { if (globalThis.document) globalThis.document.activeElement = this }
   closest() { return null }
   contains(x) { for (let n = x; n; n = n.parent) if (n === this) return true; return false }
   /** 底下所有這個標籤的元素（照畫面順序） */
@@ -74,6 +80,21 @@ export class FakeEl {
     walk(this)
     return out
   }
+}
+
+/**
+ * 在一個輸入框裡打字。先換 value 再叫 oninput —— 瀏覽器就是這個順序，
+ * 面板的 oninput 讀的也是 `input.value`（不是事件裡的東西）。
+ */
+export function typeInto(input, text) {
+  input.value = String(text)
+  input.oninput?.({ target: input })
+}
+
+/** 勾／取消勾一個勾選框。 */
+export function toggle(input, on) {
+  input.checked = Boolean(on)
+  input.onchange?.({ target: input })
 }
 
 let mounted = 0
@@ -99,6 +120,9 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
   const doc = {
     documentElement: new FakeEl('html'),
     body: new FakeEl('body'),
+    // 瀏覽器裡沒人有焦點的時候這裡是 body，不是 null —— 照抄，不然 `box.contains(activeElement)`
+    // 在測試裡走的是跟真的頁面不一樣的那一條分支
+    activeElement: null,   // 掛好之後填成 body
     getElementById: id => els.get(id) ?? null,
     createElement: tag => new FakeEl(tag),
     createTextNode: text => Object.assign(new FakeEl('#text'), { _text: String(text) }),
@@ -117,6 +141,7 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
     api: (path, init) => { calls.push({ path, method: init?.method ?? 'GET', init }); return pageApi(path, init) },
     addEventListener: (type, fn) => (winListeners[type] ??= []).push(fn),
   }
+  doc.activeElement = doc.body
   Object.assign(globalThis, {
     document: doc, window: win, Element: FakeEl,
     location: { href: base + '/', search: '' },

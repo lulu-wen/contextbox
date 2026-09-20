@@ -648,12 +648,12 @@ The page is split into **Files** (the default) and **Your details**, switched by
   Using a section jump scrolls; it does not throw you back to Files.
 * Files has two buttons: **Open cleanup panel** and **Undo recent actions**.
 
-#### The five section tabs
+#### The six section tabs
 
-Inside the cleanup panel there are five sections: **Cleanup / Bursts / Suggested names / Filing /
-Learned**. One at a time.
+Inside the cleanup panel there are six sections: **Cleanup / Bursts / Suggested names / Filing /
+Learned / Settings**. One at a time.
 
-![The five section tabs](images/Sections.png)
+![The six section tabs](images/Sections.png)
 
 * It opens on "Cleanup".
 * The number on a tab is how many rows that section has. **A tab showing 0 is visible but not clickable** —
@@ -661,7 +661,53 @@ Learned**. One at a time.
 * **The action buttons follow the section.** In Filing you see "File" and "Undo filing", and nothing else.
 * When the section you are on empties out because you finished it, it moves to the first one that still has
   something.
+* **Settings is the exception to the two rules above.** It is not a list, so it has no count and is always
+  clickable, and it is never the section you get moved to.
 * **Demo mode hides the tab strip entirely** — only the cleanup section is real there.
+
+#### The Settings tab
+
+The **Settings** tab changes your config file from the panel, so you do not have to find
+`~/.contextbox/config.json` and edit JSON by hand.
+
+![The Settings tab](images/Settings.png)
+
+Five things can be changed here. The rest of the file — the folders it watches, where filed files go, how
+much of a PDF it reads, how large a file it will open — is shown on the same page, but you change those in
+the file itself. Where the scanner points deserves more thought than a text box.
+
+| Field | What it does | When it takes effect |
+|---|---|---|
+| **Read-only mode** | It still looks and still suggests, but nothing is moved, renamed or filed | The moment you save |
+| **Model endpoint** | The address the contents of your files are sent to. Leave it empty to run with no model at all — cleanup, duplicates and burst grouping never needed one | The moment you save |
+| **Model name** | Which model that endpoint should use, for example `Qwen3-VL-8B` | The moment you save |
+| **Key environment variable** | The *name* of the environment variable your key is kept in | The moment you save |
+| **Include screenshots in cleanup** | Adds your screenshots folder to the scan. Only screenshots in it are ever proposed, nothing else in that folder | **Not until you restart the pet** |
+
+<div markdown="span" class="alert alert-info">:information_source: **The key box wants a name, not a key.**
+Type `CONTEXTBOX_MODEL_KEY` — the name of an environment variable. Never type or paste the key itself into
+it. ContextBox reads the key out of your environment each time it needs one, so the key is never written to
+the config file, never drawn on this page, and never sent back over HTTP. Underneath the box it tells you
+whether that variable currently holds anything, and nothing more than that.</div>
+
+The four fields marked "the moment you save" are looked up again on every request, so the pet you already
+have running picks them up with no restart. The fifth is not: the cleanup scope is worked out once, when the
+pet starts, so the pet keeps scanning the old set of folders until you stop it and run `node cli.mjs pet`
+again. The line under the Save button names the fields you just changed and then says which of the two
+happened — `It is in effect now.`, or
+`Restart the pet before including screenshots in cleanup takes effect`.
+
+* **Save sends only the fields you changed**, and everything else in the config file is left exactly as it
+  is, including your own comments and any key this version does not recognise.
+* **A refused save changes nothing at all.** Point the endpoint at plain `http://` on someone else's
+  machine, or type a key variable that does not start with `CONTEXTBOX_`, and you get the reason next to
+  that one box, what you typed still in the other boxes, and a config file that was not touched.
+* **Read-only mode does not lock this page.** A switch you cannot switch back is a trap, so you can always
+  turn read-only off from here.
+* Your config file may have been hand-edited into a state ContextBox does not like. Problems it can see are
+  listed at the bottom of the page — the same sentences `doctor` prints. Ones you did not cause will not
+  block a save.
+* There is no Settings tab in demo mode, where nothing on screen is a real file of yours.
 
 #### Undo from the panel
 

@@ -288,3 +288,71 @@ describe('面板的「歸檔建議」區', () => {
     assert.ok(!ui.$('cleanup-list').textContent.includes('Nothing to clean up right now'), ui.$('cleanup-list').textContent)
   })
 })
+
+// ═══ 一列一顆「File」（2026-09-20，使用者：不用滑到最下面）═══
+
+const oneButtons = ui => rows(ui).map(r => r.all('BUTTON').find(b => b.textContent === 'File'))
+
+describe('每一列自己的「File」', () => {
+  const two = () => [
+    suggestion(),
+    suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', course: '資料結構', kind: 'Exam', toFolder: 'Courses/資料結構/Exam' }),
+  ]
+  const ok = body => ({
+    results: body.items.map(i => ({
+      itemId: i.itemId, ok: true, name: 'x.txt', toFolder: `Courses/${i.course}/${i.kind}`, to: 'x.txt', why: '',
+    })),
+    remaining: 0,
+  })
+
+  test('每一列都有一顆，而且不在 <label> 裡（點它不可以順便切掉勾選框）', async t => {
+    const ui = await open(t, { suggestions: two() })
+    assert.equal(oneButtons(ui).filter(Boolean).length, 2)
+    for (const row of rows(ui)) {
+      const label = row.all('LABEL')[0]
+      assert.ok(!label.all('BUTTON').some(b => b.textContent === 'File'),
+        '按鈕放進 label 裡，真瀏覽器點下去會連帶取消那一列的勾選')
+    }
+  })
+
+  test('**只搬那一列**，別的都不動 —— 走的是同一條 /file/apply', async t => {
+    const applied = []
+    const ui = await open(t, { suggestions: two(), onApply: body => { applied.push(body); return ok(body) } })
+    await oneButtons(ui)[1].onclick()
+    assert.deepEqual(applied.flatMap(b => b.items.map(i => i.itemId)), ['it-2'])
+    assert.equal(applied[0].items[0].course, '資料結構')
+  })
+
+  test('原本勾了別的：那幾個**不會被一起搬走**', async t => {
+    const applied = []
+    const ui = await open(t, { suggestions: two(), onApply: body => { applied.push(body); return ok(body) } })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await oneButtons(ui)[1].onclick()
+    assert.deepEqual(applied.flatMap(b => b.items.map(i => i.itemId)), ['it-2'],
+      '按第二列的按鈕，第一列勾著的檔不可以被一起搬走')
+  })
+
+  test('沒搬成（那一列還在）→ 原本的勾選放回去', async t => {
+    const ui = await open(t, {
+      suggestions: two(),
+      onApply: body => ({ results: body.items.map(i => ({ itemId: i.itemId, ok: false, why: '那個資料夾裡已經有同名的檔。' })), remaining: 0 }),
+    })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await oneButtons(ui)[1].onclick()
+    assert.deepEqual(boxes(ui).map(b => b.checked), [true, false],
+      '第一列的勾要還回去，第二列（剛剛失敗那個）不要自己勾著')
+  })
+
+  test('唯讀模式下按這一顆：一樣被擋，而且講得出原因', async t => {
+    const ui = await open(t, {
+      suggestions: two(),
+      onApply: () => { const e = new Error('Read-only mode is on, so no file gets moved.'); e.status = 403; throw e },
+    })
+    await oneButtons(ui)[0].onclick()
+    assert.match(ui.$('cleanup-result').textContent, /Read-only mode/)
+  })
+})
