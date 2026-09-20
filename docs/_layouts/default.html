@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="{{ site.lang | default: 'en-US' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+    <meta name="description" content="{{ page.description | default: site.description }}">
+    <!-- jekyll-theme-minimal 的樣式。**這一份版型蓋掉了主題自己的 default.html**，
+         唯一的理由是主題把「This project is maintained by …」寫死成 repo 擁有者一個人，
+         而這是四個人做的。樣式照樣用主題的，所以看起來跟原本一樣。 -->
+    <link rel="stylesheet" href="{{ '/assets/css/style.css?v=' | append: site.github.build_revision | relative_url }}">
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="{{ '/' | relative_url }}">{{ site.title }}</a></h1>
+        <p>{{ site.description }}</p>
+
+        <p class="view">
+          <a href="{{ site.github.repository_url | default: 'https://github.com/lulu-wen/contextbox' }}">
+            View the project on GitHub
+          </a>
+        </p>
+
+        <p>This project is maintained by
+          {% for person in site.maintainers %}
+            <a href="https://github.com/{{ person }}">{{ person }}</a>{% unless forloop.last %}{% if forloop.rindex == 2 %} and {% else %}, {% endif %}{% endunless %}
+          {% endfor %}
+        </p>
+
+        <p><small>Hosted on GitHub Pages · Theme by
+          <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </header>
+
+      <section>
+        {{ content }}
+      </section>
+
+      <footer>
+        <p><small>Apache 2.0. Nothing is deleted, and nothing moves until you approve it.</small></p>
+      </footer>
+    </div>
+  </body>
+</html>

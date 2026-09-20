@@ -21,6 +21,14 @@ plugins:
   - jemoji
   - jekyll-relative-links
 
+# 「This project is maintained by …」那一行列誰（_layouts/default.html 讀它）。
+# 主題自己那一份只印 repo 擁有者一個人，而這是四個人做的。
+maintainers:
+  - lulu-wen
+  - HahaCPY
+  - yulinglingling
+  - ttou
+
 # Notes for whoever maintains the site, not pages in it.
 exclude:
   - images/README.md

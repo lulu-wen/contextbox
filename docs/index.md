@@ -48,4 +48,15 @@ third-party code at all; the 3D pet in the browser uses a vendored copy of Three
 
 ---
 
+## Team
+
+| | |
+|---|---|
+| [lulu-wen](https://github.com/lulu-wen) | file pipeline, cleanup, model, renaming, filing, learning, docs |
+| [HahaCPY](https://github.com/HahaCPY) | facts store, form filling, the browser extension |
+| [yulinglingling](https://github.com/yulinglingling) | the pet: state machine, animation, the cleanup panel |
+| [ttou](https://github.com/ttou) | design and the 3D model |
+
+---
+
 Maintaining this site: [Publishing the site](PUBLISHING.html).
