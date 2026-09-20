@@ -483,6 +483,89 @@ async function forgetLearned(id) {
   }
 }
 
+/**
+ * 面板裡的五個小標籤（P6 之二）。
+ *
+ * **為什麼**：以前五區疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議 ——
+ * 使用者自己講的第一句話就是「不然我都要滑到好下面」。
+ *
+ * 規矩：
+ *   · 一次只顯示一區；空的那幾區標籤變灰，點不下去（但**看得到**，使用者才知道有這個功能）
+ *   · 現在這一區變空了就跳到第一個有東西的；全都空的時候留在「可以清理」（那一區會講「目前沒有待清檔案」）
+ *   · 動作按鈕跟著區塊走（data-section）：在歸檔那一區只會看到「整理」與「復原整理」
+ *   · **示範模式整條不顯示** —— 那時只有清理那一區是真的
+ */
+const PANEL_SECTIONS = [
+  { key: 'clean', label: '可以清理' },
+  { key: 'bursts', label: '連拍' },
+  { key: 'renames', label: '建議的名字' },
+  { key: 'filings', label: '歸檔' },
+  { key: 'learned', label: '它學到的' },
+]
+let panelSection = 'clean'
+/** 每一顆動作按鈕屬於哪一區（不屬於現在這一區的就收起來）。 */
+const SECTION_BUTTONS = {
+  'cleanup-apply': 'clean', 'cleanup-release': 'clean', 'cleanup-putback': 'clean',
+  'cleanup-undo': 'clean', 'cleanup-dismiss': 'clean',
+  'cleanup-rename': 'renames', 'cleanup-rename-undo': 'renames',
+  'cleanup-file': 'filings', 'cleanup-file-undo': 'filings',
+}
+
+/** 每一區現在有幾筆。空的（0）那一區的標籤會變灰。 */
+function sectionCounts() {
+  const s = session()
+  if (isDemo()) return { clean: s.candidates.length, bursts: 0, renames: 0, filings: 0, learned: 0 }
+  const inBurst = bursts.memberIds()
+  return {
+    clean: s.candidates.filter(c => !inBurst.has(c.itemId)).length + (s.needsHuman?.length ?? 0),
+    bursts: bursts.groups.length,
+    renames: renames.items.length,
+    filings: filings.items.length,
+    learned: learned.items.length,
+  }
+}
+
+/** 畫標籤列，並且把沒選到的那幾區與它們的按鈕藏起來。 */
+function renderSections() {
+  const counts = sectionCounts()
+  // 現在這一區空了就換到第一個有東西的（全空就留在「可以清理」）
+  if (!counts[panelSection]) {
+    panelSection = PANEL_SECTIONS.find(x => counts[x.key])?.key ?? 'clean'
+  }
+  const bar = $('cleanup-tabs')
+  bar.hidden = isDemo()
+  bar.replaceChildren()
+  if (!isDemo()) {
+    for (const { key, label } of PANEL_SECTIONS) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.dataset.section = key
+      b.setAttribute('role', 'tab')
+      b.setAttribute('aria-selected', String(key === panelSection))
+      b.disabled = !counts[key] && key !== panelSection
+      b.append(document.createTextNode(label))
+      const n = document.createElement('span')
+      n.className = 'cleanup-tab-n'
+      n.textContent = String(counts[key])
+      b.append(n)
+      b.onclick = () => { panelSection = key; render() }
+      bar.append(b)
+    }
+  }
+  // **照 id 拿，不要用 querySelectorAll**：面板的程式碼一律只用 getElementById，
+  // 測試那份 DOM 也只實作了它（多一個選擇器語法就多一個測不到的地方）。
+  for (const { key } of PANEL_SECTIONS) {
+    const box = $('cleanup-sec-' + key)
+    // 示範模式沒有標籤列，那時候每一區都照舊（各自的 hidden 說了算）
+    if (box) box.hidden = !isDemo() && key !== panelSection
+  }
+  if (!isDemo()) {
+    for (const [id, key] of Object.entries(SECTION_BUTTONS)) {
+      if (key !== panelSection && $(id)) $(id).hidden = true
+    }
+  }
+}
+
 function render() {
   const s = session()
   panel.dataset.mode = isDemo() ? 'demo' : 'local'
@@ -542,6 +625,9 @@ function render() {
     $('cleanup-needs-human').append(row)
   }
   summary()
+  // **一定要在 summary() 之後**：summary 會依狀態決定每顆按鈕的 hidden，
+  // 這裡再把「不屬於現在這一區」的收起來。
+  renderSections()
 }
 function result(message) {
   $('cleanup-result').hidden = false

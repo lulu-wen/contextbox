@@ -256,6 +256,15 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   /* 「它學到的事」那一區的每一列：沒有勾選框，只有一句話與「忘掉」。 */
   .cleanup-learned-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
   .cleanup-learned-row p { margin: 0; }
+  /* 面板裡的小標籤。一次只顯示一區，空的那幾區標籤變灰（點不下去）。 */
+  .cleanup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+  .cleanup-tabs button {
+    border: 1px solid #e0d6c4; background: #fbf7ef; border-radius: 999px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  .cleanup-tabs button[aria-selected="true"] { background: #4a3f2f; color: #fdfaf4; border-color: #4a3f2f; }
+  .cleanup-tabs button:disabled { opacity: .45; cursor: default; }
+  .cleanup-tabs button .cleanup-tab-n { opacity: .7; margin-left: 6px; }
   #cleanup-bursts { display: grid; gap: 10px; margin: 16px 0; }
   .cleanup-burst-shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 0 28px; }
   .cleanup-shot { width: 150px; }
@@ -406,35 +415,49 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   <!-- 上一次掃描回報的問題（稽核第三輪 R3-12b）。以前只有 CLI 的 doctor 看得到，
        面板照樣說「目前沒有待清檔案」、寵物照樣說「沒事，在發呆」。 -->
   <p id="cleanup-scan-problems" class="cleanup-note cleanup-warn" role="status" hidden></p>
+  <!-- 面板裡的小標籤（P6 之二）。五區各自一個標籤，一次只顯示一區 ——
+       以前全部疊在同一條捲軸上，使用者要滑到很下面才看得到歸檔建議。
+       標籤是動態產生的（數量會變），示範模式整條不顯示（那時只有清理那一區）。 -->
+  <div id="cleanup-tabs" class="cleanup-tabs" role="tablist" hidden></div>
   <!-- 連拍截圖（P0）。一組一列、縮圖並排，成員的縮圖上畫出差異處；沒有組的時候整區不顯示。
        縮圖是 blob: 網址（面板用帶 token 的 api 取回來的），網址上不帶 token。 -->
-  <div id="cleanup-bursts" hidden></div>
+  <div class="cleanup-section" id="cleanup-sec-bursts" data-section="bursts">
+    <div id="cleanup-bursts" hidden></div>
+  </div>
   <!-- 建議的名字（P3）。**模型的意見，不是事實**：每一列都寫著「模型認為」，
        勾起來按「改名」才會真的動檔案，旁邊永遠有「復原改名」。沒有建議的時候整區不顯示。 -->
-  <div id="cleanup-renames" hidden></div>
+  <div class="cleanup-section" id="cleanup-sec-renames" data-section="renames">
+    <div id="cleanup-renames" hidden></div>
+  </div>
   <!-- 歸檔建議（P4）。**模型的意見，不是事實**：一列一個「檔名 → 課程/作業系統/講義」，
        勾起來按「整理」才會真的搬檔，旁邊永遠有「復原整理」。沒有建議的時候整區不顯示。
        只給相對於「整理好的」資料夾的那一段 —— 絕對路徑永遠不離開後端。 -->
-  <div id="cleanup-filings" hidden></div>
+  <div class="cleanup-section" id="cleanup-sec-filings" data-section="filings">
+    <div id="cleanup-filings" hidden></div>
+  </div>
   <!-- 它學到的事（P5）。**看得到、忘得掉**：每一列「模型說 A ・ 你要 B ・ 用過 N 次」＋一個「忘掉」。
        這一區裡**沒有路徑、沒有檔名以外的東西**（後端的 preferences 表本來就只存課名、類型與
        「哪一個建議」的摘要）。什麼都沒學過的時候整區不顯示。 -->
-  <div id="cleanup-learned" hidden></div>
-  <div id="cleanup-list"></div>
-  <div id="cleanup-needs-human" class="cleanup-note"></div>
-  <p id="cleanup-summary" aria-live="polite"></p>
-  <p id="cleanup-space-note" class="cleanup-note">清理會模擬移入可復原的隔離區；不等於釋放磁碟空間。</p>
+  <div class="cleanup-section" id="cleanup-sec-learned" data-section="learned">
+    <div id="cleanup-learned" hidden></div>
+  </div>
+  <div class="cleanup-section" id="cleanup-sec-clean" data-section="clean">
+    <div id="cleanup-list"></div>
+    <div id="cleanup-needs-human" class="cleanup-note"></div>
+    <p id="cleanup-summary" aria-live="polite"></p>
+    <p id="cleanup-space-note" class="cleanup-note">清理會模擬移入可復原的隔離區；不等於釋放磁碟空間。</p>
+  </div>
   <div id="cleanup-result" role="status" hidden></div>
   <div class="cleanup-actions">
-    <button id="cleanup-apply" class="primary" type="button">確認模擬清理</button>
-    <button id="cleanup-release" type="button" hidden>放棄上次那份</button>
-    <button id="cleanup-putback" type="button" hidden>放回已經搬走的</button>
-    <button id="cleanup-undo" type="button" hidden>復原這次清理</button>
-    <button id="cleanup-rename" type="button" hidden>改名</button>
-    <button id="cleanup-rename-undo" type="button" hidden>復原改名</button>
-    <button id="cleanup-file" type="button" hidden>整理</button>
-    <button id="cleanup-file-undo" type="button" hidden>復原整理</button>
-    <button id="cleanup-dismiss" type="button">這次略過</button>
+    <button id="cleanup-apply" class="primary" type="button" data-section="clean">確認模擬清理</button>
+    <button id="cleanup-release" type="button" data-section="clean" hidden>放棄上次那份</button>
+    <button id="cleanup-putback" type="button" data-section="clean" hidden>放回已經搬走的</button>
+    <button id="cleanup-undo" type="button" data-section="clean" hidden>復原這次清理</button>
+    <button id="cleanup-rename" type="button" data-section="renames" hidden>改名</button>
+    <button id="cleanup-rename-undo" type="button" data-section="renames" hidden>復原改名</button>
+    <button id="cleanup-file" type="button" data-section="filings" hidden>整理</button>
+    <button id="cleanup-file-undo" type="button" data-section="filings" hidden>復原整理</button>
+    <button id="cleanup-dismiss" type="button" data-section="clean">這次略過</button>
     <button id="cleanup-reset" type="button">重新示範</button>
   </div>
 </dialog>
