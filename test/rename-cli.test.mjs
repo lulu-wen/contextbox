@@ -78,9 +78,9 @@ function box(t, files, { readonly = false } = {}) {
         assert.ok(item, `掃描沒收到 ${name}`)
         db.prepare(`INSERT INTO model_views
           (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-          VALUES (?,?,'text',?,?,'筆記',?,?,?,'假模型','v1',?,0)`).run(
+          VALUES (?,?,'text',?,?,'Notes',?,?,?,'假模型','v1',?,0)`).run(
           'seed-' + item.id, item.id, view.course ?? '作業系統', view.topic ?? '死結',
-          view.suggestedName, view.evidence ?? '四個必要條件', view.confidence ?? '高',
+          view.suggestedName, view.evidence ?? '四個必要條件', view.confidence ?? 'high',
           new Date().toISOString())
       }
     } finally { db.close() }
@@ -136,7 +136,7 @@ describe('node cli.mjs rename', () => {
     const b = box(t, {})
     const r = b.run('rename')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /沒有可以改名的檔/)
+    assert.match(r.out, /can be renamed/)
   })
 
   test('列出建議：原名、建議名、模型認為什麼、證據；**一個檔都不改**', t => {
@@ -150,9 +150,9 @@ describe('node cli.mjs rename', () => {
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /未命名文件 \(3\)\.txt/)
     assert.match(r.out, /→ 作業系統_死結\.txt/)
-    assert.match(r.out, /模型認為：作業系統／死結（信心 高）/)
-    assert.match(r.out, /證據：四個必要條件/)
-    assert.match(r.out, /模型的意見，不是事實/)
+    assert.match(r.out, /The model thinks: 作業系統 \/ 死結 \(confidence high\)/)
+    assert.match(r.out, /Evidence: 四個必要條件/)
+    assert.match(r.out, /not facts/)
     assert.deepEqual(b.names(), before, '`rename` 只列，不可以順手改')
     // 畫面上不可以有絕對路徑
     assert.ok(!r.out.includes(b.downloads), r.out)
@@ -163,7 +163,7 @@ describe('node cli.mjs rename', () => {
     b.seed({ '作業系統_第5章_行程排程.txt': { suggestedName: '作業系統_行程排程' } })
     const r = b.run('rename')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /沒有可以改名的檔/)
+    assert.match(r.out, /can be renamed/)
   })
 
   test('--apply 真的改，--undo 改得回來', t => {
@@ -177,7 +177,7 @@ describe('node cli.mjs rename', () => {
 
     // 改完再列一次：清單空了，但看得到「最近改過的」
     const list = b.run('rename')
-    assert.match(list.out, /最近改過的/)
+    assert.match(list.out, /Recently renamed/)
     assert.match(list.out, /未命名文件 \(3\)\.txt → 作業系統_死結\.txt/)
 
     const u = b.run('rename', '--undo')
@@ -226,7 +226,7 @@ describe('node cli.mjs rename', () => {
     b.seed({ '未命名文件 (3).txt': { suggestedName: '作業系統_死結' } })
     const r = b.run('rename', '--apply')
     assert.equal(r.code, 1, `離開碼要是 1：${r.out}`)
-    assert.match(r.out, /唯讀/)
+    assert.match(r.out, /Read-only/)
     assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
 
     const undo = b.run('rename', '--undo')
@@ -235,12 +235,12 @@ describe('node cli.mjs rename', () => {
 
   test('信心低的不列、不改', t => {
     const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
-    b.seed({ '未命名文件 (3).txt': { suggestedName: '作業系統_死結', confidence: '低' } })
+    b.seed({ '未命名文件 (3).txt': { suggestedName: '作業系統_死結', confidence: 'low' } })
     const r = b.run('rename')
-    assert.match(r.out, /沒有可以改名的檔/)
+    assert.match(r.out, /can be renamed/)
     const a = b.run('rename', '--apply')
     assert.equal(a.code, 0, a.out)
-    assert.match(a.out, /沒有可以改名的檔/)
+    assert.match(a.out, /can be renamed/)
     assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
   })
 
@@ -267,7 +267,7 @@ describe('demo 沙盒（預期行為 1）', () => {
       [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', dir, '--seed-model'],
       { encoding: 'utf8', env: { ...process.env, HOME: FAKE_HOME, USERPROFILE: FAKE_HOME }, timeout: 180_000 })
     assert.equal(setup.status, 0, setup.stdout + setup.stderr)
-    assert.match(setup.stdout, /已經預先塞了 3 筆/, '前提：示範答案塞進去了')
+    assert.match(setup.stdout, /Seeded 3 model answers/, '前提：示範答案塞進去了')
 
     const home = join(dir, 'home')
     const env = {
@@ -281,25 +281,25 @@ describe('demo 沙盒（預期行為 1）', () => {
     const out = (r.stdout ?? '') + (r.stderr ?? '')
     assert.equal(r.status, 0, out)
 
-    assert.match(out, /未命名文件 \(3\)\.txt/)
-    assert.match(out, /→ 作業系統_死結\.txt/)
+    assert.match(out, /Untitled document \(3\)\.txt/)
+    assert.match(out, /→ Operating Systems_Deadlock\.txt/)
     assert.match(out, /IMG_2041\.txt/)
-    assert.match(out, /→ 資料結構_期中考範圍\.txt/)
+    assert.match(out, /→ Data Structures_Midterm scope\.txt/)
     // named 的不在（它也有示範答案，但使用者自己取的名字最大）
     assert.ok(!out.includes('作業系統_第5章_行程排程.txt'), out)
     // 示範答案要標出來
-    assert.match(out, /［示範答案］/)
+    assert.match(out, /\[demo answer\]/)
 
     // 真的改一次、再改回來，檔案就在沙盒的 Downloads 裡
     const downloads = join(home, 'Downloads')
     const apply = spawnSync(process.execPath, [CLI, 'rename', '--apply'], { encoding: 'utf8', env, timeout: 120_000 })
     assert.equal(apply.status, 0, apply.stdout + apply.stderr)
-    assert.equal(existsSync(join(downloads, '作業系統_死結.txt')), true)
-    assert.equal(existsSync(join(downloads, '資料結構_期中考範圍.txt')), true)
-    assert.equal(existsSync(join(downloads, '作業系統_第5章_行程排程.txt')), true, 'named 的不可以被動到')
+    assert.equal(existsSync(join(downloads, 'Operating Systems_Deadlock.txt')), true)
+    assert.equal(existsSync(join(downloads, 'Data Structures_Midterm scope.txt')), true)
+    assert.equal(existsSync(join(downloads, 'operating-systems-ch5-scheduling.txt')), true, 'named 的不可以被動到')
 
     const undo = spawnSync(process.execPath, [CLI, 'rename', '--undo'], { encoding: 'utf8', env, timeout: 120_000 })
     assert.equal(undo.status, 0, undo.stdout + undo.stderr)
-    assert.equal(existsSync(join(downloads, '未命名文件 (3).txt')), true)
+    assert.equal(existsSync(join(downloads, 'Untitled document (3).txt')), true)
   })
 })

@@ -28,10 +28,13 @@ export function safeName(s) {
   return String(s ?? '').replace(CONTROL, '·')
 }
 
+/** 數字＋名詞。1 不加 s —— 畫面上的「1 files」看起來像程式壞了。 */
+export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
 export const formatBytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GB'
   : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'
 
-const why = w => safeName(w || '後端沒有給原因')
+const why = w => safeName(w || 'the backend gave no reason')
 
 /**
  * 面板講「你的哪個資料夾」時用的字（稽核第三波 U4）。以前寫死 Downloads ——
@@ -46,10 +49,10 @@ export function folderPhrase(watcher, { quoted = true } = {}) {
   const list = Array.isArray(watcher?.watching) ? watcher.watching : []
   const count = Number.isInteger(watcher?.watchingCount) ? watcher.watchingCount : 0
   const total = Math.max(count, list.length)
-  const names = list.filter(n => typeof n === 'string' && n).map(n => quoted ? `「${safeName(n)}」` : safeName(n))
-  if (!names.length) return total > 1 ? `${total} 個監看資料夾` : '監看資料夾'
-  const shown = names.slice(0, 3).join('、')
-  return names.length === total && total <= 3 ? shown : `${shown}${quoted ? '' : ' '}等 ${total} 個資料夾`
+  const names = list.filter(n => typeof n === 'string' && n).map(n => quoted ? `“${safeName(n)}”` : safeName(n))
+  if (!names.length) return total > 1 ? `${total} watched folders` : 'the watched folder'
+  const shown = names.slice(0, 3).join(', ')
+  return names.length === total && total <= 3 ? shown : `${shown} and more (${total} folders)`
 }
 
 // ── 套用的結果 ──────────────────────────────────────────────
@@ -87,33 +90,33 @@ export function applyOutcome(plan) {
 export function applyMessage(r) {
   const failed = r.failed ?? [], unknown = r.unknown ?? []
   if (r.status === 'dismissed') {
-    return { text: '這份計畫已經被放棄了，這次沒有動任何檔案。', notice: '這次沒有動任何檔案。' }
+    return { text: 'That plan was already dropped. Nothing moved this time.', notice: 'Nothing moved this time.' }
   }
   if (r.noop) {
     return {
-      text: '這次什麼都沒做：這份清單先前就已經處理過了，沒有動任何檔案。\n'
-        + '要清理別的檔案，請關掉面板再打開，重新勾選。',
-      notice: '這次沒有動任何檔案。',
+      text: 'Nothing happened this time: this list had already been dealt with, so no file moved.\n'
+        + 'To clean up other files, close the panel, open it again and tick them.',
+      notice: 'Nothing moved this time.',
     }
   }
-  const lines = [`搬進隔離區 ${r.moved} 個檔案，${formatBytes(r.bytesFreed ?? 0)}。七天內可以復原。`]
+  const lines = [`Moved ${plural(r.moved, 'file')} (${formatBytes(r.bytesFreed ?? 0)}) to quarantine. You can undo this for seven days.`]
   if (failed.length && !unknown.length) {
-    lines.push(`有 ${failed.length} 個沒搬（原檔都還在原位，沒有任何東西被刪除）：`)
-    for (const f of failed) lines.push(`・${safeName(f.name)} —— ${why(f.why)}`)
+    lines.push(`${failed.length} did not move (every original is still where it was — nothing was deleted):`)
+    for (const f of failed) lines.push(`- ${safeName(f.name)} — ${why(f.why)}`)
   } else if (unknown.length) {
-    lines.push(`有 ${failed.length + unknown.length} 個沒有確定搬好：`)
-    for (const f of failed) lines.push(`・${safeName(f.name)} —— 沒搬，原檔還在原位：${why(f.why)}`)
-    for (const u of unknown) lines.push(`・${safeName(u.name)} —— 狀態不明：${why(u.why)}`)
+    lines.push(`${failed.length + unknown.length} are not confirmed moved:`)
+    for (const f of failed) lines.push(`- ${safeName(f.name)} — did not move, the original is still where it was: ${why(f.why)}`)
+    for (const u of unknown) lines.push(`- ${safeName(u.name)} — state unknown: ${why(u.why)}`)
   }
   // 中途停下來（例如清理鎖被別的動作接走）：已經做到的照實講，但不可以說成「做完了」
   if (r.stoppedEarly) {
-    lines.push('這一次停在中途，還沒做完 —— 這份清單裡還沒處理的，下次按「繼續上次那份」會接著做。')
+    lines.push('This run stopped partway and is not finished — press “Finish the last plan” next time and it picks up the rest of this list.')
   }
-  if (r.reloadFailed) lines.push('（清單沒有重新整理成功。關掉面板再打開就會更新。）')
-  const notice = r.stoppedEarly ? '這次停在中途，還沒做完，狀態寫在面板上。'
-    : r.moved ? '整理好了！想改變心意，隨時可以復原這次清理。'
-    : unknown.length ? '這次的結果還不確定，狀態寫在面板上。'
-    : '這次一個都沒搬成，原因寫在面板上。'
+  if (r.reloadFailed) lines.push('(The list did not refresh. Close the panel and open it again to see the current state.)')
+  const notice = r.stoppedEarly ? 'This run stopped partway. The panel has the details.'
+    : r.moved ? 'All tidied up. Changed your mind? You can undo this cleanup any time.'
+    : unknown.length ? 'The result is not certain yet. The panel has the details.'
+    : 'Nothing moved this time. The panel says why.'
   return { text: lines.join('\n'), notice }
 }
 
@@ -130,31 +133,31 @@ export function applyMessage(r) {
  * - plan.others：另外還有幾份沒做完的（面板打開時查 ?pending=1 才知道），一次只提示一份。
  */
 export function pendingPlanMessage(plan) {
-  const names = plan.items.map(i => safeName(i.name)).join('、')
+  const names = plan.items.map(i => safeName(i.name)).join(', ')
   const others = plan.others > 0
-    ? `\n（另外還有 ${plan.others} 份沒做完的：處理完這一份，關掉面板再打開就會看到下一份。）` : ''
+    ? `\n(${plural(plan.others, 'more plan')} still unfinished. Deal with this one, then close the panel and open it again to see the next.)` : ''
   if (!plan.started) {
-    return `上次有一份清理沒做完：${names}（${plan.items.length} 個）。\n`
-      + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
-      + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。' + others
+    return `A cleanup from last time was never finished: ${names} (${plural(plan.items.length, 'file')}).\n`
+      + '“Finish the last plan” deals with it — only these files, not the other ones you have ticked now.\n'
+      + '“Drop the last plan” voids it: nothing moves, and these files stay on the list.' + others
   }
   if (plan.restoring) {
     // 這份已經開始復原了：後端的 apply 會回 409（RESTORE_STARTED），所以不給「繼續上次那份」
-    return `上次有一份復原做到一半中斷了：${names}（${plan.items.length} 個）。\n`
-      + '按「放回已經搬走的」會接著放回，放回去的不會再動。\n'
-      + '這份已經開始復原了，不能繼續清理，也不能放棄。'
-      + (plan.others > 0 ? `\n（另外還有 ${plan.others} 份沒做完的：處理完這一份，關掉面板再打開就會看到下一份。）` : '')
+    return `An undo from last time was interrupted partway: ${names} (${plural(plan.items.length, 'file')}).\n`
+      + '“Put back what moved” carries on putting them back; the ones already back are left alone.\n'
+      + 'This plan has started restoring, so it can neither carry on cleaning up nor be dropped.'
+      + (plan.others > 0 ? `\n(${plural(plan.others, 'more plan')} still unfinished. Deal with this one, then close the panel and open it again to see the next.)` : '')
   }
   const moved = plan.moved, unsure = plan.unsure ?? 0
-  const halfway = `${unsure} 個搬到一半、說不準在原位還是在隔離區`
-  const where = moved == null ? '其中有些可能已經在隔離區'
-    : moved > 0 ? `其中 ${moved} 個已經在隔離區` + (unsure ? `，${halfway}` : '')
-    : unsure ? `其中 ${halfway}`
-    : '目前沒有檔在隔離區'
-  return `上次有一份清理做到一半中斷了：${names}（${plan.items.length} 個），${where}。\n`
-    + '按「繼續上次那份」會接著搬這份裡還沒搬的 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
-    + '按「放回已經搬走的」會把在隔離區的放回原位，還沒搬的不會動。\n'
-    + '這份已經開始搬了，不能直接放棄。' + others
+  const halfway = `${plural(unsure, 'file')} stopped mid-move — could be in either place`
+  const where = moved == null ? 'some may already be in quarantine'
+    : moved > 0 ? `${plural(moved, 'file')} already in quarantine` + (unsure ? `, and ${halfway}` : '')
+    : unsure ? `${halfway}`
+    : 'nothing is in quarantine'
+  return `A cleanup from last time was interrupted partway: ${names} (${plural(plan.items.length, 'file')}) — ${where}.\n`
+    + '“Finish the last plan” moves the rest of this plan — only these files, not the other ones you have ticked now.\n'
+    + '“Put back what moved” returns the quarantined ones to where they were; the unmoved ones are left alone.\n'
+    + 'This plan has started moving files, so it cannot simply be dropped.' + others
 }
 
 // ── 復原的結果 ──────────────────────────────────────────────
@@ -197,14 +200,14 @@ const nameAndWhy = list => list.map(({ name, why }) => ({ name, why }))
 
 /** 沒放回的那幾行 */
 function notRestoredLines(ok, notRestored) {
-  return [`${ok} 個放回；${notRestored.length} 個沒放回：`,
-    ...notRestored.map(x => `・${safeName(x.name)} —— ${why(x.why)}`)]
+  return [`${ok} put back; ${notRestored.length} not put back:`,
+    ...notRestored.map(x => `- ${safeName(x.name)} — ${why(x.why)}`)]
 }
 
 /** 還不確定放回了沒有的那幾行（U1、U2）。**不說「沒放回」** —— 可能已經放回去了。 */
 function unconfirmedLines(unconfirmed) {
-  return [`有 ${unconfirmed.length} 個還不確定放回了沒有：`,
-    ...unconfirmed.map(x => `・${safeName(x.name)} —— ${why(x.why)}`)]
+  return [`${unconfirmed.length} not confirmed put back:`,
+    ...unconfirmed.map(x => `- ${safeName(x.name)} — ${why(x.why)}`)]
 }
 
 /**
@@ -213,33 +216,33 @@ function unconfirmedLines(unconfirmed) {
  */
 function restoreNotice(ok, notRestored, unsure = 0) {
   if (unsure) {
-    return [ok && `放回了 ${ok} 個`, notRestored && `有 ${notRestored} 個沒放回來`, `有 ${unsure} 個還不確定放回了沒有`]
-      .filter(Boolean).join('，') + '，狀態寫在面板上。'
+    return [ok && `${ok} put back`, notRestored && `${notRestored} not put back`, `${unsure} not confirmed put back`]
+      .filter(Boolean).join(', ') + '. The panel has the details.'
   }
-  if (!notRestored) return ok ? '都幫你放回來了！' : '這次沒有要放回的檔案。'
-  return ok ? `放回了 ${ok} 個，有 ${notRestored} 個沒放回來，原因寫在面板上。`
-    : '這次一個都沒放回來，原因寫在面板上。'
+  if (!notRestored) return ok ? 'Everything is back where it was.' : 'Nothing needed putting back this time.'
+  return ok ? `${ok} put back, ${notRestored} not put back. The panel says why.`
+    : 'Nothing was put back this time. The panel says why.'
 }
 
 /** 面板上「復原這次清理」與「放回已經搬走的」之後要講的話。r 是 createReal().undo() 或 putBack() 的回傳。 */
 export function undoMessage(r) {
   const notRestored = r.notRestored ?? [], unconfirmed = r.unconfirmed ?? []
   const lines = notRestored.length ? notRestoredLines(r.restored, notRestored)
-    : r.restored ? [`放回原位 ${r.restored} 個檔案。`]
+    : r.restored ? [`Put ${plural(r.restored, 'file')} back.`]
     : unconfirmed.length ? []
-    : ['這次沒有需要放回的檔案。']
+    : ['Nothing needed putting back this time.']
   for (const x of r.renamed ?? []) {
-    lines.push(`・${safeName(x.name)} 的原位置已經有同名檔案，放回來的這份叫 ${safeName(x.restoredAs)}（沒有覆蓋任何檔案）。`)
+    lines.push(`- ${safeName(x.name)} already had a file of that name where it came from, so the one put back is called ${safeName(x.restoredAs)} (nothing was overwritten).`)
   }
   if (unconfirmed.length) lines.push(...unconfirmedLines(unconfirmed))
-  if (notRestored.length) lines.push('沒放回的可以從「復原最近動作」再試一次。')
-  if (unconfirmed.length) lines.push('還不確定的，可以從「復原最近動作」看它還在不在；還列在那裡的可以再復原一次。')
+  if (notRestored.length) lines.push('The ones that did not go back can be retried from “Undo recent actions”.')
+  if (unconfirmed.length) lines.push('For the uncertain ones, check “Undo recent actions” to see whether they are still there; anything still listed can be undone again.')
   // 搬到一半中斷、復原時後端確認其實沒搬過（還在原位）的：講一句（跟歷史面板、CLI 同一個意思）。
   // 不講的話，逐項才說「按復原會把在隔離區的放回原位」，按下去只剩「這次沒有需要放回的檔案」，那個檔的下落沒交代
-  for (const x of r.neverMoved ?? []) lines.push(`・${safeName(x.name)} 當初就沒有搬走，本來就在原位。`)
+  for (const x of r.neverMoved ?? []) lines.push(`- ${safeName(x.name)} never moved in the first place; it is where it always was.`)
   // 「放回已經搬走的」（做到一半中斷的那份）：還沒搬的那幾個從來沒動過，講一句，不然使用者會以為它們也被放回了
-  if (r.untouched) lines.push(`這份裡還沒搬的 ${r.untouched} 個沒有動過。`)
-  if (r.reloadFailed) lines.push('（清單沒有重新整理成功。關掉面板再打開就會更新。）')
+  if (r.untouched) lines.push(`${plural(r.untouched, 'file')} in this plan had not moved yet and were left alone.`)
+  if (r.reloadFailed) lines.push('(The list did not refresh. Close the panel and open it again to see the current state.)')
   return { text: lines.join('\n'), notice: restoreNotice(r.restored, notRestored.length, unconfirmed.length) }
 }
 
@@ -247,21 +250,21 @@ export function undoMessage(r) {
 export function historyUndoMessage(r) {
   const notRestored = r.notRestored ?? [], unconfirmed = r.unconfirmed ?? []
   const lines = notRestored.length ? notRestoredLines(r.restoredFiles, notRestored)
-    : r.restoredFiles ? [`已復原 ${r.restored} 次清理，共 ${r.restoredFiles} 個檔案放回原位。`]
+    : r.restoredFiles ? [`Undid ${plural(r.restored, 'cleanup')} and put ${plural(r.restoredFiles, 'file')} back.`]
     : unconfirmed.length ? []
-    : [r.alreadyRestored ? `勾選的 ${r.alreadyRestored} 筆先前已經復原過了，這次沒有動任何檔案。` : '這次沒有需要放回的檔案。']
+    : [r.alreadyRestored ? `The ${r.alreadyRestored} you ticked had already been undone, so nothing moved this time.` : 'Nothing needed putting back this time.']
   if (r.alreadyRestored && (notRestored.length || r.restoredFiles || unconfirmed.length)) {
     // 前面沒有別的句子（只有「還不確定」）時，「另有」接不上
-    lines.push(lines.length ? `另有 ${r.alreadyRestored} 筆先前已復原。` : `勾選的 ${r.alreadyRestored} 筆先前已經復原過了。`)
+    lines.push(lines.length ? `Another ${r.alreadyRestored} had already been undone.` : `The ${r.alreadyRestored} you ticked had already been undone.`)
   }
   for (const x of r.renamed ?? []) {
-    lines.push(`・${safeName(x.name)} → ${safeName(x.restoredAs)}（原位置已經有同名檔案，沒有覆蓋）。`)
+    lines.push(`- ${safeName(x.name)} → ${safeName(x.restoredAs)} (a file of that name was already there; nothing was overwritten).`)
   }
   if (unconfirmed.length) {
-    lines.push(...unconfirmedLines(unconfirmed), '還列在上面紀錄裡的，就是還可以復原的，可以再勾起來試一次。')
+    lines.push(...unconfirmedLines(unconfirmed), 'Anything still listed in the record above can still be undone — tick it and try again.')
   }
   // 搬到一半中斷、其實沒搬過的（後端確認還在原位）：講一句，不然使用者會以為它不見了。CLI 印同一個意思
-  for (const x of r.neverMoved ?? []) lines.push(`・${safeName(x.name)} 當初就沒有搬走，本來就在原位。`)
+  for (const x of r.neverMoved ?? []) lines.push(`- ${safeName(x.name)} never moved in the first place; it is where it always was.`)
   return { text: lines.join('\n'), notice: restoreNotice(r.restoredFiles, notRestored.length, unconfirmed.length) }
 }
 
@@ -385,7 +388,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
       if (pendingPlan) {
         const plan = pendingPlan
         // 已經開始復原的那份，後端的 apply 一定 409 —— 不要送，直接講出口
-        if (plan.restoring) throw new Error('這份已經開始復原了，不能繼續清理。請選「放回已經搬走的」。')
+        if (plan.restoring) throw new Error('This plan has started restoring, so it cannot carry on cleaning up. Choose “Put back what moved”.')
         try { return await applyPlanId(plan.id) }
         catch (e) {
           // 伺服器明確回了錯：它說了沒做成，解鎖，讓使用者改勾選或放棄（RC8）。
@@ -406,7 +409,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
         // 那樣使用者主動勾起來的低信心檔根本不在計畫裡，勾了卻沒搬。
         const candidateIds = candidates.filter(c => selected.has(c.itemId))
           .flatMap(c => c.candidateIds).sort()
-        if (!candidateIds.length) throw new Error('請至少選擇一個檔案。')
+        if (!candidateIds.length) throw new Error('Pick at least one file.')
         if (!request || !sameIds(request.candidateIds, candidateIds)) {
           request = { requestId: uuid(), candidateIds, planId: null, uncertain: false }
         }
@@ -487,9 +490,9 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
      * **開始過的那份不送**（R2-5b）：後端一定回 409，面板也不給這顆按鈕；提示維持原樣。
      */
     async release() {
-      if (!pendingPlan) throw new Error('目前沒有要放棄的計畫。')
+      if (!pendingPlan) throw new Error('There is no plan to drop.')
       if (pendingPlan.started) {
-        throw new Error('這份已經開始搬了，不能放棄。請選「繼續上次那份」或「放回已經搬走的」。')
+        throw new Error('This plan has started moving files, so it cannot be dropped. Choose “Finish the last plan” or “Put back what moved”.')
       }
       const plan = pendingPlan
       try { await post(planPath(plan.id, 'release')) }
@@ -515,7 +518,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
      * 錯誤的處置跟「繼續」「放棄」一樣：伺服器明確回錯 → 解鎖；網路斷了 → 還是那一份。
      */
     async putBack() {
-      if (!pendingPlan?.started) throw new Error('目前沒有做到一半的計畫要放回。')
+      if (!pendingPlan?.started) throw new Error('There is no half-finished plan to put back.')
       const plan = pendingPlan
       if (!plan.inQuarantine) plan.inQuarantine = (await api(planUrl(plan.id))).items.filter(maybeInQuarantine)
       let after
@@ -547,7 +550,7 @@ export function createReal(api, { uuid = () => crypto.randomUUID() } = {}) {
     },
 
     async undo() {
-      if (!lastPlan) throw new Error('目前沒有可以復原的清理。')
+      if (!lastPlan) throw new Error('There is no cleanup to undo.')
       const before = lastPlan.inQuarantine
       const plan = await post(planPath(lastPlan.id, 'undo'))
       // 放回幾個、沒放回哪幾個，照復原前在隔離區的那些逐一對（RC9）。
@@ -626,7 +629,7 @@ export function createRealHistory(api) {
       }
       return { restored, restoredFiles, restoredItems, alreadyRestored, notRestored, unconfirmed, neverMoved, operationIds: ids, renamed }
     }
-    throw new Error('本機模式不支援這個歷史操作：' + path)
+    throw new Error('Local mode does not support this history action: ' + path)
   }
 }
 
@@ -649,8 +652,8 @@ const THUMB_PATH = /^\/cleanup\/thumb\/[^/?#]+$/
 export const BURST_GROUPS_SHOWN = 20
 
 /** 面板要講的話。similar 那一句**不可以省**：除了預設不勾，還要叫人自己看一眼。 */
-export const BURST_SIMILAR_NOTE = '這一組有看得見的變化，自己看一眼再決定。'
-export const BURST_SAME_NOTE = '這一組看起來一模一樣。'
+export const BURST_SIMILAR_NOTE = 'This group has visible differences. Take a look before you decide.'
+export const BURST_SAME_NOTE = 'This group looks identical.'
 export const burstNote = level => level === 'same' ? BURST_SAME_NOTE : BURST_SIMILAR_NOTE
 
 /**
@@ -719,9 +722,9 @@ const burstShots = g => g.members.length + 1
 export function burstAskMessage(groups) {
   const list = Array.isArray(groups) ? groups : []
   if (!list.length) return null
-  if (list.length === 1) return `這 ${burstShots(list[0])} 張截圖看起來是同一批，要留最新的就好嗎？`
+  if (list.length === 1) return `These ${burstShots(list[0])} screenshots look like one burst. Keep only the newest?`
   const total = list.reduce((n, g) => n + burstShots(g), 0)
-  return `有 ${list.length} 組截圖看起來是同一批（一共 ${total} 張），要各留最新的那張就好嗎？`
+  return `${list.length} groups of screenshots look like bursts (${total} shots in all). Keep only the newest of each?`
 }
 
 /**
@@ -737,22 +740,22 @@ export function burstAskMessage(groups) {
 export function modelOpinionLines(m) {
   if (!m || typeof m !== 'object') return null
   const pick = (v, dflt) => safeName(String(v ?? '').trim()) || dflt
-  const course = pick(m.course, '看不出來')
-  const topic = pick(m.topic, '看不出來')
-  const confidence = pick(m.confidence, '低')
+  const course = pick(m.course, 'Unknown')
+  const topic = pick(m.topic, 'Unknown')
+  const confidence = pick(m.confidence, 'low')
   const evidence = safeName(String(m.evidence ?? '').trim())
   const seeded = m.seeded === true
   return {
     seeded,
-    head: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`,
-    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
-      + '這是模型的意見，不是事實 —— 不會因為它這樣說就改名或搬檔。',
+    head: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`,
+    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
+      + "This is the model's opinion, not a fact — nothing gets renamed or moved because it said so.",
   }
 }
 
 /** 連拍區裡那一組的標題。檔名是不可信的輸入，一律 safeName。 */
 export function burstGroupLine(g) {
-  return `${burstShots(g)} 張看起來是同一批 · 會留著「${safeName(g.keep.name)}」（最新的那張）`
+  return `${burstShots(g)} shots look like one burst · keeping “${safeName(g.keep.name)}” (the newest)`
 }
 
 /**
@@ -851,20 +854,20 @@ export function renameLines(item) {
   const suggested = safeName(String(item.suggested ?? ''))
   if (!name || !suggested) return null
   const seeded = item.seeded === true
-  const course = safeName(String(item.course ?? '').trim()) || '看不出來'
-  const topic = safeName(String(item.topic ?? '').trim()) || '看不出來'
-  const confidence = safeName(String(item.confidence ?? '').trim()) || '低'
+  const course = safeName(String(item.course ?? '').trim()) || 'Unknown'
+  const topic = safeName(String(item.topic ?? '').trim()) || 'Unknown'
+  const confidence = safeName(String(item.confidence ?? '').trim()) || 'low'
   const evidence = safeName(String(item.evidence ?? '').trim())
   return {
     seeded,
     head: `${name} → ${suggested}`,
-    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`
-      + (item.learned === true ? '　課名那一段照你上次改的寫。' : ''),
-    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
-      + '這是模型的意見，不是事實 —— 你按了「改名」才會改，而且改得回來。',
+    why: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`
+      + (item.learned === true ? '  The course part is spelled the way you changed it last time.' : ''),
+    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
+      + "This is the model's opinion, not a fact — nothing changes until you press “Rename”, and it can be undone.",
     // 你上次把這個建議退回去了（P5）。**照樣列**，但不預設勾、而且畫面上要講一句。
     rejected: item.rejectedBefore === true,
-    back: item.rejectedBefore === true ? '⟲ 你上次退過這個建議，所以沒有預設勾起來。' : '',
+    back: item.rejectedBefore === true ? '⟲ You turned this suggestion down last time, so it is not ticked by default.' : '',
   }
 }
 
@@ -873,11 +876,11 @@ export function renameApplyMessage(r) {
   const results = Array.isArray(r?.results) ? r.results : []
   const ok = results.filter(x => x.ok)
   const bad = results.filter(x => !x.ok)
-  const lines = [`改好 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有改` : ''}。`]
-  for (const o of ok) lines.push(`・${safeName(o.from)} → ${safeName(o.to)}`)
-  for (const o of bad) lines.push(`・${safeName(o.from) || '這個檔'}：${why(o.why)}`)
-  if (r?.remaining) lines.push(`還有 ${r.remaining} 個沒做，再按一次就會做到它們。`)
-  if (ok.length) lines.push('反悔的話按「復原改名」，名字會改回去。')
+  const lines = [`Renamed ${ok.length}${bad.length ? `, ${bad.length} not renamed` : ''}.`]
+  for (const o of ok) lines.push(`- ${safeName(o.from)} → ${safeName(o.to)}`)
+  for (const o of bad) lines.push(`- ${safeName(o.from) || 'this file'}: ${why(o.why)}`)
+  if (r?.remaining) lines.push(`${r.remaining} still to go. Press the button again and they get done too.`)
+  if (ok.length) lines.push('Changed your mind? Press “Undo rename” and the names go back.')
   return lines.join('\n')
 }
 
@@ -886,13 +889,13 @@ export function renameUndoMessage(r) {
   const results = Array.isArray(r?.results) ? r.results : []
   const ok = results.filter(x => x.ok)
   const bad = results.filter(x => !x.ok)
-  const lines = [`改回去 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有放回` : ''}。`]
+  const lines = [`Changed ${ok.length} back${bad.length ? `, ${bad.length} not changed back` : ''}.`]
   for (const o of ok) {
     lines.push(o.restoredAs
-      ? `・原本的名字已經被別的檔佔走，放回來的這一份叫「${safeName(o.restoredAs)}」（沒有覆蓋任何檔）。`
-      : `・${safeName(o.to)}`)
+      ? `- Another file had taken the original name, so this one is called “${safeName(o.restoredAs)}” (nothing was overwritten).`
+      : `- ${safeName(o.to)}`)
   }
-  for (const o of bad) lines.push(`・沒有放回：${why(o.why)}`)
+  for (const o of bad) lines.push(`- Not changed back: ${why(o.why)}`)
   return lines.join('\n')
 }
 
@@ -940,7 +943,7 @@ export function createRenames(api) {
     /** 改名。**只送勾起來的那幾個，而且連建議的名字一起送** —— 後端不會自己猜。 */
     async apply() {
       const chosen = items.filter(i => selected.has(i.itemId))
-      if (!chosen.length) throw new Error('請先勾選要改名的檔。')
+      if (!chosen.length) throw new Error('Tick the files you want renamed first.')
       const r = await post('/rename/apply', { items: chosen.map(i => ({ itemId: i.itemId, to: i.suggested })) })
       undoable = Array.isArray(r?.results) && r.results.some(x => x.ok)
       selected = new Set()
@@ -979,22 +982,22 @@ export function filingLines(item) {
   const seeded = item.seeded === true
   // **模型說的那一句一定用模型自己的課名**（P5）：套了學到的偏好之後 `course` 是使用者的寫法，
   // 拿它來填「模型認為：⋯⋯」等於把使用者自己的話說成模型講的。舊的後端沒有這個欄位，退回 course。
-  const course = safeName(String(item.modelCourse ?? item.course ?? '').trim()) || '看不出來'
-  const topic = safeName(String(item.topic ?? '').trim()) || '看不出來'
-  const confidence = safeName(String(item.confidence ?? '').trim()) || '低'
+  const course = safeName(String(item.modelCourse ?? item.course ?? '').trim()) || 'Unknown'
+  const topic = safeName(String(item.topic ?? '').trim()) || 'Unknown'
+  const confidence = safeName(String(item.confidence ?? '').trim()) || 'low'
   const evidence = safeName(String(item.evidence ?? '').trim())
   const also = safeName(String(item.alsoKnownAs ?? '').trim())
   return {
     seeded,
     head: `${name} → ${folder}`,
-    why: `${seeded ? '［示範答案］' : ''}模型認為：${course}／${topic}（信心 ${confidence}）`
-      + (item.learned === true ? '　位置照你上次改的寫。' : ''),
-    note: (evidence ? `證據：${evidence}　` : '模型沒有給證據。　')
-      + '這是模型的意見，不是事實 —— 你按了「整理」才會搬，而且搬得回來。'
+    why: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`
+      + (item.learned === true ? '  The location is the one you moved it to last time.' : ''),
+    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
+      + "This is the model's opinion, not a fact — nothing moves until you press “File”, and it can be undone."
       // 舊資料夾**沒有被搬走、也沒有改名**（只搬不刪的延伸）：不講的話使用者會以為東西不見了
-      + (also ? `　你之前把它叫「${also}」，那個資料夾還在（沒有動它）。` : ''),
+      + (also ? `  You used to call it “${also}”; that folder is still there, untouched.` : ''),
     rejected: item.rejectedBefore === true,
-    back: item.rejectedBefore === true ? '⟲ 你上次退過這個建議，所以沒有預設勾起來。' : '',
+    back: item.rejectedBefore === true ? '⟲ You turned this suggestion down last time, so it is not ticked by default.' : '',
   }
 }
 
@@ -1003,11 +1006,11 @@ export function filingApplyMessage(r) {
   const results = Array.isArray(r?.results) ? r.results : []
   const ok = results.filter(x => x.ok)
   const bad = results.filter(x => !x.ok)
-  const lines = [`整理好 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有搬` : ''}。`]
-  for (const o of ok) lines.push(`・${safeName(o.name)} → ${safeName(o.toFolder)}/${o.to === o.name ? '' : safeName(o.to)}`)
-  for (const o of bad) lines.push(`・${safeName(o.name) || '這個檔'}：${why(o.why)}`)
-  if (r?.remaining) lines.push(`還有 ${r.remaining} 個沒做，再按一次就會做到它們。`)
-  if (ok.length) lines.push('反悔的話按「復原整理」，檔案會搬回原本的資料夾。')
+  const lines = [`Filed ${ok.length}${bad.length ? `, ${bad.length} not filed` : ''}.`]
+  for (const o of ok) lines.push(`- ${safeName(o.name)} → ${safeName(o.toFolder)}/${o.to === o.name ? '' : safeName(o.to)}`)
+  for (const o of bad) lines.push(`- ${safeName(o.name) || 'this file'}: ${why(o.why)}`)
+  if (r?.remaining) lines.push(`${r.remaining} still to go. Press the button again and they get done too.`)
+  if (ok.length) lines.push('Changed your mind? Press “Undo filing” and the files go back to the folders they came from.')
   return lines.join('\n')
 }
 
@@ -1016,13 +1019,13 @@ export function filingUndoMessage(r) {
   const results = Array.isArray(r?.results) ? r.results : []
   const ok = results.filter(x => x.ok)
   const bad = results.filter(x => !x.ok)
-  const lines = [`搬回 ${ok.length} 個${bad.length ? `，${bad.length} 個沒有搬回` : ''}。`]
+  const lines = [`Moved ${ok.length} back${bad.length ? `, ${bad.length} not moved back` : ''}.`]
   for (const o of ok) {
     lines.push(o.restoredAs
-      ? `・原本的位置已經有同名的檔，放回來的這一份叫「${safeName(o.restoredAs)}」（沒有覆蓋任何檔）。`
-      : `・${safeName(o.name)}`)
+      ? `- A file of that name was already in the original place, so this one is called “${safeName(o.restoredAs)}” (nothing was overwritten).`
+      : `- ${safeName(o.name)}`)
   }
-  for (const o of bad) lines.push(`・沒有搬回：${why(o.why)}`)
+  for (const o of bad) lines.push(`- Not moved back: ${why(o.why)}`)
   return lines.join('\n')
 }
 
@@ -1070,7 +1073,7 @@ export function createFilings(api) {
     /** 整理。**只送勾起來的那幾個，而且連課名與類型一起送** —— 後端不會自己猜。 */
     async apply() {
       const chosen = items.filter(i => selected.has(i.itemId))
-      if (!chosen.length) throw new Error('請先勾選要整理的檔。')
+      if (!chosen.length) throw new Error('Tick the files you want filed first.')
       const r = await post('/file/apply', { items: chosen.map(i => ({ itemId: i.itemId, course: i.course, kind: i.kind })) })
       undoable = Array.isArray(r?.results) && r.results.some(x => x.ok)
       selected = new Set()
@@ -1110,14 +1113,14 @@ export function learnedLines(item) {
   if (item.kind === 'rejected') {
     // 歸檔的摘要（`課程/<課名>/<類型>`）講得出來；改名的摘要是真的檔名，後端就不回了（稽核 2026-09-20）
     const about = safeName(String(item.about ?? '').trim())
-    const head = about ? `你退過「${about}」這個建議` : '你退過一個改名建議'
-    return { id: item.id, head, why: '清單還是會列它，只是不預設勾起來。' }
+    const head = about ? `You turned down the suggestion “${about}”` : 'You turned down a rename suggestion'
+    return { id: item.id, head, why: 'It still gets listed, it is just not ticked by default.' }
   }
   if (!from || !to) return null
   if (item.kind === 'file_kind') {
-    return { id: item.id, head: `${from} 的東西 ・ 你要「${to}」`, why: `用過 ${times} 次` }
+    return { id: item.id, head: `${from} files · you call them “${to}”`, why: `used ${plural(times, 'time')}` }
   }
-  return { id: item.id, head: `模型說「${from}」 ・ 你要「${to}」`, why: `用過 ${times} 次` }
+  return { id: item.id, head: `The model says “${from}” · you say “${to}”`, why: `used ${plural(times, 'time')}` }
 }
 
 /**
@@ -1152,9 +1155,9 @@ export function createLearned(api) {
 
     /** 忘掉一條。**只送使用者按的那一條** —— 這裡沒有「全清」的捷徑按鈕。 */
     async forget(id) {
-      if (!items.some(i => i.id === id)) throw new Error('那一條已經不在清單上了。')
+      if (!items.some(i => i.id === id)) throw new Error('That entry is no longer on the list.')
       await api('/learned', { method: 'DELETE', body: JSON.stringify({ ids: [id] }) })
-      const message = '忘掉了。之後的建議不會再用那個寫法。'
+      const message = 'Forgotten. Future suggestions will not use that spelling.'
       try { await this.load() } catch { /* 重載失敗不可以蓋掉結果：那一條真的刪掉了 */ }
       return { message }
     },
@@ -1211,7 +1214,7 @@ export const PREVIEW_TEXT_EXTS = ['.txt', '.md', '.csv', '.docx', '.pptx', '.pdf
 /** ISO 時間 → 本地寫法。看不懂的就原樣（照樣 safeName），不猜。 */
 function localTime(iso) {
   const t = Date.parse(iso)
-  return Number.isFinite(t) ? new Date(t).toLocaleString('zh-TW') : safeName(String(iso ?? ''))
+  return Number.isFinite(t) ? new Date(t).toLocaleString('en-US') : safeName(String(iso ?? ''))
 }
 
 /**
@@ -1223,7 +1226,7 @@ export function previewLines(view) {
   const name = safeName(String(view.name ?? ''))
   const ext = safeName(String(view.ext ?? '')).toLowerCase()
   const size = Number(view.bytes)
-  const parts = [formatBytes(Number.isFinite(size) && size >= 0 ? size : 0), '最後修改 ' + localTime(view.mtime)]
+  const parts = [formatBytes(Number.isFinite(size) && size >= 0 ? size : 0), 'last modified ' + localTime(view.mtime)]
   if (ext) parts.push(ext)
   const text = typeof view.text === 'string' && view.text !== '' ? safeText(view.text) : null
   const image = typeof view.image === 'string' && THUMB_PATH.test(view.image) ? view.image : null
@@ -1231,15 +1234,15 @@ export function previewLines(view) {
     name,
     meta: parts.join(' · '),
     // 「為什麼會被列出來」就是使用者要的判斷材料。後端沒給就照實說，不要編一個理由
-    why: '為什麼列出來：' + (safeName(String(view.why ?? '').trim()) || '（後端沒有說）'),
+    why: 'Why it is listed: ' + (safeName(String(view.why ?? '').trim()) || '(the backend did not say)'),
     text,
     image,
     truncated: text !== null && view.truncated === true,
-    more: '只顯示前面一段，這個檔還有更多。',
+    more: 'Showing the beginning only — there is more in this file.',
     // 沒有文字也沒有圖的時候，要講清楚是哪一種「沒有」
     empty: text !== null || image !== null ? null
-      : PREVIEW_TEXT_EXTS.includes(ext) ? '還沒讀到這個檔的內容。'
-      : '這個檔沒有可以顯示的內容。大小與最後修改在上面，要不要留請自己決定。',
+      : PREVIEW_TEXT_EXTS.includes(ext) ? 'This file has not been read yet.'
+      : 'There is nothing in this file to show. Its size and last-modified time are above; it is your call whether to keep it.',
   }
 }
 
@@ -1290,9 +1293,9 @@ export function createPreviews(api, { createUrl, revokeUrl } = {}) {
         }
         let got
         try { got = await api('/cleanup/preview/' + encodeURIComponent(id)) }
-        catch (e) { return bad(e?.message ?? '讀不到這個檔的內容。') }
+        catch (e) { return bad(e?.message ?? "Could not read this file's contents.") }
         const view = got && typeof got === 'object' ? got : null
-        if (!view) return bad('讀不到這個檔的內容。')
+        if (!view) return bad("Could not read this file's contents.")
         const out = { ok: true, view }
         failed.delete(id)
         cache.set(id, out)

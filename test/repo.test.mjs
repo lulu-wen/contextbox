@@ -674,16 +674,16 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
 // ═══ 第三波之二 ・ 根目錄 README 照現況寫 ═══════════════════════
 
 describe('面板說明照現況寫（第三波之二）', () => {
-  // 2026-09-20：README 改寫成作品說明（給外面的人看的），面板那一整段搬到 docs/面板.md。
+  // 2026-09-20：README 改寫成作品說明（給外面的人看的），面板那一整段搬到 docs/panel.md。
   // 這一組檢查跟的是**內容**不是檔名，所以換檔案就好，該守的還是一樣要守。
-  const md = readFileSync(join(REPO, 'docs', '面板.md'), 'utf8')
+  const md = readFileSync(join(REPO, 'docs', 'panel.md'), 'utf8')
   const demoJs = readFileSync(join(REPO, 'core', 'assets', 'cleanup-demo.js'), 'utf8')
 
   test('按 D 的範例來源：寫 demo 真的讀的那一份（core/assets/demo-candidates.json），份數也對', () => {
     // demo 讀的是 /assets/demo-candidates.json（server.ts 對到 core/assets/）—— 不是 docs/api 的產生器輸出
     assert.match(demoJs, /fetch\('\/assets\/demo-candidates\.json'\)/, '前提：demo 讀的是這一份')
     const line = md.split('\n').find(l => /按 \*\*D\*\*/.test(l)) ?? ''
-    assert.ok(line, 'docs/面板.md 沒有講按 D')
+    assert.ok(line, 'docs/panel.md 沒有講按 D')
     assert.ok(line.includes('`core/assets/demo-candidates.json`'), `範例來源寫錯了：${line}`)
     assert.ok(!md.includes('docs/api/cleanup-candidates.json'), 'docs/api 的範例會隨產生器重產，demo 不讀它')
     const n = JSON.parse(readFileSync(join(REPO, 'core', 'assets', 'demo-candidates.json'), 'utf8')).candidates.length
@@ -756,7 +756,7 @@ describe('docs/cli.md（RC13）', () => {
 
   test('「放棄那一份」的建議是 release，不可以是 undo', () => {
     // 建議 ＝ 帶指令的那一行（解釋是什麼意思的說明文字不算）
-    const lines = md.split('\n').filter(l => /放棄那一份/.test(l) && /\bcleanup [a-z]+/.test(l))
+    const lines = md.split('\n').filter(l => /Drop that plan/.test(l) && /\bcleanup [a-z]+/.test(l))
     assert.ok(lines.length, 'cli.md 找不到「放棄那一份」那一條建議')
     for (const l of lines) {
       assert.match(l, /cleanup release/, `「放棄那一份」要叫人 release：${l}`)
@@ -806,7 +806,7 @@ describe('docs/cli.md（RC13）', () => {
       })
       assert.equal(r.status, 1, `前提：CLI 撞到 CONFLICT：\n${r.stdout}${r.stderr}`)
       const lines = r.stdout.split('\n')
-      const from = lines.findIndex(l => /兩個選擇：$/.test(l))
+      const from = lines.findIndex(l => /Two choices:$/.test(l))
       assert.ok(from >= 0, `前提：CLI 印了選項：\n${r.stdout}`)
       return lines.slice(from).filter(Boolean).map(l => l.replaceAll(plan.id, '5c1e…'))
     } finally { rmSync(home, { recursive: true, force: true }) }
@@ -847,7 +847,7 @@ describe('docs/cli.md（RC13）', () => {
   })
 
   test('unknown 的建議跟 CLI 真的印的一樣', () => {
-    const said = '搬到一半中斷，檔案可能已經在隔離區，執行 node cli.mjs doctor 檢查'
+    const said = 'interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check'
     assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes(said), '前提：CLI 印的是這一句')
     assert.ok(md.includes(said), 'cli.md 寫的建議跟 CLI 印的不一樣')
   })
@@ -944,14 +944,14 @@ describe('docs/cli.md（RC13）', () => {
     assert.doesNotMatch(md, /可重試|仍可重跑/)
     assert.match(md, /`apply <已經套用過的計畫>`[^\n]*N 是 0/, '唯讀模式 apply 套用過的計畫：會清掉 0 個')
     const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
-    assert.ok(cli.includes('再套用不會重試沒搬成的') && md.includes('再套用不會重試沒搬成的'), '唯讀模式那一句跟 CLI 印的一樣')
+    assert.ok(cli.includes('Applying again does not retry what failed') && md.includes('Applying again does not retry what failed'), '唯讀模式那一句跟 CLI 印的一樣')
   })
 
   test('cancelled 怎麼印跟 CLI 一樣：沒有處理，本來就在原位', () => {
     const row = md.split('\n').find(l => l.startsWith('| `cancelled`')) ?? ''
-    assert.match(row, /沒有處理/, row)
-    assert.match(row, /本來就在原位/, row)
-    assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes('沒有處理：計畫中途停了或放棄了，本來就在原位'), '前提：CLI 印的是這一句')
+    assert.match(row, /not handled/, row)
+    assert.match(row, /never moved/, row)
+    assert.ok(readFileSync(join(REPO, 'cli.mjs'), 'utf8').includes('not handled: the plan stopped or was dropped; the file never moved'), '前提：CLI 印的是這一句')
   })
 
   test('undo 的離開碼只看逐項，不看計畫的 status', () => {
@@ -969,13 +969,13 @@ describe('docs/cli.md（RC13）', () => {
   test('doctor 的新段落：中斷的計畫（跟 CLI 印的同一個樣子）、掃描問題、OneDrive、寵物還擔不擔心', () => {
     const sec = md.split(/^### /m).find(x => x.startsWith('`doctor`')) ?? ''
     for (const [what, re] of [
-      ['中斷的計畫', /中斷計畫/], ['放回', /cleanup undo 5c1e…/], ['做完', /cleanup apply 5c1e…/],
+      ['中斷的計畫', /Interrupted \d+ plan/], ['放回', /cleanup undo 5c1e…/], ['做完', /cleanup apply 5c1e…/],
       ['掃描問題', /掃描問題/], ['OneDrive', /OneDrive[^\n]*雲端/], ['跟寵物同一個判斷', /還在為它擔心/],
     ]) assert.match(sec, re, `doctor 那一節沒寫 ${what}`)
     // 中斷計畫那幾行照 CLI 真的印的樣子（數字、時間、id 換掉再比）
     const cli = readFileSync(join(REPO, 'cli.mjs'), 'utf8')
-    for (const said of ['個檔，', '個已經在隔離區', '把已經搬走的放回原位：node cli.mjs cleanup undo', '把它做完：node cli.mjs cleanup apply',
-      '做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：']) {
+    for (const said of ['files, ', 'already in quarantine', 'Put back what already moved: node cli.mjs cleanup undo', 'Finish it: node cli.mjs cleanup apply',
+      'stopped partway (killed mid-apply, a crash, or Ctrl+C):']) {
       assert.ok(cli.includes(said), `前提：CLI 印的有「${said}」`)
       assert.ok(sec.includes(said), `doctor 那一節跟 CLI 印的不一樣，少了「${said}」`)
     }
@@ -1739,7 +1739,7 @@ describe('R3-17 apply 的新欄位 noop／stoppedEarly 要寫進文件', () => {
   test('README 講了 stoppedEarly：還沒做完就停了，之後接得下去', () => {
     const line = md.split('\n').find(l => /`stoppedEarly`/.test(l) && /\|/.test(l)) ?? ''
     assert.ok(line, 'README 的欄位表裡沒有 stoppedEarly')
-    assert.match(line, /停|中斷/, '要講它是「停在中途」')
+    assert.match(line, /停|nterrupted/, '要講它是「停在中途」')
     assert.match(line, /接著|接得下去|重試/, '要講之後接得下去')
   })
 

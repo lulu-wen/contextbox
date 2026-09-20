@@ -35,7 +35,7 @@ import {
 import { createPlan } from '../core/cleanup-plans.ts'
 import { sandbox, DAY, OS_DEADLOCK, DS_MIDTERM, OS_SCHEDULING } from './helpers/rename.mjs'
 
-const HIGH = { course: '作業系統', topic: '死結', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: '高' }
+const HIGH = { course: '作業系統', topic: '死結', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: 'high' }
 
 /** 一個只有「未命名文件 (3).txt」的沙盒，模型已經給了高信心的建議。 */
 function one(t, name = '未命名文件 (3).txt', view = HIGH, content = OS_DEADLOCK) {
@@ -223,8 +223,8 @@ describe('建議清單', () => {
       '作業系統_第5章_行程排程.txt': OS_SCHEDULING,
     })
     s.seed('未命名文件 (3).txt', HIGH)
-    s.seed('IMG_2041.txt', { course: '資料結構', topic: '期中考範圍', suggestedName: '資料結構_期中考範圍', evidence: '考試時間', confidence: '高' })
-    s.seed('作業系統_第5章_行程排程.txt', { course: '作業系統', topic: '行程排程', suggestedName: '作業系統_行程排程', evidence: 'FCFS', confidence: '高' })
+    s.seed('IMG_2041.txt', { course: '資料結構', topic: '期中考範圍', suggestedName: '資料結構_期中考範圍', evidence: '考試時間', confidence: 'high' })
+    s.seed('作業系統_第5章_行程排程.txt', { course: '作業系統', topic: '行程排程', suggestedName: '作業系統_行程排程', evidence: 'FCFS', confidence: 'high' })
 
     const names = renameSuggestions(s.db, s.scope).items.map(i => i.name)
     assert.deepEqual(names.sort(), ['IMG_2041.txt', '未命名文件 (3).txt'])
@@ -232,17 +232,17 @@ describe('建議清單', () => {
   })
 
   test('預期行為 2：信心「低」的不在清單上', t => {
-    const s = one(t, '未命名文件 (3).txt', { ...HIGH, confidence: '低' })
+    const s = one(t, '未命名文件 (3).txt', { ...HIGH, confidence: 'low' })
     assert.deepEqual(renameSuggestions(s.db, s.scope).items, [])
-    assert.equal(confidentEnough('低'), false)
+    assert.equal(confidentEnough('low'), false)
     assert.equal(confidentEnough(''), false, '講不出信心的一律當成不夠有把握')
     assert.equal(confidentEnough(undefined), false)
-    assert.equal(confidentEnough('高'), true)
-    assert.equal(confidentEnough('中'), true)
+    assert.equal(confidentEnough('high'), true)
+    assert.equal(confidentEnough('medium'), true)
   })
 
   test('信心「中」的照樣提議', t => {
-    const s = one(t, '未命名文件 (3).txt', { ...HIGH, confidence: '中' })
+    const s = one(t, '未命名文件 (3).txt', { ...HIGH, confidence: 'medium' })
     assert.equal(renameSuggestions(s.db, s.scope).items.length, 1)
   })
 
@@ -268,7 +268,7 @@ describe('建議清單', () => {
     const id = s.idOf('未命名文件 (3).zip')
     s.db.prepare(`INSERT INTO model_views
       (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-      VALUES (?,?,'text','作業系統','死結','筆記','作業系統_死結','四個必要條件','高','假模型','v1',?,0)`)
+      VALUES (?,?,'text','作業系統','死結','Notes','作業系統_死結','四個必要條件','high','假模型','v1',?,0)`)
       .run('k-' + id, id, new Date().toISOString())
     // 前提：沒有計畫的時候提議得出來
     assert.equal(renameSuggestions(s.db, s.scope).items.length, 1, '前提：本來提議得出來')
@@ -276,7 +276,7 @@ describe('建議清單', () => {
     createPlan(s.db)
     assert.deepEqual(renameSuggestions(s.db, s.scope).items, [], '在計畫裡的檔不可以被提議')
     const row = s.rowOf('未命名文件 (3).zip')
-    assert.match(whyNotRenamable(s.db, row, s.scope), /清理計畫/)
+    assert.match(whyNotRenamable(s.db, row, s.scope), /cleanup plan/)
   })
 
   test('預期行為 9：十分鐘內還在變動的檔不提議', t => {
@@ -287,7 +287,7 @@ describe('建議清單', () => {
     utimesSync(join(s.downloads, '未命名文件 (3).txt'), now, now)
     s.db.prepare('UPDATE file_items SET mtime=? WHERE id=?').run(now.toISOString(), s.itemId)
     assert.deepEqual(renameSuggestions(s.db, s.scope).items, [])
-    assert.match(whyNotRenamable(s.db, s.rowOf('未命名文件 (3).txt'), s.scope), /十分鐘/)
+    assert.match(whyNotRenamable(s.db, s.rowOf('未命名文件 (3).txt'), s.scope), /ten minutes/)
   })
 
   test('status 是 new 的不提議（還在下載）', t => {
@@ -308,7 +308,7 @@ describe('建議清單', () => {
     assert.equal(row.naming, 'untitled', '前提：它是「沒取名」的')
     s.seedRaw('未命名文件 (3).lnk', HIGH)
     assert.deepEqual(renameSuggestions(s.db, s.scope).items, [])
-    assert.match(whyNotRenamable(s.db, row, s.scope), /受保護/)
+    assert.match(whyNotRenamable(s.db, row, s.scope), /protected/)
   })
 
   test('清單上沒有絕對路徑，而且標得出來是不是示範答案', t => {
@@ -434,7 +434,7 @@ describe('改名', () => {
         assert.doesNotMatch(got.to, /[\u0000-\u001f\u202e]/)
         assert.equal(existsSync(join(s.downloads, got.to)), true)
       } else {
-        assert.match(got.why, /名字|建議/)
+        assert.match(got.why, /name|suggest/)
         assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true, '沒改成就要留在原地')
       }
     }
@@ -445,12 +445,12 @@ describe('改名', () => {
     const id = s.idOf('未命名文件 (3).zip')
     s.db.prepare(`INSERT INTO model_views
       (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-      VALUES (?,?,'text','作業系統','死結','筆記','作業系統_死結','證據','高','假模型','v1',?,0)`)
+      VALUES (?,?,'text','作業系統','死結','Notes','作業系統_死結','證據','high','假模型','v1',?,0)`)
       .run('k-' + id, id, new Date().toISOString())
     createPlan(s.db)
     const r = applyRenames(s.db, [{ itemId: id, to: '作業系統_死結' }], s.scope)
     assert.equal(r.results[0].ok, false)
-    assert.match(r.results[0].why, /清理計畫/)
+    assert.match(r.results[0].why, /cleanup plan/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).zip')), true)
   })
 
@@ -460,7 +460,7 @@ describe('改名', () => {
     utimesSync(join(s.downloads, '未命名文件 (3).txt'), now, now)
     const r = applyRenames(s.db, [{ itemId: s.itemId, to: '作業系統_死結' }], s.scope)
     assert.equal(r.results[0].ok, false)
-    assert.match(r.results[0].why, /十分鐘/)
+    assert.match(r.results[0].why, /ten minutes/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
   })
 
@@ -490,7 +490,7 @@ describe('改名', () => {
 
   test('唯讀模式一個檔都不改', t => {
     const s = one(t)
-    assert.throws(() => applyRenames(s.db, [{ itemId: s.itemId }], { ...s.scope, readonly: true }), /唯讀/)
+    assert.throws(() => applyRenames(s.db, [{ itemId: s.itemId }], { ...s.scope, readonly: true }), /ead-only/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
   })
 
@@ -508,7 +508,7 @@ describe('改名', () => {
     linkSync(join(s.downloads, '未命名文件 (3).txt'), join(s.dir, '另一個名字'))
     const r = applyRenames(s.db, [{ itemId: s.itemId, to: '作業系統_死結' }], s.scope)
     assert.equal(r.results[0].ok, false, '被硬鏈結的檔不可以改名')
-    assert.match(r.results[0].why, /硬鏈結/)
+    assert.match(r.results[0].why, /hard-link/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
   })
 
@@ -523,7 +523,7 @@ describe('改名', () => {
     symlinkSync(real, join(s.downloads, '未命名文件 (3).txt'))
     const r = applyRenames(s.db, [{ itemId: s.itemId, to: '作業系統_死結' }], s.scope)
     assert.equal(r.results[0].ok, false, '捷徑不可以被改名')
-    assert.match(r.results[0].why, /捷徑/)
+    assert.match(r.results[0].why, /symlink/)
     assert.equal(existsSync(real), true)
     assert.equal(existsSync(join(s.downloads, '作業系統_死結.txt')), false)
   })
@@ -595,9 +595,9 @@ describe('復原', () => {
 
   test('沒有東西可以復原就講清楚', t => {
     const s = one(t)
-    assert.throws(() => undoRenames(s.db, { last: true }, s.scope), /沒有可以復原/)
-    assert.throws(() => undoRenames(s.db, { ids: ['不存在'] }, s.scope), /找不到/)
-    assert.throws(() => undoRenames(s.db, {}, s.scope), /要指名/)
+    assert.throws(() => undoRenames(s.db, { last: true }, s.scope), /There is no rename to undo/)
+    assert.throws(() => undoRenames(s.db, { ids: ['不存在'] }, s.scope), /Cannot find/)
+    assert.throws(() => undoRenames(s.db, {}, s.scope), /Name the ids/)
   })
 
   test('復原兩次不會出事（第二次說「本來就已經復原過了」）', t => {
@@ -606,14 +606,14 @@ describe('復原', () => {
     undoRenames(s.db, { ids: [a.results[0].id] }, s.scope)
     const again = undoRenames(s.db, { ids: [a.results[0].id] }, s.scope)
     assert.equal(again.results[0].ok, true)
-    assert.match(again.results[0].why, /已經復原過/)
+    assert.match(again.results[0].why, /had already been undone/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
   })
 
   test('唯讀模式不復原', t => {
     const s = one(t)
     const a = applyRenames(s.db, [{ itemId: s.itemId }], s.scope)
-    assert.throws(() => undoRenames(s.db, { ids: [a.results[0].id] }, { ...s.scope, readonly: true }), /唯讀/)
+    assert.throws(() => undoRenames(s.db, { ids: [a.results[0].id] }, { ...s.scope, readonly: true }), /ead-only/)
     assert.equal(existsSync(join(s.downloads, '作業系統_死結.txt')), true)
   })
 
@@ -686,7 +686,7 @@ describe('中斷之後的收尾', () => {
     s.db.exec('DROP TRIGGER no_follow')
     const row = s.db.prepare('SELECT status, error FROM renames WHERE id=?').get(id)
     assert.equal(row.status, 'started')
-    assert.match(row.error ?? '', /收尾失敗/, '要留下線索')
+    assert.match(row.error ?? '', /Tidying up failed/, '要留下線索')
     assert.equal(recoverInterruptedRenames(s.db).recovered, 1, '擋住的原因排除之後收得掉')
   })
 
@@ -721,7 +721,7 @@ describe('中斷之後的收尾', () => {
     assert.equal(recoverInterruptedRenames(s.db).recovered, 1)
     const row = s.db.prepare('SELECT * FROM renames WHERE id=?').get(id)
     assert.equal(row.status, 'reverted')
-    assert.match(row.error, /還在原位/)
+    assert.match(row.error, /never changed/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
   })
 
@@ -735,7 +735,7 @@ describe('中斷之後的收尾', () => {
     recoverInterruptedRenames(s.db)
     const row = s.db.prepare('SELECT * FROM renames WHERE id=?').get(id)
     assert.equal(row.status, 'failed')
-    assert.match(row.error, /人工確認/)
+    assert.match(row.error, /Check it yourself/)
   })
 
   test('還沒收尾的那個檔，清單上先不提議', t => {
@@ -751,7 +751,7 @@ describe('中斷之後的收尾', () => {
     assert.equal(s.db.prepare('SELECT status FROM renames WHERE id=?').get(id).status, 'done')
     // 收尾之後它已經是 named，所以不會再被改一次
     assert.equal(r.results[0].ok, false)
-    assert.match(r.results[0].why, /已經有名字/)
+    assert.match(r.results[0].why, /already has a name/)
     assert.equal(existsSync(join(s.downloads, '作業系統_死結.txt')), true)
   })
 
@@ -788,7 +788,7 @@ describe('稽核 ・ 復原也是改名，一樣要看清理計畫（2026-09-20�
     const itemId = s.idOf('未命名文件 (3).zip')
     s.db.prepare(`INSERT INTO model_views
       (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-      VALUES (?,?,'text','作業系統','死結','筆記','作業系統_死結','四個必要條件','高','假模型','v1',?,0)`)
+      VALUES (?,?,'text','作業系統','死結','Notes','作業系統_死結','四個必要條件','high','假模型','v1',?,0)`)
       .run('k-' + itemId, itemId, new Date().toISOString())
 
     const r = applyRenames(s.db, [{ itemId, to: '作業系統_死結.zip' }], s.scope)
@@ -798,7 +798,7 @@ describe('稽核 ・ 復原也是改名，一樣要看清理計畫（2026-09-20�
 
     const back = undoRenames(s.db, { ids: [r.results[0].id] }, s.scope)
     assert.equal(back.results[0].ok, false, '復原也是改名，計畫的快照會對不上')
-    assert.match(back.results[0].why, /清理計畫/)
+    assert.match(back.results[0].why, /cleanup plan/)
     assert.equal(existsSync(join(s.downloads, '作業系統_死結.zip')), true, '檔案不可以被動')
     assert.equal(s.db.prepare('SELECT status FROM renames WHERE id=?').get(r.results[0].id).status, 'done',
       '紀錄要留著 —— 計畫處理完之後還復原得回去')

@@ -421,7 +421,7 @@ describe('same 的門檻（字面值，放寬就會紅）：原圖上每個像�
     const b = { ...infoOf({ width: W, height: H, gray: g2 }), gray: g2 }
     assert.deepEqual([a.fine.w, a.fine.h], [640, 360])
     const r = fineCompare(a.fine, b.fine, 3)
-    assert.deepEqual([r.strong, r.faint, r.notSame], [0, 0, 'unverified'], '細比對看不出來')
+    assert.deepEqual([r.strong, r.faint, r.notSame], [0, 0, 'unverified'], '細比對Unknown')
     const c = compareImages(a, b)
     assert.equal(c.level, 'similar')
     assert.equal(c.reason, '')

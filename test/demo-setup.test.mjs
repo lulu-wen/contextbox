@@ -53,7 +53,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
 
     const r = run(['--dir', state, '--reset'], { HOME: home, USERPROFILE: home })
     assert.notEqual(r.code, 0, `應該拒絕，實際輸出：${r.out}`)
-    assert.match(r.out, /不敢/)
+    assert.match(r.out, /Not touching it|left alone/)
     assert.equal(readFileSync(join(state, 'quarantine', 'plan-1', 'content'), 'utf8'), '使用者的檔',
       '隔離區裡的檔一個都不可以被刪')
     assert.equal(existsSync(join(state, 'config.json')), true)
@@ -67,7 +67,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
     writeFileSync(join(fake, 'quarantine', 'x'), '重要')
     const r = run(['--dir', fake, '--reset'])
     assert.notEqual(r.code, 0)
-    assert.match(r.out, /不是這支程式建的/)
+    assert.match(r.out, /is not a demo sandbox this script built/)
     assert.equal(existsSync(join(fake, 'quarantine', 'x')), true)
   })
 
@@ -79,7 +79,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
     symlinkSync(home, link)
     const r = run(['--dir', link], { HOME: home, USERPROFILE: home })
     assert.notEqual(r.code, 0, r.out)
-    assert.match(r.out, /家目錄/)
+    assert.match(r.out, /home directory/)
   })
 
   test('真的沙盒：建得起來、記號檔在、--reset 收得掉，而且 Downloads 裡的檔沒有被動', t => {
@@ -88,7 +88,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
     const made = run(['--dir', sandbox])
     assert.equal(made.code, 0, made.out)
     assert.equal(existsSync(join(sandbox, '.contextbox-demo-sandbox')), true, '記號檔要寫出來')
-    const before = readFileSync(join(sandbox, 'home', 'Downloads', '空的.txt'), 'utf8')
+    const before = readFileSync(join(sandbox, 'home', 'Downloads', 'empty.txt'), 'utf8')
 
     writeFileSync(join(sandbox, 'data.db'), 'x')
     mkdirSync(join(sandbox, 'quarantine'), { recursive: true })
@@ -96,7 +96,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
     assert.equal(r.code, 0, r.out)
     assert.equal(existsSync(join(sandbox, 'data.db')), false, '紀錄要清掉')
     assert.equal(existsSync(join(sandbox, 'quarantine')), false)
-    assert.equal(readFileSync(join(sandbox, 'home', 'Downloads', '空的.txt'), 'utf8'), before,
+    assert.equal(readFileSync(join(sandbox, 'home', 'Downloads', 'empty.txt'), 'utf8'), before,
       'Downloads 裡的檔不可以被動')
   })
 

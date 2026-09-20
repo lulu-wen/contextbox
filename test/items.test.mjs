@@ -117,7 +117,7 @@ describe('狀態', () => {
   })
 
   test('沒有這筆就丟例外，不要安靜地什麼都沒做', () => {
-    assert.throws(() => items.setStatus('不存在的-id', 'applied'), /沒有這筆/)
+    assert.throws(() => items.setStatus('不存在的-id', 'applied'), /No such/)
   })
 })
 
@@ -190,12 +190,12 @@ describe('搬到已經有東西的位置', () => {
   test('不覆蓋別人的那一列，而且錯誤講得出是哪一種', () => {
     const a = items.add(file('q1.png', 'aaa')).item
     const b = items.add(file('q2.png', 'bbb')).item
-    assert.throws(() => items.setPath(a.id, b.path), /不覆蓋/)
+    assert.throws(() => items.setPath(a.id, b.path), /not overwritten/)
     assert.equal(items.get(a.id).path, a.path, '失敗就不該動到原本的路徑')
   })
 
   test('沒有這筆就講清楚', () => {
-    assert.throws(() => items.setPath('不存在的-id', '/x/y.png'), /沒有這筆/)
+    assert.throws(() => items.setPath('不存在的-id', '/x/y.png'), /No such/)
   })
 })
 

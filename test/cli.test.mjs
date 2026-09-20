@@ -72,12 +72,12 @@ describe('doctor', () => {
   test('跑得起來，而且講得出監看有沒有在跑', () => {
     const r = run('doctor')
     assert.equal(r.code, 0)
-    assert.match(r.out, /監看/)
-    assert.match(r.out, /從來沒跑過/, '沒人在看的時候要講清楚，不是顯示一切正常')
+    assert.match(r.out, /Watch/)
+    assert.match(r.out, /never ran/, '沒人在看的時候要講清楚，不是顯示一切正常')
   })
 
   test('模型沒設定就直說，不要假裝沒事', () => {
-    assert.match(run('doctor').out, /模型\s+✗ 還沒設定/)
+    assert.match(run('doctor').out, /Model\s+✗ not configured/)
   })
 })
 
@@ -85,7 +85,7 @@ describe('propose 的離開碼', () => {
   test('新檔案：0', () => {
     const r = run('propose', put('a.png'))
     assert.equal(r.code, 0)
-    assert.match(r.out, /收了 1 個新檔案/)
+    assert.match(r.out, /Took in 1 new file/)
   })
 
   test('已經收過了也是 0 —— 那是成功', () => {
@@ -95,18 +95,18 @@ describe('propose 的離開碼', () => {
     assert.equal(run('propose', p).code, 0)
     const again = run('propose', p)
     assert.equal(again.code, 0, '「已經收過了」不是失敗')
-    assert.match(again.out, /之前就收過/)
+    assert.match(again.out, /already known/)
   })
 
   test('被擋下來：非 0', () => {
     assert.notEqual(run('propose', '/etc/hosts').code, 0)
-    assert.match(run('propose', '/etc/hosts').out, /不在監看資料夾裡/)
+    assert.match(run('propose', '/etc/hosts').out, /not inside a watched folder/)
   })
 
   test('一半成功一半被擋：算成功，但要講清楚', () => {
     const r = run('propose', put('c.png'), '/etc/hosts')
     assert.equal(r.code, 0)
-    assert.match(r.out, /1 個被擋下/)
+    assert.match(r.out, /1 were turned away/)
   })
 
   test('沒給路徑：非 0', () => {
@@ -130,7 +130,7 @@ describe('search 不可以崩', () => {
     // （發票、收據、學費），所以短詞要走另一條路。
     const r = run('search', '發票')
     assert.equal(r.code, 0)
-    assert.match(r.out, /找不到|還沒被看懂/)
+    assert.match(r.out, /Nothing found|No document has been read yet/)
   })
 
   test('沒給字詞：非 0', () => {
@@ -176,7 +176,7 @@ describe('doctor 的心跳不可以說謊', () => {
     db.close()
 
     const r = run('doctor')
-    assert.match(r.out, /已經不在了/, '行程死掉就要直說')
+    assert.match(r.out, /is gone/, '行程死掉就要直說')
     assert.ok(!/✓.*還活著/.test(r.out))
   })
 })
@@ -190,7 +190,7 @@ describe('list', () => {
   })
 
   test('沒有那種狀態就直說', () => {
-    assert.match(run('list', 'applied').out, /沒有狀態是 applied/)
+    assert.match(run('list', 'applied').out, /Nothing has the status applied/)
   })
 })
 
@@ -229,7 +229,7 @@ describe('cleanup 的離開碼契約', () => {
   test('沒東西可清是成功（0），不是失敗', () => {
     const r = run('cleanup', 'list')
     assert.equal(r.code, 0, `回了 ${r.code}：「乾淨」被當成錯誤的話，每晚 smoke 會一直紅`)
-    assert.match(r.out, /乾淨|還沒掃過/)
+    assert.match(r.out, /乾淨|Nothing has been scanned yet/)
   })
 
   test('掃到讀不到的檔還是 0 —— 掃描的工作是更新資料庫，那件事成功了', () => {

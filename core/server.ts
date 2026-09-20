@@ -100,7 +100,7 @@ const NONCE = /^[0-9a-f]{32}$/i
  * healthSnapshot 每一段都包了 safe()，拿它算出來的就是「欄位齊全、ok 是 false」的那一份 ——
  * 不另外手寫第三種形狀（稽核 B-r5：以前 catch 路徑回 { ok, db, why }，CLI 把它判成「不是 ContextBox」）。
  */
-const DEAD_DB = { prepare() { throw new Error('資料庫不能用') } } as unknown as DatabaseSync
+const DEAD_DB = { prepare() { throw new Error('the database is unusable') } } as unknown as DatabaseSync
 
 /** 任何一段丟例外都退回預設值。泛型用函式宣告，箭頭會被當成 JSX。 */
 function safe<T>(fn: () => T, fallback: T): T {
@@ -139,7 +139,7 @@ function readBody(req: IncomingMessage): Promise<{ tooLarge: true } | { tooLarge
       ended = true
       resolve(size > MAX_BODY ? { tooLarge: true } : { tooLarge: false, text: Buffer.concat(chunks).toString('utf8') })
     })
-    req.on('close', () => { if (!ended) reject(new Error('連線在送完之前就斷了')) })
+    req.on('close', () => { if (!ended) reject(new Error('the connection dropped before the body finished')) })
     req.on('error', reject)
   })
 }
@@ -270,7 +270,7 @@ export function start(opts: {
     if (!okHost) {
       res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify({
-        error: '只接受 127.0.0.1 或 localhost 這兩個名字。別的網域指到這台也不行。',
+        error: 'Only the names 127.0.0.1 and localhost are accepted — not some other domain pointing here.',
       }))
     }
 
@@ -299,15 +299,15 @@ export function start(opts: {
 
     // 鎖 3：先擋來源，預檢也要過這一關
     if (!allowed) {
-      return send(403, { error: '網頁不能直接讀事實庫' })
+      return send(403, { error: 'A web page cannot read the fact store directly' })
     }
     if (req.method === 'OPTIONS') return send(204, {})
 
     if (url.pathname.startsWith('/assets/')) {
       const asset = PET_ASSETS.get(url.pathname)
-      if (!asset) return send(404, { error: '找不到素材' })
+      if (!asset) return send(404, { error: 'No such asset' })
       if (req.method !== 'GET' && req.method !== 'HEAD') {
-        return send(405, { error: '素材只供讀取。', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
+        return send(405, { error: 'Assets are read-only.', code: 'BAD_METHOD' }, { allow: 'GET, HEAD' })
       }
       try {
         const data = readFileSync(new URL(asset[0], import.meta.url))
@@ -315,7 +315,7 @@ export function start(opts: {
           'content-length': data.length, 'x-content-type-options': 'nosniff',
           'cross-origin-resource-policy': 'same-origin' })
         res.end(req.method === 'HEAD' ? undefined : data)
-      } catch { send(404, { error: '找不到素材' }) }
+      } catch { send(404, { error: 'No such asset' }) }
       return
     }
 
@@ -324,17 +324,17 @@ export function start(opts: {
       // 瀏覽器直接開網址是 document；網頁用 fetch 或 iframe 來拿的一律不給
       const dest = String(req.headers['sec-fetch-dest'] ?? '')
       if (dest && dest !== 'document') {
-        return send(403, { error: '這一頁只能用瀏覽器直接開' })
+        return send(403, { error: 'This page can only be opened directly in a browser' })
       }
       // **沒帶對的 k 不給頁面** —— 頁面裡印著 token，而本機任何行程都能不帶 Origin 來拿（RC16）。
       // 回純文字：這是給人在瀏覽器分頁裡看的。
       if (!sameToken(url.searchParams.get('k') ?? '', token)) {
         res.writeHead(401, { ...baseHeaders(), 'content-type': 'text/plain; charset=utf-8' })
-        return res.end('這個網址少了鑰匙。請用 `node cli.mjs open` 或 server 啟動時印出來的網址打開。\n')
+        return res.end('This address is missing its key. Open it with `node cli.mjs open`, or with the address the server printed at startup.\n')
       }
       let html: string
       try { html = uiHtml(token) }
-      catch { return send(500, { error: '找不到 core/ui.html' }) }
+      catch { return send(500, { error: 'core/ui.html is missing' }) }
       res.writeHead(200, {
         ...baseHeaders(),
         'content-type': 'text/html; charset=utf-8',
@@ -348,7 +348,7 @@ export function start(opts: {
     }
 
     if (url.pathname === '/health') {
-      if (req.method !== 'GET') return send(405, { error: '這個路徑只收 GET。', code: 'BAD_METHOD' }, { allow: 'GET' })
+      if (req.method !== 'GET') return send(405, { error: 'This route only takes GET.', code: 'BAD_METHOD' }, { allow: 'GET' })
       // **這條在 token 檢查之前，所以它是唯一沒有錯誤處理的路徑。**
       // 不包起來的話，healthSnapshot 丟例外會變成 unhandled error ——
       // 整個行程死掉、離開碼 1、client 的連線永遠掛著。
@@ -364,7 +364,7 @@ export function start(opts: {
       let snap
       try { snap = healthSnapshot(F.db, hopts) }
       catch (e: any) {
-        console.error('[contextbox] /health 自我檢查失敗：', (e && e.message) || e)
+        console.error('[contextbox] /health self-check failed:', (e && e.message) || e)
         // **回應形狀永遠跟正常時一樣**（R2-11）：拿不能用的資料庫再算一次，每一段都退回預設值
         snap = healthSnapshot(DEAD_DB, { ...hopts, roots: [] })
       }
@@ -384,13 +384,13 @@ export function start(opts: {
     }
     // 鎖 2：其他全部要 token
     if (!sameToken(String(req.headers['x-contextbox-token'] ?? ''), token)) {
-      return send(401, { error: 'token 不對。在擴充套件設定裡貼上 ~/.contextbox/token 的內容。' })
+      return send(401, { error: 'Wrong token. Paste the contents of ~/.contextbox/token into the extension settings.' })
     }
 
     // 已知的路徑用錯方法回 405，不是掉到 404（RC24）
     const own = OWN_ROUTES.find(([re]) => re.test(url.pathname))
     if (own && !own[1].includes(req.method ?? '')) {
-      return send(405, { error: `這個路徑只收 ${own[1].join('、')}。`, code: 'BAD_METHOD' }, { allow: own[1].join(', ') })
+      return send(405, { error: `This route only takes ${own[1].join(', ')}.`, code: 'BAD_METHOD' }, { allow: own[1].join(', ') })
     }
 
     // **看不懂的 body 回 400，不可以當成 {}**（RC6）。
@@ -405,13 +405,13 @@ export function start(opts: {
       try { got = await readBody(req) }
       catch { return }   // 連線自己斷了，沒有人在等回應
       if (got.tooLarge) {
-        return send(413, { error: '送來的資料太大（上限 1 MB）。', code: 'BODY_TOO_LARGE' }, { connection: 'close' })
+        return send(413, { error: 'The body is too large (1 MB limit).', code: 'BODY_TOO_LARGE' }, { connection: 'close' })
       }
       if (got.text.trim()) {
         try { body = JSON.parse(got.text) }
-        catch { return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' }) }
+        catch { return send(400, { error: 'Could not make sense of the body.', code: 'BAD_BODY' }) }
         if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-          return send(400, { error: '看不懂送來的資料。', code: 'BAD_BODY' })
+          return send(400, { error: 'Could not make sense of the body.', code: 'BAD_BODY' })
         }
       }
     }
@@ -425,7 +425,7 @@ export function start(opts: {
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => { throw new Error('改名不掃描') },
+        scan: () => { throw new Error('rename does not scan') },
       })) return
       // 歸檔（P4）。跟改名一樣只認自己那個前綴（`/file/`），認不得就回 false。
       // restoreRoots 是「原本的資料夾不見了可以建回來」的範圍，跟復原同一份（R2-4）。
@@ -435,7 +435,7 @@ export function start(opts: {
         maxBytes: () => opts.maxBytes ?? cfg().maxBytes,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => { throw new Error('歸檔不掃描') },
+        scan: () => { throw new Error('filing does not scan') },
       })) return
       // 它學到的事（P5）。只認 `/learned`，跟上面兩個一樣認不得就回 false。
       // 不需要 roots／filed —— 它只讀寫 preferences 那張表，永遠不碰檔案。
@@ -443,7 +443,7 @@ export function start(opts: {
         db: F.db, roots, quarantine: QUARANTINE,
         readonly: () => opts.readonly ?? cfg().readonly,
         url, method: req.method ?? 'GET', body, send,
-        scan: () => { throw new Error('學到的事不掃描') },
+        scan: () => { throw new Error('learned does not scan') },
       })) return
       // 清理那條線的 route。認得就處理完回 true，不認得回 false 讓下面接手。
       if (cleanupRoutes({
@@ -499,7 +499,7 @@ export function start(opts: {
       if (url.pathname === '/undo' && req.method === 'POST') {
         return send(200, { undone: F.undoLast(body.n ?? 1) })
       }
-      send(404, { error: '沒有這個路徑' })
+      send(404, { error: 'No such route' })
     } catch (e: any) {
       send(400, { error: e.message })
     }
@@ -524,9 +524,9 @@ export function start(opts: {
 if (process.argv[1]?.endsWith('server.ts')) {
   const { ready, token } = start()
   const port = await ready
-  console.log(`ContextBox 在 http://127.0.0.1:${port}`)
+  console.log(`ContextBox is on http://127.0.0.1:${port}`)
   // 網址帶鑰匙（?k=）。不帶的網址打開是 401。
-  console.log(`手填頁面：${uiUrl(port, token)}　（鑰匙已經幫你帶好，直接開就能用）`)
+  console.log(`Form page: ${uiUrl(port, token)}  (the key is already in the address, so it just opens)`)
   console.log(`token：${token}`)
-  console.log(`（也存在 ${TOKEN_PATH}，貼進擴充套件設定）`)
+  console.log(`(also saved at ${TOKEN_PATH}; paste it into the extension settings)`)
 }

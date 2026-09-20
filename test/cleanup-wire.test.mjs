@@ -137,7 +137,7 @@ describe('plan 的路由', () => {
     const r = call(f, 'POST', `/cleanup/plans/${p.id}/apply`, {}, { readonly: true })
     assert.equal(r.code, 403)
     assert.equal(r.body.code, 'READ_ONLY')
-    assert.ok(existsSync(join(f.downloads, 'a.zip')), '唯讀模式下檔案不可以被搬走')
+    assert.ok(existsSync(join(f.downloads, 'a.zip')), 'Read-only mode下檔案不可以被搬走')
   })
 
   test('undo 把檔案放回原位', t => {
@@ -461,7 +461,7 @@ describe('B CLI 離開碼', () => {
     const f = fixture(t)
     const r = cli(f, ['cleanup', 'apply'], { CONTEXTBOX_READONLY: '1' })
     assert.equal(r.code, 0, r.out)
-    assert.ok(existsSync(join(f.downloads, 'a.zip')), '唯讀模式下檔案不可以被搬走')
+    assert.ok(existsSync(join(f.downloads, 'a.zip')), 'Read-only mode下檔案不可以被搬走')
   })
 
   test('undo 打錯 plan id 是 1（輸入錯）', t => {
@@ -476,7 +476,7 @@ describe('B CLI 離開碼', () => {
     const f = fixture(t)
     const r = cli(f, ['cleanup', 'undo'])
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /沒有可以復原/)
+    assert.match(r.out, /There is no cleanup to undo/)
   })
 
   test('**全部失敗是 3 不是 2** —— 動作執行了，只是檔案沒搬成', t => {
@@ -512,7 +512,7 @@ describe('B CLI 離開碼', () => {
     const p = createPlan(f.db)
     applyPlan(f.db, p.id, f.opts)
     const r = cli(f, ['cleanup', 'quarantine', '--empty'])
-    assert.match(r.out, /[還剩等]/, '要講得出還要等多久')
+    assert.match(r.out, /days to go|old enough to empty/, '要講得出還要等多久')
     assert.ok(existsSync(join(f.opts.quarantine)), '隔離區還在')
   })
 })
@@ -593,7 +593,7 @@ describe('apply 的畫面不可以說謊', () => {
     const r = runCli(f, ['cleanup', 'apply', p.id])
     assert.equal(r.code, 3, r.out)
     assert.match(r.out, /✘ a\.zip/, '失敗的那個要印 ✘ 和原因')
-    assert.doesNotMatch(r.out, /原因不明/, '**一定要講得出為什麼**（spec 第 6 節）')
+    assert.doesNotMatch(r.out, /reason unknown/, '**一定要講得出為什麼**（spec 第 6 節）')
     assert.match(r.out, /✔ b\.zip/, '成功的那個還是 ✔')
     assert.equal((r.out.match(/✔/g) ?? []).length, 1, '不可以每一項都印 ✔')
   })
@@ -606,9 +606,9 @@ describe('apply 的畫面不可以說謊', () => {
     const r = runCli(f, ['cleanup', 'apply', p.id])
     assert.equal((r.out.match(/✔/g) ?? []).length, 0,
       '一個都沒搬成，畫面上不可以有任何 ✔')
-    assert.match(r.out, /搬進隔離區 0 個/)
+    assert.match(r.out, /Moved 0 files/)
     assert.doesNotMatch(r.out, /cleanup undo/, '沒東西可復原就不要給復原指令')
-    assert.doesNotMatch(r.out, /原因不明/, '每一個 ✘ 都要講得出為什麼')
+    assert.doesNotMatch(r.out, /reason unknown/, '每一個 ✘ 都要講得出為什麼')
   })
 })
 
@@ -636,11 +636,11 @@ describe('唯讀試跑不可以弄壞下一次真的跑', () => {
     assert.equal(dry.code, 0, dry.out)
 
     const plans = f.db.prepare('SELECT count(*) n FROM cleanup_plans').get().n
-    assert.equal(plans, 0, '唯讀試跑不可以留下任何計畫')
+    assert.equal(plans, 0, 'Read-only試跑不可以留下任何計畫')
 
     const real = runCli(f, ['cleanup', 'apply'])
-    assert.equal(real.code, 0, `唯讀試跑弄壞了真的那次：\n${real.out}`)
-    assert.match(real.out, /搬進隔離區 2 個/)
+    assert.equal(real.code, 0, `Read-only試跑弄壞了真的那次：\n${real.out}`)
+    assert.match(real.out, /Moved 2 files/)
   })
 
   test('真的有 plan 卡住時，訊息要講得出怎麼往下走', t => {
@@ -678,8 +678,8 @@ test('**檢查沒過的失敗也要講得出原因**（那種不會寫 journal�
   })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   assert.match(out, /✘ a\.zip/, out)
-  assert.doesNotMatch(out, /原因不明/, `沒講出原因：\n${out}`)
-  assert.match(out, /變更|下載/, '要說得出是「檔案變了」')
+  assert.doesNotMatch(out, /reason unknown/, `沒講出原因：\n${out}`)
+  assert.match(out, /changed|下載/, '要說得出是「檔案變了」')
 })
 
 test('undo 只列真的放回去的，數字跟行數要對得上', t => {
@@ -700,7 +700,7 @@ test('undo 只列真的放回去的，數字跟行數要對得上', t => {
   })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   // 第三波起不寫資料夾名：放回的可能是舊版搬走的桌面檔（C4），不一定在 Downloads
-  const n = Number(/放回原位 (\d+) 個/.exec(out)?.[1])
+  const n = Number(/Put (\d+) files? back/.exec(out)?.[1])
   const lines = (out.match(/↩/g) ?? []).length
   assert.equal(lines, n, `說放回去 ${n} 個，卻列了 ${lines} 行：\n${out}`)
   assert.doesNotMatch(out, /↩ a\.zip/, 'a.zip 根本沒被搬走，不可以說它被放回去了')
@@ -723,8 +723,8 @@ describe('剛動過的檔不搬 —— 但要說實話', () => {
     assert.equal(r.code, 200, '逐項失敗不是路由錯誤')
     assert.equal(r.body.quarantinedCount, 0)
     const why = f.db.prepare('SELECT error FROM file_items WHERE error IS NOT NULL').get().error
-    assert.doesNotMatch(why, /已變更/, `什麼都沒改卻說已變更：${why}`)
-    assert.match(why, /十分鐘|等一下/, `要說得出真正的原因與該怎麼辦：${why}`)
+    assert.doesNotMatch(why, /quarantined file changed/, `什麼都沒改卻說已變更：${why}`)
+    assert.match(why, /ten minutes|later/, `要說得出真正的原因與該怎麼辦：${why}`)
   })
 
   test('撥回兩小時之後就搬得動 —— 確認擋的只是「太新」', t => {
@@ -752,7 +752,7 @@ describe('剛動過的檔不搬 —— 但要說實話', () => {
     // 文件漏了 touch 的話，照著做的人會在第 3 步撞牆，而且錯不在程式。
     const md = readFileSync(join(REPO, 'test/smoke-cleanup.md'), 'utf8')
     const bash = /```bash\ncd ~\/Downloads\n([\s\S]*?)```/.exec(md)?.[1] ?? ''
-    assert.ok(bash, '找不到 smoke 的建檔區塊')
+    assert.ok(bash, 'Nothing found smoke 的建檔區塊')
     // 抓出每個被建立的垃圾檔（smoke-* 與截圖），確認後面有 touch
     const created = [...bash.matchAll(/^(?:printf|:)[^>]*>\s*'?([^\s']+(?:\s[^']*)?)'?$/gm)]
       .map(m => m[1].trim()).filter(n => n.startsWith('smoke-') || n.startsWith('Screenshot'))
@@ -797,7 +797,7 @@ describe('獨立重推抓到的（CLI）', () => {
     const p = createPlan(f.db)
     const r = runCli(f, ['cleanup', 'apply', p.id], { CONTEXTBOX_READONLY: '1' })
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /會清掉 2 個/, `印成：\n${r.out}`)
+    assert.match(r.out, /would clean up 2 files/, `印成：\n${r.out}`)
   })
 
   test('復原訊息不可以說「之後不會再被提議」—— 那不一定是真的', t => {

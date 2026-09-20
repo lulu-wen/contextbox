@@ -111,7 +111,7 @@ async function init() {
   renderer.domElement.addEventListener('webglcontextlost', event => {
     event.preventDefault()
     renderer.setAnimationLoop(null)
-    status.textContent = '3D 顯示暫時中斷，請重新載入。'
+    status.textContent = 'The 3D view stopped. Please reload.'
     showDialog(true)
     retry.hidden = false
   })
@@ -120,7 +120,7 @@ async function init() {
 
 init().catch(error => {
   console.error('Quaso viewer:', error)
-  status.textContent = 'Quaso 暫時無法顯示。請確認伺服器與瀏覽器的 3D 功能，再重新載入。'
+  status.textContent = 'Quaso cannot be shown right now. Check the server and your browser\'s 3D support, then reload.'
   showDialog(true)
   retry.hidden = false
 })

@@ -41,16 +41,16 @@ import { sandbox, OS_DEADLOCK, DS_MIDTERM, OS_SCHEDULING } from './helpers/renam
 /** demo 沙盒（`tools/demo-setup.mjs --seed-model`）那三筆答案，一字不改。 */
 const SEEDED = {
   '作業系統_第5章_行程排程.txt': {
-    course: '作業系統', topic: '行程排程', kind: '作業',
-    suggestedName: '作業系統_行程排程', evidence: '作業系統 第 5 章 行程排程 一、排班準則', confidence: '高',
+    course: '作業系統', topic: '行程排程', kind: 'Homework',
+    suggestedName: '作業系統_行程排程', evidence: '作業系統 第 5 章 行程排程 一、排班準則', confidence: 'high',
   },
   '未命名文件 (3).txt': {
-    course: '作業系統', topic: '死結', kind: '筆記',
-    suggestedName: '作業系統_死結', evidence: '死結的四個必要條件', confidence: '高',
+    course: '作業系統', topic: '死結', kind: 'Notes',
+    suggestedName: '作業系統_死結', evidence: '死結的四個必要條件', confidence: 'high',
   },
   'IMG_2041.txt': {
-    course: '資料結構', topic: '期中考範圍', kind: '考試',
-    suggestedName: '資料結構_期中考範圍', evidence: '資料結構 期中考範圍 第一部分', confidence: '高',
+    course: '資料結構', topic: '期中考範圍', kind: 'Exam',
+    suggestedName: '資料結構_期中考範圍', evidence: '資料結構 期中考範圍 第一部分', confidence: 'high',
   },
 }
 
@@ -95,8 +95,8 @@ describe('課名怎麼洗', () => {
   })
 
   test('「看不出來」不是一堂課', () => {
-    assert.equal(cleanCourse('看不出來'), '')
-    assert.equal(cleanCourse('看不出來 '), '', '前後空白折掉之後也一樣')
+    assert.equal(cleanCourse('Unknown'), '')
+    assert.equal(cleanCourse('Unknown '), '', '前後空白折掉之後也一樣')
   })
 
   test(`上限 ${COURSE_MAX_CODEPOINTS} 個字，而且按碼位切`, () => {
@@ -117,7 +117,7 @@ describe('課名怎麼洗', () => {
 
 describe('類型資料夾', () => {
   test('只收 P2 的固定選項', () => {
-    for (const k of ['講義', '作業', '考試', '筆記', '程式', '報告', '表單', '對話', '其他']) {
+    for (const k of ['Lecture', 'Homework', 'Exam', 'Notes', 'Code', 'Report', 'Form', 'Chat', 'Other']) {
       assert.equal(kindFolder(k), k)
     }
   })
@@ -131,8 +131,8 @@ describe('類型資料夾', () => {
 
 describe('回給畫面的那一段', () => {
   test('只有課名與類型，不管 filed 埋得多深', () => {
-    assert.equal(folderOf('/home/alice/Documents/Filed/課程/作業系統/講義'), '課程/作業系統/講義')
-    assert.equal(folderOf('C:\\Users\\alice\\Filed\\課程\\作業系統\\講義'), '課程/作業系統/講義')
+    assert.equal(folderOf('/home/alice/Documents/Filed/Courses/作業系統/Lecture'), 'Courses/作業系統/Lecture')
+    assert.equal(folderOf('C:\\Users\\alice\\Filed\\Courses\\作業系統\\Lecture'), 'Courses/作業系統/Lecture')
     assert.equal(folderOf(''), '')
   })
 })
@@ -144,9 +144,9 @@ describe('預期行為 1 ・ 三個課程檔的建議', () => {
     const s = three(t)
     const items = suggest(s)
     assert.equal(items.length, 3, JSON.stringify(items))
-    assert.equal(byName(items, '作業系統_第5章_行程排程.txt').toFolder, '課程/作業系統/作業')
-    assert.equal(byName(items, '未命名文件 (3).txt').toFolder, '課程/作業系統/筆記')
-    assert.equal(byName(items, 'IMG_2041.txt').toFolder, '課程/資料結構/考試')
+    assert.equal(byName(items, '作業系統_第5章_行程排程.txt').toFolder, 'Courses/作業系統/Homework')
+    assert.equal(byName(items, '未命名文件 (3).txt').toFolder, 'Courses/作業系統/Notes')
+    assert.equal(byName(items, 'IMG_2041.txt').toFolder, 'Courses/資料結構/Exam')
   })
 
   test('**已經有名字的檔照樣列**（跟改名不一樣：取好名字跟歸不歸得了類是兩回事）', t => {
@@ -163,19 +163,19 @@ describe('預期行為 1 ・ 三個課程檔的建議', () => {
     assert.equal(item.topic, '死結')
     assert.ok(!item.toFolder.includes('死結'), item.toFolder)
     assert.equal(item.seeded, true)
-    assert.equal(item.confidence, '高')
+    assert.equal(item.confidence, 'high')
     assert.ok(item.evidence.length > 0)
   })
 })
 
 describe('預期行為 2 ・ 看不出來的不提議', () => {
   test('信心低的不在清單（截圖那種）', t => {
-    const s = one(t, '未命名文件 (3).txt', { course: '作業系統', kind: '筆記', confidence: '低', evidence: 'x' })
+    const s = one(t, '未命名文件 (3).txt', { course: '作業系統', kind: 'Notes', confidence: 'low', evidence: 'x' })
     assert.deepEqual(suggest(s), [])
   })
 
   test('course 是「看不出來」的不在清單，就算信心是高', t => {
-    const s = one(t, '未命名文件 (3).txt', { course: '看不出來', topic: '看不出來', kind: '其他', confidence: '高' })
+    const s = one(t, '未命名文件 (3).txt', { course: 'Unknown', topic: 'Unknown', kind: 'Other', confidence: 'high' })
     assert.deepEqual(suggest(s), [])
   })
 
@@ -186,7 +186,7 @@ describe('預期行為 2 ・ 看不出來的不提議', () => {
 
   test('課名洗完是空的（`CON`、只有點）不在清單', t => {
     for (const course of ['CON', '...', '   ']) {
-      const s = one(t, '未命名文件 (3).txt', { course, kind: '筆記', confidence: '高' })
+      const s = one(t, '未命名文件 (3).txt', { course, kind: 'Notes', confidence: 'high' })
       assert.deepEqual(suggest(s), [], course)
     }
   })
@@ -199,9 +199,9 @@ describe('預期行為 3 ・ 套用之後', () => {
     const s = one(t)
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, true, r.results[0].why)
-    assert.equal(r.results[0].toFolder, '課程/作業系統/筆記')
+    assert.equal(r.results[0].toFolder, 'Courses/作業系統/Notes')
     assert.equal(r.results[0].to, '未命名文件 (3).txt')
-    const moved = join(s.filed, COURSES_DIR, '作業系統', '筆記', '未命名文件 (3).txt')
+    const moved = join(s.filed, COURSES_DIR, '作業系統', 'Notes', '未命名文件 (3).txt')
     assert.equal(readFileSync(moved, 'utf8'), OS_DEADLOCK)
     assert.deepEqual(readdirSync(s.downloads), [], '原位不留任何東西（搬家不是複製）')
   })
@@ -212,7 +212,7 @@ describe('預期行為 3 ・ 套用之後', () => {
     applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(s.db.prepare('SELECT count(*) n FROM file_items').get().n, before, '不可以變成兩列')
     const row = s.db.prepare('SELECT * FROM file_items WHERE id=?').get(s.itemId)
-    assert.equal(row.path, join(s.filed, COURSES_DIR, '作業系統', '筆記', '未命名文件 (3).txt'))
+    assert.equal(row.path, join(s.filed, COURSES_DIR, '作業系統', 'Notes', '未命名文件 (3).txt'))
     assert.equal(row.name, '未命名文件 (3).txt')
   })
 
@@ -220,7 +220,7 @@ describe('預期行為 3 ・ 套用之後', () => {
     // 舊的壓縮檔才會變成清理候選；.zip 讀不到文字，所以直接寫一筆看法
     const s = sandbox(t, { '期末報告.zip': 'x'.repeat(500) }, { days: 200 })
     const id = s.idOf('期末報告.zip')
-    s.seedRaw('期末報告.zip', { course: '作業系統', kind: '報告', confidence: '高' })
+    s.seedRaw('期末報告.zip', { course: '作業系統', kind: 'Report', confidence: 'high' })
     const names = () => listCandidates(s.db, { roots: [s.downloads] }).candidates.map(c => c.name)
     assert.deepEqual(names(), ['期末報告.zip'], '前提：它本來是清理候選')
 
@@ -236,7 +236,7 @@ describe('預期行為 3 ・ 套用之後', () => {
     applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.deepEqual(suggest(s), [])
     const row = s.db.prepare('SELECT * FROM file_items WHERE id=?').get(s.itemId)
-    assert.match(whyNotFilable(s.db, row, s.fileScope), /已經在整理好的資料夾/)
+    assert.match(whyNotFilable(s.db, row, s.fileScope), /already in the filed folder/)
   })
 
   test('不刪空資料夾：原本的子資料夾空了也留著', t => {
@@ -285,7 +285,7 @@ describe('預期行為 4 ・ 復原', () => {
     undoFilings(s.db, { last: true }, s.fileScope)
     const again = undoFilings(s.db, { ids: [a.results[0].id] }, s.fileScope)
     assert.equal(again.results[0].ok, true)
-    assert.match(again.results[0].why, /已經復原過/)
+    assert.match(again.results[0].why, /had already been undone/)
     assert.deepEqual(readdirSync(s.downloads), ['未命名文件 (3).txt'])
   })
 
@@ -301,32 +301,32 @@ describe('預期行為 4 ・ 復原', () => {
 describe('預期行為 5 ・ 同一堂課只長一個資料夾', () => {
   test('三個檔、課名差在空白與全形 → `課程/` 底下只有一個資料夾', t => {
     const s = sandbox(t, { 'a.txt': OS_DEADLOCK, 'b.txt': OS_SCHEDULING, 'c.txt': DS_MIDTERM })
-    s.seedRaw('a.txt', { course: '作業系統', kind: '講義', confidence: '高' })
-    s.seedRaw('b.txt', { course: '作業系統 ', kind: '作業', confidence: '高' })
-    s.seedRaw('c.txt', { course: ' 作業系統', kind: '筆記', confidence: '高' })
+    s.seedRaw('a.txt', { course: '作業系統', kind: 'Lecture', confidence: 'high' })
+    s.seedRaw('b.txt', { course: '作業系統 ', kind: 'Homework', confidence: 'high' })
+    s.seedRaw('c.txt', { course: ' 作業系統', kind: 'Notes', confidence: 'high' })
     const r = applyFilings(s.db, ['a.txt', 'b.txt', 'c.txt'].map(n => ({ itemId: s.idOf(n) })), s.fileScope)
     assert.deepEqual(r.results.map(x => x.ok), [true, true, true], JSON.stringify(r.results))
     assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR)), ['作業系統'])
-    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統')).sort(), ['作業', '筆記', '講義'])
+    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統')).sort(), ['Homework', 'Lecture', 'Notes'])
   })
 
   test('全形／大小寫也算同一堂：`ＯＳ` 跟著既有的 `OS` 走', t => {
     const s = sandbox(t, { 'a.txt': OS_DEADLOCK, 'b.txt': OS_SCHEDULING })
-    s.seedRaw('a.txt', { course: 'OS', kind: '講義', confidence: '高' })
-    s.seedRaw('b.txt', { course: 'ＯＳ', kind: '作業', confidence: '高' })
+    s.seedRaw('a.txt', { course: 'OS', kind: 'Lecture', confidence: 'high' })
+    s.seedRaw('b.txt', { course: 'ＯＳ', kind: 'Homework', confidence: 'high' })
     // 分兩批做：第二批只看得到磁碟上已經有的那一個寫法
     assert.equal(applyFilings(s.db, [{ itemId: s.idOf('a.txt') }], s.fileScope).results[0].ok, true)
     const second = applyFilings(s.db, [{ itemId: s.idOf('b.txt') }], s.fileScope)
     assert.equal(second.results[0].ok, true, second.results[0].why)
-    assert.equal(second.results[0].toFolder, '課程/OS/作業', '要用第一次出現的寫法')
+    assert.equal(second.results[0].toFolder, 'Courses/OS/Homework', '要用第一次出現的寫法')
     assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR)), ['OS'])
   })
 
   test('建議清單也照既有資料夾的寫法講（畫面上寫的位置＝真的落地的位置）', t => {
     const s = sandbox(t, { 'a.txt': OS_DEADLOCK })
-    s.seedRaw('a.txt', { course: 'ＯＳ', kind: '講義', confidence: '高' })
+    s.seedRaw('a.txt', { course: 'ＯＳ', kind: 'Lecture', confidence: 'high' })
     mkdirSync(join(s.filed, COURSES_DIR, 'OS'), { recursive: true })
-    assert.equal(suggest(s)[0].toFolder, '課程/OS/講義')
+    assert.equal(suggest(s)[0].toFolder, 'Courses/OS/Lecture')
   })
 })
 
@@ -335,7 +335,7 @@ describe('預期行為 5 ・ 同一堂課只長一個資料夾', () => {
 describe('預期行為 6 ・ 目標同名就加序號', () => {
   test('目標已經有同名檔 → `-2`，而且原本那一份沒有被覆蓋', t => {
     const s = one(t)
-    const dest = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    const dest = join(s.filed, COURSES_DIR, '作業系統', 'Notes')
     mkdirSync(dest, { recursive: true })
     writeFileSync(join(dest, '未命名文件 (3).txt'), '早就在那裡的檔')
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
@@ -358,14 +358,14 @@ describe('預期行為 6 ・ 目標同名就加序號', () => {
       const id = s.db.prepare('SELECT id FROM file_items WHERE path=?').get(p).id
       s.db.prepare(`INSERT INTO model_views
         (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-        VALUES (?,?,'text','作業系統','','講義','','證據','高','假模型','v1',?,0)`)
+        VALUES (?,?,'text','作業系統','','Lecture','','證據','high','假模型','v1',?,0)`)
         .run('k-' + id, id, new Date().toISOString())
     }
     const items = suggest(s)
     assert.equal(items.length, 2)
     const r = applyFilings(s.db, items.map(i => ({ itemId: i.itemId })), s.fileScope)
     assert.deepEqual(r.results.map(x => x.ok), [true, true], JSON.stringify(r.results))
-    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統', '講義')).sort(), ['a-2.txt', 'a.txt'])
+    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統', 'Lecture')).sort(), ['a-2.txt', 'a.txt'])
   })
 })
 
@@ -373,21 +373,21 @@ describe('預期行為 6 ・ 目標同名就加序號', () => {
 
 describe('預期行為 7 ・ 課名是敵意輸入', () => {
   test('模型給 `../../etc` → 洗成 `etc`，檔案還在 filed 底下', t => {
-    const s = one(t, '未命名文件 (3).txt', { course: '../../etc', kind: '筆記', confidence: '高' })
+    const s = one(t, '未命名文件 (3).txt', { course: '../../etc', kind: 'Notes', confidence: 'high' })
     const item = suggest(s)[0]
-    assert.equal(item.toFolder, '課程/etc/筆記')
+    assert.equal(item.toFolder, 'Courses/etc/Notes')
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, true, r.results[0].why)
     const where = s.db.prepare('SELECT path FROM file_items WHERE id=?').get(s.itemId).path
     assert.ok(where.startsWith(s.filed + '/'), `跑出去了：${where}`)
-    assert.equal(existsSync(join(s.filed, COURSES_DIR, 'etc', '筆記', '未命名文件 (3).txt')), true)
+    assert.equal(existsSync(join(s.filed, COURSES_DIR, 'etc', 'Notes', '未命名文件 (3).txt')), true)
   })
 
   test('呼叫端自己送一個路徑穿越的課名 → 一樣洗過，洗完是空的就這一項失敗', t => {
     const s = one(t)
     const bad = applyFilings(s.db, [{ itemId: s.itemId, course: '../..' }], s.fileScope)
     assert.equal(bad.results[0].ok, false)
-    assert.match(bad.results[0].why, /洗完是空的/)
+    assert.match(bad.results[0].why, /washes out to nothing/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true, '一個檔都不可以動')
     assert.equal(existsSync(s.filed), false, 'filed 也不該被建出來')
   })
@@ -399,7 +399,7 @@ describe('預期行為 7 ・ 課名是敵意輸入', () => {
     symlinkSync(join(s.dir, '別的地方'), join(s.filed, COURSES_DIR))
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, false)
-    assert.match(r.results[0].why, /捷徑/)
+    assert.match(r.results[0].why, /symlink/)
     assert.equal(existsSync(join(s.downloads, '未命名文件 (3).txt')), true)
     assert.deepEqual(readdirSync(join(s.dir, '別的地方')), [], '一個檔都不可以被搬到捷徑指過去的地方')
   })
@@ -409,7 +409,7 @@ describe('預期行為 7 ・ 課名是敵意輸入', () => {
 
 describe('預期行為 8 ・ 中斷之後的收尾', () => {
   /** 做出「rename 已經做了、done 還沒寫」的狀態 —— 那正是被砍在中間的樣子。 */
-  function crashAfterMove(s, { course = '作業系統', kind = '筆記', filed = null } = {}) {
+  function crashAfterMove(s, { course = '作業系統', kind = 'Notes', filed = null } = {}) {
     const root = filed ?? s.filed
     const dir = join(root, COURSES_DIR, course, kind)
     mkdirSync(dir, { recursive: true })
@@ -435,16 +435,16 @@ describe('預期行為 8 ・ 中斷之後的收尾', () => {
 
   test('原位有 → 那一列變 reverted（根本沒搬到）', t => {
     const s = one(t)
-    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    const dir = join(s.filed, COURSES_DIR, '作業系統', 'Notes')
     const id = randomUUID()
     s.db.prepare(
       `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+       VALUES (?,?,?,?,?,?,'作業系統','Notes','','started',NULL,?,NULL)`
     ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
     assert.equal(recoverInterruptedFilings(s.db).recovered, 1)
     const row = s.db.prepare('SELECT * FROM filings WHERE id=?').get(id)
     assert.equal(row.status, 'reverted')
-    assert.match(row.error, /還在原本的資料夾/)
+    assert.match(row.error, /never left its folder/)
     assert.equal(existsSync(join(s.downloads, s.name)), true)
   })
 
@@ -453,12 +453,12 @@ describe('預期行為 8 ・ 中斷之後的收尾', () => {
     const id = randomUUID()
     s.db.prepare(
       `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-       VALUES (?,?,'不見了.txt',?,?,'不見了.txt','作業系統','筆記','','started',NULL,?,NULL)`
-    ).run(id, s.itemId, s.downloads, join(s.filed, COURSES_DIR, '作業系統', '筆記'), new Date().toISOString())
+       VALUES (?,?,'不見了.txt',?,?,'不見了.txt','作業系統','Notes','','started',NULL,?,NULL)`
+    ).run(id, s.itemId, s.downloads, join(s.filed, COURSES_DIR, '作業系統', 'Notes'), new Date().toISOString())
     recoverInterruptedFilings(s.db)
     const row = s.db.prepare('SELECT * FROM filings WHERE id=?').get(id)
     assert.equal(row.status, 'failed')
-    assert.match(row.error, /人工確認/)
+    assert.match(row.error, /Check it yourself/)
   })
 
   test('**被砍之後先掃過一次**：掃描把新位置收成另一列，收尾要跟著那一列走（P3 的 blocker）', t => {
@@ -513,7 +513,7 @@ describe('預期行為 8 ・ 中斷之後的收尾', () => {
     s.db.exec('DROP TRIGGER no_follow')
     const row = s.db.prepare('SELECT status, error FROM filings WHERE id=?').get(id)
     assert.equal(row.status, 'started')
-    assert.match(row.error ?? '', /收尾失敗/, '要留下線索')
+    assert.match(row.error ?? '', /Tidying up failed/, '要留下線索')
     assert.equal(recoverInterruptedFilings(s.db).recovered, 1, '擋住的原因排除之後收得掉')
   })
 
@@ -524,7 +524,7 @@ describe('預期行為 8 ・ 中斷之後的收尾', () => {
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(s.db.prepare('SELECT status FROM filings WHERE id=?').get(id).status, 'done')
     assert.equal(r.results[0].ok, false, '收尾之後它已經在 filed 裡，不會再搬一次')
-    assert.match(r.results[0].why, /已經在整理好的資料夾/)
+    assert.match(r.results[0].why, /already in the filed folder/)
   })
 })
 
@@ -546,15 +546,15 @@ describe('預期行為 9 ・ filed 在另一顆碟', () => {
 
     const bad = r.results.find(x => x.name === 'IMG_2041.txt')
     assert.equal(bad.ok, false)
-    assert.match(bad.why, /另一顆碟/)
+    assert.match(bad.why, /another disk/)
     assert.ok(!bad.why.includes(s.filed), '訊息不可以帶絕對路徑')
     assert.equal(r.results.filter(x => x.ok).length, 2, '其他項要照做')
     // 原檔還在原位，而且**沒有**在 filed 底下多出一份（複製＋刪除會變成刪檔）
     assert.equal(readFileSync(join(s.downloads, 'IMG_2041.txt'), 'utf8'), DS_MIDTERM)
-    assert.equal(existsSync(join(s.filed, COURSES_DIR, '資料結構', '考試', 'IMG_2041.txt')), false)
+    assert.equal(existsSync(join(s.filed, COURSES_DIR, '資料結構', 'Exam', 'IMG_2041.txt')), false)
     // 那一筆紀錄是 failed，錯在哪寫下來了
     const row = s.db.prepare(`SELECT * FROM filings WHERE status='failed'`).get()
-    assert.match(row.error, /另一顆碟/)
+    assert.match(row.error, /another disk/)
   })
 })
 
@@ -565,14 +565,14 @@ describe(`預期行為 10 ・ 一次勾 150 個 → 做前 ${FILING_BATCH_MAX} �
     const files = {}
     for (let i = 0; i < 150; i++) files[`講義 (${i}).txt`] = OS_DEADLOCK + `\n第 ${i} 份\n`
     const s = sandbox(t, files)
-    for (let i = 0; i < 150; i++) s.seedRaw(`講義 (${i}).txt`, { course: '作業系統', kind: '講義', confidence: '高' })
+    for (let i = 0; i < 150; i++) s.seedRaw(`講義 (${i}).txt`, { course: '作業系統', kind: 'Lecture', confidence: 'high' })
     const items = filingSuggestions(s.db, s.fileScope).items
     assert.equal(items.length, 150)
     const r = applyFilings(s.db, items.map(i => ({ itemId: i.itemId })), s.fileScope)
     assert.equal(r.results.length, FILING_BATCH_MAX)
     assert.equal(r.remaining, 150 - FILING_BATCH_MAX)
     assert.equal(r.results.every(x => x.ok), true)
-    assert.equal(readdirSync(join(s.filed, COURSES_DIR, '作業系統', '講義')).length, FILING_BATCH_MAX)
+    assert.equal(readdirSync(join(s.filed, COURSES_DIR, '作業系統', 'Lecture')).length, FILING_BATCH_MAX)
     assert.equal(readdirSync(s.downloads).length, 150 - FILING_BATCH_MAX)
   })
 })
@@ -644,10 +644,10 @@ describe('預期行為 11 ・ 復原時原位被佔、原資料夾不見了', ()
 
     const u = undoFilings(s.db, { last: true }, s.fileScope)
     assert.equal(u.results[0].ok, false)
-    assert.match(u.results[0].why, /不在設定的清理資料夾底下/)
+    assert.match(u.results[0].why, /not under a configured cleanup folder/)
     assert.equal(existsSync(desktop), false, '不可以偷偷建回來')
     // 檔案還在 filed 裡，沒有不見
-    assert.equal(existsSync(join(s.filed, COURSES_DIR, '作業系統', '筆記', '未命名文件 (3).txt')), true)
+    assert.equal(existsSync(join(s.filed, COURSES_DIR, '作業系統', 'Notes', '未命名文件 (3).txt')), true)
   })
 })
 
@@ -692,7 +692,7 @@ describe('不搬的那幾種（跟改名同一批，但不看 naming）', () => 
     utimesSync(join(s.downloads, s.name), now, now)
     s.db.prepare('UPDATE file_items SET mtime=? WHERE id=?').run(now.toISOString(), s.itemId)
     assert.deepEqual(suggest(s), [])
-    assert.match(whyNotFilable(s.db, s.rowOf(s.name), s.fileScope), /十分鐘/)
+    assert.match(whyNotFilable(s.db, s.rowOf(s.name), s.fileScope), /ten minutes/)
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, false)
     assert.equal(existsSync(join(s.downloads, s.name)), true)
@@ -700,11 +700,11 @@ describe('不搬的那幾種（跟改名同一批，但不看 naming）', () => 
 
   test('在一份還沒套用的清理計畫裡 → 不提議，而且講得出原因', t => {
     const s = sandbox(t, { '期末報告.zip': 'x'.repeat(500) }, { days: 200 })
-    s.seedRaw('期末報告.zip', { course: '作業系統', kind: '報告', confidence: '高' })
+    s.seedRaw('期末報告.zip', { course: '作業系統', kind: 'Report', confidence: 'high' })
     assert.equal(suggest(s).length, 1, '前提：本來提議得出來')
     createPlan(s.db)
     assert.deepEqual(suggest(s), [])
-    assert.match(whyNotFilable(s.db, s.rowOf('期末報告.zip'), s.fileScope), /清理計畫/)
+    assert.match(whyNotFilable(s.db, s.rowOf('期末報告.zip'), s.fileScope), /cleanup plan/)
   })
 
   test('捷徑與硬鏈結不搬', t => {
@@ -714,7 +714,7 @@ describe('不搬的那幾種（跟改名同一批，但不看 naming）', () => 
     symlinkSync(real, join(s.downloads, s.name))
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, false)
-    assert.match(r.results[0].why, /捷徑|一般檔案/)
+    assert.match(r.results[0].why, /symlink|ordinary file/)
     assert.equal(existsSync(real), true)
   })
 
@@ -748,7 +748,7 @@ describe('不搬的那幾種（跟改名同一批，但不看 naming）', () => 
     assert.equal(r.results.length, 2)
     assert.equal(r.results[0].ok, true, r.results[0].why)
     assert.equal(r.results[1].ok, false)
-    assert.match(r.results[1].why, /找不到/)
+    assert.match(r.results[1].why, /Cannot find/)
   })
 })
 
@@ -825,7 +825,7 @@ describe('稽核 ・ 寫入順序與收尾', () => {
     const again = applyFilings(s.db, [{ itemId: second }], s.fileScope)
     assert.equal(again.results[0].ok, true, again.results[0].why)
     assert.equal(again.results[0].to, s.name, '磁碟上沒有同名檔，不可以加序號')
-    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統', '筆記')), [s.name])
+    assert.deepEqual(readdirSync(join(s.filed, COURSES_DIR, '作業系統', 'Notes')), [s.name])
   })
 
   test('內容一樣的兄弟檔：模型只看過其中一個，另一個照樣有建議', t => {
@@ -846,7 +846,7 @@ describe('稽核 ・ 寫入順序與收尾', () => {
   })
 
   test('課名截到 40 字之後要重洗：不可以留下結尾的點（Windows 會安靜吃掉）', () => {
-    const out = cleanCourse('X'.repeat(38) + '..' + '中'.repeat(10))
+    const out = cleanCourse('X'.repeat(38) + '..' + 'medium'.repeat(10))
     assert.equal(out, 'X'.repeat(38))
     assert.ok(!out.endsWith('.'), out)
   })
@@ -876,12 +876,12 @@ describe('稽核 ・ 收尾不可以蓋掉「已經成功」的整理紀錄（20
 
   test('SELECT 之後那一列被別的行程 commit 成 done → 收尾不動它，復原照樣做得到', t => {
     const s = one(t)
-    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    const dir = join(s.filed, COURSES_DIR, '作業系統', 'Notes')
     mkdirSync(dir, { recursive: true })
     const id = randomUUID()
     s.db.prepare(
       `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+       VALUES (?,?,?,?,?,?,'作業系統','Notes','','started',NULL,?,NULL)`
     ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
     renameSync(join(s.downloads, s.name), join(dir, s.name))
 
@@ -905,12 +905,12 @@ describe('稽核 ・ 收尾不可以蓋掉「已經成功」的整理紀錄（20
     // 第一次看的時候還沒搬（新位置沒有），第二次看的時候已經搬走了（原位也沒有）——
     // 於是它判「兩邊都找不到、請人工確認」。那一筆其實搬得好好的。
     const s = one(t)
-    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    const dir = join(s.filed, COURSES_DIR, '作業系統', 'Notes')
     mkdirSync(dir, { recursive: true })
     const id = randomUUID()
     s.db.prepare(
       `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+       VALUES (?,?,?,?,?,?,'作業系統','Notes','','started',NULL,?,NULL)`
     ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
 
     // 在第一次 lstat（看新位置，還沒搬 → 不存在）之後，讓「另一個行程」把檔案搬走並 commit 成 done
@@ -943,12 +943,12 @@ describe('稽核 ・ 收尾不可以蓋掉「已經成功」的整理紀錄（20
 
   test('另一種順序：apply 在收尾 SELECT 之後才 commit（檔案已經在新位置）', t => {
     const s = one(t)
-    const dir = join(s.filed, COURSES_DIR, '作業系統', '筆記')
+    const dir = join(s.filed, COURSES_DIR, '作業系統', 'Notes')
     mkdirSync(dir, { recursive: true })
     const id = randomUUID()
     s.db.prepare(
       `INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-       VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`
+       VALUES (?,?,?,?,?,?,'作業系統','Notes','','started',NULL,?,NULL)`
     ).run(id, s.itemId, s.name, s.downloads, dir, s.name, new Date().toISOString())
 
     // 「另一個行程」在收尾 SELECT 完之後把檔案搬走並 commit 成 done
@@ -964,5 +964,29 @@ describe('稽核 ・ 收尾不可以蓋掉「已經成功」的整理紀錄（20
     assert.ok(!row.error, `不可以留下「請人工確認」：${row.error}`)
     const back = undoFilings(s.db, { ids: [id] }, s.fileScope)
     assert.equal(back.results[0].ok, true, back.results[0].why)
+  })
+})
+
+describe('稽核 ・ 英文化之後「說不出來」的各種寫法都要擋（2026-09-20）', () => {
+  test('模型沒照 prompt 用英文回答時，不可以長出 Courses/未知/ 這種資料夾', () => {
+    for (const said of ['Unknown', 'unknown', 'ＵＮＫＮＯＷＮ', ' Unknown ', '看不出來', '未知', '不知道',
+      'unclear', 'not sure', 'none', 'N/A', 'null']) {
+      assert.equal(cleanCourse(said), '', `「${said}」不是一堂課`)
+    }
+  })
+
+  test('真的課名不可以被這條擋掉', () => {
+    for (const real of ['Operating Systems', '作業系統', 'Unknown Pleasures', 'Nonlinear Optics', 'Nanotech']) {
+      assert.notEqual(cleanCourse(real), '', real)
+    }
+  })
+
+  test('提示詞講死了「檔案可以是任何語言，但用英文回答」', async () => {
+    const { SYSTEM_PROMPT, USER_PROMPT } = await import('../core/model.ts')
+    const both = SYSTEM_PROMPT + '\n' + USER_PROMPT
+    assert.match(both, /any language/i, '要講「檔案可能是任何語言」—— 不然中文講義會被跳過')
+    assert.match(both, /in English/i, '要講「用英文回答」—— course 會變成磁碟上的資料夾名')
+    assert.match(both, /exact word Unknown/i, '要講死 Unknown 那個字，不可以是它的翻譯')
+    assert.match(both, /original language|do not translate/i, '證據是原文引用，翻譯過的不算證據')
   })
 })

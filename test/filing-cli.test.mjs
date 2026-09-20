@@ -82,8 +82,8 @@ function box(t, files, { readonly = false } = {}) {
           (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
           VALUES (?,?,'text',?,?,?,?,?,?,'假模型','v1',?,0)`).run(
           'seed-' + item.id, item.id, view.course ?? '作業系統', view.topic ?? '死結',
-          view.kind ?? '筆記', view.suggestedName ?? '', view.evidence ?? '四個必要條件',
-          view.confidence ?? '高', new Date().toISOString())
+          view.kind ?? 'Notes', view.suggestedName ?? '', view.evidence ?? '四個必要條件',
+          view.confidence ?? 'high', new Date().toISOString())
       }
     } finally { db.close() }
   }
@@ -110,52 +110,52 @@ describe('`file` 只列，不動任何檔', () => {
     const b = box(t, {})
     const r = b.run('file')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /沒有可以整理的檔/)
+    assert.match(r.out, /can be filed/)
   })
 
   test('列得出建議，而且一個檔都沒動', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
     b.seed({
-      '未命名文件 (3).txt': { course: '作業系統', topic: '死結', kind: '筆記' },
-      'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: '考試' },
+      'Untitled document (3).txt': { course: '作業系統', topic: '死結', kind: 'Notes' },
+      'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: 'Exam' },
     })
     const r = b.run('file')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /→ 課程\/作業系統\/筆記\//)
-    assert.match(r.out, /→ 課程\/資料結構\/考試\//)
-    assert.match(r.out, /這些是模型的意見，不是事實/)
-    assert.deepEqual(b.names(), ['IMG_2041.txt', '未命名文件 (3).txt'])
+    assert.match(r.out, /→ Courses\/作業系統\/Notes\//)
+    assert.match(r.out, /→ Courses\/資料結構\/Exam\//)
+    assert.match(r.out, /these are the model's opinions, not facts/)
+    assert.deepEqual(b.names(), ['IMG_2041.txt', 'Untitled document (3).txt'])
     assert.equal(existsSync(b.filed), false, '只列的時候連 Filed 都不該被建出來')
   })
 
   test('打錯編號：什麼都不做，離開碼 1', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
-    b.seed({ '未命名文件 (3).txt': {} })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
+    b.seed({ 'Untitled document (3).txt': {} })
     const r = b.run('file', '--apply', 'zzzz')
     assert.equal(r.code, 1, r.out)
-    assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+    assert.deepEqual(b.names(), ['Untitled document (3).txt'])
   })
 
   test('看不懂的旗標、--apply 與 --undo 一起用 → 離開碼 1', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
-    b.seed({ '未命名文件 (3).txt': {} })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
+    b.seed({ 'Untitled document (3).txt': {} })
     assert.equal(b.run('file', '--all').code, 1)
     assert.equal(b.run('file', '--apply', '--undo').code, 1)
-    assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+    assert.deepEqual(b.names(), ['Untitled document (3).txt'])
   })
 
   test('唯讀模式：不搬，離開碼非 0', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK }, { readonly: true })
-    b.seed({ '未命名文件 (3).txt': {} })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK }, { readonly: true })
+    b.seed({ 'Untitled document (3).txt': {} })
     const r = b.run('file', '--apply')
     assert.notEqual(r.code, 0)
-    assert.match(r.out, /唯讀/)
-    assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+    assert.match(r.out, /Read-only/)
+    assert.deepEqual(b.names(), ['Untitled document (3).txt'])
   })
 
   test('檔名與證據裡的控制字元、方向字元印出來要被換掉（終端機偽造）', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
-    b.seed({ '未命名文件 (3).txt': { evidence: '第一行\u001b[31m紅色\u202E' } })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
+    b.seed({ 'Untitled document (3).txt': { evidence: '第一行\u001b[31m紅色\u202E' } })
     const r = b.run('file')
     assert.ok(!r.out.includes('\u001b['), '原始碼的 ESC 不可以原樣印出來')
     assert.ok(!r.out.includes('\u202E'), '方向字元不可以原樣印出來')
@@ -169,84 +169,84 @@ describe('`file` 只列，不動任何檔', () => {
 
 describe('`file --apply` 與 `--undo`', () => {
   test('搬進 Filed，再搬回來', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
     b.seed({
-      '未命名文件 (3).txt': { course: '作業系統', topic: '死結', kind: '筆記' },
-      'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: '考試' },
+      'Untitled document (3).txt': { course: '作業系統', topic: '死結', kind: 'Notes' },
+      'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: 'Exam' },
     })
     const a = b.run('file', '--apply')
     assert.equal(a.code, 0, a.out)
-    assert.match(a.out, /整理好 2 個/)
+    assert.match(a.out, /Filed 2/)
     assert.deepEqual(b.filedTree(), [
-      '課程/', '課程/作業系統/', '課程/作業系統/筆記/', '課程/作業系統/筆記/未命名文件 (3).txt',
-      '課程/資料結構/', '課程/資料結構/考試/', '課程/資料結構/考試/IMG_2041.txt',
+      'Courses/', 'Courses/作業系統/', 'Courses/作業系統/Notes/', 'Courses/作業系統/Notes/Untitled document (3).txt',
+      'Courses/資料結構/', 'Courses/資料結構/Exam/', 'Courses/資料結構/Exam/IMG_2041.txt',
     ])
     assert.deepEqual(b.names(), [])
 
     const u = b.run('file', '--undo')
     assert.equal(u.code, 0, u.out)
-    assert.match(u.out, /搬回 2 個/)
-    assert.deepEqual(b.names(), ['IMG_2041.txt', '未命名文件 (3).txt'])
+    assert.match(u.out, /Moved 2 back/)
+    assert.deepEqual(b.names(), ['IMG_2041.txt', 'Untitled document (3).txt'])
     // 只搬不刪：空掉的資料夾留著
     assert.deepEqual(b.filedTree(), [
-      '課程/', '課程/作業系統/', '課程/作業系統/筆記/', '課程/資料結構/', '課程/資料結構/考試/',
+      'Courses/', 'Courses/作業系統/', 'Courses/作業系統/Notes/', 'Courses/資料結構/', 'Courses/資料結構/Exam/',
     ])
   })
 
   test('只挑一個編號：另一個不動', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
     b.seed({
-      '未命名文件 (3).txt': { course: '作業系統', kind: '筆記' },
-      'IMG_2041.txt': { course: '資料結構', kind: '考試' },
+      'Untitled document (3).txt': { course: '作業系統', kind: 'Notes' },
+      'IMG_2041.txt': { course: '資料結構', kind: 'Exam' },
     })
     const listed = b.run('file')
-    const code = /\[([0-9a-f]{4,})\] 未命名文件/.exec(listed.out)?.[1]
+    const code = /\[([0-9a-f]{4,})\] Untitled document/.exec(listed.out)?.[1]
     assert.ok(code, listed.out)
     assert.equal(b.run('file', '--apply', code).code, 0)
     assert.deepEqual(b.names(), ['IMG_2041.txt'])
   })
 
   test('`--undo <編號>`：只還那一筆；編號少於 4 碼、對不上都是離開碼 1', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
     b.seed({
-      '未命名文件 (3).txt': { course: '作業系統', kind: '筆記' },
-      'IMG_2041.txt': { course: '資料結構', kind: '考試' },
+      'Untitled document (3).txt': { course: '作業系統', kind: 'Notes' },
+      'IMG_2041.txt': { course: '資料結構', kind: 'Exam' },
     })
     assert.equal(b.run('file', '--apply').code, 0)
     const listed = b.run('file')
-    const code = /\[([0-9a-f]{4,})\] 未命名文件 \(3\)\.txt →/.exec(listed.out)?.[1]
+    const code = /\[([0-9a-f]{4,})\] Untitled document \(3\)\.txt →/.exec(listed.out)?.[1]
     assert.ok(code, listed.out)
     assert.equal(b.run('file', '--undo', 'zz').code, 1)
     assert.equal(b.run('file', '--undo', 'zzzzzzzz').code, 1)
     assert.equal(b.run('file', '--undo', code).code, 0)
-    assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+    assert.deepEqual(b.names(), ['Untitled document (3).txt'])
   })
 
   test('沒有可以復原的 → 講一句話，不是當機', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
-    b.seed({ '未命名文件 (3).txt': {} })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
+    b.seed({ 'Untitled document (3).txt': {} })
     const r = b.run('file', '--undo')
     assert.notEqual(r.code, 0)
-    assert.match(r.out, /沒有可以復原的整理/)
+    assert.match(r.out, /There is no filing to undo/)
   })
 })
 
 describe('中斷的整理，每個指令進來都會收尾', () => {
   /** 做出「rename 做了、done 還沒寫」的狀態。 */
   function crashed(b) {
-    b.seed({ '未命名文件 (3).txt': { course: '作業系統', kind: '筆記' } })
-    const dir = join(b.filed, '課程', '作業系統', '筆記')
+    b.seed({ 'Untitled document (3).txt': { course: '作業系統', kind: 'Notes' } })
+    const dir = join(b.filed, '課程', '作業系統', 'Notes')
     mkdirSync(dir, { recursive: true })
     const db = openDb(b.dbPath)
     let id
     try {
-      const item = db.prepare('SELECT id FROM file_items WHERE name=?').get('未命名文件 (3).txt')
+      const item = db.prepare('SELECT id FROM file_items WHERE name=?').get('Untitled document (3).txt')
       id = 'f-' + item.id
       db.prepare(`INSERT INTO filings (id,item_id,name,from_dir,to_dir,to_name,course,kind,topic,status,error,at,undone_at)
-        VALUES (?,?,?,?,?,?,'作業系統','筆記','','started',NULL,?,NULL)`)
-        .run(id, item.id, '未命名文件 (3).txt', b.downloads, dir, '未命名文件 (3).txt', new Date().toISOString())
+        VALUES (?,?,?,?,?,?,'作業系統','Notes','','started',NULL,?,NULL)`)
+        .run(id, item.id, 'Untitled document (3).txt', b.downloads, dir, 'Untitled document (3).txt', new Date().toISOString())
     } finally { db.close() }
-    renameSync(join(b.downloads, '未命名文件 (3).txt'), join(dir, '未命名文件 (3).txt'))
+    renameSync(join(b.downloads, 'Untitled document (3).txt'), join(dir, 'Untitled document (3).txt'))
     return id
   }
   const statusOf = (b, id) => {
@@ -257,7 +257,7 @@ describe('中斷的整理，每個指令進來都會收尾', () => {
   // 搬家比改名更嚴重：filed 不在掃描範圍裡，沒收到尾的那一筆不會有任何別的東西把它接回來。
   for (const args of [['doctor'], ['cleanup', 'list'], ['cleanup', 'scan'], ['file']]) {
     test(`${args.join(' ')} 進來也會把中斷的整理收掉`, t => {
-      const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
+      const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
       const id = crashed(b)
       assert.equal(b.run(...args).code, 0)
       assert.equal(statusOf(b, id), 'done', `${args.join(' ')} 沒有收尾`)
@@ -265,16 +265,16 @@ describe('中斷的整理，每個指令進來都會收尾', () => {
   }
 
   test('收尾之後復原得回去', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
     crashed(b)
     assert.equal(b.run('doctor').code, 0)
     const u = b.run('file', '--undo')
     assert.equal(u.code, 0, u.out)
-    assert.deepEqual(b.names(), ['未命名文件 (3).txt'])
+    assert.deepEqual(b.names(), ['Untitled document (3).txt'])
   })
 
   test('唯讀模式不收尾（第三輪 R3-9：純預覽不可以寫資料庫）', t => {
-    const b = box(t, { '未命名文件 (3).txt': OS_DEADLOCK })
+    const b = box(t, { 'Untitled document (3).txt': OS_DEADLOCK })
     const id = crashed(b)
     // 沙盒本來不是唯讀（crashed 要先掃一次），這裡才改成唯讀
     const cfg = join(b.home, 'config.json')
@@ -282,7 +282,7 @@ describe('中斷的整理，每個指令進來都會收尾', () => {
     json.readonly = true
     writeFileSync(cfg, JSON.stringify(json))
     assert.equal(b.run('doctor').code, 0)
-    assert.equal(statusOf(b, id), 'started', '唯讀模式不可以動資料庫')
+    assert.equal(statusOf(b, id), 'started', 'Read-only mode不可以動資料庫')
   })
 })
 
@@ -294,7 +294,7 @@ describe('demo 沙盒（預期行為 1）', () => {
       [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', dir, '--seed-model'],
       { encoding: 'utf8', env: { ...process.env, HOME: FAKE_HOME, USERPROFILE: FAKE_HOME }, timeout: 180_000 })
     assert.equal(setup.status, 0, setup.stdout + setup.stderr)
-    assert.match(setup.stdout, /已經預先塞了 3 筆/, '前提：示範答案塞進去了')
+    assert.match(setup.stdout, /Seeded 3 model answers/, '前提：示範答案塞進去了')
 
     const home = join(dir, 'home')
     const env = {
@@ -311,22 +311,22 @@ describe('demo 沙盒（預期行為 1）', () => {
     const r = cli('file')
     assert.equal(r.code, 0, r.out)
     // 預期行為 1：兩個作業系統的檔都進 `課程/作業系統/…`，IMG_2041 進 `課程/資料結構/考試`
-    assert.match(r.out, /作業系統_第5章_行程排程\.txt\n\s+→ 課程\/作業系統\/作業\//)
-    assert.match(r.out, /未命名文件 \(3\)\.txt\n\s+→ 課程\/作業系統\/筆記\//)
-    assert.match(r.out, /IMG_2041\.txt\n\s+→ 課程\/資料結構\/考試\//)
-    assert.match(r.out, /［示範答案］/)
+    assert.match(r.out, /operating-systems-ch5-scheduling\.txt\n\s+→ Courses\/Operating Systems\/Lecture\//)
+    assert.match(r.out, /Untitled document \(3\)\.txt\n\s+→ Courses\/Operating Systems\/Notes\//)
+    assert.match(r.out, /IMG_2041\.txt\n\s+→ Courses\/Data Structures\/Exam\//)
+    assert.match(r.out, /\[demo answer\]/)
 
     const filed = join(home, 'Documents', 'Filed')
     const downloads = join(home, 'Downloads')
     assert.equal(cli('file', '--apply').code, 0)
-    assert.equal(existsSync(join(filed, '課程', '作業系統', '作業', '作業系統_第5章_行程排程.txt')), true)
-    assert.equal(existsSync(join(filed, '課程', '作業系統', '筆記', '未命名文件 (3).txt')), true)
-    assert.equal(existsSync(join(filed, '課程', '資料結構', '考試', 'IMG_2041.txt')), true)
-    assert.deepEqual(readdirSync(join(filed, '課程')).sort(), ['作業系統', '資料結構'])
+    assert.equal(existsSync(join(filed, 'Courses', 'Operating Systems', 'Lecture', 'operating-systems-ch5-scheduling.txt')), true)
+    assert.equal(existsSync(join(filed, 'Courses', 'Operating Systems', 'Notes', 'Untitled document (3).txt')), true)
+    assert.equal(existsSync(join(filed, 'Courses', 'Data Structures', 'Exam', 'IMG_2041.txt')), true)
+    assert.deepEqual(readdirSync(join(filed, 'Courses')).sort(), ['Data Structures', 'Operating Systems'])
 
     assert.equal(cli('file', '--undo').code, 0)
-    assert.equal(existsSync(join(downloads, '未命名文件 (3).txt')), true)
+    assert.equal(existsSync(join(downloads, 'Untitled document (3).txt')), true)
     assert.equal(existsSync(join(downloads, 'IMG_2041.txt')), true)
-    assert.equal(existsSync(join(downloads, '作業系統_第5章_行程排程.txt')), true)
+    assert.equal(existsSync(join(downloads, 'operating-systems-ch5-scheduling.txt')), true)
   })
 })

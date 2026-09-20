@@ -90,7 +90,7 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
     try { markMissing(opts.db, path, opts.roots) }
     catch (e: any) {
       pending.set(path, { ...prev, since: now, stable: 0 })
-      problem(`記錄 ${basename(path)} 不見了的時候出錯：${e?.message ?? e}，等一下會再試一次。`)
+      problem(`Something went wrong recording that ${basename(path)} is gone: ${e?.message ?? e}. It will be tried again shortly.`)
     }
   }
 
@@ -132,7 +132,7 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
         remember(path, fp)
         if (opts.onScan) opts.onScan(result)
       } catch (e: any) {
-        problem(`掃描 ${basename(path)} 時出錯：${e?.message ?? e}，等一下會再試一次。`)
+        problem(`Something went wrong scanning ${basename(path)}: ${e?.message ?? e}. It will be tried again shortly.`)
       }
     }
   }
@@ -140,9 +140,9 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
   function poll() {
     if (stopped) return
     for (const root of opts.roots) {
-      if (!existsSync(root)) { problem(`監看資料夾不存在：${root}`); continue }
+      if (!existsSync(root)) { problem(`The watched folder does not exist: ${root}`); continue }
       const r = cleanupWalk(root, maxDepth, maxFiles)
-      if (r.truncated) problem(`${root} 裡的檔案超過 ${maxFiles} 個，只掃前面一部分。`)
+      if (r.truncated) problem(`${root} holds more than ${maxFiles} files, so only the first part was scanned.`)
       for (const p of r.files) notice(p)
     }
   }
@@ -168,15 +168,15 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
     stopped = false
 
     for (const root of opts.roots) {
-      if (!existsSync(root)) { problem(`監看資料夾不存在：${root}`); continue }
+      if (!existsSync(root)) { problem(`The watched folder does not exist: ${root}`); continue }
       try {
         const w = watch(root, { recursive: true }, (_event, filename) => {
           if (filename) notice(join(root, String(filename)))
         })
-        w.on('error', e => problem(`監看 ${root} 出錯：${e.message}，改用輪詢補掃。`))
+        w.on('error', e => problem(`Watching ${root} hit an error: ${e.message}; falling back to polling.`))
         watchers.push(w)
       } catch (e: any) {
-        problem(`${root} 不支援即時監看（${e.message}），改用輪詢補掃。`)
+        problem(`${root} does not support live watching (${e.message}); falling back to polling.`)
       }
     }
 

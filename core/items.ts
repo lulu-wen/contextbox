@@ -43,7 +43,7 @@ const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 /** 檔案在檢查之後被換掉了。呼叫端要分得出這個跟「讀不到」不一樣。 */
 export class SwappedError extends Error {
   constructor(path: string) {
-    super(`${basename(path)} 在檢查之後被換掉了，這一份不收`)
+    super(`${basename(path)} was swapped out after the check, so this copy is not taken in`)
     this.name = 'SwappedError'
   }
 }
@@ -174,15 +174,15 @@ export class Items {
   setStatus(id: string, status: ItemStatus, error?: string | null): Item {
     this.db.prepare(`UPDATE items SET status=?, error=? WHERE id=?`).run(status, error ?? null, id)
     const it = this.get(id)
-    if (!it) throw new Error(`沒有這筆 item：${id}`)
+    if (!it) throw new Error(`No such item: ${id}`)
     return it
   }
 
   /** 檔案被搬走或改名之後，把路徑更新。內容沒變所以 sha 不動。 */
   setPath(id: string, path: string): Item {
-    if (!this.get(id)) throw new Error(`沒有這筆 item：${id}`)
+    if (!this.get(id)) throw new Error(`No such item: ${id}`)
     const clash = this.byPath(path)
-    if (clash && clash.id !== id) throw new Error(`${path} 已經是另一筆 item 了，不覆蓋`)
+    if (clash && clash.id !== id) throw new Error(`${path} already belongs to another item, so it is not overwritten`)
     this.db.prepare(`UPDATE items SET path=? WHERE id=?`).run(path, id)
     // 檔名進得了全文搜尋，改名之後要跟著更新
     this.db.prepare(`UPDATE items_fts SET name=? WHERE item_id=?`).run(basename(path), id)

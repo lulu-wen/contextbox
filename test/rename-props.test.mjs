@@ -145,7 +145,7 @@ const PIECES = [
   '作業系統', '死結', 'etc', 'passwd', 'a', 'Z', '0', '9', '_', '-', '（', '）', '、',
   '𠮷', '😀', 'é', 'ｱ', 'ー', '・',
   '.txt', '.pdf', '.tar.gz', '.第二版',
-  '中'.repeat(40), 'a'.repeat(120), '😀'.repeat(30),
+  'medium'.repeat(40), 'a'.repeat(120), '😀'.repeat(30),
   '', ' ', '\n', '\t',
 ]
 const EXTS = ['', '.txt', '.pdf', '.PNG', '.tar.gz', '.a1b2c3d4e5']
@@ -163,7 +163,7 @@ function sample(seed) {
 const SEEDS = [
   '', ' ', '.', '..', '...', '/', '//', '\\', './', '../', '../../etc/passwd', '/etc/shadow',
   'CON', 'CON.txt', 'con.', ' CON ', 'CONTEXT', 'COM10',
-  '中'.repeat(NAME_MAX_CODEPOINTS - 1), '中'.repeat(NAME_MAX_CODEPOINTS), '中'.repeat(NAME_MAX_CODEPOINTS + 1),
+  'medium'.repeat(NAME_MAX_CODEPOINTS - 1), 'medium'.repeat(NAME_MAX_CODEPOINTS), 'medium'.repeat(NAME_MAX_CODEPOINTS + 1),
   '𠮷'.repeat(NAME_MAX_CODEPOINTS), '😀'.repeat(NAME_MAX_CODEPOINTS + 1),
   'a'.repeat(4095), 'a'.repeat(4096), 'a'.repeat(4097),
   '作業系統_死結', '作業系統_死結.pdf', '報告.第二版', 'hw3.1', '.env', '.bashrc',

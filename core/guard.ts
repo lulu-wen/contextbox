@@ -82,7 +82,7 @@ export const DENY_SEGMENTS = [...DENY_DIRS, ...DENY_FILES]
  * 截圖工具常常先建一個 0 byte 的檔，一秒多之後才把內容寫進去。
  * watcher 靠這個決定要不要重試 —— 不分的話那張截圖會永遠消失。
  */
-const TEMPORARY = ['檔案是空的', '讀不到這個檔案', 'realpath 失敗']
+const TEMPORARY = ['the file is empty', 'cannot read this file', 'realpath failed']
 export const isTemporary = (why: string): boolean => TEMPORARY.some(t => String(why).includes(t))
 
 /** win32 的路徑不分大小寫，比對前要先折一次，不然白名單形同虛設 */
@@ -101,10 +101,10 @@ export function under(root: string, p: string): boolean {
  * a.pdf 的替代資料流，而 extname 會說它是 .png。
  */
 function badName(name: string): string | null {
-  if (!name || name === '.' || name === '..') return '檔名不合法'
-  if (name.includes('\u0000')) return '檔名裡有空位元組'
-  if (name.includes('/') || name.includes('\\')) return '檔名裡有路徑分隔符'
-  if (/[:<>"|?*]/.test(name)) return '檔名裡有不能用的字元'
+  if (!name || name === '.' || name === '..') return 'that file name is not valid'
+  if (name.includes('\u0000')) return 'the name contains a null byte'
+  if (name.includes('/') || name.includes('\\')) return 'the name contains a path separator'
+  if (/[:<>"|?*]/.test(name)) return 'the name contains characters that cannot be used'
   return null
 }
 
@@ -162,9 +162,9 @@ function deniedSegment(real: string): string | null {
 export function admit(path: string, opts: AdmitOptions): Verdict {
   const no = (why: string): Verdict => ({ ok: false, why })
   // 防線要 fail closed —— 少給參數是關門，不是丟 TypeError
-  if (!opts || !Array.isArray(opts.roots) || !opts.roots.length) return no('沒有設定監看資料夾')
-  if (!Number.isFinite(opts.maxBytes) || opts.maxBytes <= 0) return no('大小上限沒設好')
-  if (!path || typeof path !== 'string') return no('沒有給路徑')
+  if (!opts || !Array.isArray(opts.roots) || !opts.roots.length) return no('no watched folder is configured')
+  if (!Number.isFinite(opts.maxBytes) || opts.maxBytes <= 0) return no('the size limit is not set properly')
+  if (!path || typeof path !== 'string') return no('no path was given')
 
   const nameBad = badName(basename(path))
   if (nameBad) return no(nameBad)
@@ -172,43 +172,43 @@ export function admit(path: string, opts: AdmitOptions): Verdict {
   // 先看它自己是不是捷徑。
   // 一定要用 lstat，realpath 會跟著捷徑走到目標去，看起來一切正常。
   let st
-  try { st = lstatSync(path) } catch { return no('讀不到這個檔案') }
-  if (st.isSymbolicLink()) return no('這是一個捷徑（symlink），我們不跟')
-  if (!st.isFile()) return no('不是一般檔案')
+  try { st = lstatSync(path) } catch { return no('cannot read this file') }
+  if (st.isSymbolicLink()) return no('this is a symlink, and we do not follow those')
+  if (!st.isFile()) return no('not an ordinary file')
 
   // 解析成真路徑。上層資料夾如果是捷徑，這一步會把它攤開，
   // 接著用真路徑比對白名單，就跳不出去。
   let real: string
-  try { real = realpathSync(path) } catch { return no('realpath 失敗') }
+  try { real = realpathSync(path) } catch { return no('realpath failed') }
 
   // 白名單：一定要在某個監看資料夾底下
-  if (!opts.roots.some(r => under(r, real))) return no('不在監看資料夾裡')
+  if (!opts.roots.some(r => under(r, real))) return no('not inside a watched folder')
   if (opts.exclude && opts.exclude.some(x => under(x, real) || fold(resolve(x)) === fold(real))) {
-    return no('在排除的資料夾裡')
+    return no('inside an excluded folder')
   }
 
   // 黑名單：白名單設錯時的第二道網
   const denied = deniedSegment(real)
-  if (denied) return no(`路徑裡有 ${denied}，這種東西我們不碰`)
+  if (denied) return no(`the path contains ${denied}, which we never touch`)
 
   // 副檔名
   const ext = extname(real).toLowerCase()
-  if (PARTIAL_EXT.has(ext)) return no('還在下載中（半成品副檔名）')
+  if (PARTIAL_EXT.has(ext)) return no('still downloading (a half-finished extension)')
   const mime = EXT_MIME[ext]
-  if (!mime) return no(`副檔名 ${ext || '（沒有）'} 不在收件清單裡`)
+  if (!mime) return no(`the extension ${ext || '(none)'} is not on the intake list`)
 
   // 這裡用 realpath 之後重新量一次，因為前面那次 lstat 量的是捷徑本身。
   let realStat
-  try { realStat = lstatSync(real) } catch { return no('讀不到這個檔案') }
+  try { realStat = lstatSync(real) } catch { return no('cannot read this file') }
 
   // **硬鏈結。** lstat 看不出來、realpath 也攤不開 —— 在它眼裡就是一般檔案。
   // `ln ~/.ssh/id_ed25519 ~/Downloads/photo.png` 會通過上面每一條檢查。
   // 截圖與下載檔的 nlink 一定是 1，所以這條零誤殺。
-  if (realStat.nlink > 1) return no('這個檔案被硬鏈結到別的地方，我們不碰')
+  if (realStat.nlink > 1) return no('this file is hard-linked elsewhere, and we never touch those')
 
-  if (realStat.size === 0) return no('檔案是空的')
+  if (realStat.size === 0) return no('the file is empty')
   if (realStat.size > opts.maxBytes) {
-    return no(`檔案 ${(realStat.size / 1048576).toFixed(1)}MB，超過上限 ${(opts.maxBytes / 1048576).toFixed(0)}MB`)
+    return no(`the file is ${(realStat.size / 1048576).toFixed(1)}MB, over the ${(opts.maxBytes / 1048576).toFixed(0)}MB limit`)
   }
 
   return {

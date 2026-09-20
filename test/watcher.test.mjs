@@ -141,7 +141,7 @@ describe('被防線擋下的', () => {
     await settle(w)
     assert.deepEqual(fired, [])
     assert.equal(problems.length, 1)
-    assert.match(problems[0], /空的/)
+    assert.match(problems[0], /empty/)
   })
 
   test('被擋下的不會每次輪詢都再吵一次', async () => {
@@ -214,7 +214,7 @@ describe('walk', () => {
 
     const { w, problems } = mk({ maxFiles: 5 })
     w.poll()
-    assert.ok(problems.some(m => /超過 5 個/.test(m)), '要告訴使用者有東西沒掃到')
+    assert.ok(problems.some(m => /more than 5 files/.test(m)), '要告訴使用者有東西沒掃到')
   })
 })
 
@@ -226,7 +226,7 @@ describe('不可以弄丟檔案', () => {
     const p = put('shot.png', '')
     w.poll(); await settle(w)
     assert.deepEqual(fired, [], '空檔案這一刻確實不該送出去')
-    assert.ok(problems.some(m => /空的/.test(m)))
+    assert.ok(problems.some(m => /empty/.test(m)))
 
     writeFileSync(p, '這次真的有內容了')
     w.poll(); await settle(w)
@@ -238,7 +238,7 @@ describe('不可以弄丟檔案', () => {
     put('empty.png', '')
     for (let i = 0; i < 8; i++) { w.poll(); await settle(w) }
     assert.ok(problems.length <= 3, `試太多次了，講了 ${problems.length} 次`)
-    assert.ok(problems.some(m => /放棄/.test(m)), '放棄的時候要講一聲')
+    assert.ok(problems.some(m => /given up/.test(m)), '放棄的時候要講一聲')
   })
 
   test('onFile 丟例外（例如資料庫被鎖住），檔案不可以就這樣消失', async () => {

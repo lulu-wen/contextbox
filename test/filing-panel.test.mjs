@@ -29,9 +29,9 @@ const demoFetch = async url => String(url).includes('demo-candidates.json')
 import { filingLines, filingApplyMessage, filingUndoMessage } from '../core/assets/cleanup-real-state.js'
 
 const suggestion = (over = {}) => ({
-  itemId: 'it-1', name: '未命名文件 (3).txt', course: '作業系統', kind: '筆記', topic: '死結',
-  confidence: '高', evidence: '文件裡寫著「四個必要條件」', seeded: false,
-  toFolder: '課程/作業系統/筆記', ...over,
+  itemId: 'it-1', name: '未命名文件 (3).txt', course: '作業系統', kind: 'Notes', topic: '死結',
+  confidence: 'high', evidence: '文件裡寫著「四個必要條件」', seeded: false,
+  toFolder: 'Courses/作業系統/Notes', ...over,
 })
 
 function fakeApi({ suggestions = [], onApply = null, onUndo = null, calls = [] } = {}) {
@@ -78,28 +78,28 @@ const boxes = ui => ui.$('cleanup-filings').all('INPUT')
 describe('filingLines', () => {
   test('一列：檔名 → 課程/作業系統/筆記、模型說了什麼、證據，而且講明是意見', () => {
     const l = filingLines(suggestion())
-    assert.equal(l.head, '未命名文件 (3).txt → 課程/作業系統/筆記')
-    assert.equal(l.why, '模型認為：作業系統／死結（信心 高）')
-    assert.match(l.note, /證據：文件裡寫著「四個必要條件」/)
-    assert.match(l.note, /這是模型的意見，不是事實/)
-    assert.match(l.note, /搬得回來/)
+    assert.equal(l.head, '未命名文件 (3).txt → Courses/作業系統/Notes')
+    assert.equal(l.why, 'The model thinks: 作業系統 / 死結 (confidence high)')
+    assert.match(l.note, /Evidence: 文件裡寫著「四個必要條件」/)
+    assert.match(l.note, /This is the model's opinion, not a fact/)
+    assert.match(l.note, /it can be undone/)
   })
 
   test('示範答案要標出來', () => {
-    assert.match(filingLines(suggestion({ seeded: true })).why, /^［示範答案］/)
+    assert.match(filingLines(suggestion({ seeded: true })).why, /^\[demo answer\] /)
   })
 
   test('模型沒給證據就直說，不要留一塊空的', () => {
-    assert.match(filingLines(suggestion({ evidence: '' })).note, /模型沒有給證據/)
+    assert.match(filingLines(suggestion({ evidence: '' })).note, /The model gave no evidence/)
   })
 
   test('看不出主題就寫「看不出來」，不是空白', () => {
-    assert.equal(filingLines(suggestion({ topic: '   ' })).why, '模型認為：作業系統／看不出來（信心 高）')
+    assert.equal(filingLines(suggestion({ topic: '   ' })).why, 'The model thinks: 作業系統 / Unknown (confidence high)')
   })
 
   test('**檔名與資料夾名都是不可信的輸入**：控制字元與方向字元換掉', () => {
     const l = filingLines(suggestion({
-      name: '好檔案\u202E' + 'txt.exe', toFolder: '課程/a\u0000b/筆記', evidence: '第一行\nfake ✔ 已刪除',
+      name: '好檔案\u202E' + 'txt.exe', toFolder: 'Courses/a\u0000b/筆記', evidence: '第一行\nfake ✔ 已刪除',
     }))
     assert.ok(!l.head.includes('\u202E'), l.head)
     assert.ok(!l.head.includes('\u0000'), l.head)
@@ -117,44 +117,44 @@ describe('結果的訊息', () => {
   test('整理：逐項都講，成功與失敗分開', () => {
     const m = filingApplyMessage({
       results: [
-        { itemId: 'a', ok: true, name: '未命名文件 (3).txt', toFolder: '課程/作業系統/筆記', to: '未命名文件 (3).txt', why: '' },
-        { itemId: 'b', ok: false, name: 'IMG_2041.txt', toFolder: '', to: '', why: '這個檔十分鐘內還在變動，先不歸檔。' },
+        { itemId: 'a', ok: true, name: '未命名文件 (3).txt', toFolder: 'Courses/作業系統/Notes', to: '未命名文件 (3).txt', why: '' },
+        { itemId: 'b', ok: false, name: 'IMG_2041.txt', toFolder: '', to: '', why: 'This file changed within the last ten minutes, so it will not be filed yet.' },
       ],
       remaining: 0,
     })
-    assert.match(m, /整理好 1 個，1 個沒有搬。/)
-    assert.match(m, /・未命名文件 \(3\)\.txt → 課程\/作業系統\/筆記\//)
-    assert.match(m, /・IMG_2041\.txt：這個檔十分鐘內還在變動/)
-    assert.match(m, /復原整理/)
+    assert.match(m, /Filed 1, 1 not filed./)
+    assert.match(m, /- 未命名文件 \(3\)\.txt → Courses\/作業系統\/Notes\//)
+    assert.match(m, /- IMG_2041\.txt: This file changed within the last ten minutes/)
+    assert.match(m, /Undo filing/)
   })
 
   test('目標同名加了序號：畫面要看得到它真正叫什麼', () => {
     const m = filingApplyMessage({
-      results: [{ itemId: 'a', ok: true, name: 'a.txt', toFolder: '課程/作業系統/講義', to: 'a-2.txt', why: '' }],
+      results: [{ itemId: 'a', ok: true, name: 'a.txt', toFolder: 'Courses/作業系統/Lecture', to: 'a-2.txt', why: '' }],
       remaining: 0,
     })
-    assert.match(m, /課程\/作業系統\/講義\/a-2\.txt/)
+    assert.match(m, /Courses\/作業系統\/Lecture\/a-2\.txt/)
   })
 
   test('超過一次的上限：講還有幾個', () => {
     const m = filingApplyMessage({ results: [{ itemId: 'a', ok: true, name: 'x', toFolder: 'y', to: 'x', why: '' }], remaining: 50 })
-    assert.match(m, /還有 50 個沒做/)
+    assert.match(m, /50 still to go/)
   })
 
   test('復原：原位被佔走時**一定要講放回來的叫什麼**', () => {
     const m = filingUndoMessage({
       results: [{ id: 'f1', itemId: 'a', ok: true, name: '未命名文件 (3)-2.txt', restoredAs: '未命名文件 (3)-2.txt', why: '' }],
     })
-    assert.match(m, /放回來的這一份叫「未命名文件 \(3\)-2\.txt」/)
-    assert.match(m, /沒有覆蓋任何檔/)
+    assert.match(m, /so this one is called “未命名文件 \(3\)-2\.txt”/)
+    assert.match(m, /nothing was overwritten/)
   })
 
   test('復原失敗也要講', () => {
     const m = filingUndoMessage({
-      results: [{ id: 'f1', itemId: 'a', ok: false, name: '', restoredAs: null, why: '檔案或資料夾不見了，請確認後重試。' }],
+      results: [{ id: 'f1', itemId: 'a', ok: false, name: '', restoredAs: null, why: 'The file or folder is gone. Check and try again.' }],
     })
-    assert.match(m, /搬回 0 個，1 個沒有搬回/)
-    assert.match(m, /沒有搬回：檔案或資料夾不見了/)
+    assert.match(m, /Moved 0 back, 1 not moved back/)
+    assert.match(m, /Not moved back: The file or folder is gone/)
   })
 })
 
@@ -163,14 +163,14 @@ describe('結果的訊息', () => {
 describe('面板的「歸檔建議」區', () => {
   test('列出來，而且**一個勾選框都不預設勾起來**', async t => {
     const ui = await open(t, {
-      suggestions: [suggestion(), suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', course: '資料結構', kind: '考試', toFolder: '課程/資料結構/考試' })],
+      suggestions: [suggestion(), suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', course: '資料結構', kind: 'Exam', toFolder: 'Courses/資料結構/Exam' })],
     })
     assert.equal(ui.$('cleanup-filings').hidden, false)
     assert.equal(rows(ui).length, 2)
-    assert.match(ui.$('cleanup-filings').textContent, /未命名文件 \(3\)\.txt → 課程\/作業系統\/筆記/)
-    assert.match(ui.$('cleanup-filings').textContent, /模型認為：作業系統／死結（信心 高）/)
-    assert.match(ui.$('cleanup-filings').textContent, /這是模型的意見，不是事實/)
-    assert.deepEqual(boxes(ui).map(b => b.checked), [false, false], '歸檔不可以預設勾起來')
+    assert.match(ui.$('cleanup-filings').textContent, /未命名文件 \(3\)\.txt → Courses\/作業系統\/Notes/)
+    assert.match(ui.$('cleanup-filings').textContent, /The model thinks: 作業系統 \/ 死結 \(confidence high\)/)
+    assert.match(ui.$('cleanup-filings').textContent, /This is the model's opinion, not a fact/)
+    assert.deepEqual(boxes(ui).map(b => b.checked), [false, false], 'Filing不可以預設勾起來')
     assert.equal(ui.$('cleanup-file').hidden, false)
     assert.equal(ui.$('cleanup-file-undo').hidden, true, '還沒整理過，沒有東西要復原')
   })
@@ -185,26 +185,26 @@ describe('面板的「歸檔建議」區', () => {
   test('後端沒有這幾條（404）：清理面板照常，歸檔區不見', async t => {
     const ui = await open(t, { suggestions: 'missing' })
     assert.equal(ui.$('cleanup-filings').hidden, true)
-    assert.match(ui.$('cleanup-list').textContent, /目前沒有待清檔案/)
+    assert.match(ui.$('cleanup-list').textContent, /Nothing to clean up right now/)
   })
 
   test('沒勾就按「整理」：不送請求，畫面講一句', async t => {
     const ui = await open(t, { suggestions: [suggestion()] })
     await ui.click('cleanup-file')
-    assert.match(ui.$('cleanup-result').textContent, /請先勾選/)
+    assert.match(ui.$('cleanup-result').textContent, /Tick the files you want/)
     assert.equal(ui.apiCalls.filter(c => c.path === '/file/apply').length, 0, '一個請求都不可以送出去')
   })
 
   test('勾起來按「整理」：**只送勾的那幾個，而且連課名與類型一起送**', async t => {
     const applied = []
     const ui = await open(t, {
-      suggestions: [suggestion(), suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', course: '資料結構', kind: '考試', toFolder: '課程/資料結構/考試' })],
+      suggestions: [suggestion(), suggestion({ itemId: 'it-2', name: 'IMG_2041.txt', course: '資料結構', kind: 'Exam', toFolder: 'Courses/資料結構/Exam' })],
       onApply: body => {
         applied.push(body)
         return {
           results: body.items.map(i => ({
             itemId: i.itemId, ok: true, name: '未命名文件 (3).txt',
-            toFolder: `課程/${i.course}/${i.kind}`, to: '未命名文件 (3).txt', why: '',
+            toFolder: `Courses/${i.course}/${i.kind}`, to: '未命名文件 (3).txt', why: '',
           })),
           remaining: 0,
         }
@@ -215,10 +215,10 @@ describe('面板的「歸檔建議」區', () => {
     await first.onchange()
     await ui.click('cleanup-file')
 
-    assert.deepEqual(applied, [{ items: [{ itemId: 'it-1', course: '作業系統', kind: '筆記' }] }])
-    assert.match(ui.$('cleanup-result').textContent, /整理好 1 個/)
-    assert.match(ui.$('cleanup-result').textContent, /課程\/作業系統\/筆記/)
-    assert.equal(ui.$('cleanup-file-undo').hidden, false, '整理完要看得到「復原整理」')
+    assert.deepEqual(applied, [{ items: [{ itemId: 'it-1', course: '作業系統', kind: 'Notes' }] }])
+    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+    assert.match(ui.$('cleanup-result').textContent, /Courses\/作業系統\/Notes/)
+    assert.equal(ui.$('cleanup-file-undo').hidden, false, '整理完要看得到“Undo filing”')
   })
 
   test('「復原整理」送 { last: true }，訊息照後端說的講', async t => {
@@ -240,7 +240,7 @@ describe('面板的「歸檔建議」區', () => {
     await ui.click('cleanup-file')
     await ui.click('cleanup-file-undo')
     assert.deepEqual(undos, [{ last: true }])
-    assert.match(ui.$('cleanup-result').textContent, /搬回 1 個/)
+    assert.match(ui.$('cleanup-result').textContent, /Moved 1 back/)
     assert.equal(ui.$('cleanup-file-undo').hidden, true, '復原過就沒有東西要復原了')
   })
 
@@ -248,7 +248,7 @@ describe('面板的「歸檔建議」區', () => {
     const ui = await open(t, {
       suggestions: [suggestion()],
       onApply: () => ({
-        results: [{ itemId: 'it-1', ok: false, name: '未命名文件 (3).txt', toFolder: '', to: '', why: '「整理好的」資料夾在另一顆碟，這一版還不支援搬過去。' }],
+        results: [{ itemId: 'it-1', ok: false, name: '未命名文件 (3).txt', toFolder: '', to: '', why: 'The filed folder is on another disk, which this version cannot move to.' }],
         remaining: 0,
       }),
     })
@@ -256,20 +256,20 @@ describe('面板的「歸檔建議」區', () => {
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-file')
-    assert.match(ui.$('cleanup-result').textContent, /另一顆碟/)
-    assert.equal(ui.$('cleanup-file-undo').hidden, true, '一個都沒搬成，沒有東西要復原')
+    assert.match(ui.$('cleanup-result').textContent, /another disk/)
+    assert.equal(ui.$('cleanup-file-undo').hidden, true, 'Nothing moved this time，沒有東西要復原')
   })
 
   test('整理的請求失敗：只講原因，不假裝成功', async t => {
     const ui = await open(t, {
       suggestions: [suggestion()],
-      onApply: () => { const e = new Error('目前是唯讀模式，不會搬動任何檔案。'); e.status = 403; throw e },
+      onApply: () => { const e = new Error('Read-only mode is on, so no file gets moved.'); e.status = 403; throw e },
     })
     const [first] = boxes(ui)
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-file')
-    assert.match(ui.$('cleanup-result').textContent, /唯讀模式/)
+    assert.match(ui.$('cleanup-result').textContent, /Read-only mode/)
     assert.equal(ui.$('cleanup-file-undo').hidden, true)
   })
 
@@ -285,6 +285,6 @@ describe('面板的「歸檔建議」區', () => {
 
   test('只有歸檔建議、沒有待清檔案時，不可以說「目前沒有待清檔案」蓋掉整區', async t => {
     const ui = await open(t, { suggestions: [suggestion()] })
-    assert.ok(!ui.$('cleanup-list').textContent.includes('目前沒有待清檔案'), ui.$('cleanup-list').textContent)
+    assert.ok(!ui.$('cleanup-list').textContent.includes('Nothing to clean up right now'), ui.$('cleanup-list').textContent)
   })
 })

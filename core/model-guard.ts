@@ -26,16 +26,16 @@
  */
 
 /** 擋下來的時候記的那句話。**一定含「看起來像機密」**（預想的預期行為第 3、4 條照這句對）。 */
-export const SECRET_WHY = '看起來像機密，沒送出去'
+export const SECRET_WHY = 'looks like a secret, so it was not sent'
 
 /** 文件太短，問了也答不出來（不是機密，另一句）。 */
-export const TOO_SHORT_WHY = '內容太短，看不出是什麼，沒送出去'
+export const TOO_SHORT_WHY = 'too little content to make sense of, so it was not sent'
 
 /** 問過幾次都問不到答案。 */
-export const UNANSWERED_WHY = '問了幾次模型都沒有給出可用的答案，先跳過'
+export const UNANSWERED_WHY = 'the model gave no usable answer after several tries, so it is skipped for now'
 
 /** 準備不出可以送的東西（解不開的 PNG、組不出內容）。 */
-export const UNUSABLE_WHY = '這個檔沒辦法整理成可以問的樣子，沒送出去'
+export const UNUSABLE_WHY = 'this file cannot be shaped into something askable, so it was not sent'
 
 /**
  * 副檔名一律不送。憑證與公鑰（.crt／.cer／.pub）其實不是秘密，但它們出現的地方
@@ -85,10 +85,10 @@ export function secretByName(name: string): string | null {
   let s = raw
   try { s = raw.normalize('NFKC') } catch { /* 正規化失敗就用原字串 */ }
   s = s.toLowerCase()
-  if (SECRET_NAMES.includes(s)) return `檔名是 ${SECRET_NAMES.find(n => n === s)}`
+  if (SECRET_NAMES.includes(s)) return `the file is named ${SECRET_NAMES.find(n => n === s)}`
   // .env、.env.local、prod.env 都算
-  if (s === '.env' || s.startsWith('.env.') || s.endsWith('.env')) return '檔名是環境變數檔（.env）'
-  for (const ext of SECRET_EXTS) if (s.endsWith(ext)) return `副檔名是 ${ext}`
+  if (s === '.env' || s.startsWith('.env.') || s.endsWith('.env')) return 'the file is an environment file (.env)'
+  for (const ext of SECRET_EXTS) if (s.endsWith(ext)) return `the extension is ${ext}`
   for (const w of SECRET_WORDS) {
     if (!s.includes(w)) continue
     // **真正的文件格式放行弱關鍵字**：一份叫「tokenizer作業.pdf」或「帳號與密碼章節.pptx」的講義
@@ -96,7 +96,7 @@ export function secretByName(name: string): string | null {
     // 而且內容那一層照樣會擋（真的有金鑰、有帳密表就不會送）。
     // .txt／.csv／.md／沒有副檔名的**不放行**：密碼就是放在那種檔裡。
     if (WEAK_WORDS.has(w) && DOC_EXTS.some(ext => s.endsWith(ext))) continue
-    return `檔名裡有「${w}」`
+    return `the name contains “${w}”`
   }
   return null
 }
@@ -138,28 +138,28 @@ function hasCardNumber(text: string): boolean {
  * 一般的字（password、密碼、帳號）**不在這裡**，那是名字那一層的事。
  */
 export const SECRET_PATTERNS: readonly (readonly [string, RegExp])[] = Object.freeze([
-  ['私鑰檔頭', /-----BEGIN[A-Z0-9 ]{0,40}PRIVATE KEY-----/] as const,
-  ['PGP 私鑰檔頭', /-----BEGIN PGP PRIVATE KEY BLOCK-----/] as const,
-  ['OpenSSH 私鑰檔頭', /-----BEGIN OPENSSH PRIVATE KEY-----/] as const,
-  ['憑證檔頭', /-----BEGIN CERTIFICATE-----/] as const,
-  ['AWS 金鑰 ID', /(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}(?![0-9A-Z])/] as const,
-  ['AWS 秘密金鑰欄位', /aws_secret_access_key\s*[:=]/i] as const,
+  ['a private key header', /-----BEGIN[A-Z0-9 ]{0,40}PRIVATE KEY-----/] as const,
+  ['a PGP private key header', /-----BEGIN PGP PRIVATE KEY BLOCK-----/] as const,
+  ['an OpenSSH private key header', /-----BEGIN OPENSSH PRIVATE KEY-----/] as const,
+  ['a certificate header', /-----BEGIN CERTIFICATE-----/] as const,
+  ['an AWS key id', /(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}(?![0-9A-Z])/] as const,
+  ['an AWS secret key field', /aws_secret_access_key\s*[:=]/i] as const,
   ['GitHub token', /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{16,}/] as const,
   ['GitHub token', /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}/] as const,
-  ['sk- 開頭的金鑰', /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}/] as const,
+  ['a key starting with sk-', /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}/] as const,
   ['Slack token', /(?<![A-Za-z0-9_-])xox[abprs]-[A-Za-z0-9-]{8,}/] as const,
-  ['Google API 金鑰', /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/] as const,
-  ['Bearer 授權標頭', /authorization\s*[:=]\s*["']?bearer\s+[A-Za-z0-9._~+/=-]{16,}/i] as const,
+  ['a Google API key', /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/] as const,
+  ['a Bearer authorization header', /authorization\s*[:=]\s*["']?bearer\s+[A-Za-z0-9._~+/=-]{16,}/i] as const,
   // 身分證字號：**不驗檢查碼**（驗了就會放過「格式對、檢查碼錯」的那些）
-  ['身分證字號', /(?<![A-Za-z0-9])[A-Za-z][12][0-9]{8}(?![0-9A-Za-z])/] as const,
+  ['a national ID number', /(?<![A-Za-z0-9])[A-Za-z][12][0-9]{8}(?![0-9A-Za-z])/] as const,
   // ── 下面這幾條是 P2 驗證員抓到的漏網（Downloads 裡最值錢的東西就是這些）──
-  ['Stripe 金鑰', /(?<![A-Za-z0-9_-])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/] as const,
-  ['帶密碼的連線字串', /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|ftp|ssh):\/\/[^\s:@/]+:[^\s@/]{3,}@/i] as const,
+  ['a Stripe key', /(?<![A-Za-z0-9_-])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/] as const,
+  ['a connection string with a password', /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|ftp|ssh):\/\/[^\s:@/]+:[^\s@/]{3,}@/i] as const,
   ['JWT', /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/] as const,
   ['Kubernetes Secret', /kind:\s*Secret\b/] as const,
-  ['.pgpass 格式', /^[^\s:]+:\d{1,5}:[^\s:]*:[^\s:]+:\S+$/m] as const,
+  ['a .pgpass line', /^[^\s:]+:\d{1,5}:[^\s:]*:[^\s:]+:\S+$/m] as const,
   // 收尾的引號要吃掉："private_key": ⋯ 這種 JSON 寫法最常見
-  ['私鑰欄位', /(?:^|[\s,{"'])(?:private_key|privatekey|client_secret|api[_-]?secret)["']?\s*[:=]/i] as const,
+  ['a private key field', /(?:^|[\s,{"'])(?:private_key|privatekey|client_secret|api[_-]?secret)["']?\s*[:=]/i] as const,
 ])
 
 /**
@@ -194,9 +194,9 @@ export function looksLikeCredentialTable(text: string): boolean {
 export function secretByContent(text: string): string | null {
   const s = String(text ?? '')
   if (!s) return null
-  for (const [label, re] of SECRET_PATTERNS) if (re.test(s)) return `內容裡有${label}`
-  if (hasCardNumber(s)) return '內容裡有信用卡號'
-  if (looksLikeCredentialTable(s)) return '內容看起來是一張帳號密碼表'
+  for (const [label, re] of SECRET_PATTERNS) if (re.test(s)) return `the contents hold ${label}`
+  if (hasCardNumber(s)) return 'the contents hold a credit card number'
+  if (looksLikeCredentialTable(s)) return 'the contents look like a table of usernames and passwords'
   return null
 }
 
@@ -227,7 +227,7 @@ export function screen(input: { name: string; text?: string | null; key?: string
   if (text) {
     const key = String(input.key ?? '')
     if (key.length >= 8 && text.includes(key)) {
-      return { send: false, why: SECRET_WHY, rule: '內容裡有這台機器的模型金鑰' }
+      return { send: false, why: SECRET_WHY, rule: "the contents hold this machine's model key" }
     }
     const byContent = secretByContent(text)
     if (byContent) return { send: false, why: SECRET_WHY, rule: byContent }

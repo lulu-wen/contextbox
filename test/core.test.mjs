@@ -40,7 +40,7 @@ test('敏感度從註冊表拿，呼叫端說了不算', () => {
 test('secret 級的東西存不進去', () => {
   const F = fresh()
   assert.throws(() => F.propose({ key: 'password', value: 'x', source: { kind: 'manual' } }),
-    /不認得的 key/)
+    /Unknown key/)
 })
 
 test('擴充套件問一組欄位，拿回四種不同指示', () => {

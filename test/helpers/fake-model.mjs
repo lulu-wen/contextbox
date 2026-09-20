@@ -14,10 +14,10 @@ import { createServer } from 'node:http'
 export const GOOD_VIEW = {
   course: '作業系統',
   topic: '死結',
-  kind: '講義',
+  kind: 'Lecture',
   suggestedName: '作業系統_死結',
   evidence: '文件裡寫著「作業系統 第 6 章 死結」',
-  confidence: '高',
+  confidence: 'high',
 }
 
 /** 包成 chat completion 的樣子。 */

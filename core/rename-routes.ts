@@ -28,7 +28,7 @@ const BODY_KEYS = {
   undo: ['ids', 'last'],
 } as const
 
-const INTERNAL = '改名的時候出錯了。檔案沒有被刪掉，紀錄還在，請重試。'
+const INTERNAL = 'Something went wrong while renaming. No file was deleted and the records are intact. Try again.'
 
 const fail = (send: RouteCtx['send'], code: number, error: string, tag: string, headers?: Record<string, string>) =>
   send(code, { error, code: tag }, headers)
@@ -38,7 +38,7 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
   const b = ctx.body
   if (b === undefined) return {}
   if (b === null || typeof b !== 'object' || Array.isArray(b)) {
-    throw new CleanupError('BAD_BODY', '看不懂送來的資料。')
+    throw new CleanupError('BAD_BODY', 'Could not make sense of the body.')
   }
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
@@ -46,7 +46,7 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
       .map(k => k.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, '·').slice(0, 40))
       .join('、')
     throw new CleanupError('BAD_BODY',
-      `看不懂送來的資料：不認得的欄位 ${shown}。這個路徑只收 ${allowed.join('、')}。`)
+      `Could not make sense of the body: unknown field ${shown}. This route only takes ${allowed.join(', ')}.`)
   }
   return b
 }
@@ -83,7 +83,7 @@ function route(ctx: RouteCtx): boolean {
 
   const known = KNOWN.find(([re]) => re.test(p))
   if (known && !known[1].includes(method)) {
-    fail(send, 405, `這個路徑只收 ${known[1].join('、')}。`, 'BAD_METHOD', { allow: known[1].join(', ') })
+    fail(send, 405, `This route only takes ${known[1].join(', ')}.`, 'BAD_METHOD', { allow: known[1].join(', ') })
     return true
   }
 
@@ -91,7 +91,7 @@ function route(ctx: RouteCtx): boolean {
     const raw = url.searchParams.get('limit')
     const limit = raw === null ? undefined : Number(raw)
     if (raw !== null && (!Number.isInteger(limit) || limit! < 1 || limit! > 1000)) {
-      fail(send, 400, 'limit 要是 1 到 1000 之間的整數。', 'BAD_BODY')
+      fail(send, 400, 'limit must be a whole number between 1 and 1000.', 'BAD_BODY')
       return true
     }
     send(200, renameSuggestions(ctx.db, scopeOf(ctx), { limit }))
@@ -112,6 +112,6 @@ function route(ctx: RouteCtx): boolean {
   }
 
   // `/rename/` 底下認不得的路徑：回一句人話，不是 404（404 會讓呼叫端以為自己打錯網址）
-  fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED')
+  fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED')
   return true
 }

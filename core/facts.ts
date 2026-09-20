@@ -82,8 +82,8 @@ export class Facts {
    */
   confirm(id: string): Fact {
     const row = this.row(id)
-    if (!row) throw new Error(`沒有這筆事實：${id}`)
-    if (row.status !== 'candidate') throw new Error(`只有 candidate 能確認，這筆是 ${row.status}`)
+    if (!row) throw new Error(`No such fact: ${id}`)
+    if (row.status !== 'candidate') throw new Error(`Only a candidate can be confirmed; this one is ${row.status}`)
 
     const prev = this.db.prepare(
       `SELECT * FROM facts WHERE key=? AND status='confirmed' AND id!=?`
@@ -106,7 +106,7 @@ export class Facts {
 
   reject(id: string): Fact {
     const row = this.row(id)
-    if (!row) throw new Error(`沒有這筆事實：${id}`)
+    if (!row) throw new Error(`No such fact: ${id}`)
     this.db.prepare(`UPDATE facts SET status='rejected' WHERE id=?`).run(id)
     const after = this.row(id)!
     this.log('fact.reject', id, [row], [after])

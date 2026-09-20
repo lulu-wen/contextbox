@@ -139,7 +139,7 @@ async function serve(t, s, extra = {}) {
     const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body })
     const text = await r.text()
     let json = null
-    try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+    try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
     return { status: r.status, json, text }
   }
   const api = (method, path, body) => raw(method, path, { body: body === undefined ? undefined : JSON.stringify(body) })
@@ -319,13 +319,13 @@ describe('R2-4 面板（HTTP）的復原用 清理範圍 ∪ 監看資料夾；�
     const r = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads] })
     assert.equal(r.code, 200, JSON.stringify(r.body))
     assert.equal(r.body.status, 'error')
-    assert.doesNotMatch(JSON.stringify(r.body), /請設定清理資料夾/, '叫使用者去改設定，其實只是資料夾暫時不在')
+    assert.doesNotMatch(JSON.stringify(r.body), /Set the cleanup folders/, '叫使用者去改設定，其實只是資料夾暫時不在')
     const a = r.body.items.find(i => i.name === 'a.zip')
     assert.equal(a.outcome, 'moved', '檔還在隔離區')
-    assert.match(a.why ?? '', /不見了/)
+    assert.match(a.why ?? '', /gone/)
     const h = health(f)
     assert.equal(h.lastErrorKind, 'undo')
-    assert.doesNotMatch(h.lastError, /請設定清理資料夾/)
+    assert.doesNotMatch(h.lastError, /Set the cleanup folders/)
 
     // 插回來之後照樣放得回
     renameSync(unplugged, f.downloads)
@@ -350,8 +350,8 @@ describe('R2-4 面板（HTTP）的復原用 清理範圍 ∪ 監看資料夾；�
     const r = call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads, desktop] })
     assert.equal(r.code, 200, JSON.stringify(r.body))
     const a = r.body.items.find(i => i.name === 'a.zip')
-    assert.deepEqual({ outcome: a.outcome, gone: /不見了/.test(a.why ?? '') }, { outcome: 'moved', gone: true }, a.why)
-    assert.doesNotMatch(JSON.stringify(r.body), /不在設定的清理資料夾內|請設定清理資料夾/)
+    assert.deepEqual({ outcome: a.outcome, gone: /gone/.test(a.why ?? '') }, { outcome: 'moved', gone: true }, a.why)
+    assert.doesNotMatch(JSON.stringify(r.body), /not inside a configured cleanup folder|Set the cleanup folders/)
     renameSync(unplugged, f.downloads)
     assert.equal(call(f, 'POST', `/cleanup/plans/${p.id}/undo`, {}, { restoreRoots: [f.downloads, desktop] }).body.status, 'restored')
   })
@@ -483,7 +483,7 @@ describe('R2-12a（HTTP）dismiss 一份 release 過的計畫、它的檔在另�
     const B = call(f, 'POST', '/cleanup/plans', { candidateIds: ids }).body
     const r = call(f, 'POST', `/cleanup/plans/${A.id}/dismiss`, {})
     assert.deepEqual({ code: r.code, err: r.body.code }, { code: 409, err: 'CONFLICT' }, JSON.stringify(r.body))
-    assert.match(r.body.error, /另一份還沒套用的清理計畫/)
+    assert.match(r.body.error, /another plan that was never applied/)
     assert.equal(health(f).lastError, null, '狀態衝突不是意外，不記')
     assert.notEqual(petOf(f), 'worried')
     assert.deepEqual(routes.listCandidates(f.db, { roots: f.opts.roots }).candidates.map(c => c.name).sort(), ['a.zip', 'b.zip'],
@@ -1085,20 +1085,20 @@ describe('R2-11 防呆', () => {
       ELOOP: "ELOOP: too many symbolic links encountered, open '/home/u/Downloads/x'",
       EIO: "EIO: i/o error, read '/home/u/Downloads/x'",
     }
-    const want = { EROFS: /唯讀/, ENOSPC: /滿/, EXDEV: /同一顆碟/, ELOOP: /捷徑/, EIO: /讀寫|硬體|磁碟/ }
+    const want = { EROFS: /read-only/, ENOSPC: /full/, EXDEV: /different disk/, ELOOP: /symlink/, EIO: /read or write|hardware|disk/ }
     const got = {}
     for (const [code, s] of Object.entries(raw)) {
       got[code] = routes.safeWhy(s)
-      assert.notEqual(got[code], '讀不到這個檔案', code)
+      assert.notEqual(got[code], 'cannot read this file', code)
       assert.match(got[code], want[code], `${code}：${got[code]}`)
       assert.ok(!/[\\/]/.test(got[code]), got[code])
     }
     assert.equal(new Set(Object.values(got)).size, 5, '五種錯要五句話')
-    assert.match(routes.safeWhy(raw.ENOSPC), /隔離區/, '滿的多半是隔離區所在的磁碟')
+    assert.match(routes.safeWhy(raw.ENOSPC), /quarantine/, '滿的多半是隔離區所在的磁碟')
     // 對照：舊的照舊
-    assert.equal(routes.safeWhy("ENOENT: no such file or directory, open '/x/y'"), '這個檔案已經不在了')
-    assert.equal(routes.safeWhy("EACCES: permission denied, open '/x/y'"), '沒有權限讀這個檔案')
-    assert.equal(routes.safeWhy('EWHATEVER: something /x'), '讀不到這個檔案')
+    assert.equal(routes.safeWhy("ENOENT: no such file or directory, open '/x/y'"), 'this file is no longer there')
+    assert.equal(routes.safeWhy("EACCES: permission denied, open '/x/y'"), 'no permission to read this file')
+    assert.equal(routes.safeWhy('EWHATEVER: something /x'), 'cannot read this file')
   })
 
   test('/health：facts 表壞掉時，形狀跟正常時一模一樣（欄位齊全），ok 是 false', async t => {

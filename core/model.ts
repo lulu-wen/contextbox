@@ -33,7 +33,7 @@ import { resizeGray } from './imagehash.ts'
 import { encodeGrayPng } from './png-write.ts'
 
 /** 提示詞版本。**改了提示詞就要改這個字串** —— 它是快取鍵的一半，舊答案才不會被當成新提示詞的答案。 */
-export const PROMPT_VERSION = 'v1'
+export const PROMPT_VERSION = 'v2-en'
 
 /** 每個請求最多等這麼久。 */
 export const MODEL_TIMEOUT_MS = 60_000
@@ -54,11 +54,11 @@ export const MAX_RESPONSE_BYTES = 1024 * 1024
 
 /** `kind` 的固定選項。 */
 export const VIEW_KINDS: readonly string[] = Object.freeze([
-  '講義', '作業', '考試', '筆記', '程式', '報告', '表單', '對話', '其他',
+  'Lecture', 'Homework', 'Exam', 'Notes', 'Code', 'Report', 'Form', 'Chat', 'Other',
 ])
 
 /** 信心三級。數字沒有校準過，別假裝精確。 */
-export const CONFIDENCES: readonly string[] = Object.freeze(['高', '中', '低'])
+export const CONFIDENCES: readonly string[] = Object.freeze(['high', 'medium', 'low'])
 
 /** 回答的六個欄位。**不多不少** —— parseView 照這個比。 */
 export const VIEW_FIELDS: readonly string[] = Object.freeze([
@@ -79,14 +79,30 @@ export type ModelView = {
 
 export type ModelSource = 'image' | 'text'
 
+/**
+ * **答案的語言是固定的，檔案的語言不是。**（稽核 2026-09-20）
+ *
+ * 使用者的檔案可能是任何語言（這個作品就是在台灣寫的，講義多半是中文），但 `course` 與 `kind`
+ * 會**變成磁碟上的資料夾名**，而 `Unknown` 這個字是「看不出來就不提議」那條防線的字面值。
+ * 不講死的話：中文講義會讓模型回「作業系統」，路徑長成 `Courses/作業系統/Lecture`；
+ * 更糟的是它會回「未知」「看不出來」—— cleanCourse 只認字面 `Unknown`，於是真的長出一個
+ * `Courses/未知/` 資料夾。所以 prompt 要同時講兩件事：讀得懂任何語言、但用英文回答。
+ *
+ * `evidence` 是例外：它是**從檔案裡引用的原文**，原文是什麼語言就是什麼語言 ——
+ * 翻譯過的引用不算證據。
+ */
 export const SYSTEM_PROMPT =
-  '你是檔案整理助手。看使用者給你的截圖或文件片段，判斷它屬於哪一堂課或哪個專案、什麼主題，'
-  + '並建議一個繁體中文檔名。只根據看到的內容回答，看不出來就說看不出來（confidence 用「低」）。'
-  + '不要猜測、不要編造課程名稱。'
+  'You sort files. Look at the screenshot or document excerpt the user gives you and work out which course or '
+  + 'project it belongs to, what its topic is, and suggest a file name. Answer only from what you can see. '
+  + 'The file may be in any language; read it in whatever language it is written in. '
+  + 'Always answer in English, and use the exact word Unknown for course and topic when you cannot tell — '
+  + 'never a translation of it. If you cannot tell, also set confidence to "low". '
+  + 'Do not guess and do not invent course names.'
 
 export const USER_PROMPT =
-  '請用固定格式回答。suggestedName 用繁體中文，格式是 <課程或專案>_<主題>，不要副檔名、不要日期。'
-  + 'evidence 要引用你在畫面或文字裡真的看到的字。'
+  'Answer in the fixed format, in English. suggestedName is <Course or project>_<Topic>, with no extension '
+  + 'and no date, in English. evidence must quote words you actually saw in the image or the text — '
+  + 'quote them in their original language, do not translate them.'
 
 /** 強制回答格式（vLLM 的 xgrammar 會照這個壓）。 */
 export function responseFormat(): Record<string, unknown> {
@@ -100,11 +116,11 @@ export function responseFormat(): Record<string, unknown> {
         additionalProperties: false,
         required: [...VIEW_FIELDS],
         properties: {
-          course: { type: 'string', description: '哪一堂課或哪個專案，看不出來就填「看不出來」' },
-          topic: { type: 'string', description: '什麼主題' },
+          course: { type: 'string', description: 'Which course or project. Write Unknown if you cannot tell.' },
+          topic: { type: 'string', description: 'What the topic is' },
           kind: { type: 'string', enum: [...VIEW_KINDS] },
-          suggestedName: { type: 'string', description: '繁體中文，格式 <課程或專案>_<主題>，不含副檔名與日期' },
-          evidence: { type: 'string', description: '你在畫面或文字裡真的看到的字' },
+          suggestedName: { type: 'string', description: '<Course or project>_<Topic>, with no extension and no date' },
+          evidence: { type: 'string', description: 'Words you actually saw in the image or the text' },
           confidence: { type: 'string', enum: [...CONFIDENCES] },
         },
       },
@@ -124,8 +140,8 @@ export function modelEnabled(config: Config): boolean {
 
 /** 沒開的時候，doctor 要講的那句話。 */
 export function whyDisabled(config: Config): string | null {
-  if (!config?.model?.baseUrl || !config?.model?.name) return '沒設定模型，看懂內容的功能沒開'
-  if (!modelKey(config)) return `環境變數 ${config.model.keyEnv} 是空的，看懂內容的功能沒開`
+  if (!config?.model?.baseUrl || !config?.model?.name) return 'no model configured, so reading is off'
+  if (!modelKey(config)) return `the environment variable ${config.model.keyEnv} is empty, so reading is off`
   return null
 }
 
@@ -271,7 +287,7 @@ export function buildMessages(input: AskInput): unknown[] {
         { type: 'image_url', image_url: { url: `data:image/png;base64,${input.png.toString('base64')}` } },
         { type: 'text', text: USER_PROMPT },
       ]
-    : [{ type: 'text', text: `以下是一個檔案的內容片段：\n\n${input.text}\n\n${USER_PROMPT}` }]
+    : [{ type: 'text', text: `Here is an excerpt from a file:\n\n${input.text}\n\n${USER_PROMPT}` }]
   return [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: user },
@@ -282,7 +298,7 @@ export function buildMessages(input: AskInput): unknown[] {
 function safeError(e: unknown, key: string): string {
   let s = String((e as any)?.message ?? e ?? '')
   if (key && key.length >= 8) s = s.split(key).join('***')
-  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 200) || '原因不明'
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 200) || 'reason unknown'
 }
 
 /** 把回應讀進來，超過上限就不讀了。 */
@@ -299,7 +315,7 @@ async function readCapped(res: Response, cap: number): Promise<string> {
     n += value.length
     if (n > cap) {
       try { await reader.cancel() } catch { /* 已經斷了 */ }
-      throw new Error('模型的回應太長，不讀了')
+      throw new Error('the model\'s response is too long; not reading further')
     }
     chunks.push(value)
   }
@@ -335,8 +351,8 @@ export async function askModel(config: Config, input: AskInput, opts: AskOptions
   const fail = (error: string, aborted = false, blame: 'answer' | 'transport' = 'transport'): AskFail =>
     ({ ok: false, error, ms: Date.now() - started, charsSent, bytesSent, aborted, blame })
 
-  if (!modelEnabled(config)) return fail('模型還沒設定')
-  if (opts.signal?.aborted) return fail('已經取消', true)
+  if (!modelEnabled(config)) return fail('The model is not configured')
+  if (opts.signal?.aborted) return fail('Cancelled', true)
 
   const timeout = AbortSignal.timeout(Math.max(1, opts.timeoutMs ?? MODEL_TIMEOUT_MS))
   const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
@@ -362,29 +378,29 @@ export async function askModel(config: Config, input: AskInput, opts: AskOptions
       signal,
     })
   } catch (e) {
-    if (opts.signal?.aborted) return fail('已經取消', true)
-    if (timeout.aborted) return fail(`模型 ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)} 秒沒有回應`)
-    return fail(`連不上模型（${safeError(e, key)}）`)
+    if (opts.signal?.aborted) return fail('Cancelled', true)
+    if (timeout.aborted) return fail(`The model did not answer in ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)}s`)
+    return fail(`Cannot reach the model (${safeError(e, key)})`)
   }
 
-  if (res.status === 401 || res.status === 403) return fail(`模型拒絕了這把金鑰（${res.status}）`)
-  if (!res.ok) return fail(`模型回了 ${res.status}`)
+  if (res.status === 401 || res.status === 403) return fail(`The model rejected this key (${res.status})`)
+  if (!res.ok) return fail(`The model returned ${res.status}`)
 
   let text: string
   try { text = await readCapped(res, MAX_RESPONSE_BYTES) }
   catch (e) {
-    if (opts.signal?.aborted) return fail('已經取消', true)
-    if (timeout.aborted) return fail(`模型 ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)} 秒沒有回應`)
-    return fail(`讀不完模型的回應（${safeError(e, key)}）`)
+    if (opts.signal?.aborted) return fail('Cancelled', true)
+    if (timeout.aborted) return fail(`The model did not answer in ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)}s`)
+    return fail(`Could not read the model's response through (${safeError(e, key)})`)
   }
 
   let body: any
-  try { body = JSON.parse(text) } catch { return fail('模型回的不是 JSON', false, 'answer') }
+  try { body = JSON.parse(text) } catch { return fail('The model did not answer with JSON', false, 'answer') }
   const content = body?.choices?.[0]?.message?.content
-  if (typeof content !== 'string' || !content.trim()) return fail('模型沒有回答內容', false, 'answer')
+  if (typeof content !== 'string' || !content.trim()) return fail('The model answered with nothing', false, 'answer')
   const view = parseView(content)
   // **形狀不對就整筆不採用。** 少一欄、多一欄、選項不對 —— 一律當成一次失敗，
   // 不可以把半筆資料存進去（預想的預期行為第 8 條）
-  if (!view) return fail('模型回的格式不對，這一筆不採用', false, 'answer')
+  if (!view) return fail('The model answered in the wrong shape; this one is discarded', false, 'answer')
   return { ok: true, view, ms: Date.now() - started, charsSent, bytesSent }
 }

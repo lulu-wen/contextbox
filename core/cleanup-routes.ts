@@ -95,10 +95,10 @@ export const lastOkKey = (kind: ActionKind) => `cleanup_last_ok_${kind}`
  * 或已經刪掉之後（例如刪完檔、寫回結果時資料庫出錯）。稽查實測過：檔案已經永久刪了，
  * 訊息卻說沒有（C-C5）。我們不知道的時候，就說不知道。
  */
-export const INTERNAL_MESSAGE = '後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。'
+export const INTERNAL_MESSAGE = 'The backend hit an error, so this step may not have completed. Close the panel and open it again from the pet or `node cli.mjs open` to see where things stand.'
 
 /** 太大、算不出指紋的檔：執行層一定拒收，所以不列成候選，改列在「需要你查看」。 */
-export const TOO_LARGE_WHY = '檔案太大，這個工具不處理，要不要留請自己決定。'
+export const TOO_LARGE_WHY = 'This file is too large for this tool to handle. Whether to keep it is your call.'
 
 /** 預設清理（不帶 id）一次最多幾個檔。超過的下次再清（RC12）。 */
 export const DEFAULT_PLAN_MAX_FILES = 1000
@@ -292,7 +292,7 @@ function enrichDuplicate(db: DatabaseSync, item: ItemRow, evidence: string, root
   // 會被當成同一個檔，「會留著」那句話整個消失 —— 而那句話正是使用者敢勾的理由。
   if (!keep || keep.id === item.id) return evidence
   const where = displayPath(keep.path, roots).subdir
-  return `${evidence}，會留著「${keep.name}」` + (where ? `（在 ${where}）` : '')
+  return `${evidence}; “${keep.name}” is the one being kept` + (where ? ` (in ${where})` : '')
 }
 
 /**
@@ -310,23 +310,23 @@ function humanError(raw: string | null): string {
   const s = String(raw ?? '')
   if (/EACCES|EPERM|permission denied/i.test(s)) {
     // 建隔離區資料夾、搬檔時的權限錯誤不是「讀不到」，講錯的話使用者會去查錯的地方
-    if (/\bmkdir\b/.test(s)) return '沒有權限建立資料夾'
-    if (/\brename\b/.test(s)) return '沒有權限搬動這個檔案'
-    return '沒有權限讀這個檔案'
+    if (/\bmkdir\b/.test(s)) return 'no permission to create a folder'
+    if (/\brename\b/.test(s)) return 'no permission to move this file'
+    return 'no permission to read this file'
   }
-  if (/ENOENT|no such file/i.test(s)) return '這個檔案已經不在了'
-  if (/EISDIR/i.test(s)) return '這是一個資料夾，不是檔案'
-  if (/EMFILE|ENFILE/i.test(s)) return '同時開太多檔案了，等一下會再試'
-  if (/EBUSY|EAGAIN/i.test(s)) return '這個檔案正在被別的程式使用'
+  if (/ENOENT|no such file/i.test(s)) return 'this file is no longer there'
+  if (/EISDIR/i.test(s)) return 'this is a folder, not a file'
+  if (/EMFILE|ENFILE/i.test(s)) return 'too many files open at once; it will try again shortly'
+  if (/EBUSY|EAGAIN/i.test(s)) return 'another program is using this file'
   // 寫入端的錯（第二輪 R2-11）。以前全部掉到最後那句「讀不到這個檔案」——
   // 隔離區所在的磁碟滿了，doctor 卻叫使用者去查 Downloads 的讀取權限。
-  if (/\bENOSPC\b|no space left/i.test(s)) return '隔離區所在的磁碟滿了，沒有空間放這個檔'
-  if (/\bEXDEV\b|cross-device/i.test(s)) return '隔離區跟這個檔不在同一顆碟，沒辦法搬'
-  if (/\bEROFS\b|read-only file system/i.test(s)) return '這顆碟是唯讀的，沒辦法寫入或搬動'
-  if (/\bELOOP\b|too many symbolic links/i.test(s)) return '路徑裡的捷徑繞成一圈，沒辦法安全處理'
-  if (/\bEIO\b|i\/o error/i.test(s)) return '磁碟讀寫出錯（可能是硬體或網路磁碟的問題）'
+  if (/\bENOSPC\b|no space left/i.test(s)) return 'the disk holding quarantine is full, with no room for this file'
+  if (/\bEXDEV\b|cross-device/i.test(s)) return 'quarantine is on a different disk from this file, so it cannot be moved'
+  if (/\bEROFS\b|read-only file system/i.test(s)) return 'this disk is read-only, so nothing can be written or moved'
+  if (/\bELOOP\b|too many symbolic links/i.test(s)) return 'the symlinks in this path loop back on themselves, so it cannot be handled safely'
+  if (/\bEIO\b|i\/o error/i.test(s)) return 'a disk read or write error, possibly hardware or a network drive'
   if (/too large|太大|超過.*上限/i.test(s)) return TOO_LARGE_WHY
-  return '讀不到這個檔案'
+  return 'cannot read this file'
 }
 
 /**
@@ -584,7 +584,7 @@ function needsHumanWhy(b: ItemRow): string {
   // 太大是事實（沒有指紋），不看 scanner 寫了什麼字 —— 那句「超過清理掃描上限」
   // 以前被翻成「讀不到這個檔案」（稽核 RC11）。
   if (b.status !== 'error' && noFingerprint(b)) return TOO_LARGE_WHY
-  return safeWhy(b.error) ?? '讀不到這個檔案'
+  return safeWhy(b.error) ?? 'cannot read this file'
 }
 
 const isDefaultChecked = (g: Group) => g.cands[0].confidence >= DEFAULT_CHECK_MIN
@@ -880,6 +880,12 @@ export function invalidateQuarantineCache() { countCache = null }
  * 都是同步 request，回應送出的時候它們已經結束了。那三個是前端在等
  * response 的時候自己播的動畫，不該由這裡回報。
  */
+/**
+ * 英文的單複數。`1 files` 是最容易被看到、也最廉價的破綻 ——
+ * 而寵物的對話框是整個作品最常被截圖的地方（稽核 2026-09-20）。
+ */
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
 export function petState(
   h: {
     db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown; rootsMissing?: unknown }
@@ -912,16 +918,16 @@ export function petState(
   // **訊息裡不放問題的原文**（R3-12）：那些字串已經去過路徑，但寵物的對話框是最容易被截圖、
   // 最容易被旁人看到的地方，檔名與資料夾名不必出現在那裡。詳情在 scanProblems 陣列裡，面板自己決定怎麼列。
   const scanWhy = rootsMissing > 0
-    ? (rootsMissing > 1 ? `有 ${rootsMissing} 個清理資料夾好像不見了，先看一下 doctor。` : '清理資料夾好像不見了，先看一下 doctor。')
-    : `上次掃描回報了 ${problems.length} 個問題，先看一下 doctor。`
+    ? (rootsMissing > 1 ? `${rootsMissing} cleanup folders look like they are gone. Have a look at doctor.` : 'A cleanup folder looks like it is gone. Have a look at doctor.')
+    : `The last scan reported ${plural(problems.length, 'problem')}. Have a look at doctor.`
 
   const message =
-    !h.db.ok || errorStillActive(h) ? '後端出了點狀況，先看一下 doctor。'
+    !h.db.ok || errorStillActive(h) ? 'Something is off in the backend. Have a look at doctor.'
     : state === 'worried' ? scanWhy
-    : state === 'waiting' ? `有 ${counts.proposedPlans} 份清單等你確認。`
-    : state === 'found' ? `找到 ${h.pendingCandidates} 個可以清的檔案。`
-    : state === 'watching' ? `盯著${watchingPhrase(h.watcher)}。`
-    : '沒事，在發呆。'
+    : state === 'waiting' ? `${plural(counts.proposedPlans, 'list')} ${counts.proposedPlans === 1 ? 'is' : 'are'} waiting for you.`
+    : state === 'found' ? `Found ${plural(h.pendingCandidates, 'file')} that could be cleaned up.`
+    : state === 'watching' ? `Keeping an eye on ${watchingPhrase(h.watcher)}.`
+    : 'Nothing going on. Just daydreaming.'
 
   return {
     state,
@@ -954,10 +960,10 @@ function watchingPhrase(w: { watching?: unknown; watchingCount?: unknown }): str
   const count = typeof w.watchingCount === 'number' && Number.isInteger(w.watchingCount) ? w.watchingCount : 0
   const total = Math.max(count, list.length)
   const names = list.filter(n => typeof n === 'string' && n !== '')
-    .map(n => `「${String(n).replace(UNSAFE_DISPLAY, '·')}」`)
-  if (!names.length) return total > 1 ? `這 ${total} 個監看資料夾` : '監看資料夾'
-  const shown = names.slice(0, 3).join('、')
-  return names.length === total && total <= 3 ? shown : `${shown}等 ${total} 個資料夾`
+    .map(n => `“${String(n).replace(UNSAFE_DISPLAY, '·')}”`)
+  if (!names.length) return total > 1 ? `${total} watched folders` : 'the watched folder'
+  const shown = names.slice(0, 3).join(', ')
+  return names.length === total && total <= 3 ? shown : `${shown} and more (${total} folders)`
 }
 
 /**
@@ -988,7 +994,7 @@ function parseLastError(raw: string | null): { at: string | null; why: string | 
   if (!raw) return { at: null, why: null }
   const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z)\s+([\s\S]*)$/.exec(raw)
   const at = m && Number.isFinite(Date.parse(m[1])) ? m[1] : null
-  return { at, why: safeWhy(m ? m[2] : raw) ?? '後端出錯了' }
+  return { at, why: safeWhy(m ? m[2] : raw) ?? 'the backend hit an error' }
 }
 
 const setMeta = (db: DatabaseSync, k: string, v: string) =>
@@ -1049,8 +1055,8 @@ export function isSurprise(e: unknown): boolean {
 export function recordCleanupError(db: DatabaseSync, e: unknown, kind?: ActionKind): boolean {
   if (!isSurprise(e)) return false
   const raw = String((e as any)?.message ?? e).slice(0, 300)
-  console.error('[contextbox] 清理出錯：', raw)
-  writeLastError(db, safeWhy(raw) ?? '後端出錯了', isActionKind(kind) ? kind : undefined)
+  console.error('[contextbox] cleanup error:', raw)
+  writeLastError(db, safeWhy(raw) ?? 'the backend hit an error', isActionKind(kind) ? kind : undefined)
   return true
 }
 
@@ -1094,14 +1100,14 @@ export function recordActionResult(db: DatabaseSync, kind: 'apply' | 'undo' | 'e
   let why: string | null = null
   if (kind === 'empty') {
     if (Array.isArray(r.errors) && r.errors.length && !r.deletedCount) {
-      why = `清空隔離區一個檔都沒刪掉：${safeWhy(String(r.errors[0]?.error ?? '')) ?? '原因不明'}`
+      why = `Emptying quarantine deleted nothing: ${safeWhy(String(r.errors[0]?.error ?? '')) ?? 'reason unknown'}`
     }
   } else if (r.status === 'error') {
-    const first = safeWhy(typeof r.error === 'string' ? r.error : null) ?? '原因不明'
-    why = kind === 'apply' ? `這次清理一個檔都沒搬成：${first}` : `這次復原一個檔都沒放回去：${first}`
+    const first = safeWhy(typeof r.error === 'string' ? r.error : null) ?? 'reason unknown'
+    why = kind === 'apply' ? `This cleanup moved nothing: ${first}` : `This undo put nothing back: ${first}`
   }
   if (why) {
-    console.error('[contextbox] 清理出錯：', why)
+    console.error('[contextbox] cleanup error:', why)
     writeLastError(db, why.slice(0, 300), kind)
     return 'error'
   }
@@ -1189,10 +1195,10 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
       watchingCount: rootList.length,
       // 顯示名只給帶 token 的。watch 設成家目錄時，basename 就是使用者名稱。
       watching: full ? rootList.map(r => displayPath(join(r, 'x'), rootList).folder) : [],
-      why: !beat ? '從來沒跑過'
-        : !running ? '那個行程已經不在了'
-        : !fresh ? '行程還在，但心跳停了超過五分鐘'
-        : rootsMissing ? '有監看資料夾不存在'
+      why: !beat ? 'never ran'
+        : !running ? 'that process is gone'
+        : !fresh ? 'the process is alive but its heartbeat stopped over five minutes ago'
+        : rootsMissing ? 'a watched folder does not exist'
         : null,
     },
     quarantine: {
@@ -1215,7 +1221,7 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
     // 讀出來再翻一次 —— 舊版存的是原文，帶完整路徑（fs 的 message 一律含 path）。
     lastError: full
       ? (lastErrorRaw ? (lastErr.at ? `${lastErr.at} ${lastErr.why}` : lastErr.why) : null)
-      : (lastErrorRaw ? '有，帶 token 才看得到' : null),
+      : (lastErrorRaw ? 'yes, but only visible with a token' : null),
     // 時間只給帶 token 的：免 token 的 /health 同機任何行程都讀得到，時間會洩漏
     // 「使用者什麼時候清理過」。欄位兩版都有（形狀一致），遮蔽時是 null。
     // 寵物（/pet/state，要 token）拿它們比「錯在成功之後嗎」。
@@ -1292,7 +1298,7 @@ export function createPlanForRoots(db: DatabaseSync, scope: string[] | CleanupSc
   if (!replay) {
     const listed = new Set(collect(db, scopeOf(scope)).rows.flatMap(g => g.cands.map(c => c.id)))
     if (ids.some(id => !listed.has(id))) {
-      throw new CleanupError('STALE_CANDIDATE', '候選已變更，請重新掃描並建立計畫。')
+      throw new CleanupError('STALE_CANDIDATE', 'The candidates changed. Scan again and build a new plan.')
     }
   }
   return createPlan(db, { candidateIds: ids, requestId: opts.requestId as string | undefined })
@@ -1359,12 +1365,12 @@ type Outcome = { outcome: ItemOutcome; why: string | null; restoredAs?: string }
  * 只有還沒跑完的 proposed 再套用會接著做。所以照實講：說不準檔在哪；復原（undoPlan）會把在隔離區、
  * 指紋對得上的放回原位，確認沒搬過的結掉；doctor 看得到整體的狀態。
  */
-const MOVE_INTERRUPTED = '搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。'
+const MOVE_INTERRUPTED = 'Interrupted mid-move, so there is no telling whether the file is where it was or in quarantine. “Undo” puts back whatever is in quarantine; you can also run node cli.mjs doctor to check.'
 /**
  * 復原到一半中斷的話。再按一次復原多半接得完（performMove 認得「已經放回去了」），但放回之後
  * 原位的檔又被改過就接不上 —— 所以不說「會把它接完」，只說會接著放回。
  */
-const RESTORE_INTERRUPTED = '復原到一半中斷，說不準檔案現在在隔離區還是已經放回原位。再按一次復原會接著放回；也可以執行 node cli.mjs doctor 檢查。'
+const RESTORE_INTERRUPTED = 'Interrupted mid-undo, so there is no telling whether the file is still in quarantine or already back. Pressing undo again carries on; you can also run node cli.mjs doctor to check.'
 
 const tableExists = (db: DatabaseSync, name: string) =>
   Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name))
@@ -1462,7 +1468,7 @@ function outcomesOf(db: DatabaseSync, planId: string, opts: OutcomeOptions = {})
       // 根本不會寫 journal**，只寫 file_items.error —— 而那一欄下一次掃描就被改寫。
       // 所以先讀套用當下存起來的（cleanup_item_errors），再看 journal，最後才是 file_items。
       raw = safeWhy(q?.error) ?? safeWhy(i.error)
-      why = stored.get(i.item_id) ?? raw ?? '沒有搬動，原因不明'
+      why = stored.get(i.item_id) ?? raw ?? 'did not move, reason unknown'
     }
     const o: InnerOutcome = { outcome, why, raw, restoring }
     // **原位置被佔的時候，放回來的那份會改名**（B 的 restoreTarget：X.zip.restored）。
@@ -1585,7 +1591,7 @@ export function listPlans(db: DatabaseSync, opts: { filter?: 'undoable' | 'pendi
   const limit = opts.limit ?? 20
   let offset = opts.offset ?? 0
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0) {
-    throw new CleanupError('BAD_BODY', '分頁參數不正確：limit 要是 1 到 100，offset 不可以是負的。')
+    throw new CleanupError('BAD_BODY', 'Bad paging: limit must be 1 to 100 and offset cannot be negative.')
   }
   if (!tableExists(db, 'cleanup_snapshots')) return { total: 0, offset: 0, limit, operations: [] }
 
@@ -1665,7 +1671,7 @@ export function quarantineItems(db: DatabaseSync) {
     const snap = JSON.parse(r.snapshot) as { name: string; bytes: number }
     const done = r.completed_at ? Date.parse(r.completed_at) : NaN
     // 跟 B 的 quarantineCompletedAt 一樣：算不出七天就不猜
-    if (!Number.isFinite(done)) throw new CleanupError('UNSAFE_JOURNAL', '缺少隔離完成時間，無法清空。')
+    if (!Number.isFinite(done)) throw new CleanupError('UNSAFE_JOURNAL', 'The quarantine timestamp is missing, so this cannot be emptied.')
     return {
       seq: r.seq, planId: r.plan_id, itemId: r.item_id, name: snap.name, bytes: snap.bytes,
       quarantinedAt: r.completed_at!, canEmptyAt: new Date(done + RETENTION_MS).toISOString(),
@@ -1682,7 +1688,7 @@ function pruneEmptyRequests(db: DatabaseSync) {
       .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString())
   } catch (e: any) {
     // 清不掉只是表多幾列，不可以讓預覽本身失敗
-    console.error('[contextbox] 清空預覽的舊紀錄清不掉：', e?.message ?? e)
+    console.error('[contextbox] could not clear old empty-preview rows:', e?.message ?? e)
   }
 }
 
@@ -1982,23 +1988,23 @@ export function panelReason(db: DatabaseSync, scope: string[] | PanelScope, item
   for (const g of listed.rows) {
     if (g.item.id !== itemId) continue
     // 信心最高的那一條理由就是清單上印的那一句
-    return safeWhy(g.cands[0]?.reason) ?? '在清理清單上。'
+    return safeWhy(g.cands[0]?.reason) ?? 'It is on the cleanup list.'
   }
   for (const n of listed.needsHuman) if (n.item.id === itemId) return n.why
   for (const g of safe(() => burstGroupsView(db, s, { models: false }), [] as BurstGroupView[])) {
-    if (g.keep.itemId === itemId) return '同一批連拍截圖裡要留著的那一張。'
-    if (g.members.some(m => m.itemId === itemId)) return '跟同一批連拍的其他截圖很像，被提議清掉。'
+    if (g.keep.itemId === itemId) return 'The one being kept from a burst of screenshots.'
+    if (g.members.some(m => m.itemId === itemId)) return 'Much like the other screenshots in its burst, so it is suggested for cleanup.'
   }
   for (const q of safe(() => quarantineItems(db), [] as { itemId: string }[])) {
-    if (q.itemId === itemId) return '已經搬進隔離區了，還可以放回原位。'
+    if (q.itemId === itemId) return 'Already moved to quarantine, and still possible to put back.'
   }
   const moveScope = { roots: s.roots, quarantine: s.quarantine }
   for (const r of safe(() => renameSuggestions(db, moveScope).items, [])) {
-    if (r.itemId === itemId) return '模型建議換一個名字，還沒改。'
+    if (r.itemId === itemId) return 'The model suggests a different name; not renamed yet.'
   }
   if (s.filed) {
     for (const f of safe(() => filingSuggestions(db, { ...moveScope, filed: s.filed as string }).items, [])) {
-      if (f.itemId === itemId) return '模型建議把它歸到課程資料夾，還沒搬。'
+      if (f.itemId === itemId) return 'The model suggests filing it under a course folder; not moved yet.'
     }
   }
   return null
@@ -2080,7 +2086,7 @@ export function previewOf(db: DatabaseSync, scope: string[] | PanelScope, itemId
 }
 
 /** 看不到與不存在**講同一句話**：不讓呼叫端從訊息或狀態碼問出「這個 id 存不存在」。 */
-const PREVIEW_NOT_FOUND = '沒有這個檔可以看。'
+const PREVIEW_NOT_FOUND = 'There is no such file to look at.'
 
 export type RouteCtx = {
   db: DatabaseSync
@@ -2154,7 +2160,7 @@ export function scanProblems(raw: string[], roots: string[]): string[] {
   }))]
   if (clean.length <= MAX_SCAN_PROBLEMS) return clean
   const shown = clean.slice(0, MAX_SCAN_PROBLEMS - 1)
-  return [...shown, `還有 ${clean.length - shown.length} 條沒有列出來。`]
+  return [...shown, `${clean.length - shown.length} more are not listed.`]
 }
 
 /** 錯誤沿用既有 server 的 { error: 字串 }，多一個 code 給程式分支。 */
@@ -2317,13 +2323,13 @@ const KNOWN: [RegExp, string[]][] = [
 function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> {
   const b = ctx.body
   if (b === undefined) return {}
-  if (b === null || typeof b !== 'object' || Array.isArray(b)) throw new CleanupError('BAD_BODY', '看不懂送來的資料。')
+  if (b === null || typeof b !== 'object' || Array.isArray(b)) throw new CleanupError('BAD_BODY', 'Could not make sense of the body.')
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
     // key 是呼叫端給的字串：控制字元換掉、只講前幾個
     const shown = unknown.slice(0, 3).map(k => k.replace(UNSAFE_DISPLAY, '·').slice(0, 40)).join('、')
-    throw new CleanupError('BAD_BODY', `看不懂送來的資料：不認得的欄位 ${shown}。`
-      + (allowed.length ? `這個路徑只收 ${allowed.join('、')}。` : '這個路徑不收任何欄位。'))
+    throw new CleanupError('BAD_BODY', `Could not make sense of the body: unknown field ${shown}.`
+      + (allowed.length ? ` This route only takes ${allowed.join(', ')}.` : ' This route takes no fields.'))
   }
   return b
 }
@@ -2368,7 +2374,7 @@ function route(ctx: RouteCtx): boolean {
 
   const known = KNOWN.find(([re]) => re.test(p))
   if (known && !known[1].includes(method)) {
-    fail(send, 405, `這個路徑只收 ${known[1].join('、')}。`, 'BAD_METHOD', { allow: known[1].join(', ') })
+    fail(send, 405, `This route only takes ${known[1].join(', ')}.`, 'BAD_METHOD', { allow: known[1].join(', ') })
     return true
   }
 
@@ -2376,7 +2382,7 @@ function route(ctx: RouteCtx): boolean {
     const raw = url.searchParams.get('limit')
     const limit = raw === null ? undefined : Number(raw)
     if (raw !== null && (!Number.isInteger(limit) || limit! < 1 || limit! > 1000)) {
-      fail(send, 400, 'limit 要是 1 到 1000 之間的整數。', 'BAD_BODY')
+      fail(send, 400, 'limit must be a whole number between 1 and 1000.', 'BAD_BODY')
       return true
     }
     send(200, listCandidates(ctx.db, { ...scopeOfCtx(ctx), limit }))
@@ -2394,11 +2400,11 @@ function route(ctx: RouteCtx): boolean {
   if (thumb && method === 'GET') {
     let itemId: string
     try { itemId = decodeURIComponent(thumb[1]) }
-    catch { throw new CleanupError('BAD_BODY', '縮圖的 id 格式不正確。') }
-    if (!ctx.sendBytes) { fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED'); return true }
+    catch { throw new CleanupError('BAD_BODY', 'That thumbnail id is not a valid shape.') }
+    if (!ctx.sendBytes) { fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED'); return true }
     const png = burstThumbPng(ctx.db, scopeOfCtx(ctx), itemId)
     // 不在組裡、讀不到、解不開都一樣回 404：不讓呼叫端從狀態碼問出「這個 id 存不存在」
-    if (!png) { fail(send, 404, '沒有這張縮圖。', 'NOT_FOUND'); return true }
+    if (!png) { fail(send, 404, 'There is no such thumbnail.', 'NOT_FOUND'); return true }
     ctx.sendBytes(200, 'image/png', png, { 'content-length': String(png.length) })
     return true
   }
@@ -2409,7 +2415,7 @@ function route(ctx: RouteCtx): boolean {
   if (peek && method === 'GET') {
     let itemId: string
     try { itemId = decodeURIComponent(peek[1]) }
-    catch { throw new CleanupError('BAD_BODY', '要看的檔 id 格式不正確。') }
+    catch { throw new CleanupError('BAD_BODY', 'That file id is not a valid shape.') }
     const view = previewOf(ctx.db, scopeOfCtx(ctx), itemId)
     if (!view) { fail(send, 404, PREVIEW_NOT_FOUND, 'NOT_FOUND'); return true }
     send(200, view)
@@ -2436,7 +2442,7 @@ function route(ctx: RouteCtx): boolean {
       // scanner 逐檔寫入沒有交易，掃到一半炸掉時資料庫已經改了一半，
       // 所以只說「可能沒有完成」；掃描本身從來不搬也不刪，那一句是真的。
       recordCleanupError(ctx.db, e, 'scan')
-      fail(send, 500, '掃描的時候出錯了，這次掃描可能沒有完成。掃描不會搬動或刪除任何檔案。', 'INTERNAL')
+      fail(send, 500, 'The scan hit an error, so it may not have finished. A scan never moves or deletes anything.', 'INTERNAL')
       return true
     }
     recordOk(ctx.db, 'scan')
@@ -2466,7 +2472,7 @@ function route(ctx: RouteCtx): boolean {
     // 建了再被 apply 擋下的話，那份計畫卡在 proposed、永遠佔住那些檔，
     // 之後任何人建計畫都撞 CONFLICT。CLI 那輪修過一模一樣的 bug。
     const ro = typeof ctx.readonly === 'function' ? ctx.readonly() : ctx.readonly
-    if (ro) throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會建立清理計畫，也不會搬動任何檔案。')
+    if (ro) throw new CleanupError('READ_ONLY', 'Read-only mode is on: no cleanup plan is created and no file is moved.')
     const scope = scopeOfCtx(ctx)
     // **只有完全沒帶 candidateIds 才是預設**（清單上打 ✔ 的，一次最多 1000 個檔）。
     // `null` 是看不懂，不是沒帶 —— 上一版用 `??`，null 就變成「全部打 ✔ 的」（RC6）。
@@ -2499,7 +2505,7 @@ function route(ctx: RouteCtx): boolean {
     let id: string
     // 壞掉的 %xx 是呼叫端送錯，不是後端故障（RC5）—— 上一版丟 URIError，變成 500 + lastError
     try { id = decodeURIComponent(plan[1]) }
-    catch { throw new CleanupError('BAD_BODY', '計畫 id 的格式不正確。') }
+    catch { throw new CleanupError('BAD_BODY', 'That plan id is not a valid shape.') }
     const action = plan[2]
     // 每個回應都帶逐項結果（outcome／why）。UI 不可以自己用「勾了幾個」推算。
     if (!action) { send(200, withOutcomes(ctx.db, getPlan(ctx.db, id))); return true }
@@ -2558,7 +2564,7 @@ function route(ctx: RouteCtx): boolean {
     // 而這是整個專案唯一會真的刪檔的路徑。
     // 帶了但不是布林是**送錯**（400），跟「還沒確認」（沒帶或 false，428）分開（RC23）。
     if (body.confirmed !== undefined && typeof body.confirmed !== 'boolean') {
-      throw new CleanupError('BAD_BODY', 'confirmed 要是 true 或 false。')
+      throw new CleanupError('BAD_BODY', 'confirmed must be true or false.')
     }
     let result
     // 清空刪了檔，孤兒對帳的快取同樣要作廢（以前沒有：清空後十秒內 /health 會報假的孤兒）
@@ -2591,7 +2597,7 @@ function route(ctx: RouteCtx): boolean {
   // 而漏掉的後果就是這段註解要避免的那件事。
   // 認得的路徑用錯方法在最上面就回 405 了，走到這裡的是真的不認得的路徑。
   if (p.startsWith('/cleanup/') || p.startsWith('/pet/')) {
-    fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED')
+    fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED')
     return true
   }
 

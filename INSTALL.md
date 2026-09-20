@@ -51,7 +51,7 @@ node cli.mjs pet              # 開面板（網址會印出來，鑰匙已經帶
 
 **整個沙盒都在 `%TEMP%\contextbox-demo`，刪掉那個資料夾就什麼都沒留下。**
 逐步畫面與每一行預期輸出在 [docs/DEMO.md](docs/DEMO.md)；要現場真的問模型改用
-`--live-model`（見 [docs/接模型.md](docs/接模型.md)）。
+`--live-model`（見 [docs/model-setup.md](docs/model-setup.md)）。
 
 用 `cmd.exe` 的話，環境變數那幾行要換成 `set NAME=值`（不要加引號）。
 

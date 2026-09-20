@@ -22,7 +22,7 @@ import { COURSES_DIR } from '../core/filing.ts'
 import { sandbox, OS_DEADLOCK, DS_MIDTERM } from './helpers/rename.mjs'
 
 const TOKEN = 'filing-wire-token'
-const HIGH = { course: '作業系統', topic: '死結', kind: '筆記', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: '高' }
+const HIGH = { course: '作業系統', topic: '死結', kind: 'Notes', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: 'high' }
 
 async function serve(t, s, extra = {}) {
   const S = server.start({
@@ -39,7 +39,7 @@ async function serve(t, s, extra = {}) {
     const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body })
     const text = await r.text()
     let json = null
-    try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+    try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
     return { status: r.status, json, text, headers: r.headers }
   }
   const api = (method, path, body) => raw(method, path, { body: body === undefined ? undefined : JSON.stringify(body) })
@@ -49,7 +49,7 @@ async function serve(t, s, extra = {}) {
 function fixture(t) {
   const s = sandbox(t, { '未命名文件 (3).txt': OS_DEADLOCK, 'IMG_2041.txt': DS_MIDTERM })
   s.seed('未命名文件 (3).txt', HIGH)
-  s.seed('IMG_2041.txt', { ...HIGH, course: '資料結構', topic: '期中考範圍', kind: '考試' })
+  s.seed('IMG_2041.txt', { ...HIGH, course: '資料結構', topic: '期中考範圍', kind: 'Exam' })
   return s
 }
 
@@ -67,7 +67,7 @@ describe('GET /file/suggestions', () => {
     assert.equal(r.status, 200)
     assert.equal(r.json.items.length, 2)
     const folders = r.json.items.map(i => i.toFolder).sort()
-    assert.deepEqual(folders, ['課程/作業系統/筆記', '課程/資料結構/考試'])
+    assert.deepEqual(folders, ['Courses/作業系統/Notes', 'Courses/資料結構/Exam'])
     for (const i of r.json.items) {
       assert.equal(typeof i.seeded, 'boolean')
       assert.ok(!('path' in i) && !('dir' in i) && !('toDir' in i), '回應不可以帶路徑')
@@ -127,10 +127,10 @@ describe('POST /file/apply', () => {
     const r = await api('POST', '/file/apply', { items: [{ itemId: id }] })
     assert.equal(r.status, 200)
     assert.equal(r.json.results[0].ok, true, r.text)
-    assert.equal(r.json.results[0].toFolder, '課程/作業系統/筆記')
+    assert.equal(r.json.results[0].toFolder, 'Courses/作業系統/Notes')
     assert.equal(r.json.results[0].to, '未命名文件 (3).txt')
     assert.equal(r.json.remaining, 0)
-    assert.equal(existsSync(join(s.filed, COURSES_DIR, '作業系統', '筆記', '未命名文件 (3).txt')), true)
+    assert.equal(existsSync(join(s.filed, COURSES_DIR, '作業系統', 'Notes', '未命名文件 (3).txt')), true)
     assert.ok(!r.text.includes(s.downloads), r.text)
     assert.ok(!r.text.includes(s.filed), r.text)
   })
@@ -139,8 +139,8 @@ describe('POST /file/apply', () => {
     const s = fixture(t)
     const { api } = await serve(t, s)
     const id = s.idOf('未命名文件 (3).txt')
-    const r = await api('POST', '/file/apply', { items: [{ itemId: id, course: '計算機組織', kind: '講義' }] })
-    assert.equal(r.json.results[0].toFolder, '課程/計算機組織/講義', r.text)
+    const r = await api('POST', '/file/apply', { items: [{ itemId: id, course: '計算機組織', kind: 'Lecture' }] })
+    assert.equal(r.json.results[0].toFolder, 'Courses/計算機組織/Lecture', r.text)
   })
 
   test('**沒帶 items 不是「全部」**，是看不懂；一個檔都不動', async t => {
@@ -192,7 +192,7 @@ describe('POST /file/apply', () => {
     assert.equal(r.status, 200)
     assert.equal(r.json.results[0].ok, true)
     assert.equal(r.json.results[1].ok, false)
-    assert.match(r.json.results[1].why, /找不到/)
+    assert.match(r.json.results[1].why, /Cannot find/)
   })
 })
 
@@ -274,7 +274,7 @@ describe('其他', () => {
     assert.equal(renamed.json.results[0].ok, true, renamed.text)
     const filed = await api('POST', '/file/apply', { items: [{ itemId: id }] })
     assert.equal(filed.json.results[0].ok, true, filed.text)
-    const there = join(s.filed, COURSES_DIR, '作業系統', '筆記', '作業系統_死結.txt')
+    const there = join(s.filed, COURSES_DIR, '作業系統', 'Notes', '作業系統_死結.txt')
     assert.equal(existsSync(there), true)
 
     // 先復原歸檔（檔案回到 Downloads，名字還是改過的）

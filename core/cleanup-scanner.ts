@@ -175,7 +175,7 @@ function waitForDb<T>(fn: () => T, attempts = 5): T {
 
 function isDeniedPath(path: string): string | null {
   const segs = path.split(/[\\/]+/).filter(Boolean)
-  if (segs.some(s => s.startsWith('.'))) return '隱藏檔或隱藏資料夾'
+  if (segs.some(s => s.startsWith('.'))) return 'a hidden file or folder'
 
   const lower = segs.map(s => s.toLowerCase())
   const file = lower[lower.length - 1] ?? ''
@@ -232,14 +232,14 @@ function inspectPath(path: string, opts: CleanupScanOptions): InspectedFile | { 
   let st
   try { st = lstatSync(path) }
   catch (e) {
-    return isGoneError(e) ? { error: '檔案不見了', missing: true } : { error: '暫時讀不到這個檔案（沒有權限或磁碟出錯）' }
+    return isGoneError(e) ? { error: 'the file is gone', missing: true } : { error: 'cannot read this file right now (no permission, or a disk error)' }
   }
   if (st.isSymbolicLink()) return null
   if (!st.isFile()) return null
 
   let real: string
   try { real = realpathSync(path) }
-  catch (e) { return isGoneError(e) ? { error: '檔案不見了', missing: true } : { error: 'realpath 失敗' } }
+  catch (e) { return isGoneError(e) ? { error: 'the file is gone', missing: true } : { error: 'realpath failed' } }
 
   const roots = opts.roots.map(r => {
     try { return realpathSync(r) } catch { return resolve(r) }
@@ -251,9 +251,9 @@ function inspectPath(path: string, opts: CleanupScanOptions): InspectedFile | { 
 
   let realStat
   try { realStat = lstatSync(real) }
-  catch (e) { return isGoneError(e) ? { error: '檔案不見了', missing: true } : { error: '讀不到這個檔案' } }
+  catch (e) { return isGoneError(e) ? { error: 'the file is gone', missing: true } : { error: 'cannot read this file' } }
   if (!realStat.isFile()) return null
-  if (realStat.nlink > 1) return { error: '硬鏈結檔案不清理' }
+  if (realStat.nlink > 1) return { error: 'hard-linked files are never cleaned' }
 
   const nowMs = (opts.now ?? new Date()).getTime()
   const ext = extname(real).toLowerCase()
@@ -289,7 +289,7 @@ function sha256Of(path: string, expect: FileIdentity): { sha256: string; png: Bu
   let fd: number
   try { fd = openSync(path, constants.O_RDONLY | NOFOLLOW) }
   catch (e: any) {
-    if (e?.code === 'ELOOP' || e?.code === 'EMLINK') throw new Error('檔案在掃描中變成捷徑')
+    if (e?.code === 'ELOOP' || e?.code === 'EMLINK') throw new Error('the file turned into a symlink mid-scan')
     throw e
   }
   try {
@@ -299,7 +299,7 @@ function sha256Of(path: string, expect: FileIdentity): { sha256: string; png: Bu
         || st.ino !== expect.ino
         || st.size !== expect.size
         || st.mtimeMs !== expect.mtimeMs) {
-      throw new Error('檔案在掃描中被換掉')
+      throw new Error('the file was swapped out mid-scan')
     }
     const buf = readFileSync(fd)
     return { sha256: createHash('sha256').update(buf).digest('hex'), png: looksLikePng(buf) ? buf : null }
@@ -320,7 +320,7 @@ function namingOf(name: string): { state: string; why: string } {
     const c = classifyName(name)
     return { state: c.state, why: c.reason }
   } catch (e) {
-    const why = e instanceof UntitledError ? '檔名不像正常的檔名，拿不準' : '判斷檔名時出錯，拿不準'
+    const why = e instanceof UntitledError ? 'the name does not look like a normal file name, so this is a guess' : 'something went wrong reading the name, so this is a guess'
     return { state: 'generic', why }
   }
 }
@@ -382,7 +382,7 @@ export function markMissing(db: DatabaseSync, path: string, roots: string[] = []
   const forms = knownFormsOf(path, roots)
   const placeholders = forms.map(() => '?').join(',')
   const r = waitForDb(() => db.prepare(
-    `UPDATE file_items SET status='missing', error='檔案不見了', last_seen_at=?
+    `UPDATE file_items SET status='missing', error='the file is gone', last_seen_at=?
      WHERE path IN (${placeholders}) AND status NOT IN ('quarantined','missing')`
   ).run(nowIso, ...forms))
   return Number(r.changes)
@@ -457,7 +457,7 @@ function fileList(opts: CleanupScanOptions): { files: string[]; truncated: boole
   let truncated = false
   for (const root of opts.roots) {
     // 只給資料夾名稱，不給完整路徑：這句話會經由 POST /cleanup/scan 回到 UI
-    if (!existsSync(root)) { problem(opts, `掃描資料夾「${basename(root) || root}」不存在，這次沒有掃。`); continue }
+    if (!existsSync(root)) { problem(opts, `The scan folder “${basename(root) || root}” does not exist, so it was not scanned.`); continue }
     let rootFailed = false
     let dirsFailed = 0
     const r = cleanupWalk(root, opts.maxDepth ?? 3, opts.maxFiles ?? 5000, dir => {
@@ -465,8 +465,8 @@ function fileList(opts: CleanupScanOptions): { files: string[]; truncated: boole
       else dirsFailed++
     })
     // 讀不到的資料夾以前是安靜跳過 —— 跟「裡面沒東西」長得一模一樣。
-    if (rootFailed) problem(opts, `打不開掃描資料夾「${basename(root)}」（沒有權限？），這次什麼都沒掃到。`)
-    if (dirsFailed) problem(opts, `「${basename(root)}」裡有 ${dirsFailed} 個資料夾打不開（沒有權限？），裡面的檔這次沒有掃到。`)
+    if (rootFailed) problem(opts, `Could not open the scan folder “${basename(root)}” (no permission?), so nothing in it was scanned.`)
+    if (dirsFailed) problem(opts, `${dirsFailed} ${dirsFailed === 1 ? 'folder' : 'folders'} inside “${basename(root)}” could not be opened (no permission?), so the files in ${dirsFailed === 1 ? 'it' : 'them'} were not scanned.`)
     files.push(...r.files)
     truncated = truncated || r.truncated
   }
@@ -538,20 +538,20 @@ function reconcileRoot(opts: CleanupScanOptions, given: string, nowIso: string) 
   }
   const label = basename(root) || root
   if (unreadable) {
-    problem(opts, `「${label}」裡有 ${unreadable} 個已知的檔這次讀不到（沒有權限或磁碟出錯），先當成還在。`)
+    problem(opts, `${unreadable} known files in “${label}” could not be read this time (no permission, or a disk error), so they are still treated as present.`)
   }
   try {
     if (!gone.length) return
     if (lastDev !== null && lastDev !== dev) {
-      problem(opts, `監看資料夾「${label}」跟上次掃描時不在同一顆碟上（換了碟，或外接碟沒掛上？）：`
-        + `${live.length} 個已知的檔有 ${gone.length} 個找不到，這次一個都不標成不見。`)
+      problem(opts, `The watched folder “${label}” is not on the same disk as last scan (swapped disks, or an external drive not mounted?): `
+        + `${gone.length} of its ${live.length} known files are missing, so none were marked gone this time.`)
       return
     }
     // 根目錄讀不到：打不開的資料夾 fileList 已經報過了，不猜它是不是空的
     if (entries === null) return
     if (entries === 0 && gone.length === live.length && live.length >= MASS_MISSING_MIN_KNOWN) {
-      problem(opts, `監看資料夾「${label}」看起來整個不見了（外接碟沒掛上？）：`
-        + `${live.length} 個已知的檔全部找不到、資料夾是空的，這次一個都不標成不見。`)
+      problem(opts, `The watched folder “${label}” looks like it vanished entirely (an external drive not mounted?): `
+        + `all ${live.length} known files are missing and the folder is empty, so none were marked gone this time.`)
       return
     }
     for (const p of gone) markMissing(opts.db, p, [], nowIso)
@@ -671,7 +671,7 @@ function ensureImageSig(
     hash = dHash(img)
     fine = fineSig(img)
   } catch {
-    problem(opts, `${f.name}：這張圖打不開，這次沒有算它的長相指紋。`)
+    problem(opts, `${f.name}: could not open this image, so no look-alike fingerprint was computed.`)
     waitForDb(() => db.prepare('DELETE FROM cleanup_image_sigs WHERE item_id=?').run(itemId))
     return
   }
@@ -814,7 +814,7 @@ function ensureFileText(
     if (batch.deaths >= MAX_WORKER_DEATHS) {
       batch.off = true
       // 只講次數，不講檔名也不講資料夾
-      problem(opts, `讀檔案內容的背景工作連續失敗 ${MAX_WORKER_DEATHS} 次，這次掃描先不讀內容了。`)
+      problem(opts, `The background worker that reads file contents failed ${MAX_WORKER_DEATHS} times in a row, so this scan stopped reading contents.`)
     }
     return
   }
@@ -858,7 +858,7 @@ export function burstGroupsChunked(
   catch (e: any) { if (!isTooMuchWork(e)) throw e }
   const tooMuch = (n: number) => {
     // 只講張數，不講檔名也不講資料夾
-    if (onProblem) onProblem(`有 ${n} 張圖的連拍比對量太大，這次沒有比它們。`)
+    if (onProblem) onProblem(`Comparing ${n} images for bursts is too much work, so they were not compared this time.`)
   }
   // **對半切到切不動為止**。以前是「超過 300 張才切」，但上游的記憶體分段本來就把每一段壓在
   // 291 張以下（常見截圖尺寸），所以那條路永遠走不到：整段的連拍組被靜默丟掉，而且每一次掃描
@@ -1133,7 +1133,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
     let png: Buffer | null = null
 
     if (inspected.bytes > opts.maxBytes) {
-      error = `檔案 ${(inspected.bytes / 1048576).toFixed(1)}MB，超過清理掃描上限`
+      error = `the file is ${(inspected.bytes / 1048576).toFixed(1)}MB, over the cleanup scan limit`
     } else if (inspected.bytes > 0 && !inspected.partial) {
       try {
         const got = sha256Of(inspected.real, inspected)
@@ -1142,7 +1142,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
       }
       catch (e: any) {
         status = 'error'
-        error = e?.message ?? '算 sha256 失敗'
+        error = e?.message ?? 'computing sha256 failed'
         result.errors++
       }
     }
@@ -1205,7 +1205,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   result.textsPending = texts.pending
   // 讀不懂不是錯（預想的不變量第 6 條）：**只講幾個，不逐檔洗版**
   if (texts.unreadable > 0) {
-    problem(opts, `有 ${texts.unreadable} 個檔看不懂，這次沒有讀到它們的內容。`)
+    problem(opts, `${texts.unreadable} ${texts.unreadable === 1 ? 'file' : 'files'} could not be made sense of, so ${texts.unreadable === 1 ? 'its' : 'their'} contents were not read this time.`)
   }
 
   // 只算清單上真的會出現的：候選在 missing 的檔上會留在 proposed（見 markMissing），

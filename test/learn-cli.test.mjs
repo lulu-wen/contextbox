@@ -87,8 +87,8 @@ function box(t, files, { readonly = false } = {}) {
           (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
           VALUES (?,?,'text',?,?,?,?,?,?,'假模型','v1',?,0)`).run(
           'seed-' + item.id, item.id, view.course ?? '作業系統', view.topic ?? '死結',
-          view.kind ?? '筆記', view.suggestedName ?? '', view.evidence ?? '四個必要條件',
-          view.confidence ?? '高', new Date().toISOString())
+          view.kind ?? 'Notes', view.suggestedName ?? '', view.evidence ?? '四個必要條件',
+          view.confidence ?? 'high', new Date().toISOString())
       }
     } finally { db.close() }
   }
@@ -129,9 +129,9 @@ function three(t, opts) {
     'IMG_2041.txt': DS_MIDTERM,
   }, opts)
   b.seed({
-    '未命名文件 (3).txt': { course: '作業系統', topic: '死結', kind: '筆記', suggestedName: '作業系統_死結' },
-    '未命名文件 (4).txt': { course: '作業系統', topic: '行程排程', kind: '筆記', suggestedName: '作業系統_排程' },
-    'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: '考試', suggestedName: '資料結構_期中考範圍' },
+    '未命名文件 (3).txt': { course: '作業系統', topic: '死結', kind: 'Notes', suggestedName: '作業系統_死結' },
+    '未命名文件 (4).txt': { course: '作業系統', topic: '行程排程', kind: 'Notes', suggestedName: '作業系統_排程' },
+    'IMG_2041.txt': { course: '資料結構', topic: '期中考範圍', kind: 'Exam', suggestedName: '資料結構_期中考範圍' },
   })
   return b
 }
@@ -142,9 +142,9 @@ describe('`file --apply --course`（預期行為 1）', () => {
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
     const r = b.run('file', '--apply', code, '--course', 'OS')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /課程\/OS\/筆記/)
+    assert.match(r.out, /Courses\/OS\/Notes/)
     assert.ok(!r.out.includes('沒有編號'), r.out)
-    assert.deepEqual(b.filedTree().filter(p => p.endsWith('.txt')), ['課程/OS/筆記/未命名文件 (3).txt'])
+    assert.deepEqual(b.filedTree().filter(p => p.endsWith('.txt')), ['Courses/OS/Notes/未命名文件 (3).txt'])
   })
 
   test('學到之後，另一個作業系統的檔的清單變成 課程/OS/，而且講「照你上次改的寫」', t => {
@@ -152,24 +152,24 @@ describe('`file --apply --course`（預期行為 1）', () => {
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
     b.run('file', '--apply', code, '--course', 'OS')
     const out = b.run('file').out
-    assert.match(out, /→ 課程\/OS\/筆記\/　（照你上次改的寫）/)
-    assert.match(out, /模型認為：作業系統／行程排程/, '「模型認為」那一句要用模型自己的課名')
-    assert.match(out, /→ 課程\/資料結構\/考試\//, '別堂課不受影響')
+    assert.match(out, /→ Courses\/OS\/Notes\/  \(the way you changed it last time\)/)
+    assert.match(out, /The model thinks: 作業系統 \/ 行程排程/, '「模型認為」那一句要用模型自己的課名')
+    assert.match(out, /→ Courses\/資料結構\/Exam\//, '別堂課不受影響')
   })
 
   test('`--kind` 也學得到（這一堂課的）', t => {
     const b = three(t)
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
-    assert.equal(b.run('file', '--apply', code, '--kind', '講義').code, 0)
-    assert.deepEqual(b.prefs(), [{ kind: 'file_kind', k: '作業系統\n筆記', v: '講義', times: 1 }])
-    assert.match(b.run('file').out, /→ 課程\/作業系統\/講義\//)
+    assert.equal(b.run('file', '--apply', code, '--kind', 'Lecture').code, 0)
+    assert.deepEqual(b.prefs(), [{ kind: 'file_kind', k: '作業系統\nNotes', v: 'Lecture', times: 1 }])
+    assert.match(b.run('file').out, /→ Courses\/作業系統\/Lecture\//)
   })
 
   test('`--course` 後面沒接東西 → 離開碼 1，一個檔都沒動', t => {
     const b = three(t)
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
     assert.equal(b.run('file', '--apply', code, '--course').code, 1)
-    assert.equal(b.run('file', '--apply', code, '--course', '--kind', '講義').code, 1)
+    assert.equal(b.run('file', '--apply', code, '--course', '--kind', 'Lecture').code, 1)
     assert.equal(b.names().length, 3)
     assert.deepEqual(b.prefs(), [])
   })
@@ -196,7 +196,7 @@ describe('`rename --apply --to`（預期行為 4）', () => {
     assert.match(r.out, /→ OS_死結\.txt/)
     assert.deepEqual(b.prefs(), [{ kind: 'course', k: '作業系統', v: 'OS', times: 1 }])
     const out = b.run('rename').out
-    assert.match(out, /→ OS_排程\.txt　（課名照你上次改的寫）/)
+    assert.match(out, /→ OS_排程\.txt  \(course spelled the way you changed it last time\)/)
     assert.match(out, /→ 資料結構_期中考範圍\.txt/, '名字裡沒有那個課名的不受影響')
   })
 
@@ -204,7 +204,7 @@ describe('`rename --apply --to`（預期行為 4）', () => {
     const b = three(t)
     const r = b.run('rename', '--apply', '--to', 'X')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /一次只能指名一個檔/)
+    assert.match(r.out, /--to names one file at a time/)
     assert.equal(b.names().length, 3)
   })
 
@@ -221,12 +221,12 @@ describe('退過貨的不預設做（預期行為 5）', () => {
     b.run('file', '--apply', code)
     b.run('file', '--undo')
     const listed = b.run('file').out
-    assert.match(listed, /⟲ 你上次退過這個建議/)
+    assert.match(listed, /⟲ You turned this suggestion down last time/)
     const r = b.run('file', '--apply')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /1 個你上次退過的沒有算進去/)
+    assert.match(r.out, /\(1 suggestion you turned down last time is left out/)
     const tree = b.filedTree().filter(p => p.endsWith('.txt'))
-    assert.equal(tree.includes('課程/作業系統/筆記/未命名文件 (3).txt'), false, '退過貨的不可以被默默做掉')
+    assert.equal(tree.includes('Courses/作業系統/Notes/未命名文件 (3).txt'), false, '退過貨的不可以被默默做掉')
     assert.equal(tree.length, 2)
   })
 
@@ -238,7 +238,7 @@ describe('退過貨的不預設做（預期行為 5）', () => {
     const again = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
     const r = b.run('file', '--apply', again)
     assert.equal(r.code, 0, r.out)
-    assert.ok(b.filedTree().includes('課程/作業系統/筆記/未命名文件 (3).txt'))
+    assert.ok(b.filedTree().includes('Courses/作業系統/Notes/未命名文件 (3).txt'))
     // 重新做一次成功 → 那個標記消失
     assert.deepEqual(b.prefs(), [])
   })
@@ -249,9 +249,9 @@ describe('退過貨的不預設做（預期行為 5）', () => {
     b.run('rename', '--apply', code)
     b.run('rename', '--undo')
     const out = b.run('rename').out
-    assert.match(out, /⟲ 你上次退過這個建議/)
+    assert.match(out, /⟲ You turned this suggestion down last time/)
     const r = b.run('rename', '--apply')
-    assert.match(r.out, /1 個你上次退過的沒有算進去/)
+    assert.match(r.out, /\(1 suggestion you turned down last time is left out/)
     assert.ok(b.names().includes('未命名文件 (3).txt'), '退過貨的名字沒有被改掉')
   })
 })
@@ -261,22 +261,22 @@ describe('`learned`（預期行為 7）', () => {
     const b = three(t)
     const r = b.run('learned')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /還沒學到任何東西/)
+    assert.match(r.out, /has not learned anything yet/)
   })
 
   test('學過之後列得出來，三種各講各的', t => {
     const b = three(t)
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
-    b.run('file', '--apply', code, '--course', 'OS', '--kind', '講義')
+    b.run('file', '--apply', code, '--course', 'OS', '--kind', 'Lecture')
     const two = b.codeOf(b.run('file').out, '未命名文件 (4).txt')
     b.run('file', '--apply', two)
     b.run('file', '--undo')
 
     const r = b.run('learned')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /課名　模型說「作業系統」 ・ 你要「OS」・用過 1 次/)
-    assert.match(r.out, /類型　作業系統／筆記 的東西 ・ 你要「講義」・用過 1 次/)
-    assert.match(r.out, /退過貨　你上次退掉了「課程\/OS\/講義」這個建議/)
+    assert.match(r.out, /course      The model says “作業系統” · you say “OS” · used 1 time/)
+    assert.match(r.out, /kind        作業系統 \/ Notes files · you call them “Lecture” · used 1 time/)
+    assert.match(r.out, /turned down  You turned down the suggestion “Courses\/OS\/Lecture”/)
     // **沒有絕對路徑、沒有檔案內容**（預期行為 11）
     for (const leak of [b.home, b.downloads, b.filed, FAKE_HOME]) assert.ok(!r.out.includes(leak), r.out)
     assert.ok(!r.out.includes('死結的四個必要條件'), r.out)
@@ -286,12 +286,12 @@ describe('`learned`（預期行為 7）', () => {
     const b = three(t)
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
     b.run('file', '--apply', code, '--course', 'OS')
-    assert.match(b.run('file').out, /→ 課程\/OS\/筆記\//)
+    assert.match(b.run('file').out, /→ Courses\/OS\/Notes\//)
     const id = /\[([0-9a-f]+)\]/.exec(b.run('learned').out)[1]
     const r = b.run('learned', '--forget', id)
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /忘掉 1 條了/)
-    assert.match(b.run('file').out, /→ 課程\/作業系統\/筆記\//)
+    assert.match(r.out, /Forgot 1 of them/)
+    assert.match(b.run('file').out, /→ Courses\/作業系統\/Notes\//)
     assert.deepEqual(b.prefs(), [])
   })
 
@@ -309,12 +309,12 @@ describe('`learned`（預期行為 7）', () => {
   test('`--forget-all` 全清', t => {
     const b = three(t)
     const code = b.codeOf(b.run('file').out, '未命名文件 (3).txt')
-    b.run('file', '--apply', code, '--course', 'OS', '--kind', '講義')
+    b.run('file', '--apply', code, '--course', 'OS', '--kind', 'Lecture')
     const r = b.run('learned', '--forget-all')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /全部忘掉了（2 條）/)
+    assert.match(r.out, /Forgot all 2 of them/)
     assert.deepEqual(b.prefs(), [])
-    assert.match(b.run('learned').out, /還沒學到任何東西/)
+    assert.match(b.run('learned').out, /has not learned anything yet/)
   })
 
   test('`--forget` 與 `--forget-all` 一起用、看不懂的旗標 → 離開碼 1', t => {
@@ -334,7 +334,7 @@ describe('`learned`（預期行為 7）', () => {
     assert.equal(b.run('learned').code, 0)
     const r = b.run('learned', '--forget-all')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /唯讀模式/)
+    assert.match(r.out, /Read-only mode/)
     assert.equal(b.prefs().length, 1)
   })
 
@@ -344,7 +344,7 @@ describe('`learned`（預期行為 7）', () => {
     try { db.exec('DROP TABLE preferences') } finally { db.close() }
     const r = b.run('learned')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /還沒學到任何東西/)
+    assert.match(r.out, /has not learned anything yet/)
     assert.ok(!/ at .*\.ts:\d+/.test(r.out), `不可以噴堆疊：\n${r.out}`)
     // 建議那兩條也照樣走得完
     assert.equal(b.run('file').code, 0)

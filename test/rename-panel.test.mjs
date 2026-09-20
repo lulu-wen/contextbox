@@ -30,7 +30,7 @@ import { renameLines, renameApplyMessage, renameUndoMessage } from '../core/asse
 
 const suggestion = (over = {}) => ({
   itemId: 'it-1', name: '未命名文件 (3).txt', suggested: '作業系統_死結.txt',
-  course: '作業系統', topic: '死結', confidence: '高', evidence: '文件裡寫著「四個必要條件」',
+  course: '作業系統', topic: '死結', confidence: 'high', evidence: '文件裡寫著「四個必要條件」',
   seeded: false, ...over,
 })
 
@@ -78,22 +78,22 @@ describe('renameLines', () => {
   test('一列：原名 → 建議名、模型說了什麼、證據、而且講明是意見', () => {
     const l = renameLines(suggestion())
     assert.equal(l.head, '未命名文件 (3).txt → 作業系統_死結.txt')
-    assert.equal(l.why, '模型認為：作業系統／死結（信心 高）')
-    assert.match(l.note, /證據：文件裡寫著「四個必要條件」/)
-    assert.match(l.note, /這是模型的意見，不是事實/)
-    assert.match(l.note, /改得回來/)
+    assert.equal(l.why, 'The model thinks: 作業系統 / 死結 (confidence high)')
+    assert.match(l.note, /Evidence: 文件裡寫著「四個必要條件」/)
+    assert.match(l.note, /This is the model's opinion, not a fact/)
+    assert.match(l.note, /it can be undone/)
   })
 
   test('示範答案要標出來', () => {
-    assert.match(renameLines(suggestion({ seeded: true })).why, /^［示範答案］/)
+    assert.match(renameLines(suggestion({ seeded: true })).why, /^\[demo answer\] /)
   })
 
   test('模型沒給證據就直說，不要留一塊空的', () => {
-    assert.match(renameLines(suggestion({ evidence: '' })).note, /模型沒有給證據/)
+    assert.match(renameLines(suggestion({ evidence: '' })).note, /The model gave no evidence/)
   })
 
   test('看不出課程或主題就寫「看不出來」，不是空白', () => {
-    assert.equal(renameLines(suggestion({ course: '', topic: '   ' })).why, '模型認為：看不出來／看不出來（信心 高）')
+    assert.equal(renameLines(suggestion({ course: '', topic: '   ' })).why, 'The model thinks: Unknown / Unknown (confidence high)')
   })
 
   test('**檔名與證據是不可信的輸入**：控制字元與方向字元換掉', () => {
@@ -117,33 +117,33 @@ describe('結果的訊息', () => {
     const m = renameApplyMessage({
       results: [
         { itemId: 'a', ok: true, from: '未命名文件 (3).txt', to: '作業系統_死結.txt', why: '改好了。' },
-        { itemId: 'b', ok: false, from: 'IMG_2041.txt', to: '', why: '這個檔十分鐘內還在變動，先不改名。' },
+        { itemId: 'b', ok: false, from: 'IMG_2041.txt', to: '', why: 'This file changed within the last ten minutes, so it will not rename it yet.' },
       ],
       remaining: 0,
     })
-    assert.match(m, /改好 1 個，1 個沒有改。/)
-    assert.match(m, /・未命名文件 \(3\)\.txt → 作業系統_死結\.txt/)
-    assert.match(m, /・IMG_2041\.txt：這個檔十分鐘內還在變動/)
-    assert.match(m, /復原改名/)
+    assert.match(m, /Renamed 1, 1 not renamed./)
+    assert.match(m, /- 未命名文件 \(3\)\.txt → 作業系統_死結\.txt/)
+    assert.match(m, /- IMG_2041\.txt: This file changed within the last ten minutes/)
+    assert.match(m, /Undo rename/)
   })
 
   test('超過一次的上限：講還有幾個', () => {
     const m = renameApplyMessage({ results: [{ itemId: 'a', ok: true, from: 'x', to: 'y', why: '' }], remaining: 50 })
-    assert.match(m, /還有 50 個沒做/)
+    assert.match(m, /50 still to go/)
   })
 
   test('復原：原名被佔走時**一定要講放回來的叫什麼**', () => {
     const m = renameUndoMessage({
       results: [{ id: 'r1', itemId: 'a', ok: true, to: '未命名文件 (3)-2.txt', restoredAs: '未命名文件 (3)-2.txt', why: '' }],
     })
-    assert.match(m, /放回來的這一份叫「未命名文件 \(3\)-2\.txt」/)
-    assert.match(m, /沒有覆蓋任何檔/)
+    assert.match(m, /so this one is called “未命名文件 \(3\)-2\.txt”/)
+    assert.match(m, /nothing was overwritten/)
   })
 
   test('復原失敗也要講', () => {
-    const m = renameUndoMessage({ results: [{ id: 'r1', itemId: 'a', ok: false, to: '', restoredAs: null, why: '檔案或資料夾不見了，請確認後重試。' }] })
-    assert.match(m, /改回去 0 個，1 個沒有放回/)
-    assert.match(m, /沒有放回：檔案或資料夾不見了/)
+    const m = renameUndoMessage({ results: [{ id: 'r1', itemId: 'a', ok: false, to: '', restoredAs: null, why: 'The file or folder is gone. Check and try again.' }] })
+    assert.match(m, /Changed 0 back, 1 not changed back/)
+    assert.match(m, /Not changed back: The file or folder is gone/)
   })
 })
 
@@ -155,8 +155,8 @@ describe('面板的「建議的名字」區', () => {
     assert.equal(ui.$('cleanup-renames').hidden, false)
     assert.equal(rows(ui).length, 2)
     assert.match(ui.$('cleanup-renames').textContent, /未命名文件 \(3\)\.txt → 作業系統_死結\.txt/)
-    assert.match(ui.$('cleanup-renames').textContent, /模型認為：作業系統／死結（信心 高）/)
-    assert.match(ui.$('cleanup-renames').textContent, /這是模型的意見，不是事實/)
+    assert.match(ui.$('cleanup-renames').textContent, /The model thinks: 作業系統 \/ 死結 \(confidence high\)/)
+    assert.match(ui.$('cleanup-renames').textContent, /This is the model's opinion, not a fact/)
     assert.deepEqual(boxes(ui).map(b => b.checked), [false, false], '改名不可以預設勾起來')
     assert.equal(ui.$('cleanup-rename').hidden, false)
     assert.equal(ui.$('cleanup-rename-undo').hidden, true, '還沒改過，沒有東西要復原')
@@ -172,13 +172,13 @@ describe('面板的「建議的名字」區', () => {
   test('後端沒有這幾條（404）：清理面板照常，改名區不見', async t => {
     const ui = await open(t, { suggestions: 'missing' })
     assert.equal(ui.$('cleanup-renames').hidden, true)
-    assert.match(ui.$('cleanup-list').textContent, /目前沒有待清檔案/)
+    assert.match(ui.$('cleanup-list').textContent, /Nothing to clean up right now/)
   })
 
   test('沒勾就按「改名」：不送請求，畫面講一句', async t => {
     const ui = await open(t, { suggestions: [suggestion()] })
     await ui.click('cleanup-rename')
-    assert.match(ui.$('cleanup-result').textContent, /請先勾選/)
+    assert.match(ui.$('cleanup-result').textContent, /Tick the files you want/)
     assert.equal(ui.apiCalls.filter(c => c.path === '/rename/apply').length, 0, '一個請求都不可以送出去')
   })
 
@@ -197,9 +197,9 @@ describe('面板的「建議的名字」區', () => {
     await ui.click('cleanup-rename')
 
     assert.deepEqual(applied, [{ items: [{ itemId: 'it-1', to: '作業系統_死結.txt' }] }])
-    assert.match(ui.$('cleanup-result').textContent, /改好 1 個/)
+    assert.match(ui.$('cleanup-result').textContent, /Renamed 1/)
     assert.match(ui.$('cleanup-result').textContent, /→ 作業系統_死結\.txt/)
-    assert.equal(ui.$('cleanup-rename-undo').hidden, false, '改完要看得到「復原改名」')
+    assert.equal(ui.$('cleanup-rename-undo').hidden, false, '改完要看得到“Undo rename”')
   })
 
   test('「復原改名」送 { last: true }，訊息照後端說的講', async t => {
@@ -218,7 +218,7 @@ describe('面板的「建議的名字」區', () => {
     await ui.click('cleanup-rename')
     await ui.click('cleanup-rename-undo')
     assert.deepEqual(undos, [{ last: true }])
-    assert.match(ui.$('cleanup-result').textContent, /改回去 1 個/)
+    assert.match(ui.$('cleanup-result').textContent, /Changed 1 back/)
     assert.equal(ui.$('cleanup-rename-undo').hidden, true, '復原過就沒有東西要復原了')
   })
 
@@ -226,7 +226,7 @@ describe('面板的「建議的名字」區', () => {
     const ui = await open(t, {
       suggestions: [suggestion()],
       onApply: () => ({
-        results: [{ itemId: 'it-1', ok: false, from: '未命名文件 (3).txt', to: '', why: '它在一份還沒處理完的清理計畫裡。' }],
+        results: [{ itemId: 'it-1', ok: false, from: '未命名文件 (3).txt', to: '', why: 'It belongs to an unfinished cleanup plan. Finish or drop that plan first.' }],
         remaining: 0,
       }),
     })
@@ -234,20 +234,20 @@ describe('面板的「建議的名字」區', () => {
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-rename')
-    assert.match(ui.$('cleanup-result').textContent, /它在一份還沒處理完的清理計畫裡/)
+    assert.match(ui.$('cleanup-result').textContent, /It belongs to an unfinished cleanup plan/)
     assert.equal(ui.$('cleanup-rename-undo').hidden, true, '一個都沒改成，沒有東西要復原')
   })
 
   test('改名的請求失敗：只講原因，不假裝成功', async t => {
     const ui = await open(t, {
       suggestions: [suggestion()],
-      onApply: () => { const e = new Error('目前是唯讀模式，不會改任何檔案的名字。'); e.status = 403; throw e },
+      onApply: () => { const e = new Error('Read-only mode is on, so no file gets renamed.'); e.status = 403; throw e },
     })
     const [first] = boxes(ui)
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-rename')
-    assert.match(ui.$('cleanup-result').textContent, /唯讀模式/)
+    assert.match(ui.$('cleanup-result').textContent, /Read-only mode/)
     assert.equal(ui.$('cleanup-rename-undo').hidden, true)
   })
 

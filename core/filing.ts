@@ -53,12 +53,12 @@ export const FILING_BATCH_MAX = 100
 /** 課名的洗法與上限住在 core/rename.ts（cleanName 就在那裡），這裡 re-export，呼叫端不用改。 */
 export { cleanCourse, COURSE_MAX_CODEPOINTS, UNKNOWN_COURSE }
 /** 歸檔樹的第一層。`<filed>/課程/<課名>/<類型>/` */
-export const COURSES_DIR = '課程'
+export const COURSES_DIR = 'Courses'
 /** `kind` 不在固定選項裡時用哪一個資料夾（P2 的 VIEW_KINDS 最後一個就是它）。 */
-export const OTHER_KIND = '其他'
+export const OTHER_KIND = 'Other'
 
 /** 訊息裡的詞（跟 P3 共用同一套判斷，只有詞不一樣）。 */
-const FILE_WORDS: MoveWords = { act: '歸檔', it: '不搬它' }
+const FILE_WORDS: MoveWords = { act: 'be filed', doIt: 'file this file', it: 'it is left where it is' }
 
 // ── 課名與類型 ──────────────────────────────────────────────
 
@@ -161,7 +161,7 @@ function midFiling(db: DatabaseSync, itemId: string): boolean {
 export function whyNotFilable(db: DatabaseSync, item: ItemRow, scope: FilingScope): string | null {
   const filed = scope.filed ? resolve(scope.filed) : ''
   if (filed && (item.path === filed || under(filed, item.path))) {
-    return '這個檔已經在整理好的資料夾裡了，這一期只往裡面搬。'
+    return 'This file is already in the filed folder, and this version only moves things in.'
   }
   return whyNotTouchable(db, item, scope, FILE_WORDS, midFiling)
 }
@@ -305,24 +305,24 @@ export type FilingRequest = { itemId: unknown; course?: unknown; kind?: unknown 
 
 function validateRequests(items: unknown): asserts items is FilingRequest[] {
   if (!Array.isArray(items) || !items.length) {
-    throw new CleanupError('BAD_BODY', '要指名整理哪幾個檔（items 是一個陣列，每一項有 itemId）。')
+    throw new CleanupError('BAD_BODY', 'Name which files to file: items is an array and each entry has an itemId.')
   }
-  if (items.length > 5000) throw new CleanupError('BAD_BODY', '一次最多 5000 項。')
+  if (items.length > 5000) throw new CleanupError('BAD_BODY', 'At most 5000 entries at a time.')
   for (const it of items) {
     if (!it || typeof it !== 'object' || Array.isArray(it)) {
-      throw new CleanupError('BAD_BODY', 'items 的每一項要是 { itemId, course, kind }。')
+      throw new CleanupError('BAD_BODY', 'Each entry in items must be { itemId, course, kind }.')
     }
     const id = (it as FilingRequest).itemId
     if (typeof id !== 'string' || !id || id.length > 200) {
-      throw new CleanupError('BAD_BODY', 'itemId 必須是 1 到 200 字元的字串。')
+      throw new CleanupError('BAD_BODY', 'itemId must be a string of 1 to 200 characters.')
     }
     const course = (it as FilingRequest).course
     if (course !== undefined && (typeof course !== 'string' || course.length > 4096)) {
-      throw new CleanupError('BAD_BODY', 'course 必須是字串（最多 4096 字元）。')
+      throw new CleanupError('BAD_BODY', 'course must be a string of at most 4096 characters.')
     }
     const kind = (it as FilingRequest).kind
     if (kind !== undefined && (typeof kind !== 'string' || kind.length > 200)) {
-      throw new CleanupError('BAD_BODY', 'kind 必須是字串（最多 200 字元）。')
+      throw new CleanupError('BAD_BODY', 'kind must be a string of at most 200 characters.')
     }
   }
 }
@@ -344,10 +344,10 @@ export function applyFilings(db: DatabaseSync, items: unknown, scope: FilingScop
 } {
   validateRequests(items)
   if (scope.readonly) {
-    throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會搬動任何檔案。')
+    throw new CleanupError('READ_ONLY', 'Read-only mode is on, so no file gets moved.')
   }
   if (!scope.filed) {
-    throw new CleanupError('BAD_CONFIG', '還沒設定「整理好的」資料夾，不知道要搬去哪。')
+    throw new CleanupError('BAD_CONFIG', 'The filed folder is not configured, so there is nowhere to move things to.')
   }
   // 同一個檔送兩次只做一次（第二次的來源已經是搬完的位置，很難講清楚）
   const seen = new Set<string>()
@@ -405,7 +405,7 @@ function targetDir(scope: FilingScope, course: string, kind: string, memo: Memo)
   }
   const dir = ensureDir(ensureDir(courses, actual), kind)
   if (!under(root, dir)) {
-    throw new CleanupError('UNSAFE_PATH', '算出來的資料夾不在「整理好的」資料夾底下，這一個先跳過。')
+    throw new CleanupError('UNSAFE_PATH', 'The folder this works out to is not under the filed folder, so this one is skipped.')
   }
   return { dir, folder: [COURSES_DIR, actual, kind].join('/') }
 }
@@ -424,16 +424,16 @@ function moveTo(from: string, to: string, before: { dev: number; ino: number }):
     if (e?.code !== 'ENOENT') throw e
     exists = false
   }
-  if (exists) throw new CleanupError('CONFLICT', '目標名字剛剛被別的東西佔走了，這一個先跳過。')
+  if (exists) throw new CleanupError('CONFLICT', 'Something just took the target name, so this one is skipped.')
   const now = lstatSync(from)
   if (now.dev !== before.dev || now.ino !== before.ino) {
-    throw new CleanupError('CHANGED', '這個檔剛剛被換掉了，先不搬它。')
+    throw new CleanupError('CHANGED', 'This file was just swapped out, so it is not moved.')
   }
   try { renameSync(from, to) }
   catch (e: any) {
     if (e?.code === 'EXDEV') {
       throw new CleanupError('CROSS_DEVICE',
-        '「整理好的」資料夾在另一顆碟，這一版還不支援搬過去（複製再刪掉等於刪檔，這個專案只搬不刪）。')
+        'The filed folder is on another disk, which this version cannot move to. Copying and deleting would be deleting, and this project only moves — it never deletes.')
     }
     throw e
   }
@@ -459,7 +459,7 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   const itemId = String(req.itemId)
   const item = itemById(db, itemId)
   if (!item) {
-    return { itemId, ok: false, name: '', toFolder: '', to: '', why: '找不到這個檔（可能已經被清掉或重新掃描過）。' }
+    return { itemId, ok: false, name: '', toFolder: '', to: '', why: 'Cannot find this file — it may have been cleaned up, or rescanned.' }
   }
   const name = item.name
   const no = (why: string): FilingOutcome => ({ itemId, ok: false, name, toFolder: '', to: '', why })
@@ -477,8 +477,8 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   const course = cleanCourse(req.course === undefined ? offer.course : req.course)
   if (!course) {
     return no(req.course === undefined
-      ? '沒有可以用的課程名稱（模型沒有看法、信心太低，或看不出來是哪一堂課）。'
-      : '這個課程名稱洗完是空的（只剩路徑符號、控制字元或保留名稱），不能用。')
+      ? 'There is no usable course name: the model had no view, was not confident enough, or could not tell which course.'
+      : 'That course name washes out to nothing — only path separators, control characters or reserved names are left — so it cannot be used.')
   }
   const kind = kindFolder(req.kind === undefined ? offer.kind : req.kind)
   // 打錯字的類型（`講議`）會被 kindFolder 收斂成「其他」。**那一次照舊進「其他」，但不可以學** ——
@@ -491,14 +491,14 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   let fromDir: string
   try { fromDir = checkedPath(dirname(item.path), true) } catch (e) { return no(cleanupProblem(e)) }
   // 資料夾攤開之後還要在清理範圍裡（父層是捷徑時 path 與 fromDir 會不一樣）
-  if (!underSomeRoot(scope.roots, join(fromDir, name))) return no('這個檔不在設定的清理資料夾裡。')
+  if (!underSomeRoot(scope.roots, join(fromDir, name))) return no('This file is not inside a configured cleanup folder.')
 
   let before
   try { before = checkFile(join(fromDir, name), FILE_WORDS) } catch (e) { return no(cleanupProblem(e)) }
 
   let dest: { dir: string; folder: string }
   try { dest = targetDir(scope, course, kind, memo) } catch (e) { return no(cleanupProblem(e)) }
-  if (dest.dir === fromDir) return no('這個檔已經在那個資料夾裡了。')
+  if (dest.dir === fromDir) return no('This file is already in that folder.')
 
   let taken = memo.taken.get(dest.dir)
   if (!taken) {
@@ -506,7 +506,7 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
     memo.taken.set(dest.dir, taken)
   }
   const to = freeName(name, originalExt(name), taken)
-  if (!to) return no(`「${name}」與它的 -2⋯-${SUFFIX_MAX} 在那個資料夾裡都已經有人用了，這一個先跳過。`)
+  if (!to) return no(`“${name}” and its -2…-${SUFFIX_MAX} variants are all taken in that folder, so this one is skipped.`)
 
   const id = randomUUID()
   db.prepare(
@@ -539,8 +539,8 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   return {
     itemId, ok: true, name, toFolder: dest.folder, to, id,
     why: to === name
-      ? `搬到「${dest.folder}」了。反悔的話可以復原。`
-      : `搬到「${dest.folder}」了；那裡已經有同名的檔，所以這一份叫「${to}」（沒有覆蓋任何檔）。`,
+      ? `Moved to “${dest.folder}”. Changed your mind? It can be undone.`
+      : `Moved to “${dest.folder}”. A file of that name was already there, so this one is called “${to}” (nothing was overwritten).`,
   }
 }
 
@@ -582,7 +582,7 @@ function restoreDir(from: string, scope: FilingScope): string {
     })
     if (!inScope) {
       throw new CleanupError('OUTSIDE_ROOT',
-        '原本的資料夾已經不在了，而且它不在設定的清理資料夾底下，沒有幫你建回來。')
+        'The original folder is gone, and it is not under a configured cleanup folder, so it was not recreated.')
     }
     mkdirSync(want, { recursive: true })
   }
@@ -601,22 +601,22 @@ export function undoFilings(db: DatabaseSync, sel: FilingUndoSelection, scope: F
   results: FilingUndoOutcome[]
 } {
   if (scope.readonly) {
-    throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會搬動任何檔案。')
+    throw new CleanupError('READ_ONLY', 'Read-only mode is on, so no file gets moved.')
   }
   const wantLast = sel.last === true
   if (sel.last !== undefined && typeof sel.last !== 'boolean') {
-    throw new CleanupError('BAD_BODY', 'last 要是 true 或 false。')
+    throw new CleanupError('BAD_BODY', 'last must be true or false.')
   }
   let ids: string[] = []
   if (sel.ids !== undefined) {
     if (!Array.isArray(sel.ids) || sel.ids.length > 1000
       || sel.ids.some(v => typeof v !== 'string' || !v || v.length > 200)) {
-      throw new CleanupError('BAD_BODY', 'ids 必須是字串陣列，最多 1000 筆。')
+      throw new CleanupError('BAD_BODY', 'ids must be an array of strings, at most 1000 of them.')
     }
     ids = [...new Set(sel.ids as string[])]
   }
   if (!ids.length && !wantLast) {
-    throw new CleanupError('BAD_BODY', '要指名 ids，或送 { "last": true } 復原最近一次整理。')
+    throw new CleanupError('BAD_BODY', 'Name the ids, or send { "last": true } to undo the most recent filing.')
   }
 
   return withCleanupLock(db, renew => {
@@ -627,11 +627,11 @@ export function undoFilings(db: DatabaseSync, sel: FilingUndoSelection, scope: F
         `SELECT * FROM filings WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY at DESC, id`
       ).all(...ids) as FilingRow[]
       const found = new Set(rows.map(r => r.id))
-      if (ids.some(i => !found.has(i))) throw new CleanupError('NOT_FOUND', '找不到這幾筆整理紀錄。')
+      if (ids.some(i => !found.has(i))) throw new CleanupError('NOT_FOUND', 'Cannot find those filing records.')
     } else {
       const last = db.prepare(`SELECT at FROM filings WHERE status='done' ORDER BY at DESC LIMIT 1`)
         .get() as { at: string } | undefined
-      if (!last) throw new CleanupError('NOT_FOUND', '沒有可以復原的整理。')
+      if (!last) throw new CleanupError('NOT_FOUND', 'There is no filing to undo.')
       rows = db.prepare(`SELECT * FROM filings WHERE status='done' AND at=? ORDER BY id`)
         .all(last.at) as FilingRow[]
     }
@@ -649,14 +649,14 @@ function undoOne(db: DatabaseSync, row: FilingRow, scope: FilingScope): FilingUn
     id: row.id, itemId: row.item_id, ok: false, name: '', restoredAs: null, why: '',
   }
   const no = (why: string): FilingUndoOutcome => ({ ...base, why })
-  if (row.status === 'reverted') return { ...base, ok: true, name: row.name, why: '這一筆本來就已經復原過了。' }
-  if (row.status !== 'done') return no('這一筆沒有搬成功，沒有東西要復原。')
+  if (row.status === 'reverted') return { ...base, ok: true, name: row.name, why: 'This one had already been undone.' }
+  if (row.status !== 'done') return no('This one never succeeded, so there is nothing to undo.')
 
   let toDir: string
   try { toDir = checkedPath(row.to_dir, true) } catch (e) { return no(cleanupProblem(e)) }
   const filed = scope.filed ? resolve(scope.filed) : ''
   if (!filed || !under(filed, join(toDir, row.to_name))) {
-    return no('那個檔現在不在「整理好的」資料夾裡，先不動它。')
+    return no('That file is no longer in the filed folder, so it is left alone.')
   }
   let before
   try { before = checkFile(join(toDir, row.to_name), FILE_WORDS) } catch (e) { return no(cleanupProblem(e)) }
@@ -667,7 +667,7 @@ function undoOne(db: DatabaseSync, row: FilingRow, scope: FilingScope): FilingUn
   let taken: Set<string>
   try { taken = namesTaken(db, backDir) } catch (e) { return no(cleanupProblem(e)) }
   const back = freeName(row.name, originalExt(row.name), taken)
-  if (!back) return no(`原本的名字與它的 -2⋯-${SUFFIX_MAX} 都已經有人用了，沒有搬回去。`)
+  if (!back) return no(`The original name and its -2…-${SUFFIX_MAX} variants are all taken, so it was not moved back.`)
 
   try {
     moveTo(join(toDir, row.to_name), join(backDir, back), before)
@@ -693,8 +693,8 @@ function undoOne(db: DatabaseSync, row: FilingRow, scope: FilingScope): FilingUn
   return {
     ...base, ok: true, name: back, restoredAs,
     why: restoredAs
-      ? `原本的位置已經有一個同名的檔了，放回來的這一份叫「${restoredAs}」（沒有覆蓋任何檔）。`
-      : '搬回原本的資料夾了。',
+      ? `A file of that name was already in the original place, so this one is called “${restoredAs}” (nothing was overwritten).`
+      : 'Moved back to the folder it came from.',
   }
 }
 
@@ -738,16 +738,16 @@ export function recoverInterruptedFilings(db: DatabaseSync): { recovered: number
         })
       } else if (there(join(row.from_dir, row.name))) {
         changed = db.prepare(`UPDATE filings SET status='reverted', undone_at=?, error=? WHERE id=? AND status='started'`)
-          .run(new Date().toISOString(), '整理中斷，檔案還在原本的資料夾，沒有搬。', row.id).changes
+          .run(new Date().toISOString(), 'Interrupted mid-filing; the file never left its folder, so nothing moved.', row.id).changes
       } else {
         changed = db.prepare(`UPDATE filings SET status='failed', error=? WHERE id=? AND status='started'`)
-          .run('整理中斷，原位與新位置現在都找不到這個檔，請人工確認。', row.id).changes
+          .run('Interrupted mid-filing; the file is in neither the old nor the new place. Check it yourself.', row.id).changes
       }
       if (changed) recovered++
     } catch (e: any) {
       try {
         db.prepare(`UPDATE filings SET error=? WHERE id=? AND status='started'`)
-          .run(`收尾失敗：${String(e?.message ?? e).slice(0, 150)}`, row.id)
+          .run(`Tidying up failed: ${String(e?.message ?? e).slice(0, 150)}`, row.id)
       } catch { /* 連這個都寫不進去就算了 */ }
     }
   }

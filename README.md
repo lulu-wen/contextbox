@@ -11,7 +11,7 @@ Nothing leaves your machine unless you decide it should. Nothing moves until you
 Open anyone's Downloads folder and it looks like this:
 
 ```
-未命名文件 (3).txt
+Untitled document (3).txt
 IMG_2041.png
 Screenshot 2026-09-18 at 10.31.02.png
 Screenshot 2026-09-18 at 10.31.05.png      ← same screen, cursor moved
@@ -42,7 +42,7 @@ project is the answer to it.**
 | "Where did that lecture handout go?" | Filenames come from whoever served the download. They say nothing about the contents | Reads the file, tells you what it is, gives it a name you can find later |
 | 40 GB you'll never delete | Every tool's answer is *delete*, and deleted is forever — so you never run it | Moves things to quarantine. One command brings everything back, for 7 days |
 | A dozen screenshots a day, three of them identical | Reviewing them one by one is worse than keeping them | Spots "these three are one burst" and asks once |
-| Filing takes an hour, and two weeks later it's a mess again | It requires understanding the contents. Rules can't do that | Same course, same project → filed into `課程/作業系統/講義/` on one click |
+| Filing takes an hour, and two weeks later it's a mess again | It requires understanding the contents. Rules can't do that | Same course, same project → filed into `Courses/Operating Systems/Lecture/` on one click |
 | You don't want your files on someone's cloud | Cloud assistants start with "upload everything" | Runs locally. Whether to use a model at all — and which one — is your call |
 | "AI cleaning my files" sounds terrifying | Most tools let the model act directly | The model only ever *suggests*, with evidence. You approve. You can undo |
 
@@ -93,8 +93,8 @@ node cli.mjs cleanup scan     # what's here
 node cli.mjs cleanup list     # "these three screenshots are one burst — keep the newest?"
 node cli.mjs cleanup apply    # moved to quarantine. Not deleted. `cleanup undo` brings it all back
 node cli.mjs think            # ask the model (about 80 seconds for 14 files)
-node cli.mjs rename           # "未命名文件 (3).txt → 作業系統_死結.txt", with the evidence
-node cli.mjs file             # same course → 課程/作業系統/筆記/
+node cli.mjs rename           # "Untitled document (3).txt → Operating Systems_Deadlock.txt", with evidence
+node cli.mjs file             # same course → Courses/Operating Systems/Notes/
 node cli.mjs file --undo      # never mind, put it all back
 node cli.mjs pet              # the panel: everything above, but clickable
 ```
@@ -107,9 +107,9 @@ Installing it for real, Windows included: **[INSTALL.md](INSTALL.md)**.
 Run `think`, and the first line is this:
 
 ```
-－ [1/8] logins.csv　—— looks like credentials, not sent
-✔ [2/8] 作業系統_第5章_行程排程.txt　—— model says: Operating Systems / CPU scheduling (high)
-✔ [3/8] Screenshot 2026-09-18 at 14.02.44.png　—— model says: no idea / no idea (low)
+－ [1/8] logins.csv   looks like credentials, not sent
+✔ [2/8] operating-systems-ch5-scheduling.txt   The model thinks: Operating Systems / CPU scheduling (confidence high)
+✔ [3/8] Screenshot 2026-09-18 at 14.02.44.png   The model thinks: Unknown / Unknown (confidence low)
 
 This round: 8 queued, 7 asked, 0 cache hits, 1 withheld, 0 failures.
 ```
@@ -186,7 +186,7 @@ extension/  Chrome MV3 extension (the form-filling half)
 test/       the test suite
 tools/      demo sandbox generator
 cli.mjs     command-line entry point
-docs/       DEMO.md · cli.md · api/ · 接模型.md (choosing a model) · 面板.md (the panel)
+docs/       DEMO.md · cli.md · api/ · model-setup.md (choosing a model) · panel.md (the panel)
 ```
 
 ---
@@ -213,7 +213,7 @@ export CONTEXTBOX_MODEL_KEY="..."   # environment only; local models usually nee
 ```
 
 Local vs. self-hosted vs. cloud, and the three things your endpoint has to support, are covered in
-**[docs/接模型.md](docs/接模型.md)**. Without a model, scanning, duplicate detection, burst grouping and
+**[docs/model-setup.md](docs/model-setup.md)**. Without a model, scanning, duplicate detection, burst grouping and
 cleanup all work exactly the same — and nothing is sent anywhere.
 
 ---

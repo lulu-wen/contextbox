@@ -21,8 +21,8 @@
         {
           "kind": "duplicate",
           "confidence": 98,
-          "reason": "同內容的重複檔案",
-          "evidence": "同一個 sha256 還有 1 份檔案存在，會留著「report.pdf」"
+          "reason": "A duplicate — same contents",
+          "evidence": "1 other file has the same sha256; \u201Creport.pdf\u201D is the one being kept"
         }
       ]
     },
@@ -43,14 +43,14 @@
         {
           "kind": "partial",
           "confidence": 95,
-          "reason": "下載中斷留下的半成品",
-          "evidence": ".crdownload 副檔名，而且 12 天沒有變動"
+          "reason": "A half-finished download",
+          "evidence": ".crdownload extension, and untouched for 12 days"
         }
       ]
     },
     {
       "itemId": "i_81d",
-      "name": "素材包.zip",
+      "name": "assets-bundle.zip",
       "folder": "Downloads",
       "subdir": "2026/07",
       "bytes": 786432000,
@@ -66,14 +66,14 @@
         {
           "kind": "archive",
           "confidence": 65,
-          "reason": "舊壓縮檔通常是一次性下載",
-          "evidence": ".zip 壓縮檔，而且 65 天沒有變動"
+          "reason": "Old archives are usually one-off downloads",
+          "evidence": ".zip archive, and untouched for 65 days"
         },
         {
           "kind": "old-download",
           "confidence": 35,
-          "reason": "很久沒有動過的下載檔",
-          "evidence": "65 天沒有變動，且副檔名 .zip 不在保護清單"
+          "reason": "A download nobody has touched in a long time",
+          "evidence": "Untouched for 65 days, and .zip is not on the protected list"
         }
       ]
     },
@@ -94,8 +94,8 @@
         {
           "kind": "screenshot-noise",
           "confidence": 35,
-          "reason": "舊截圖常常是暫時資訊",
-          "evidence": "檔名是 Screenshot 2026-06-02 141203.png，而且 105 天沒有變動"
+          "reason": "Old screenshots are usually throwaway",
+          "evidence": "Named Screenshot 2026-06-02 141203.png, and untouched for 105 days"
         }
       ]
     }
@@ -103,10 +103,10 @@
   "needsHuman": [
     {
       "itemId": "i_99f",
-      "name": "備份.tar",
+      "name": "backup.tar",
       "folder": "Downloads",
       "bytes": 8589934592,
-      "why": "讀不到這個檔案：權限不足"
+      "why": "Cannot read this file: permission denied"
     }
   ]
 }

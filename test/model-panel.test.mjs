@@ -17,8 +17,8 @@ import { mountPanel } from './helpers/panel-dom.mjs'
 import { modelOpinionLines, normalizeBurstGroups } from '../core/assets/cleanup-real-state.js'
 
 const opinion = (over = {}) => ({
-  course: '作業系統', topic: '死結', kind: '講義', suggestedName: '作業系統_死結',
-  evidence: '文件裡寫著「四個必要條件」', confidence: '高',
+  course: '作業系統', topic: '死結', kind: 'Lecture', suggestedName: '作業系統_死結',
+  evidence: '文件裡寫著「四個必要條件」', confidence: 'high',
   model: 'Qwen3-VL-8B', at: '2026-09-19T00:00:00.000Z', seeded: false, ...over,
 })
 
@@ -75,23 +75,23 @@ const cards = ui => ui.$('cleanup-list').all('article')
 describe('modelOpinionLines', () => {
   test('一般的一筆：標明是模型說的、講信心、講證據', () => {
     const l = modelOpinionLines(opinion())
-    assert.equal(l.head, '模型認為：作業系統／死結（信心 高）')
-    assert.match(l.note, /證據：文件裡寫著「四個必要條件」/)
-    assert.match(l.note, /這是模型的意見，不是事實/)
-    assert.match(l.note, /不會因為它這樣說就改名或搬檔/)
+    assert.equal(l.head, 'The model thinks: 作業系統 / 死結 (confidence high)')
+    assert.match(l.note, /Evidence: 文件裡寫著「四個必要條件」/)
+    assert.match(l.note, /This is the model's opinion, not a fact/)
+    assert.match(l.note, /nothing gets renamed or moved because it said so/)
     assert.equal(l.seeded, false)
   })
 
   test('seeded：前面加「［示範答案］」', () => {
     const l = modelOpinionLines(opinion({ seeded: true }))
-    assert.match(l.head, /^［示範答案］模型認為：/)
+    assert.match(l.head, /^\[demo answer\] The model thinks: /)
     assert.equal(l.seeded, true)
   })
 
   test('欄位是空的：填「看不出來」「低」，不留一句半截的話', () => {
     const l = modelOpinionLines(opinion({ course: '', topic: '   ', confidence: '', evidence: '' }))
-    assert.equal(l.head, '模型認為：看不出來／看不出來（信心 低）')
-    assert.match(l.note, /模型沒有給證據/)
+    assert.equal(l.head, 'The model thinks: Unknown / Unknown (confidence low)')
+    assert.match(l.note, /The model gave no evidence/)
   })
 
   test('沒有看法（null、舊版後端沒有這一欄、不是物件）→ null，畫面上什麼都不加', () => {
@@ -138,15 +138,15 @@ describe('候選卡片（假的 api、真的面板）', () => {
   test('有看法時卡片上多兩行：「模型認為⋯⋯」與證據', async t => {
     const ui = await open(t, { candidates: [candidate('m1', '截圖 1.png', { model: opinion() })] })
     const card = cards(ui)[0]
-    assert.match(card.textContent, /模型認為：作業系統／死結（信心 高）/)
-    assert.match(card.textContent, /證據：文件裡寫著「四個必要條件」/)
-    assert.match(card.textContent, /這是模型的意見，不是事實/)
+    assert.match(card.textContent, /The model thinks: 作業系統 \/ 死結 \(confidence high\)/)
+    assert.match(card.textContent, /Evidence: 文件裡寫著「四個必要條件」/)
+    assert.match(card.textContent, /This is the model's opinion, not a fact/)
     assert.ok(card.byClass('cleanup-model').length, '沒有那個 class，樣式上看不出它跟規則講的話不一樣')
   })
 
   test('**模型很有信心也不會自動勾起來**', async t => {
     const ui = await open(t, {
-      candidates: [candidate('m1', '截圖 1.png', { defaultChecked: false, model: opinion({ confidence: '高' }) })],
+      candidates: [candidate('m1', '截圖 1.png', { defaultChecked: false, model: opinion({ confidence: 'high' }) })],
     })
     assert.deepEqual(cards(ui)[0].all('input').map(i => i.checked), [false])
   })
@@ -164,7 +164,7 @@ describe('候選卡片（假的 api、真的面板）', () => {
   test('示範答案標得出來（class 也不一樣）', async t => {
     const ui = await open(t, { candidates: [candidate('m1', 'a.png', { model: opinion({ seeded: true }) })] })
     const card = cards(ui)[0]
-    assert.match(card.textContent, /［示範答案］模型認為：/)
+    assert.match(card.textContent, /\[demo answer\] The model thinks: /)
     assert.ok(card.byClass('cleanup-model-seeded').length, '示範答案要看得出來跟真的問過的不一樣')
   })
 })
@@ -188,8 +188,8 @@ describe('連拍區（假的 api、真的面板）', () => {
     const ui = await open(t, fixture())
     const cells = ui.$('cleanup-bursts').all('article')[0].byClass('cleanup-shot')
     assert.equal(cells.length, 3)
-    assert.match(cells[0].textContent, /模型認為：作業系統／行程排程/)
-    assert.match(cells[1].textContent, /［示範答案］模型認為：/)
+    assert.match(cells[0].textContent, /The model thinks: 作業系統 \/ 行程排程/)
+    assert.match(cells[1].textContent, /\[demo answer\] The model thinks: /)
     assert.ok(!/模型認為/.test(cells[2].textContent), cells[2].textContent)
   })
 

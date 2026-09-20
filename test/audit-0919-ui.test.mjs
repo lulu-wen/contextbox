@@ -52,7 +52,7 @@ const DAY = 86400_000
 const TOKEN = 'ui-audit-token'
 const realFetch = globalThis.fetch
 const UI_HTML = readFileSync(join(REPO, 'core/ui.html'), 'utf8')
-const LOCAL_HISTORY_NOTE = '每次清理為一筆，勾選後會把那一次搬走的檔案放回原位。'
+const LOCAL_HISTORY_NOTE = 'One row per cleanup. Tick one and the files it moved go back where they were.'
 
 /** ui.html 裡真的 window.api（跟 cleanup-panel.test.mjs 抽 api() 的方式一樣）。 */
 function uiApi(fetchImpl, doc = { documentElement: { dataset: {} } }) {
@@ -348,7 +348,7 @@ describe('RC7 撞到 CONFLICT 要提示擋住這次勾選的那一份', () => {
     assert.deepEqual(r.plan.items.map(i => i.name), ['a.zip'], '要提示擋住 a 的那一份，不是最新的那一份')
     assert.equal(r.plan.id, p1.id)
     assert.ok(!s.calls.some(c => c.path.includes('pending=1')), '不可以再自己去 ?pending=1 猜')
-    const done = await real.apply()          // 使用者按「繼續上次那份」
+    const done = await real.apply()          // 使用者按“Finish the last plan”
     assert.equal(done.status, 'applied', JSON.stringify(done))
     assert.ok(!s.has('a.zip'), '上次那份是 a')
     assert.ok(s.has('z.zip'), '**z 不在擋住 a 的那一份裡，不可以被搬**')
@@ -411,7 +411,7 @@ describe('RC8 伺服器明確回錯就解鎖；撞到卡住的計畫可以放棄
     await real.load()
     const e = await real.apply().catch(e => e)
     assert.equal(e.status, 500, String(e))
-    assert.match(e.message, /捷徑/, '原因要照後端說的講')
+    assert.match(e.message, /symlink/, '原因要照後端說的講')
     assert.equal(real.locked, false, '伺服器明確回了 500，不是「結果不明」')
     const a = s.byName(real, 'a.zip').itemId
     real.select(a, false)
@@ -441,9 +441,9 @@ describe('RC8 伺服器明確回錯就解鎖；撞到卡住的計畫可以放棄
     await real.load()
     const p = await real.apply()
     assert.equal(p.status, 'pending-plan', JSON.stringify(p))
-    const e = await real.apply().catch(e => e)       // 繼續上次那份 → 500
+    const e = await real.apply().catch(e => e)       // Finish the last plan → 500
     assert.equal(e.status, 500, String(e))
-    assert.equal(real.pendingPlan, null, '伺服器明確回錯，不可以一直卡在「繼續上次那份」')
+    assert.equal(real.pendingPlan, null, '伺服器明確回錯，不可以一直卡在“Finish the last plan”')
     assert.equal(real.locked, false)
   })
 
@@ -543,12 +543,12 @@ describe('RC8 面板（假 DOM 上跑真的 cleanup-demo.js）', () => {
     assert.equal(panelChecks(ui).length, 2, ui.$('cleanup-list').textContent)
     await ui.click('cleanup-apply')
     const text = ui.$('cleanup-result').textContent
-    assert.match(text, /捷徑/, text)
-    assert.ok(!/還沒確認/.test(text), `伺服器明確回錯，不可以說結果不明：${text}`)
+    assert.match(text, /symlink/, text)
+    assert.ok(!/not confirmed/.test(text), `伺服器明確回錯，不可以說結果不明：${text}`)
     for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, false, `${name} 的勾選框被鎖住了`)
-    assert.equal(ui.$('cleanup-release').hidden, true, '沒有卡住的計畫，不要出現「放棄上次那份」')
+    assert.equal(ui.$('cleanup-release').hidden, true, '沒有卡住的計畫，不要出現“Drop the last plan”')
     await uiOnly(ui, 'a.zip')
-    assert.match(ui.$('cleanup-summary').textContent, /已選 1 \/ 2/)
+    assert.match(ui.$('cleanup-summary').textContent, /1 of 2/)
   })
 
   test('**撞到卡住的計畫：兩個按鈕「繼續上次那份」與「放棄上次那份」；放棄不動任何檔**', async t => {
@@ -566,13 +566,13 @@ describe('RC8 面板（假 DOM 上跑真的 cleanup-demo.js）', () => {
     const text = ui.$('cleanup-result').textContent
     assert.match(text, /a\.zip/, text)
     assert.ok(!/z\.zip/.test(text), `提示的不可以是 z 那份：${text}`)
-    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（1 個）')
-    assert.equal(ui.$('cleanup-release').hidden, false, '要有「放棄上次那份」')
-    assert.equal(ui.$('cleanup-release').textContent, '放棄上次那份')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Finish the last plan (1)')
+    assert.equal(ui.$('cleanup-release').hidden, false, '要有“Drop the last plan”')
+    assert.equal(ui.$('cleanup-release').textContent, 'Drop the last plan')
     await ui.click('cleanup-release')
     const after = ui.$('cleanup-result').textContent
-    assert.match(after, /放棄/, after)
-    assert.match(after, /沒有動任何檔案/, after)
+    assert.match(after, /Dropped the last plan/, after)
+    assert.match(after, /Nothing moved\./, after)
     assert.equal(s.planStatus(p1.id), 'dismissed')
     assert.ok(s.has('a.zip') && s.has('z.zip') && s.has('m.zip'))
     assert.equal(ui.$('cleanup-release').hidden, true)
@@ -590,7 +590,7 @@ describe('RC8 面板（假 DOM 上跑真的 cleanup-demo.js）', () => {
     })
     await ui.click('cleanup-apply')
     const text = ui.$('cleanup-result').textContent
-    assert.match(text, /搬進隔離區 1 個檔案/, text)
+    assert.match(text, /Moved 1 file/, text)
     assert.ok(!s.has('a.zip'))
   })
 })
@@ -615,11 +615,11 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
     const u = await h('undo', { operationIds: [planId] })
     assert.equal(u.restoredFiles, 0)
     assert.equal(u.restored, 0)
-    assert.equal(u.alreadyRestored, 0, '檔案還在隔離區，不可以說「先前已復原」')
+    assert.equal(u.alreadyRestored, 0, '檔案還在隔離區，不可以說“already been undone”')
     assert.equal(u.notRestored?.length, 1, JSON.stringify(u))
     assert.equal(u.notRestored[0].name, 'a.zip')
     const plan = await s.raw(`/cleanup/plans/${planId}`)
-    assert.ok(u.notRestored[0].why && !/原因不明/.test(u.notRestored[0].why), `要講得出為什麼：${u.notRestored[0].why}`)
+    assert.ok(u.notRestored[0].why && !/reason unknown/.test(u.notRestored[0].why), `要講得出為什麼：${u.notRestored[0].why}`)
     assert.equal(u.notRestored[0].why, plan.items[0].why, 'why 照後端的逐項結果')
   })
 
@@ -774,7 +774,7 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
       // 復原前不在隔離區的（沒搬成、略過、還沒套用、放棄了，以及已放回、已清空）一個都不列
       for (const x of [...u.notRestored, ...unsure]) {
         const was = beforeOf.get(x.name)
-        assert.ok(!NEVER_MOVED.includes(was), `seed ${seed}：${x.name} 復原前是 ${was}（根本沒進隔離區），卻被列成沒放回／不確定：${JSON.stringify(u)}`)
+        assert.ok(!NEVER_MOVED.includes(was), `seed ${seed}：${x.name} 復原前是 ${was}（根本沒進隔離區），卻被列成not put back／不確定：${JSON.stringify(u)}`)
         assert.ok(wasIn(was), `seed ${seed}：${x.name} 復原前是 ${was}，不在隔離區：${JSON.stringify(u)}`)
       }
       // 只有復原前有東西在隔離區的那幾份送 undo，而且各送一次
@@ -790,9 +790,9 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
       const neverLeft = plans.flatMap(p => before.get(p.id)
         .filter(i => i.outcome === 'unknown' && NEVER_MOVED.includes(after.get(p.id).get(i.name)))).length
       assert.equal(u.restoredFiles + u.notRestored.length + unsure.length + neverLeft, inQuarantineBefore,
-        `seed ${seed}：放回＋沒放回＋不確定＋其實沒搬 ≠ 復原前在隔離區的 ${inQuarantineBefore}：${JSON.stringify(u)}`)
+        `seed ${seed}：放回＋not put back＋不確定＋其實沒搬 ≠ 復原前在隔離區的 ${inQuarantineBefore}：${JSON.stringify(u)}`)
       assert.equal(u.alreadyRestored, plans.filter(p => !before.get(p.id).some(i => wasIn(i.outcome))).length,
-        `seed ${seed}：先前已復原算錯`)
+        `seed ${seed}：already been undone算錯`)
       // 復原到一半中斷的，再按一次復原一定接得完（沒被改過的話回到原位）；這個生成器不會留下「不確定」
       assert.deepEqual(unsure, [], `seed ${seed}：${JSON.stringify(unsure)}`)
       for (const p of plans) {
@@ -803,16 +803,16 @@ describe('RC9 歷史轉接器：notRestored、先前已復原只算復原前就�
       }
       if (plans.some(p => p.files.some(f => f.fate === 'unknownR' && !tampered.has(f.name)))) hits.interrupted++
       const m = historyUndoMessage(u)
-      if (u.notRestored.length) assert.ok(!/都幫你放回來了/.test(m.text + m.notice), `seed ${seed}：有沒放回的卻說都放回來了`)
+      if (u.notRestored.length) assert.ok(!/Everything is back where it was/.test(m.text + m.notice), `seed ${seed}：有not put back的卻說都放回來了`)
       // 真的有東西在隔離區就不可以說「勾選的 N 筆先前已經復原過了」
-      if (inQuarantineBefore - neverLeft) assert.ok(!/勾選的 \d+ 筆先前已經復原過了/.test(m.text), `seed ${seed}：${m.text}`)
-      if (!u.notRestored.length && u.restoredFiles) { assert.equal(m.notice, '都幫你放回來了！'); hits.allBack++ }
+      if (inQuarantineBefore - neverLeft) assert.ok(!/The \d+ you ticked had already been undone/.test(m.text), `seed ${seed}：${m.text}`)
+      if (!u.notRestored.length && u.restoredFiles) { assert.equal(m.notice, 'Everything is back where it was.'); hits.allBack++ }
       if (u.notRestored.length && u.restoredFiles) hits.partial++
       if (u.notRestored.length && !u.restoredFiles) hits.noneBack++
       if (u.alreadyRestored) hits.already++
     }
     for (const [k, min] of Object.entries({ allBack: 1, partial: 1, noneBack: 1, already: 1, interrupted: 3, noUndoSent: 3, mixed: 2 })) {
-      assert.ok(hits[k] >= min, `生成器沒走到「${k}」：${JSON.stringify(hits)}`)
+      assert.ok(hits[k] >= min, `生成器沒走到“${k}”：${JSON.stringify(hits)}`)
     }
     for (const [o, n] of Object.entries(seen)) assert.ok(n >= 2, `生成器產生的 ${o} 不到兩個：${JSON.stringify(seen)}`)
   })
@@ -822,19 +822,19 @@ describe('RC9 寵物台詞看結果決定', () => {
   const why = '隔離區檔案已變更，無法安全復原。'
   test('**歷史：0 個放回 → 「0 個放回；1 個沒放回：（原因）」，不可以說「都幫你放回來了」**', () => {
     const m = historyUndoMessage({ restored: 0, restoredFiles: 0, alreadyRestored: 0, notRestored: [{ name: 'a.zip', why }], renamed: [] })
-    assert.ok(m.text.includes('0 個放回；1 個沒放回：'), m.text)
+    assert.ok(m.text.includes('0 put back; 1 not put back:'), m.text)
     assert.ok(m.text.includes(why), m.text)
-    assert.ok(!/都幫你放回來了/.test(m.text + m.notice), m.notice)
+    assert.ok(!/Everything is back where it was/.test(m.text + m.notice), m.notice)
   })
   test('歷史：部分放回 → 「1 個放回；1 個沒放回：」、台詞不是「都幫你放回來了」', () => {
     const m = historyUndoMessage({ restored: 1, restoredFiles: 1, alreadyRestored: 0, notRestored: [{ name: 'b.zip', why }], renamed: [] })
-    assert.ok(m.text.includes('1 個放回；1 個沒放回：'), m.text)
-    assert.ok(!/都幫你放回來了/.test(m.notice), m.notice)
+    assert.ok(m.text.includes('1 put back; 1 not put back:'), m.text)
+    assert.ok(!/Everything is back where it was/.test(m.notice), m.notice)
   })
   test('歷史：全部放回 → 「都幫你放回來了！」', () => {
     const m = historyUndoMessage({ restored: 2, restoredFiles: 3, alreadyRestored: 0, notRestored: [], renamed: [] })
-    assert.equal(m.notice, '都幫你放回來了！')
-    assert.ok(!/沒放回/.test(m.text), m.text)
+    assert.equal(m.notice, 'Everything is back where it was.')
+    assert.ok(!/not put back/.test(m.text), m.text)
   })
   test('三種情況的台詞兩兩不同', () => {
     const none = historyUndoMessage({ restored: 0, restoredFiles: 0, alreadyRestored: 0, notRestored: [{ name: 'a', why }], renamed: [] }).notice
@@ -845,7 +845,7 @@ describe('RC9 寵物台詞看結果決定', () => {
     const pPart = undoMessage({ restored: 1, notRestored: [{ name: 'a', why }], renamed: [] }).notice
     const pAll = undoMessage({ restored: 1, notRestored: [], renamed: [] }).notice
     assert.equal(new Set([pNone, pPart, pAll]).size, 3, JSON.stringify([pNone, pPart, pAll]))
-    assert.equal(pAll, '都幫你放回來了！')
+    assert.equal(pAll, 'Everything is back where it was.')
   })
 
   test('**面板的復原（createReal.undo）：隔離區的檔被改過 → notRestored 帶原因**', async t => {
@@ -857,10 +857,10 @@ describe('RC9 寵物台詞看結果決定', () => {
     const r = await real.undo()
     assert.equal(r.restored, 0)
     assert.equal(r.notRestored?.length, 1, JSON.stringify(r))
-    assert.ok(r.notRestored[0].why && !/原因不明/.test(r.notRestored[0].why))
+    assert.ok(r.notRestored[0].why && !/reason unknown/.test(r.notRestored[0].why))
     const m = undoMessage(r)
-    assert.ok(m.text.includes('0 個放回；1 個沒放回：'), m.text)
-    assert.ok(!/都幫你放回來了/.test(m.text + m.notice))
+    assert.ok(m.text.includes('0 put back; 1 not put back:'), m.text)
+    assert.ok(!/Everything is back where it was/.test(m.text + m.notice))
   })
 
   // 第三波之二：同一份計畫裡沒搬成的（failed）根本沒進隔離區。面板的復原照「復原前在隔離區的」逐一對，
@@ -888,8 +888,8 @@ describe('RC9 寵物台詞看結果決定', () => {
     assert.deepEqual(r.notRestored, [], `b.zip 根本沒進隔離區：${JSON.stringify(r)}`)
     assert.deepEqual(r.unconfirmed, [])
     const m = undoMessage(r)
-    assert.equal(m.notice, '都幫你放回來了！')
-    assert.ok(!/沒放回|b\.zip/.test(m.text), m.text)
+    assert.equal(m.notice, 'Everything is back where it was.')
+    assert.ok(!/not put back|b\.zip/.test(m.text), m.text)
     assert.ok(s.has('a.zip') && s.has('b.zip'))
   })
 
@@ -900,7 +900,7 @@ describe('RC9 寵物台詞看結果決定', () => {
     assert.equal(r.restored, 0)
     assert.deepEqual(r.notRestored.map(x => x.name), ['a.zip'], JSON.stringify(r))
     const m = undoMessage(r)
-    assert.ok(m.text.includes('0 個放回；1 個沒放回：'), m.text)
+    assert.ok(m.text.includes('0 put back; 1 not put back:'), m.text)
     assert.ok(!/b\.zip/.test(m.text), m.text)
   })
 
@@ -919,7 +919,7 @@ describe('RC9 寵物台詞看結果決定', () => {
     const second = await real.undo()
     assert.equal(second.restored, 1, `這一次只放回 b：${JSON.stringify(second)}`)
     assert.deepEqual(second.notRestored, [])
-    assert.equal(undoMessage(second).text, '放回原位 1 個檔案。')
+    assert.equal(undoMessage(second).text, 'Put 1 file back.')
     assert.ok(s.has('a.zip') && s.has('b.zip'))
     assert.equal(real.canUndo, false)
   })
@@ -929,13 +929,13 @@ describe('RC9 寵物台詞看結果決定', () => {
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     await ui.click('cleanup-apply')
-    assert.match(ui.$('cleanup-result').textContent, /搬進隔離區 1 個檔案/)
+    assert.match(ui.$('cleanup-result').textContent, /Moved 1 file/)
     s.tamper('a.zip')
     await ui.click('cleanup-undo')
     const text = ui.$('cleanup-result').textContent
-    assert.ok(text.includes('0 個放回；1 個沒放回：'), text)
-    assert.ok(text.includes('隔離區檔案已變更'), text)
-    assert.ok(!/都幫你放回來了/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(text.includes('0 put back; 1 not put back:'), text)
+    assert.ok(text.includes('The quarantined file changed'), text)
+    assert.ok(!/Everything is back where it was/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 
   test('對照（假 DOM）：面板復原全部放回 → 「都幫你放回來了！」', async t => {
@@ -944,7 +944,7 @@ describe('RC9 寵物台詞看結果決定', () => {
     await ui.click('quaso-cleanup-alert')
     await ui.click('cleanup-apply')
     await ui.click('cleanup-undo')
-    assert.equal(ui.$('quaso-status').textContent, '都幫你放回來了！')
+    assert.equal(ui.$('quaso-status').textContent, 'Everything is back where it was.')
     assert.ok(s.has('a.zip'))
   })
 
@@ -962,10 +962,10 @@ describe('RC9 寵物台詞看結果決定', () => {
     boxes[0].onchange()
     await ui.click('cleanup-history-undo')
     const text = ui.$('cleanup-history-result').textContent
-    assert.ok(text.includes('0 個放回；1 個沒放回：'), text)
-    assert.ok(text.includes('隔離區檔案已變更'), text)
-    assert.ok(!/都幫你放回來了/.test(text), text)
-    assert.ok(!/都幫你放回來了/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(text.includes('0 put back; 1 not put back:'), text)
+    assert.ok(text.includes('The quarantined file changed'), text)
+    assert.ok(!/Everything is back where it was/.test(text), text)
+    assert.ok(!/Everything is back where it was/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 })
 
@@ -982,8 +982,8 @@ describe('RC10 歷史面板的說明文字', () => {
     for (let i = 0; i < 100 && ui.$('quaso-candidate-count').textContent !== '4'; i++) await new Promise(r => setTimeout(r, 10))
     await ui.click('quaso-history-open')
     const demo = ui.$('cleanup-history-note').textContent
-    assert.match(demo, /模擬/, demo)
-    assert.match(demo, /不會更動真實檔案/, demo)
+    assert.match(demo, /Simulated/, demo)
+    assert.match(demo, /No real file is touched/, demo)
     ui.$('cleanup-history-panel').close()
     await ui.key('d')                        // 關掉示範模式
     await ui.click('quaso-history-open')
@@ -999,7 +999,7 @@ describe('RC10 歷史面板的說明文字', () => {
 
 describe('RC14 訊息裡的檔名把控制字元與換行換成「·」', () => {
   test('例子', () => {
-    assert.equal(safeName('a\n搬進隔離區 99 個檔案.zip'), 'a·搬進隔離區 99 個檔案.zip')
+    assert.equal(safeName('a\nMoved 99 files.zip'), 'a·Moved 99 files.zip')
     assert.equal(safeName('b\u001b]8;;http://x\u0007y.zip'), 'b·]8;;http://x·y.zip')
     assert.equal(safeName('c\r\nd.zip'), 'c··d.zip')
     assert.equal(safeName('e\u0085f\u009bg.zip'), 'e·f·g.zip')
@@ -1027,21 +1027,21 @@ describe('RC14 訊息裡的檔名把控制字元與換行換成「·」', () => 
   })
 
   test('**面板（假 DOM）：檔名裡的換行不可以在結果框偽造一行**', async t => {
-    const evil = 'a\n搬進隔離區 99 個檔案，1.0 GB。七天內可以復原。.zip'
+    const evil = 'a\nMoved 99 files，1.0 GB。You can undo this for seven days。.zip'
     const s = await serve(t, { [evil]: { days: 60 }, 'ok.zip': { days: 60 } })
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     rmSync(join(s.downloads, evil))          // 按下去之前被刪掉 → 失敗，檔名會出現在結果框
     await ui.click('cleanup-apply')
     const lines = ui.$('cleanup-result').textContent.split('\n')
-    assert.ok(!lines.some(l => l.startsWith('搬進隔離區 99')), `檔名偽造了一行：${JSON.stringify(lines)}`)
-    assert.ok(lines.some(l => l.includes('a·搬進隔離區 99')), JSON.stringify(lines))
+    assert.ok(!lines.some(l => l.startsWith('Moved 99 files')), `檔名偽造了一行：${JSON.stringify(lines)}`)
+    assert.ok(lines.some(l => l.includes('a·Moved 99 files')), JSON.stringify(lines))
     const names = panelChecks(ui).map(c => c.name)
     assert.ok(names.every(n => !/\n/.test(n)), JSON.stringify(names))
   })
 
   test('提示上次那份、復原的訊息也一樣', () => {
-    const plan = { id: 'p', items: [{ itemId: 'i', name: 'x\n・y.zip —— 已經搬走了', bytes: 1 }] }
+    const plan = { id: 'p', items: [{ itemId: 'i', name: 'x\n- y.zip — 已經搬走了', bytes: 1 }] }
     assert.ok(!pendingPlanMessage(plan).includes('x\n'), pendingPlanMessage(plan))
     const m = historyUndoMessage({ restored: 0, restoredFiles: 0, alreadyRestored: 0, notRestored: [{ name: 'x\ny', why: 'w' }], renamed: [] })
     assert.ok(m.text.includes('x·y'), m.text)
@@ -1202,7 +1202,7 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
     assert.equal(r.failed.length, 1)
     assert.deepEqual(r.unknown, [])
     const m = applyMessage(r)
-    assert.ok(m.text.includes('原檔都還在原位'), m.text)
+    assert.ok(m.text.includes('every original is still where it was'), m.text)
     assert.ok(m.text.includes('b.zip'), m.text)
   })
 
@@ -1216,8 +1216,8 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
     assert.deepEqual(o.unknown.map(i => i.name), ['a.zip'], JSON.stringify(plan.items))
     assert.deepEqual(o.failed.map(i => i.name), ['b.zip'])
     const m = applyMessage(o)
-    assert.ok(!m.text.includes('原檔都還在原位'), m.text)
-    assert.match(m.text, /狀態不明/, m.text)
+    assert.ok(!m.text.includes('every original is still where it was'), m.text)
+    assert.match(m.text, /state unknown/, m.text)
     assert.ok(m.text.includes(o.unknown[0].why), `unknown 的原因要照後端講：${m.text}`)
     assert.ok(m.text.includes('b.zip') && m.text.includes('a.zip'), m.text)
   })
@@ -1225,8 +1225,8 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
   test('只有 unknown、一個都沒確定搬好 → 寵物不說「一個都沒搬成」', () => {
     const m = applyMessage({ status: 'error', moved: 0, bytesFreed: 0, failed: [],
       unknown: [{ name: 'a.zip', why: '搬到一半中斷，說不準檔案現在在原位還是在隔離區。按「復原」會把在隔離區的放回原位；也可以執行 node cli.mjs doctor 檢查。' }] })
-    assert.ok(!m.text.includes('原檔都還在原位'), m.text)
-    assert.ok(!/一個都沒搬成/.test(m.notice), m.notice)
+    assert.ok(!m.text.includes('every original is still where it was'), m.text)
+    assert.ok(!/Nothing moved this time/.test(m.notice), m.notice)
   })
 
   test('面板（假 DOM）：全部 failed 的時候說「原檔都還在原位」', async t => {
@@ -1236,7 +1236,7 @@ describe('RC17(3) 失敗訊息照 outcome 講', () => {
     rmSync(join(s.downloads, 'b.zip'))
     await ui.click('cleanup-apply')
     const text = ui.$('cleanup-result').textContent
-    assert.ok(text.includes('原檔都還在原位'), text)
+    assert.ok(text.includes('every original is still where it was'), text)
     assert.ok(text.includes('b.zip'), text)
   })
 })
@@ -1293,12 +1293,12 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     const u = await createRealHistory(s.api)('undo', { operationIds: [planId] })
     assert.equal(undoPosts(s), 1, '要送 undo')
     assert.ok(s.has('a.zip'), '檔案要回到原位')
-    assert.equal(u.alreadyRestored, 0, '檔案還在隔離區，不可以說「先前已復原」')
+    assert.equal(u.alreadyRestored, 0, '檔案還在隔離區，不可以說“already been undone”')
     assert.equal(u.restoredFiles, 1)
     assert.equal(u.restored, 1)
     assert.deepEqual(u.notRestored, [])
     assert.deepEqual(u.unconfirmed, [])
-    assert.equal(historyUndoMessage(u).text, '已復原 1 次清理，共 1 個檔案放回原位。')
+    assert.equal(historyUndoMessage(u).text, 'Undid 1 cleanup and put 1 file back.')
   })
 
   test('對照：真的復原完的再送一次 → 不送 undo、先前已復原 1', async t => {
@@ -1310,7 +1310,7 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     const again = await h('undo', { operationIds: [planId] })
     assert.equal(undoPosts(s), 0, '一個都不在隔離區，不用送')
     assert.equal(again.alreadyRestored, 1)
-    assert.equal(historyUndoMessage(again).text, '勾選的 1 筆先前已經復原過了，這次沒有動任何檔案。')
+    assert.equal(historyUndoMessage(again).text, 'The 1 you ticked had already been undone, so nothing moved this time.')
   })
 
   test('**歷史面板（假 DOM）：勾復原到一半中斷的那筆 → 送 undo、檔回原位、寵物說都放回來了**', async t => {
@@ -1329,8 +1329,8 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     assert.equal(undoPosts(s), 1, '要送 undo')
     assert.ok(s.has('a.zip'), 'a.zip 要回到原位')
     const text = ui.$('cleanup-history-result').textContent
-    assert.equal(text, '已復原 1 次清理，共 1 個檔案放回原位。')
-    assert.equal(ui.$('quaso-status').textContent, '都幫你放回來了！')
+    assert.equal(text, 'Undid 1 cleanup and put 1 file back.')
+    assert.equal(ui.$('quaso-status').textContent, 'Everything is back where it was.')
   })
 
   test('b 搬到一半中斷、檔還在原位，undo 之後 → b 不列（沒搬過），不是「沒放回」也不是「還不確定」', async t => {
@@ -1346,8 +1346,8 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     assert.equal(plan.items.find(i => i.name === 'b.zip').outcome, 'failed', '核心確認 b 沒搬過')
     assert.deepEqual(u.neverMoved, [{ name: 'b.zip' }])
     const m = historyUndoMessage(u)
-    assert.equal(m.text, '已復原 1 次清理，共 1 個檔案放回原位。\n・b.zip 當初就沒有搬走，本來就在原位。')
-    assert.equal(m.notice, '都幫你放回來了！')
+    assert.equal(m.text, 'Undid 1 cleanup and put 1 file back.\n- b.zip never moved in the first place; it is where it always was.')
+    assert.equal(m.notice, 'Everything is back where it was.')
     assert.ok(s.has('a.zip') && s.has('b.zip'))
   })
 
@@ -1360,14 +1360,14 @@ describe('U1 復原到一半中斷的計畫：歷史面板要真的送復原', (
     s.setHook(null)
     const planId = s.q('SELECT id FROM cleanup_plans')[0].id
     await s.interruptRestore(planId)         // 別處（CLI）按了復原，復原到一半當機
-    const r = await real.apply()              // 使用者按「再試一次」：後端回的是現在的樣子
+    const r = await real.apply()              // 使用者按“Try again”：後端回的是現在的樣子
     assert.deepEqual(r.unknown.map(i => i.name), ['a.zip'], JSON.stringify(r))
     assert.equal(real.canUndo, true)
     const u = await real.undo()
     assert.ok(s.has('a.zip'), '前提：後端真的放回來了')
     assert.equal(u.restored, 1, JSON.stringify(u))
     assert.deepEqual(u.notRestored, [])
-    assert.equal(undoMessage(u).text, '放回原位 1 個檔案。')
+    assert.equal(undoMessage(u).text, 'Put 1 file back.')
   })
 })
 
@@ -1397,9 +1397,9 @@ describe('U2 歷史復原回有 status 的錯：再讀一次計畫，照逐項�
     assert.deepEqual(u.notRestored.map(x => x.name), ['b.zip'])
     const plan = await s.raw(`/cleanup/plans/${planId}`)
     assert.equal(u.notRestored[0].why, plan.items.find(i => i.name === 'b.zip').why)
-    assert.match(u.notRestored[0].why, /變更/)
+    assert.match(u.notRestored[0].why, /changed/)
     assert.deepEqual(u.unconfirmed, [])
-    assert.ok(historyUndoMessage(u).text.startsWith('1 個放回；1 個沒放回：'), historyUndoMessage(u).text)
+    assert.ok(historyUndoMessage(u).text.startsWith('1 put back; 1 not put back:'), historyUndoMessage(u).text)
   })
 
   test('**對照：再讀一次也失敗 → 整份列為「還不確定」，不可以說「沒放回」**', async t => {
@@ -1414,10 +1414,10 @@ describe('U2 歷史復原回有 status 的錯：再讀一次計畫，照逐項�
     assert.ok(u.unconfirmed.every(x => x.why === INTERNAL_MESSAGE), JSON.stringify(u.unconfirmed))
     assert.equal(u.alreadyRestored, 0)
     const m = historyUndoMessage(u)
-    assert.ok(!/沒放回/.test(m.text + m.notice), m.text)
-    assert.ok(!/都幫你放回來了|這次沒有需要放回|先前已經復原過了/.test(m.text + m.notice), m.text)
-    assert.ok(m.text.includes('有 2 個還不確定放回了沒有：'), m.text)
-    assert.equal(m.notice, '有 2 個還不確定放回了沒有，狀態寫在面板上。')
+    assert.ok(!/not put back/.test(m.text + m.notice), m.text)
+    assert.ok(!/Everything is back where it was|Nothing needed putting back|had already been undone/.test(m.text + m.notice), m.text)
+    assert.ok(m.text.includes('2 not confirmed put back:'), m.text)
+    assert.equal(m.notice, '2 not confirmed put back. The panel has the details.')
   })
 
   test('500 而且什麼都沒做 → 再讀一次：沒放回 [a]，原因是那個錯誤訊息', async t => {
@@ -1449,43 +1449,43 @@ describe('U2 歷史復原回有 status 的錯：再讀一次計畫，照逐項�
     undo500(s, { getFails: true })
     await ui.click('cleanup-history-undo')
     const text = ui.$('cleanup-history-result').textContent
-    assert.ok(text.includes('有 1 個還不確定放回了沒有：'), text)
-    assert.ok(!/沒放回/.test(text), text)
-    assert.ok(!/都幫你放回來了|沒放回/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(text.includes('1 not confirmed put back:'), text)
+    assert.ok(!/not put back/.test(text), text)
+    assert.ok(!/Everything is back where it was|not put back/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
   })
 
   test('台詞：部分放回、部分沒放回、部分不確定 → 三種都講', () => {
     const m = historyUndoMessage({ restored: 1, restoredFiles: 1, alreadyRestored: 0, renamed: [],
       notRestored: [{ name: 'b.zip', why: 'w1' }], unconfirmed: [{ name: 'c.zip', why: 'w2' }] })
-    assert.ok(m.text.startsWith('1 個放回；1 個沒放回：\n・b.zip —— w1'), m.text)
-    assert.ok(m.text.includes('有 1 個還不確定放回了沒有：\n・c.zip —— w2'), m.text)
-    assert.equal(m.notice, '放回了 1 個，有 1 個沒放回來，有 1 個還不確定放回了沒有，狀態寫在面板上。')
+    assert.ok(m.text.startsWith('1 put back; 1 not put back:\n- b.zip — w1'), m.text)
+    assert.ok(m.text.includes('1 not confirmed put back:\n- c.zip — w2'), m.text)
+    assert.equal(m.notice, '1 put back, 1 not put back, 1 not confirmed put back. The panel has the details.')
     const p = undoMessage({ restored: 0, notRestored: [], renamed: [], unconfirmed: [{ name: 'c\u2028.zip', why: 'w' }] })
-    assert.ok(p.text.includes('有 1 個還不確定放回了沒有：\n・c·.zip —— w'), p.text)
-    assert.ok(!/沒放回|這次沒有需要放回/.test(p.text + p.notice), p.text)
+    assert.ok(p.text.includes('1 not confirmed put back:\n- c·.zip — w'), p.text)
+    assert.ok(!/not put back|Nothing needed putting back/.test(p.text + p.notice), p.text)
   })
 })
 
 describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理會拿到 401）', () => {
   test('**INTERNAL 的訊息：關掉面板，再從寵物或 `node cli.mjs open` 打開**', () => {
     assert.ok(!/重新整理/.test(INTERNAL_MESSAGE), INTERNAL_MESSAGE)
-    assert.match(INTERNAL_MESSAGE, /^後端出錯了，這一步可能沒有完成。/, 'RC17：開頭照舊是中性的')
-    assert.match(INTERNAL_MESSAGE, /關掉面板/)
-    assert.match(INTERNAL_MESSAGE, /寵物/)
+    assert.match(INTERNAL_MESSAGE, /^The backend hit an error, so this step may not have completed\./, 'RC17：開頭照舊是中性的')
+    assert.match(INTERNAL_MESSAGE, /Close the panel/)
+    assert.match(INTERNAL_MESSAGE, /pet/)
     assert.ok(INTERNAL_MESSAGE.includes('`node cli.mjs open`'), INTERNAL_MESSAGE)
   })
 
   test('面板說明：7391 的網址一律帶 k；不叫人重新整理頁面', () => {
-    // 2026-09-20：README 改寫成作品說明，面板那一整段搬到 docs/面板.md（見 repo.test.mjs 同一批）。
+    // 2026-09-20：README 改寫成作品說明，面板那一整段搬到 docs/panel.md（見 repo.test.mjs 同一批）。
     // 守的是**內容**不是檔名，所以兩份一起看：哪一份提到那個網址，就要帶 k。
-    const md = readFileSync(join(REPO, 'docs', '面板.md'), 'utf8')
+    const md = readFileSync(join(REPO, 'docs', 'panel.md'), 'utf8')
       + '\n' + readFileSync(join(REPO, 'README.md'), 'utf8')
     const urls = md.match(/http:\/\/127\.0\.0\.1:7391[^\s`）)]*/g) ?? []
     assert.ok(urls.length >= 1, '前提：README 有講網址')
     assert.deepEqual(urls.filter(u => !/[?&]k=/.test(u)), [], '沒帶 k 的網址打開是 401')
     assert.ok(!md.includes('重新整理或重啟後仍保留'), '重新整理會拿到 401')
     assert.ok(!/重新整理頁面/.test(md), '重新整理會拿到 401')
-    assert.match(md, /mockBackend=offline/, '離線模擬的說明還在')
+    assert.match(md, /mockBackend=offline/, '離線Simulated的說明還在')
   })
 
   // ── 第三波之二：同一個坑的另外兩個地方（示範紀錄的錯誤訊息、docs/api 的 INTERNAL 那一列）──
@@ -1497,13 +1497,13 @@ describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理�
     const known = fixture.candidates[0].candidateIds
     const errorOf = body => { try { recordDemo(db, body) } catch (e) { return e.message } return null }
     const said = [
-      [/^缺少操作識別碼/, errorOf({ candidateIds: known })],
-      [/^範例候選已變更/, errorOf({ candidateIds: ['不在範例裡的-id'], requestId: 'r1' })],
+      [/^The action id is missing/, errorOf({ candidateIds: known })],
+      [/^The sample candidates changed/, errorOf({ candidateIds: ['不在範例裡的-id'], requestId: 'r1' })],
     ]
     for (const [which, m] of said) {
       assert.match(m ?? '', which, `前提：是這一種錯：${m}`)
       assert.ok(!/重新整理/.test(m), `網址上的 k 已經拿掉，重新整理會拿到 401：${m}`)
-      assert.match(m, /關掉面板/, m)
+      assert.match(m, /Close the panel/, m)
       assert.ok(m.includes('`node cli.mjs open`'), `跟 INTERNAL 一樣講去哪裡重新打開：${m}`)
     }
     // 對照：正常的一筆照樣記得進去（上面真的是那兩種錯，不是別的錯）
@@ -1525,54 +1525,54 @@ describe('U3 不叫人重新整理（網址上的 k 已經拿掉，重新整理�
 describe('U4 面板講的是真的監看資料夾，不寫死 Downloads', () => {
   test('folderPhrase 的例子', () => {
     const w = (watching, watchingCount = watching.length) => ({ watching, watchingCount })
-    assert.equal(folderPhrase(w(['Downloads'])), '「Downloads」')
+    assert.equal(folderPhrase(w(['Downloads'])), '“Downloads”')
     assert.equal(folderPhrase(w(['Downloads']), { quoted: false }), 'Downloads')
-    assert.equal(folderPhrase(w(['下載', 'Screenshots'])), '「下載」、「Screenshots」')
-    assert.equal(folderPhrase(w(['下載', 'Screenshots']), { quoted: false }), '下載、Screenshots')
-    assert.equal(folderPhrase(w([], 1)), '監看資料夾', '沒帶 token 的 /health：名字被遮掉')
-    assert.equal(folderPhrase(w([], 2)), '2 個監看資料夾')
-    assert.equal(folderPhrase(w(['', 'Downloads'])), '「Downloads」等 2 個資料夾', '家目錄那個不給名字')
-    assert.equal(folderPhrase(w(['', 'Downloads']), { quoted: false }), 'Downloads 等 2 個資料夾')
-    assert.equal(folderPhrase(w(['a', 'b', 'c', 'd'])), '「a」、「b」、「c」等 4 個資料夾')
-    assert.equal(folderPhrase(w(['a', 'b', 'c'])), '「a」、「b」、「c」')
-    assert.equal(folderPhrase(undefined), '監看資料夾')
-    assert.equal(folderPhrase({ watching: 'Downloads', watchingCount: 1 }), '監看資料夾', '形狀不對就不猜')
-    assert.equal(folderPhrase(w(['a\u2028b\nc'])), '「a·b·c」', '名字是不可信的輸入')
-    assert.equal(folderPhrase(w([null, 5, 'x'])), '「x」等 3 個資料夾')
+    assert.equal(folderPhrase(w(['下載', 'Screenshots'])), '“下載”, “Screenshots”')
+    assert.equal(folderPhrase(w(['下載', 'Screenshots']), { quoted: false }), '下載, Screenshots')
+    assert.equal(folderPhrase(w([], 1)), 'the watched folder', '沒帶 token 的 /health：名字被遮掉')
+    assert.equal(folderPhrase(w([], 2)), '2 watched folders')
+    assert.equal(folderPhrase(w(['', 'Downloads'])), '“Downloads” and more (2 folders)', '家目錄那個不給名字')
+    assert.equal(folderPhrase(w(['', 'Downloads']), { quoted: false }), 'Downloads and more (2 folders)')
+    assert.equal(folderPhrase(w(['a', 'b', 'c', 'd'])), '“a”, “b”, “c” and more (4 folders)')
+    assert.equal(folderPhrase(w(['a', 'b', 'c'])), '“a”, “b”, “c”')
+    assert.equal(folderPhrase(undefined), 'the watched folder')
+    assert.equal(folderPhrase({ watching: 'Downloads', watchingCount: 1 }), 'the watched folder', '形狀不對就不猜')
+    assert.equal(folderPhrase(w(['a\u2028b\nc'])), '“a·b·c”', '名字是不可信的輸入')
+    assert.equal(folderPhrase(w([null, 5, 'x'])), '“x” and more (3 folders)')
   })
 
   test('**兩個清理根目錄（下載、Screenshots）→ 本機說明與舞台 title 兩個都列，不寫 Downloads**', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } }, { roots: ['下載', 'Screenshots'] })
     s.heartbeat()
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
-    assert.equal(ui.$('quaso-stage').title, '📁 下載、Screenshots · 監看中')
+    await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health（有心跳 → Watching）')
+    assert.equal(ui.$('quaso-stage').title, '📁 Watching 下載, Screenshots')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-mode-note').textContent,
-      '本機模式 · 這些是你「下載」、「Screenshots」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+      'Local mode · these are the real files in “下載”, “Screenshots”. Cleanup moves the ticked ones to quarantine; you can undo it for seven days.')
   })
 
   test('對照：只有 Downloads → 「Downloads」', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     s.heartbeat()
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
-    assert.equal(ui.$('quaso-stage').title, '📁 Downloads · 監看中')
+    await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health（有心跳 → Watching）')
+    assert.equal(ui.$('quaso-stage').title, '📁 Watching Downloads')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-mode-note').textContent,
-      '本機模式 · 這些是你「Downloads」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+      'Local mode · these are the real files in “Downloads”. Cleanup moves the ticked ones to quarantine; you can undo it for seven days.')
   })
 
   test('本機模式一打開面板就是本機的說明（清單讀不到也一樣，不會留著示範模式那一句）', async t => {
     const s = await serve(t, { 'a.zip': { days: 60 } })
     s.heartbeat()
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health（有心跳 → Watching）')
     s.setHook((p, m) => (m === 'GET' && p.startsWith('/cleanup/candidates') ? 'before' : undefined))
     await ui.click('quaso-cleanup-alert')
-    assert.match(ui.$('cleanup-list').textContent, /讀取失敗/)
+    assert.match(ui.$('cleanup-list').textContent, /Loading failed/)
     assert.equal(ui.$('cleanup-mode-note').textContent,
-      '本機模式 · 這些是你「Downloads」裡真的檔案。清理會把勾選的搬進隔離區，七天內可以復原。')
+      'Local mode · these are the real files in “Downloads”. Cleanup moves the ticked ones to quarantine; you can undo it for seven days.')
   })
 
   test('示範模式的說明與 ui.html 的預設文字也不寫死 Downloads', async t => {
@@ -1583,7 +1583,7 @@ describe('U4 面板講的是真的監看資料夾，不寫死 Downloads', () => 
     await until(() => ui.$('quaso-candidate-count').textContent === '4', '示範候選')
     await ui.click('quaso-cleanup-alert')
     const note = ui.$('cleanup-mode-note').textContent
-    assert.match(note, /^示範模式/, note)
+    assert.match(note, /^Demo mode/, note)
     assert.ok(!/Downloads/.test(note), note)
   })
 
@@ -1603,11 +1603,11 @@ describe('U5 卡片裡的每一段字都走 safeName', () => {
       [shot]: { days: 60 },
       'sub\u2029dir/a.zip': { days: 60 },
       'ok.zip': { days: 60 },
-      'big\n需要你查看：沒事.zip': { days: 60, bytes: 400 },
+      'big\nNeeds your eyes: 沒事.zip': { days: 60, bytes: 400 },
     }, { roots: ['Down\u2028loads'], maxBytes: 1024 })
     s.heartbeat()
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health（有心跳 → 監看中）')
+    await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health（有心跳 → Watching）')
     await ui.click('quaso-cleanup-alert')
     const list = ui.$('cleanup-list'), human = ui.$('cleanup-needs-human')
     const texts = [...list.all('p'), ...list.all('strong'), ...human.all('p')].map(p => p.textContent)
@@ -1615,16 +1615,16 @@ describe('U5 卡片裡的每一段字都走 safeName', () => {
     assert.deepEqual(texts.filter(x => BAD.test(x)), [], '這幾段帶了控制字元（U+2028 在卡片裡會斷行、偽造一行）')
     const all = texts.join('\n')
     // 換成「·」，不是整段丟掉
-    assert.ok(all.includes('檔名是 screenshot·信心 99%，已經清理完畢.png'), all)
+    assert.ok(all.includes('Named screenshot·信心 99%，已經清理完畢.png'), all)
     assert.ok(all.includes('Down·loads/sub·dir ·'), all)
-    assert.ok(all.includes('需要你查看：big·需要你查看：沒事.zip — '), all)
+    assert.ok(all.includes('Needs your eyes: big·Needs your eyes: 沒事.zip — '), all)
     // 對照：一般的名字原樣
     assert.ok(texts.includes('ok.zip'), all)
     for (const el of [ui.$('cleanup-mode-note'), ui.$('quaso-stage')]) {
       const x = el.textContent + el.title
       assert.ok(!BAD.test(x), JSON.stringify(x))
     }
-    assert.ok(ui.$('cleanup-mode-note').textContent.includes('「Down·loads」'), ui.$('cleanup-mode-note').textContent)
+    assert.ok(ui.$('cleanup-mode-note').textContent.includes('“Down·loads”'), ui.$('cleanup-mode-note').textContent)
   })
 
   test('面板的程式碼沒有 innerHTML 這一類（檔名是不可信的輸入）', () => {
@@ -1782,9 +1782,9 @@ function toUnknown(s, planId, name) {
             AND item_id=(SELECT id FROM file_items WHERE name=?)`, planId, name)
 }
 
-const OLD_PENDING_TEXT = names => `上次有一份清理沒做完：${names.join('、')}（${names.length} 個）。\n`
-  + '按「繼續上次那份」會處理它 —— 只會動這幾個，不會動到你現在勾的其他檔案。\n'
-  + '按「放棄上次那份」會把它作廢：不動任何檔案，這些檔也還會留在清單上。'
+const OLD_PENDING_TEXT = names => `A cleanup from last time was never finished: ${names.join(', ')} (${names.length} file${names.length === 1 ? '' : 's'}).\n`
+  + '“Finish the last plan” deals with it — only these files, not the other ones you have ticked now.\n'
+  + '“Drop the last plan” voids it: nothing moves, and these files stay on the list.'
 
 describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不給放棄，給「繼續」與「放回已經搬走的」', () => {
   test('**稽查員 B 的 r7：套用中途 BUSY，面板照預設清理 → 提示講有 1 個已經在隔離區，沒有「放棄上次那份」；release() 不送請求**', async t => {
@@ -1797,10 +1797,10 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     assert.equal(r.plan.id, planId)
     assert.equal(r.plan.started, true)
     const text = pendingPlanMessage(r.plan)
-    assert.ok(!text.includes('放棄上次那份'), `開始過的計畫不能放棄：${text}`)
-    assert.ok(!text.includes('不動任何檔案'), `已經有檔搬走了：${text}`)
-    assert.ok(text.includes('其中 1 個已經在隔離區'), text)
-    assert.ok(text.includes('繼續上次那份') && text.includes('放回已經搬走的'), text)
+    assert.ok(!text.includes('Drop the last plan'), `開始過的計畫不能放棄：${text}`)
+    assert.ok(!text.includes('nothing moves'), `已經有檔搬走了：${text}`)
+    assert.ok(text.includes('1 file already in quarantine'), text)
+    assert.ok(text.includes('Finish the last plan') && text.includes('Put back what moved'), text)
     assert.ok(text.includes(moved), text)
     s.calls.length = 0
     await assert.rejects(real.release(), e => !e.status, '不送請求，前端自己擋')
@@ -1829,23 +1829,23 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     const r = await real.apply()
     assert.equal(r.status, 'pending-plan', JSON.stringify(r))
     const text = pendingPlanMessage(r.plan)
-    assert.ok(!text.includes('已經在隔離區'), `unknown 不可以說成已經在隔離區：${text}`)
-    assert.ok(text.includes('1 個搬到一半、說不準在原位還是在隔離區'), text)
-    assert.ok(!text.includes('放棄上次那份'), text)
+    assert.ok(!text.includes('already in quarantine'), `unknown 不可以說成已經在隔離區：${text}`)
+    assert.ok(text.includes('1 file stopped mid-move — could be in either place'), text)
+    assert.ok(!text.includes('Drop the last plan'), text)
   })
 
   test('例子：訊息的幾種說法（有 moved 也有 unknown、都沒有、數不出來）', () => {
     const items = ['a.zip', 'b.zip', 'c.zip'].map(name => ({ itemId: name, name }))
     const both = pendingPlanMessage({ id: 'p', items, started: true, moved: 2, unsure: 1 })
-    assert.ok(both.includes('（3 個），其中 2 個已經在隔離區，1 個搬到一半、說不準在原位還是在隔離區。'), both)
+    assert.ok(both.includes('(3 files) — 2 files already in quarantine, and 1 file stopped mid-move — could be in either place.'), both)
     const none = pendingPlanMessage({ id: 'p', items, started: true, moved: 0, unsure: 0 })
-    assert.ok(none.includes('（3 個），目前沒有檔在隔離區。'), none)
+    assert.ok(none.includes('(3 files) — nothing is in quarantine.'), none)
     const unknownCount = pendingPlanMessage({ id: 'p', items, started: true, moved: null, unsure: null })
-    assert.ok(unknownCount.includes('（3 個），其中有些可能已經在隔離區。'), unknownCount)
-    for (const x of [both, none, unknownCount]) assert.ok(!x.includes('放棄上次那份'), x)
+    assert.ok(unknownCount.includes('(3 files) — some may already be in quarantine.'), unknownCount)
+    for (const x of [both, none, unknownCount]) assert.ok(!x.includes('Drop the last plan'), x)
     // 檔名一樣走 safeName
-    const evil = pendingPlanMessage({ id: 'p', items: [{ itemId: 'x', name: 'a\n搬進隔離區 9 個.zip' }], started: true, moved: 1, unsure: 0 })
-    assert.ok(!evil.includes('a\n搬'), evil)
+    const evil = pendingPlanMessage({ id: 'p', items: [{ itemId: 'x', name: 'a\nMoved 9 files.zip' }], started: true, moved: 1, unsure: 0 })
+    assert.ok(!evil.includes('a\nMoved'), evil)
   })
 
   test('**面板（假 DOM）：打開就提示中斷的那份；放棄按鈕藏著、放回按鈕在；按放回 → 搬走的回到原位、還沒搬的不列成沒放回**', async t => {
@@ -1854,11 +1854,11 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     const text = ui.$('cleanup-result').textContent
-    assert.ok(text.includes('其中 1 個已經在隔離區'), text)
+    assert.ok(text.includes('1 file already in quarantine'), text)
     assert.equal(ui.$('cleanup-release').hidden, true, '不可以再出現會 409 的放棄按鈕')
-    assert.equal(ui.$('cleanup-putback').hidden, false, '要有「放回已經搬走的」')
-    assert.equal(ui.$('cleanup-putback').textContent, '放回已經搬走的')
-    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（3 個）')
+    assert.equal(ui.$('cleanup-putback').hidden, false, '要有“Put back what moved”')
+    assert.equal(ui.$('cleanup-putback').textContent, 'Put back what moved')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Finish the last plan (3)')
     for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, true, `${name}：先選一條路，勾選鎖住`)
     s.calls.length = 0
     await ui.click('cleanup-putback')
@@ -1866,9 +1866,9 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'), `搬走的 ${moved} 要回到原位`)
     assert.equal(s.planStatus(planId), 'restored')
     const after = ui.$('cleanup-result').textContent
-    assert.ok(after.includes('放回原位 1 個檔案。'), after)
-    assert.ok(!after.includes('沒放回'), `還沒搬的不是「沒放回」：${after}`)
-    assert.ok(after.includes('這份裡還沒搬的 2 個沒有動過。'), after)
+    assert.ok(after.includes('Put 1 file back.'), after)
+    assert.ok(!after.includes('not put back'), `還沒搬的不是“not put back”：${after}`)
+    assert.ok(after.includes('2 files in this plan had not moved yet and were left alone.'), after)
     assert.equal(ui.$('cleanup-putback').hidden, true)
     assert.equal(ui.$('cleanup-release').hidden, true)
     for (const { input, name } of panelChecks(ui)) assert.equal(input.disabled, false, `${name} 的勾選框被鎖住了`)
@@ -1882,7 +1882,7 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     await ui.click('cleanup-apply')
     assert.equal(s.planStatus(planId), 'applied')
     assert.ok(!s.has('a.zip') && !s.has('b.zip') && !s.has('c.zip'))
-    assert.match(ui.$('cleanup-result').textContent, /搬進隔離區 3 個檔案/)
+    assert.match(ui.$('cleanup-result').textContent, /Moved 3 files/)
     assert.equal(ui.$('cleanup-putback').hidden, true)
   })
 
@@ -1892,13 +1892,13 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     toUnknown(s, planId, moved)
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
-    assert.ok(ui.$('cleanup-result').textContent.includes('說不準'), ui.$('cleanup-result').textContent)
+    assert.ok(ui.$('cleanup-result').textContent.includes('could be in either place'), ui.$('cleanup-result').textContent)
     assert.equal(ui.$('cleanup-release').hidden, true)
     await ui.click('cleanup-putback')
     assert.ok(s.has(moved), `${moved} 要回到原位`)
-    assert.ok(ui.$('cleanup-result').textContent.includes('放回原位 1 個檔案。'), ui.$('cleanup-result').textContent)
+    assert.ok(ui.$('cleanup-result').textContent.includes('Put 1 file back.'), ui.$('cleanup-result').textContent)
     // 對照（下一條）：真的在隔離區、放回來的，不可以說成「當初就沒有搬走」
-    assert.ok(!ui.$('cleanup-result').textContent.includes('當初就沒有搬走'), ui.$('cleanup-result').textContent)
+    assert.ok(!ui.$('cleanup-result').textContent.includes('never moved in the first place'), ui.$('cleanup-result').textContent)
   })
 
   test('**放回：搬到一半中斷、其實還在原位的那個（rename 之前當機）→ 說「當初就沒有搬走」，不算進「還沒搬的」**', async t => {
@@ -1909,10 +1909,10 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     const hint = ui.$('cleanup-result').textContent
-    assert.ok(hint.includes('其中 1 個搬到一半、說不準在原位還是在隔離區'), hint)
+    assert.ok(hint.includes('1 file stopped mid-move — could be in either place'), hint)
     await ui.click('cleanup-putback')
     assert.equal(ui.$('cleanup-result').textContent,
-      `這次沒有需要放回的檔案。\n・${moved} 當初就沒有搬走，本來就在原位。\n這份裡還沒搬的 2 個沒有動過。`)
+      `Nothing needed putting back this time.\n- ${moved} never moved in the first place; it is where it always was.\n2 files in this plan had not moved yet and were left alone.`)
     assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'))
     assert.equal(ui.$('cleanup-putback').hidden, true)
   })
@@ -1929,12 +1929,12 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     const hint = ui.$('cleanup-result').textContent
-    assert.ok(hint.includes('（3 個），目前沒有檔在隔離區。'), hint)
-    assert.ok(!hint.includes('放棄上次那份'), hint)
+    assert.ok(hint.includes('(3 files) — nothing is in quarantine.'), hint)
+    assert.ok(!hint.includes('Drop the last plan'), hint)
     assert.equal(ui.$('cleanup-release').hidden, true, '不可以出現會 409 的放棄按鈕')
     assert.equal(ui.$('cleanup-putback').hidden, false)
     await ui.click('cleanup-putback')
-    assert.equal(ui.$('cleanup-result').textContent, '這次沒有需要放回的檔案。\n這份裡還沒搬的 3 個沒有動過。')
+    assert.equal(ui.$('cleanup-result').textContent, 'Nothing needed putting back this time.\n3 files in this plan had not moved yet and were left alone.')
     assert.equal(s.planStatus(planId), 'restored', '這份結掉了，不再佔住檔案')
     assert.ok(s.has('a.zip') && s.has('b.zip') && s.has('c.zip'))
   })
@@ -1954,7 +1954,7 @@ describe('P1 撞到做到一半中斷的計畫（blockingPlan.started）：不�
     // 第一次其實已經放回去了（只是回應丟了）：照「提示時在隔離區的那些」對，還是說放回 1 個，
     // 不是「這次沒有需要放回的檔案」
     assert.equal(r.restored, 1, JSON.stringify(r))
-    assert.equal(undoMessage(r).text.split('\n')[0], '放回原位 1 個檔案。')
+    assert.equal(undoMessage(r).text.split('\n')[0], 'Put 1 file back.')
     assert.equal(s.planStatus(planId), 'restored')
     assert.ok(s.has('a.zip') && s.has('b.zip'))
     assert.equal(real.locked, false)
@@ -1988,13 +1988,13 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     assert.equal(ui.$('cleanup-result').textContent, OLD_PENDING_TEXT(['a.zip']))
     assert.equal(ui.$('cleanup-release').hidden, false)
     assert.equal(ui.$('cleanup-putback').hidden, true, '還沒開始的那份沒有東西可以放回')
-    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（1 個）')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Finish the last plan (1)')
     assert.equal(panelChecks(ui)[0].input.disabled, true, '先選一條路')
     await ui.click('cleanup-release')
     assert.equal(s.planStatus(p.id), 'dismissed')
-    assert.match(ui.$('cleanup-result').textContent, /已放棄上次那份/)
+    assert.match(ui.$('cleanup-result').textContent, /Dropped the last plan/)
     assert.equal(panelChecks(ui)[0].input.disabled, false)
-    assert.equal(ui.$('cleanup-apply').textContent, '清理勾選的 1 個檔案')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Clean up 1 selected file')
   })
 
   test('對照：沒有待處理的計畫 → 不提示、放棄按鈕藏著、勾選可以改', async t => {
@@ -2006,7 +2006,7 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     assert.equal(ui.$('cleanup-release').hidden, true)
     assert.equal(ui.$('cleanup-putback').hidden, true)
     assert.equal(panelChecks(ui)[0].input.disabled, false)
-    assert.equal(ui.$('cleanup-apply').textContent, '清理勾選的 1 個檔案')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Clean up 1 selected file')
   })
 
   test('好幾份：先提示最新的那份、講另外還有幾份；放棄之後關掉再打開 → 提示下一份', async t => {
@@ -2018,7 +2018,7 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     await ui.click('quaso-cleanup-alert')
     const first = ui.$('cleanup-result').textContent
     assert.ok(first.startsWith(OLD_PENDING_TEXT(['z.zip'])), first)
-    assert.ok(first.includes('另外還有 1 份'), first)
+    assert.ok(first.includes('1 more plan still unfinished'), first)
     await ui.click('cleanup-release')
     assert.equal(s.planStatus(p2.id), 'dismissed')
     assert.equal(s.planStatus(p1.id), 'proposed', '另一份不動')
@@ -2041,7 +2041,7 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     await uiOnly(ui, 'a.zip')
     await ui.click('cleanup-apply')
     assert.equal(ui.$('cleanup-result').textContent, OLD_PENDING_TEXT(['a.zip']))
-    assert.equal(ui.$('cleanup-apply').textContent, '繼續上次那份（1 個）')
+    assert.equal(ui.$('cleanup-apply').textContent, 'Finish the last plan (1)')
     assert.equal(s.planStatus(p.id), 'proposed')
     assert.ok(s.has('a.zip') && s.has('b.zip'))
   })
@@ -2053,11 +2053,11 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-release').hidden, true, '說不準開始了沒，不可以給放棄')
-    assert.ok(!/放棄上次那份/.test(ui.$('cleanup-result').hidden ? '' : ui.$('cleanup-result').textContent))
+    assert.ok(!/Drop the last plan/.test(ui.$('cleanup-result').hidden ? '' : ui.$('cleanup-result').textContent))
     await ui.click('cleanup-apply')                // 預設勾選：還在清單上的那兩個 → 撞到中斷的那份
     const text = ui.$('cleanup-result').textContent
-    assert.ok(text.includes('其中有些可能已經在隔離區'), text)
-    assert.ok(!text.includes('放棄上次那份'), text)
+    assert.ok(text.includes('some may already be in quarantine'), text)
+    assert.ok(!text.includes('Drop the last plan'), text)
     assert.equal(ui.$('cleanup-release').hidden, true, '不可以再出現會 409 的放棄按鈕')
     assert.equal(ui.$('cleanup-putback').hidden, false)
     assert.equal(s.planStatus(planId), 'proposed')
@@ -2070,11 +2070,11 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     s.setHook((p, m) => (m === 'POST' && p.endsWith('/apply') ? 'before' : undefined))
     await ui.click('cleanup-apply')
     s.setHook(null)
-    assert.match(ui.$('cleanup-result').textContent, /還沒確認/)
+    assert.match(ui.$('cleanup-result').textContent, /not confirmed/)
     ui.$('cleanup-panel').close()
     await ui.click('quaso-cleanup-alert')
-    assert.match(ui.$('cleanup-result').textContent, /上一次清理的結果還沒確認/)
-    assert.equal(ui.$('cleanup-apply').textContent, '再試一次')
+    assert.match(ui.$('cleanup-result').textContent, /The result of the last cleanup was never confirmed/)
+    assert.equal(ui.$('cleanup-apply').textContent, 'Try again')
     assert.equal(ui.$('cleanup-release').hidden, true)
     await ui.click('cleanup-apply')
     assert.ok(!s.has('a.zip'))
@@ -2090,14 +2090,14 @@ describe('P2 面板一打開就查 ?pending=1：有待處理的計畫就先提�
     s.setHook((p, m) => (m === 'POST' && p === '/cleanup/plans' ? 'before' : undefined))
     await ui.click('cleanup-apply')
     s.setHook(null)
-    assert.match(ui.$('cleanup-result').textContent, /還沒確認/)
+    assert.match(ui.$('cleanup-result').textContent, /not confirmed/)
     const other = await s.raw('/cleanup/plans', { method: 'POST', body: JSON.stringify({ candidateIds: await s.idsOf('z.zip') }) })
     ui.$('cleanup-panel').close()
     s.calls.length = 0
     await ui.click('quaso-cleanup-alert')
     assert.ok(!s.calls.some(c => c.path.includes('pending=1')), `鎖住的時候不查：${JSON.stringify(s.calls)}`)
-    assert.match(ui.$('cleanup-result').textContent, /上一次清理的結果還沒確認/)
-    assert.equal(ui.$('cleanup-apply').textContent, '再試一次')
+    assert.match(ui.$('cleanup-result').textContent, /The result of the last cleanup was never confirmed/)
+    assert.equal(ui.$('cleanup-apply').textContent, 'Try again')
     assert.equal(ui.$('cleanup-release').hidden, true)
     assert.equal(ui.$('cleanup-putback').hidden, true)
     await ui.click('cleanup-apply')
@@ -2285,9 +2285,9 @@ describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', (
     const why = plan.items[0].why
     assert.equal(plan.items[0].outcome, 'unknown')
     assert.ok(!why.includes('再套用一次'), `partial／error 原樣回傳之後這句不成立：${why}`)
-    assert.ok(why.startsWith('搬到一半中斷'), why)
-    assert.ok(why.includes('說不準'), why)
-    assert.ok(why.includes('按「復原」會把在隔離區的放回原位'), why)
+    assert.ok(why.startsWith('Interrupted mid-move'), why)
+    assert.ok(why.includes('no telling'), why)
+    assert.ok(why.includes('“Undo” puts back whatever is in quarantine'), why)
     assert.ok(why.includes('node cli.mjs doctor'), why)
   })
 
@@ -2298,9 +2298,9 @@ describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', (
     const plan = await s.raw(`/cleanup/plans/${planId}`)
     const why = plan.items[0].why
     assert.equal(plan.items[0].outcome, 'unknown')
-    assert.ok(why.startsWith('復原到一半中斷'), why)
-    assert.ok(why.includes('說不準'), why)
-    assert.ok(why.includes('再按一次復原'), why)
+    assert.ok(why.startsWith('Interrupted mid-undo'), why)
+    assert.ok(why.includes('no telling'), why)
+    assert.ok(why.includes('Pressing undo again carries on'), why)
     assert.ok(why.includes('node cli.mjs doctor'), why)
   })
 
@@ -2329,14 +2329,14 @@ describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', (
     s.setHook(null)
     const planId = s.q('SELECT id FROM cleanup_plans')[0].id
     toUnknown(s, planId, 'a.zip')
-    const r = await real.apply()                   // 再試一次：拿到現在的樣子（applied、a 是 unknown）
+    const r = await real.apply()                   // Try again：拿到現在的樣子（applied、a 是 unknown）
     assert.deepEqual(r.unknown.map(i => i.name), ['a.zip'], JSON.stringify(r))
     assert.equal(r.undoable, false, '前提：後端的 undoable 只算 done 的')
     assert.equal(real.canUndo, true, '訊息叫人按「復原」，面板就要有得按')
     const u = await real.undo()
     assert.ok(s.has('a.zip'))
     assert.equal(u.restored, 1, JSON.stringify(u))
-    assert.equal(undoMessage(u).text, '放回原位 1 個檔案。')
+    assert.equal(undoMessage(u).text, 'Put 1 file back.')
   })
 
   test('**套用結果只有 unknown、其實還在原位（rename 之前當機）→ 按復原：講「當初就沒有搬走」，不是只說「這次沒有需要放回的檔案」**', async t => {
@@ -2357,8 +2357,8 @@ describe('P4 搬到一半中斷的話照實講；面板找得到「復原」', (
     assert.equal(u.restored, 0, JSON.stringify(u))
     assert.deepEqual(u.neverMoved, [{ name: 'a.zip' }])
     const m = undoMessage(u)
-    assert.equal(m.text, '這次沒有需要放回的檔案。\n・a.zip 當初就沒有搬走，本來就在原位。')
-    assert.equal(m.notice, '這次沒有要放回的檔案。')
+    assert.equal(m.text, 'Nothing needed putting back this time.\n- a.zip never moved in the first place; it is where it always was.')
+    assert.equal(m.notice, 'Nothing needed putting back this time.')
   })
 
   test('對照：套用結果只有 failed（原檔都在原位）→ canUndo 是 false', async t => {
@@ -2450,7 +2450,7 @@ describe('P5 性質：面板給「放棄」的那一份，後端一定放棄得�
       assert.equal(p.moved, count('moved'), `${label}：已經在隔離區的只算 moved`)
       assert.equal(p.unsure, count('unknown', 'inPlace'), `${label}：說不準的`)
       const text = pendingPlanMessage(p)
-      assert.equal(text.includes('放棄上次那份'), !p.started, `${label}：${text}`)
+      assert.equal(text.includes('Drop the last plan'), !p.started, `${label}：${text}`)
       if (!p.started) {
         hits.offered++
         assert.equal(release, 200, `${label}：面板給了「放棄」，後端卻回 ${release}`)
@@ -2509,7 +2509,7 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     for (const ok of [
       '⚠ 上次掃描回報了 1 個問題，可能有檔案沒有掃到：掃描資料夾「Downloads」不存在，這次沒有掃。',
       '⚠ ~/Downloads/sub 打不開。',              // 後端把家目錄換成 ~ 是刻意的，不算絕對路徑
-      '📁 「Downloads」 · 監看中',
+      '📁 Watching Downloads',
     ]) assert.ok(!ABSOLUTE.test(ok), `誤抓：${ok}`)
   })
 
@@ -2519,11 +2519,11 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     const ui = await mountUi(t, s)
     await until(() => ui.$('quaso-status').textContent.includes(problems[0]), '寵物泡泡講出掃描問題')
     const bubble = ui.$('quaso-status').textContent
-    assert.ok(!bubble.includes('今天吃可頌了嗎'), bubble)
+    assert.ok(!bubble.includes('Had a croissant today'), bubble)
     assert.ok(!ABSOLUTE.test(bubble), `泡泡帶了絕對路徑：${bubble}`)
     // stage 的 title（滑鼠移上去、螢幕閱讀器都讀得到）也不可以只說「監看中」
     const title = ui.$('quaso-stage').title
-    assert.ok(/掃描/.test(title), `stage title 沒講掃描出問題：${title}`)
+    assert.ok(/scan/.test(title), `stage title 沒講掃描出問題：${title}`)
     assert.ok(!ABSOLUTE.test(title), title)
     // 面板頂端的提示
     await ui.click('quaso-cleanup-alert')
@@ -2537,8 +2537,8 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     const s = await serve(t, { 'a.zip': { days: 60 } })
     s.heartbeat()
     const ui = await mountUi(t, s)
-    await until(() => ui.$('quaso-stage').title.includes('監看中'), '拿到 /health')
-    assert.equal(ui.$('quaso-status').textContent, '今天吃可頌了嗎？')
+    await until(() => ui.$('quaso-stage').title.includes('Watching'), '拿到 /health')
+    assert.equal(ui.$('quaso-status').textContent, 'Had a croissant today?')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-scan-problems').hidden, true)
     assert.equal(ui.$('cleanup-scan-problems').textContent, '')
@@ -2552,7 +2552,7 @@ describe('R3-12b 掃描問題要走到寵物與面板（不是只有 doctor 看�
     await ui.click('cleanup-apply')
     assert.equal(ui.$('quaso-dialog').hidden, false, '前提：做完動作之後對話框是開著的')
     const said = ui.$('quaso-status').textContent
-    assert.match(said, /整理好了/)
+    assert.match(said, /All tidied up/)
     // 現在才出現掃描問題（下一輪輪詢會讀到）
     await withScanProblem(s)
     await ui.click('quaso-connection-retry')      // 立刻再輪詢一次
@@ -2576,10 +2576,10 @@ describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完
     const m = applyMessage({
       status: 'applied', planId: 'p1', moved: 0, bytesFreed: 0, failed: [], unknown: [], noop: true,
     })
-    assert.ok(!/搬進隔離區/.test(m.text), m.text)
-    assert.ok(!/七天內可以復原/.test(m.text), m.text)
-    assert.ok(!/整理好了/.test(m.notice), m.notice)
-    assert.match(m.text, /沒有動任何檔案|什麼都沒做/)
+    assert.ok(!/to quarantine/.test(m.text), m.text)
+    assert.ok(!/You can undo this for seven days/.test(m.text), m.text)
+    assert.ok(!/All tidied up/.test(m.notice), m.notice)
+    assert.match(m.text, /Nothing moved this time|Nothing happened this time/)
   })
 
   test('對照：沒有 noop、真的搬了 0 個（全部失敗）→ 照舊講原因', () => {
@@ -2587,9 +2587,9 @@ describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完
       status: 'partial', planId: 'p1', moved: 0, bytesFreed: 0,
       failed: [{ itemId: '1', name: 'a.zip', why: '檔案不見了' }], unknown: [],
     })
-    assert.match(m.text, /搬進隔離區 0 個檔案/)
-    assert.match(m.text, /原檔都還在原位/)
-    assert.match(m.notice, /一個都沒搬成/)
+    assert.match(m.text, /Moved 0 files/)
+    assert.match(m.text, /every original is still where it was/)
+    assert.match(m.notice, /Nothing moved this time/)
   })
 
   test('applyOutcome 要把 noop／stoppedEarly 從後端的回應帶上來（面板才講得出來）', () => {
@@ -2609,9 +2609,9 @@ describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完
     const m = applyMessage({
       status: 'proposed', planId: 'p1', moved: 3, bytesFreed: 1024, failed: [], unknown: [], stoppedEarly: true,
     })
-    assert.match(m.text, /搬進隔離區 3 個檔案/, '已經做到的照實講')
-    assert.match(m.text, /停在中途|還沒做完/, m.text)
-    assert.ok(!/整理好了/.test(m.notice), m.notice)
+    assert.match(m.text, /Moved 3 files/, '已經做到的照實講')
+    assert.match(m.text, /stopped partway|is not finished/, m.text)
+    assert.ok(!/All tidied up/.test(m.notice), m.notice)
   })
 
   test('**面板：按「繼續上次那份」而後端其實什麼都沒做 → 畫面不可以像剛清完**', async t => {
@@ -2627,13 +2627,13 @@ describe('R3-12b／noop：「這次什麼都沒做」不可以顯示成剛清完
       : null))
     const ui = await mountUi(t, s)
     await ui.click('quaso-cleanup-alert')
-    assert.match(ui.$('cleanup-apply').textContent, /繼續上次那份/, '前提：面板提示了上次那份')
+    assert.match(ui.$('cleanup-apply').textContent, /Finish the last plan/, '前提：面板提示了上次那份')
     await ui.click('cleanup-apply')
     const text = ui.$('cleanup-result').textContent
-    assert.ok(!/搬進隔離區/.test(text), `什麼都沒做卻說搬了：${text}`)
-    assert.ok(!/七天內可以復原/.test(text), text)
-    assert.match(text, /沒有動任何檔案|什麼都沒做/)
-    assert.ok(!/整理好了/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
+    assert.ok(!/to quarantine/.test(text), `什麼都沒做卻說搬了：${text}`)
+    assert.ok(!/You can undo this for seven days/.test(text), text)
+    assert.match(text, /Nothing moved this time|Nothing happened this time/)
+    assert.ok(!/All tidied up/.test(ui.$('quaso-status').textContent), ui.$('quaso-status').textContent)
     assert.ok(s.has('a.zip'), '前提：檔案真的沒動')
   })
 })

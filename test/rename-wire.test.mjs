@@ -21,7 +21,7 @@ import * as server from '../core/server.ts'
 import { sandbox, OS_DEADLOCK, DS_MIDTERM } from './helpers/rename.mjs'
 
 const TOKEN = 'rename-wire-token'
-const HIGH = { course: '作業系統', topic: '死結', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: '高' }
+const HIGH = { course: '作業系統', topic: '死結', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: 'high' }
 
 async function serve(t, s, extra = {}) {
   const S = server.start({
@@ -38,7 +38,7 @@ async function serve(t, s, extra = {}) {
     const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body })
     const text = await r.text()
     let json = null
-    try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+    try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
     return { status: r.status, json, text, headers: r.headers }
   }
   const api = (method, path, body) => raw(method, path, { body: body === undefined ? undefined : JSON.stringify(body) })
@@ -162,7 +162,7 @@ describe('POST /rename/apply', () => {
     assert.equal(r.json.results.length, 2)
     assert.equal(r.json.results[0].ok, true)
     assert.equal(r.json.results[1].ok, false)
-    assert.match(r.json.results[1].why, /找不到/)
+    assert.match(r.json.results[1].why, /Cannot find/)
   })
 })
 

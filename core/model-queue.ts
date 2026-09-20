@@ -259,7 +259,7 @@ type Payload =
 export function payloadFor(db: DatabaseSync, item: PendingItem, key: string): Payload {
   const row = db.prepare('SELECT id, path, name, ext, bytes, sha256, mtime FROM file_items WHERE id=?')
     .get(item.id) as ItemRow | undefined
-  if (!row) return { ok: false, why: '這個檔已經不在了', remember: false }
+  if (!row) return { ok: false, why: 'this file is no longer there', remember: false }
 
   if (item.source === 'text') {
     const t = db.prepare('SELECT text, has_text FROM file_texts WHERE item_id=?').get(item.id) as
@@ -285,7 +285,7 @@ export function payloadFor(db: DatabaseSync, item: PendingItem, key: string): Pa
   const s = screen({ name: row.name, key })
   if (!s.send) return { ok: false, why: s.why ?? SECRET_WHY, remember: true }
   const raw = readImage(row.path, Number(row.bytes), row.mtime)
-  if (!raw) return { ok: false, why: '這個檔現在讀不到（或剛剛被改過），下一輪再試', remember: false }
+  if (!raw) return { ok: false, why: 'cannot read this file right now (or it just changed); it will be tried next round', remember: false }
   try {
     const shrunk = imagePayload(raw)
     return {
@@ -421,7 +421,7 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       result.failed++
       step({ outcome: 'failed', why: r.error })
       if (inARow >= STOP_AFTER_FAILURES) {
-        result.stopped = `模型連續 ${STOP_AFTER_FAILURES} 次沒有回答（最後一次：${r.error}），這一輪先停，下一輪再試。`
+        result.stopped = `The model failed to answer ${STOP_AFTER_FAILURES} times in a row (last one: ${r.error}). This round stops here and it will try again next round.`
         try { opts.onError?.(result.stopped) } catch { /* 記不下來就算了 */ }
         break
       }

@@ -146,7 +146,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 function ranged(v: unknown, lo: number, hi: number, dflt: number, name: string, problems: string[]): number {
   if (v === undefined) return dflt
   if (!isNum(v) || v < lo || v > hi) {
-    problems.push(`${name} 設成 ${JSON.stringify(v)} 不合理（要在 ${lo} 到 ${hi} 之間），改用預設值 ${dflt}。`)
+    problems.push(`${name} is set to ${JSON.stringify(v)}, which makes no sense (it must be between ${lo} and ${hi}). Using the default ${dflt}.`)
     return dflt
   }
   return Math.floor(v)
@@ -160,19 +160,19 @@ function ranged(v: unknown, lo: number, hi: number, dflt: number, name: string, 
 function readonlyOf(v: unknown, problems: string[]): boolean {
   if (process.env.CONTEXTBOX_READONLY === '1') return true
   if (v === undefined || typeof v === 'boolean') return v === true
-  problems.push(`readonly 要寫 true 或 false（你寫的是 ${JSON.stringify(v)}）。`
-    + '這是安全開關，看不懂的時候一律當成開著。')
+  problems.push(`readonly must be true or false (you wrote ${JSON.stringify(v)}). `
+    + 'It is a safety switch, so anything unreadable counts as on.')
   return true
 }
 
 /** 歸檔資料夾不能是家目錄本身、檔案系統根目錄，也不能踩到黑名單 */
 function filedProblem(filed: string): string | null {
   const home = realOrAbs(homedir())
-  if (filed === home) return '歸檔資料夾不能直接就是家目錄'
-  if (resolve(filed) === resolve('/') || /^[A-Za-z]:[\\/]?$/.test(filed)) return '歸檔資料夾不能是磁碟根目錄'
+  if (filed === home) return 'the filed folder cannot be the home directory itself'
+  if (resolve(filed) === resolve('/') || /^[A-Za-z]:[\\/]?$/.test(filed)) return 'the filed folder cannot be a disk root'
   const segs = filed.split(/[\\/]+/).filter(Boolean).map(s => s.toLowerCase())
   const hit = segs.find(s => DENY_DIRS.some(bad => s === bad || s.startsWith(bad + '.')))
-  return hit ? `歸檔資料夾的路徑裡有 ${hit}，那種地方不能放東西` : null
+  return hit ? `the filed folder's path contains ${hit}, and nothing may be put in a place like that` : null
 }
 
 /**
@@ -197,18 +197,18 @@ export function cleanupRootProblem(root: string, sys: SysInfo = {}): string | nu
   // **先換回一般寫法再比**（第二輪 R2-11）：\\?\C:\Users\alice、\\localhost\C$\Users\alice、
   // macOS 的 /System/Volumes/Data/Users/alice 都是家目錄，以前全部放行（稽核 C-e11）
   const r = fold(P.resolve(canonicalPath(root, os)))
-  if (r === fold(P.parse(r).root)) return '清理資料夾不能是磁碟根目錄'
+  if (r === fold(P.parse(r).root)) return 'a cleanup folder cannot be a disk root'
   for (const h of new Set([homeRaw, homeReal])) {
     const home = fold(P.resolve(h))
-    if (r === home) return '清理資料夾不能直接就是家目錄'
+    if (r === home) return 'a cleanup folder cannot be the home directory itself'
     const rel = P.relative(r, home)
     if (rel && rel !== '..' && !rel.startsWith('..' + P.sep) && !P.isAbsolute(rel)) {
-      return '清理資料夾不能是家目錄的上層（那樣會清到整個家目錄）'
+      return 'a cleanup folder cannot sit above the home directory — that would clean the whole home directory'
     }
   }
   const segs = r.split(/[\\/]+/).filter(Boolean).map(x => x.toLowerCase())
   const hit = segs.find(x => DENY_DIRS.some(bad => x === bad || x.startsWith(bad + '.')))
-  return hit ? `清理資料夾的路徑裡有 ${hit}，那種地方不能碰` : null
+  return hit ? `a cleanup folder's path contains ${hit}, and a place like that is never touched` : null
 }
 
 /**
@@ -266,16 +266,16 @@ function checkBaseUrl(raw: string, problems: string[]): string {
   if (!raw) return ''
   let u: URL
   try { u = new URL(raw) }
-  catch { problems.push(`模型網址 ${raw} 看不懂，已經忽略。`); return '' }
+  catch { problems.push(`The model URL ${raw} could not be read, so it was ignored.`); return '' }
   if (u.protocol === 'https:' || (u.protocol === 'http:' && isPrivateHost(u.hostname))) {
     if (u.username || u.password) {
-      problems.push('模型網址裡不要放帳號密碼，已經拿掉。金鑰請放環境變數。')
+      problems.push('Do not put a username and password in the model URL; they were removed. Put the key in an environment variable.')
       u.username = ''; u.password = ''
     }
     return u.toString().replace(/\/+$/, '')
   }
-  problems.push(`模型網址 ${u.protocol}//${u.hostname} 不安全`
-    + `（明文 http 只能打自己內網的位址，打外面的主機請用 https），已經忽略。`)
+  problems.push(`The model URL ${u.protocol}//${u.hostname} is not safe`
+    + ` (plain http only works for addresses on your own network; use https for anything outside), so it was ignored.`)
   return ''
 }
 
@@ -294,7 +294,7 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
     ? o.watch.filter(x => typeof x === 'string' && x.trim()).map(x => realOrAbs(x as string))
     : []
   if (!watch.length) {
-    if (o.watch !== undefined) problems.push('watch 設定看不懂，改用這台機器的預設資料夾。')
+    if (o.watch !== undefined) problems.push("The watch setting could not be read, so this machine's default folders are used.")
     watch = d.watch.map(realOrAbs)
   }
   // 去重：同一個資料夾寫兩次會讓 watcher 送兩份一樣的事件
@@ -303,30 +303,30 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
   // normalize({ watch: ['/'] }) 是原封不動收下、零警告的。
   for (const w of watch) {
     const wp = filedProblem(w)
-    if (wp) problems.push(`監看資料夾 ${w}：${wp.replace('歸檔資料夾', '監看資料夾')}。範圍請縮小一點。`)
+    if (wp) problems.push(`Watched folder ${w}: ${wp.replace('the filed folder', 'a watched folder')}. Narrow it down.`)
   }
 
   let filed = typeof o.filed === 'string' && o.filed.trim() ? realOrAbs(o.filed) : realOrAbs(d.filed)
   const fp = filedProblem(filed)
-  if (fp) { problems.push(`${fp}，改用預設的 ${d.filed}。`); filed = realOrAbs(d.filed) }
+  if (fp) { problems.push(`${fp}; using the default ${d.filed} instead.`); filed = realOrAbs(d.filed) }
 
   // filed 落在 watch 底下：**不要動 watch。**
   // 以前這裡把整個 watch root 移除，結果設 filed=~/Downloads/Filed（很自然的設法）
   // 就會讓 ~/Downloads 整個不看了，而訊息說的是另一回事。
   // admit() 本來就有 exclude，重掃迴圈本來就擋住了。
   if (watch.some(w => filed === w || under(w, filed))) {
-    problems.push(`歸檔資料夾 ${filed} 在監看資料夾底下。已經自動把它排除，搬過去的檔案不會被重新掃到。`)
+    problems.push(`The filed folder ${filed} sits inside a watched folder. It was excluded automatically, so files moved there are not picked up again.`)
   }
   // 反過來：watch 落在 filed 底下 —— 那個 root 會被 exclude 整個吃掉，等於白看
   const swallowed = watch.filter(w => under(filed, w) || w === filed)
   if (swallowed.length) {
-    problems.push(`監看資料夾 ${swallowed.join('、')} 在歸檔資料夾底下，會被整個排除掉，等於沒在看。請把它們分開。`)
+    problems.push(`Watched folders ${swallowed.join(', ')} sit inside the filed folder, so they get excluded entirely and nothing is watched. Keep them apart.`)
   }
 
   const m = (o.model && typeof o.model === 'object') ? o.model as Record<string, unknown> : {}
   let keyEnv = typeof m.keyEnv === 'string' ? m.keyEnv.trim() : ''
   if (keyEnv && !KEY_ENV_OK.test(keyEnv)) {
-    problems.push(`金鑰的環境變數名稱只能是 CONTEXTBOX_ 開頭（你寫的是 ${keyEnv}），改用 ${d.model.keyEnv}。`)
+    problems.push(`The key's environment variable must start with CONTEXTBOX_ (you wrote ${keyEnv}); using ${d.model.keyEnv} instead.`)
     keyEnv = ''
   }
   const model: ModelConfig = {
@@ -341,7 +341,7 @@ export function normalize(raw: unknown, sys: SysInfo = {}): { config: Config; pr
   // （「整理好的東西不再被提議清理」就不成立了）。一樣不動 roots，只出聲。
   const swallowsFiled = cleanup.roots.filter(r => filed === r || under(r, filed))
   if (swallowsFiled.length) {
-    problems.push(`歸檔資料夾 ${filed} 在清理資料夾 ${swallowsFiled.join('、')} 底下，整理好的檔過一陣子還是會被列成清理候選。建議把它放到清理範圍外面。`)
+    problems.push(`The filed folder ${filed} sits inside the cleanup folders ${swallowsFiled.join(', ')}, so filed files eventually show up as cleanup candidates again. Better to put it outside the cleanup scope.`)
   }
 
   return {
@@ -370,14 +370,14 @@ function cleanupOf(v: unknown, dfltRoots: string[], screenshotsDir: string, prob
   let c: Record<string, unknown> = {}
   if (v !== undefined) {
     if (v && typeof v === 'object' && !Array.isArray(v)) c = v as Record<string, unknown>
-    else problems.push('cleanup 設定看不懂，清理範圍改用預設（只有 Downloads）。')
+    else problems.push('The cleanup setting could not be read, so the cleanup scope falls back to the default (Downloads only).')
   }
 
   let screenshots = false
   if (c.screenshots !== undefined) {
     if (typeof c.screenshots === 'boolean') screenshots = c.screenshots
-    else problems.push(`cleanup.screenshots 要寫 true 或 false（你寫的是 ${JSON.stringify(c.screenshots)}）。`
-      + '看不懂的時候一律當成關著，只清 Downloads。')
+    else problems.push(`cleanup.screenshots must be true or false (you wrote ${JSON.stringify(c.screenshots)}). `
+      + 'Anything unreadable counts as off, so only Downloads is cleaned.')
   }
 
   let roots: string[]
@@ -388,11 +388,11 @@ function cleanupOf(v: unknown, dfltRoots: string[], screenshotsDir: string, prob
       : []
     roots = roots.filter(r => {
       const p = cleanupRootProblem(r, sys)
-      if (p) problems.push(`清理資料夾 ${r}：${p}，已經從清理範圍拿掉。`)
+      if (p) problems.push(`Cleanup folder ${r}: ${p}. It was taken out of the cleanup scope.`)
       return !p
     })
     if (!roots.length) {
-      problems.push('cleanup.roots 看不懂或全部不能用，清理範圍改用預設（只有 Downloads）。')
+      problems.push('cleanup.roots could not be read, or none of it is usable, so the cleanup scope falls back to the default (Downloads only).')
       roots = fallback()
     }
   }
@@ -412,7 +412,7 @@ export function load(path: string = CONFIG_PATH): Loaded {
 
   if (existsSync(path)) {
     try { raw = JSON.parse(readFileSync(path, 'utf8')) }
-    catch (e: any) { problems.push(`設定檔讀不懂（${e.message}），這次先用預設值，檔案沒有被覆蓋。`) }
+    catch (e: any) { problems.push(`The config file could not be read (${e.message}), so defaults are used this time. The file was not overwritten.`) }
   } else {
     try {
       mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
@@ -423,7 +423,7 @@ export function load(path: string = CONFIG_PATH): Loaded {
       created = true
     } catch (e: any) {
       // 以前這裡安靜吞掉，結果 doctor 會謊報「剛剛幫你建了一份」
-      problems.push(`設定檔寫不出來（${e.message}），這次用預設值跑，你的設定不會被保存。`)
+      problems.push(`The config file could not be written (${e.message}), so defaults are used this time and your settings are not saved.`)
     }
   }
   const n = normalize(raw)

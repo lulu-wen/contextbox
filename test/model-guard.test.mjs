@@ -208,7 +208,7 @@ describe('screen 的形狀', () => {
       { send: true, why: null, rule: null })
   })
   test('擋下來的那句話一定含「看起來像機密」（面板與 doctor 照這句數）', () => {
-    assert.match(SECRET_WHY, /看起來像機密/)
+    assert.match(SECRET_WHY, /looks like a secret/)
     assert.equal(screen({ name: '.env' }).why, SECRET_WHY)
     assert.equal(screen({ name: '講義.txt', text: inLecture('AKIAIOSFODNN7EXAMPLE') }).why, SECRET_WHY)
   })
@@ -255,7 +255,7 @@ describe('弱關鍵字：文件格式放行，純文字與表格照擋', () => {
 
 describe('結構化隨機：秘密塞在任何位置都擋得住；正常講義不會被擋', () => {
   const words = ['行程排程', '死結', '銀行家演算法', '分頁', '虛擬記憶體', '互斥鎖', '號誌',
-    '第 3 章', '小考', '作業三', 'FCFS', 'Round Robin', '講義', '範例', '習題']
+    '第 3 章', '小考', '作業三', 'FCFS', 'Round Robin', 'Lecture', '範例', '習題']
 
   test('200 份隨機講義＋隨機位置的秘密 → 每一份都擋得住', () => {
     const next = rng(20260919)

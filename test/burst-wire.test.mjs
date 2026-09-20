@@ -176,7 +176,7 @@ describe('S1 哪些檔要算指紋：看內容，不看副檔名', () => {
     s.scan()
     // P1 之後這些假 .pdf 會被拿去讀內容、讀不懂，那件事只報**一條總結**
     // （預想的不變量第 6 條）。這一條守的是「圖的那條路不可以逐檔各報一條」。
-    assert.deepEqual(s.problems.filter(m => !/^有 \d+ 個檔看不懂/.test(m)), [],
+    assert.deepEqual(s.problems.filter(m => !/could not be made sense of/.test(m)), [],
       '一般（不是 PNG）的檔不可以各報一條問題 —— 寵物會永遠在擔心')
     assert.ok(s.problems.length <= 1, `最多一條總結：${JSON.stringify(s.problems)}`)
   })
@@ -391,10 +391,10 @@ describe('S7／S8 候選的 kind、rule_version 與信心', () => {
     const c = burstCands(s.db)[0]
     assert.equal(c.name, '舊的.png')
     assert.match(c.reason, /新的\.png/, 'reason 要指名留下的那張')
-    assert.match(c.reason, /幾乎一樣|差不多/)
-    assert.match(c.evidence, /同一批/)
-    assert.match(c.evidence, /相隔 18\d 秒|相隔 1[78]\d 秒/, 'evidence 要講相隔幾秒')
-    assert.match(c.evidence, /會留著.*新的\.png/, 'evidence 要講會留著哪一張')
+    assert.match(c.reason, /Almost identical|Much like/)
+    assert.match(c.evidence, /Same burst/)
+    assert.match(c.evidence, /18\ds apart|1[78]\ds apart/, 'evidence 要講相隔幾秒')
+    assert.match(c.evidence, /“新的\.png” is the one being kept/, 'evidence 要講會留著哪一張')
     assert.ok(!c.reason.includes(s.downloads) && !c.evidence.includes(s.downloads), '不可以帶路徑')
   })
 })
@@ -453,7 +453,7 @@ describe('S9 工作量超過上限：接住 TOO_MUCH_WORK，照張數切成每�
     // **重點是它真的切了**：以前「≤ 300 就放棄」的寫法，在常見截圖尺寸下永遠走不到切的那一步，
     // 整段的連拍組被靜默丟掉（P0 驗證員）。
     assert.ok(problems.length >= 2, `放棄的每一小段各報一條：${problems.length}`)
-    assert.ok(problems.every(m => /連拍比對量太大/.test(m)), problems.join('\n'))
+    assert.ok(problems.every(m => /too much work/.test(m)), problems.join('\n'))
   })
 })
 
@@ -703,7 +703,7 @@ describe('D8 縮圖端點', () => {
         res.on('end', () => {
           const body = Buffer.concat(chunks)
           let json = null
-          try { json = JSON.parse(body.toString('utf8')) } catch { /* 不是 JSON */ }
+          try { json = JSON.parse(body.toString('utf8')) } catch { /* not answer with JSON */ }
           resolve({ status: res.statusCode, headers: res.headers, body, json })
         })
       })
@@ -829,7 +829,7 @@ describe('沒有 PNG 的資料夾，掃描不可以因此變慢很多', () => {
     assert.equal(r.imagesPending, 0)
     assert.equal(sigRows(s.db).length, 0)
     // 這 40 個假 .pdf 讀不懂，P1 會報一條總結（不是 40 條）。圖的那條路一條都不報。
-    assert.deepEqual(s.problems.filter(m => !/^有 \d+ 個檔看不懂/.test(m)), [])
+    assert.deepEqual(s.problems.filter(m => !/could not be made sense of/.test(m)), [])
     assert.ok(s.problems.length <= 1, `最多一條總結：${JSON.stringify(s.problems)}`)
   })
 })

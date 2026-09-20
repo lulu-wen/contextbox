@@ -32,7 +32,7 @@ import { fixture } from './helpers/cleanup.mjs'
 
 const DAY = 86400_000
 const TOKEN = 'audit-0919-token'
-const INTERNAL_MSG = '後端出錯了，這一步可能沒有完成。請關掉面板，再從寵物或 `node cli.mjs open` 重新打開，看目前的狀態。'
+const INTERNAL_MSG = 'The backend hit an error, so this step may not have completed. Close the panel and open it again from the pet or `node cli.mjs open` to see where things stand.'
 
 // ── 小工具 ───────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ function rawer(port) {
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8')
         let json = null
-        try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+        try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
         resolve({ status: res.statusCode, headers: res.headers, text, json })
       })
     })
@@ -144,8 +144,8 @@ describe('RC4 太大、沒指紋的檔不列成候選；放棄還沒開始的計
     assert.ok(list.candidates.some(c => c.name === 'a.zip'), '前提：正常的檔還在')
     const h = list.needsHuman.find(x => x.name === 'NodeSetup.msi')
     assert.ok(h, '它要出現在「需要你查看」')
-    assert.match(h.why, /太大/)
-    assert.doesNotMatch(h.why, /讀不到/, '不可以說成讀不到')
+    assert.match(h.why, /too large/)
+    assert.doesNotMatch(h.why, /cannot read/, '不可以說成讀不到')
 
     const health = (await s.raw('GET', '/health')).json
     assert.equal(health.pendingCandidates, list.candidates.length, '徽章數字要跟清單一致')
@@ -165,8 +165,8 @@ describe('RC4 太大、沒指紋的檔不列成候選；放棄還沒開始的計
     assert.deepEqual(list.candidates.map(c => c.name), ['ok.zip'])
     const h = list.needsHuman.find(x => x.name === '婚禮影片備份.zip')
     assert.ok(h, '要在「需要你查看」')
-    assert.match(h.why, /太大/)
-    assert.match(h.why, /不處理/, '要講清楚這個工具不處理')
+    assert.match(h.why, /too large/)
+    assert.match(h.why, /too large for this tool/, '要講清楚這個工具不處理')
 
     const r = call(f, 'POST', '/cleanup/plans', { candidateIds: big.cands })
     assert.equal(r.code, 409)
@@ -404,12 +404,12 @@ describe('RC11 失敗原因只有一套翻譯、要保存、「需要你查看�
     assert.equal(applied.code, 200)
     const failed = applied.body.items.filter(i => i.outcome === 'failed')
     assert.equal(failed.length, 1)
-    assert.match(failed[0].why, /十分鐘內還在變動/)
+    assert.match(failed[0].why, /changed within the last ten minutes/)
 
     const list = routes.listCandidates(f.db, { roots: f.opts.roots })
     const h = list.needsHuman.find(x => x.name === failed[0].name)
     assert.ok(h, '搬不動的檔要在「需要你查看」')
-    assert.match(h.why, /十分鐘內還在變動/, `兩邊講的話要一樣，現在是：${h.why}`)
+    assert.match(h.why, /changed within the last ten minutes/, `兩邊講的話要一樣，現在是：${h.why}`)
 
     const saved = f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=?').all(p.id)
     assert.equal(saved.length, 1, '失敗原因要寫進 cleanup_item_errors')
@@ -418,7 +418,7 @@ describe('RC11 失敗原因只有一套翻譯、要保存、「需要你查看�
     const later = call(f, 'GET', `/cleanup/plans/${p.id}`)
     const again = later.body.items.find(i => i.itemId === failed[0].itemId)
     assert.equal(again.outcome, 'failed')
-    assert.match(again.why, /十分鐘內還在變動/, `重掃之後原因不見了：${again.why}`)
+    assert.match(again.why, /changed within the last ten minutes/, `full-rescan之後原因不見了：${again.why}`)
   })
 
   test('recordItemErrors 是匯出的，CLI 也要能叫', t => {
@@ -430,7 +430,7 @@ describe('RC11 失敗原因只有一套翻譯、要保存、「需要你查看�
     routes.recordItemErrors(f.db, p.id)
     const rows = f.db.prepare('SELECT item_id, why, at FROM cleanup_item_errors WHERE plan_id=?').all(p.id)
     assert.equal(rows.length, 1)
-    assert.ok(rows[0].why && !/原因不明/.test(rows[0].why))
+    assert.ok(rows[0].why && !/reason unknown/.test(rows[0].why))
     assert.ok(!rows[0].why.includes(f.dir))
   })
 
@@ -573,7 +573,7 @@ describe('RC15 清理範圍只有 Downloads', () => {
   test('cleanup.roots 指到家目錄或根目錄：拿掉並出聲，退回 Downloads', () => {
     const r = config.normalize({ cleanup: { roots: [FAKE_HOME, '/'] } })
     assert.deepEqual(r.config.cleanup.roots, [join(FAKE_HOME, 'Downloads')])
-    assert.ok(r.problems.some(p => /清理資料夾/.test(p)))
+    assert.ok(r.problems.some(p => /cleanup folder/.test(p)))
   })
 
   test('舊資料庫裡桌面的候選：不在清單上、不會被搬、指名也建不了計畫', t => {
@@ -694,7 +694,7 @@ describe('RC17 已經搬了，訊息卻說沒有', () => {
     assert.ok(!existsSync(join(f.downloads, 'a.zip')), '前提：檔案真的已經在隔離區')
     const got = call(f, 'GET', `/cleanup/plans/${p.id}`)
     assert.equal(got.body.items[0].outcome, 'unknown')
-    assert.match(got.body.items[0].why, /搬到一半中斷/)
+    assert.match(got.body.items[0].why, /Interrupted mid-move/)
     assert.doesNotMatch(got.body.items[0].why, /沒有搬動/)
     const pending = call(f, 'GET', '/cleanup/plans?pending=1').body
     assert.equal(pending.total, 1, '中斷的那份要能被找到、接續')
@@ -740,7 +740,7 @@ function seedPlans(db, PLANS, PER = 3) {
 function slowListPlans(db, { filter, offset = 0, limit = 20 } = {}) {
   const plans = db.prepare(`SELECT id, status, created_at, applied_at FROM cleanup_plans ORDER BY created_at DESC, rowid DESC`).all()
   const rows = []
-  const canRestore = x => x?.outcome === 'moved' || (x?.outcome === 'unknown' && /復原到一半中斷/.test(x.why ?? ''))
+  const canRestore = x => x?.outcome === 'moved' || (x?.outcome === 'unknown' && /Interrupted mid-undo/.test(x.why ?? ''))
   for (const p of plans) {
     if (filter === 'pending' && p.status !== 'proposed') continue
     const o = routes.planOutcomes(db, p.id)
@@ -899,8 +899,8 @@ describe('RC28 清空預覽表不可以無限成長', () => {
     const r = call(f, 'POST', '/cleanup/quarantine/empty', {})
     assert.equal(r.code, 200)
     const left = f.db.prepare('SELECT token FROM cleanup_empty_requests').all().map(x => x.token)
-    assert.ok(!left.includes('two-days-old'), '過期超過一天的要刪掉')
-    assert.ok(left.includes('one-hour-old'), '過期不到一天的先留著')
+    assert.ok(!left.includes('two-days-old'), 'expired超過一天的要刪掉')
+    assert.ok(left.includes('one-hour-old'), 'expired不到一天的先留著')
     assert.ok(left.includes('future'))
     assert.ok(left.includes(r.body.token), '這次的預覽要在')
   })

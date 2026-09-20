@@ -236,7 +236,7 @@ export function modelStats(db: DatabaseSync, since: string): ModelStats {
        FROM model_calls WHERE at >= ?`, since)
   const s = one(
     `SELECT count(*) AS skips,
-            sum(CASE WHEN why LIKE '%看起來像機密%' THEN 1 ELSE 0 END) AS secret
+            sum(CASE WHEN why LIKE '%looks like a secret%' THEN 1 ELSE 0 END) AS secret
        FROM model_skips`)
   const v = one(`SELECT count(*) AS views, sum(seeded) AS seeded FROM model_views`)
   const n = (x: unknown) => Number(x ?? 0) || 0

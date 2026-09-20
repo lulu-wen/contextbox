@@ -26,7 +26,7 @@ const KNOWN: [RegExp, string[]][] = [
 /** 這條路徑認得的 body key。改之前先看面板（core/assets）與 cli.mjs 送了什麼。 */
 const BODY_KEYS = ['ids', 'all'] as const
 
-const INTERNAL = '讀寫「它學到的事」時出錯了。檔案沒有被動過，請重試。'
+const INTERNAL = 'Something went wrong reading or writing what it learned. No file was touched. Try again.'
 
 const fail = (send: RouteCtx['send'], code: number, error: string, tag: string, headers?: Record<string, string>) =>
   send(code, { error, code: tag }, headers)
@@ -36,13 +36,13 @@ function bodyOf(ctx: RouteCtx, allowed: readonly string[]): Record<string, any> 
   const b = ctx.body
   if (b === undefined) return {}
   if (b === null || typeof b !== 'object' || Array.isArray(b)) {
-    throw new CleanupError('BAD_BODY', '看不懂送來的資料。')
+    throw new CleanupError('BAD_BODY', 'Could not make sense of the body.')
   }
   const unknown = Object.keys(b).filter(k => !allowed.includes(k))
   if (unknown.length) {
     const bad = unknown.slice(0, 3).map(k => shown(k).slice(0, 40)).join('、')
     throw new CleanupError('BAD_BODY',
-      `看不懂送來的資料：不認得的欄位 ${bad}。這個路徑只收 ${allowed.join('、')}。`)
+      `Could not make sense of the body: unknown field ${bad}. This route only takes ${allowed.join(', ')}.`)
   }
   return b
 }
@@ -73,7 +73,7 @@ function route(ctx: RouteCtx): boolean {
 
   const known = KNOWN.find(([re]) => re.test(p))
   if (known && !known[1].includes(method)) {
-    fail(send, 405, `這個路徑只收 ${known[1].join('、')}。`, 'BAD_METHOD', { allow: known[1].join(', ') })
+    fail(send, 405, `This route only takes ${known[1].join(', ')}.`, 'BAD_METHOD', { allow: known[1].join(', ') })
     return true
   }
 
@@ -85,33 +85,33 @@ function route(ctx: RouteCtx): boolean {
   if (p === '/learned' && method === 'DELETE') {
     // 唯讀模式不寫任何東西 —— 忘掉一條偏好也是寫（跟收尾、apply 同一條規矩，第三輪 R3-9）
     if (readonlyOf(ctx) === true) {
-      throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會改任何東西（包括忘掉學過的事）。')
+      throw new CleanupError('READ_ONLY', 'Read-only mode is on, so nothing changes — not even forgetting what it learned.')
     }
     const body = bodyOf(ctx, BODY_KEYS)
     const all = body.all
     if (all !== undefined && typeof all !== 'boolean') {
-      throw new CleanupError('BAD_BODY', 'all 要是 true 或 false。')
+      throw new CleanupError('BAD_BODY', 'all must be true or false.')
     }
     let ids: string[] = []
     if (body.ids !== undefined) {
       if (!Array.isArray(body.ids) || body.ids.length > FORGET_MAX
         || body.ids.some((v: unknown) => typeof v !== 'string' || !v || v.length > 200)) {
-        throw new CleanupError('BAD_BODY', `ids 必須是字串陣列，最多 ${FORGET_MAX} 筆。`)
+        throw new CleanupError('BAD_BODY', `ids must be an array of strings, at most ${FORGET_MAX} of them.`)
       }
       ids = body.ids as string[]
     }
     // **沒指名就什麼都不做**：沒有「預設全清」這種捷徑（不變量 3 的反面 —— 忘掉是使用者的決定）
     if (!ids.length && all !== true) {
-      throw new CleanupError('BAD_BODY', '要指名 ids，或送 { "all": true } 全部忘掉。')
+      throw new CleanupError('BAD_BODY', 'Name the ids, or send { "all": true } to forget everything.')
     }
     if (ids.length && all === true) {
-      throw new CleanupError('BAD_BODY', 'ids 與 all 不能一起送 —— 講清楚是要忘掉哪幾條，還是全部。')
+      throw new CleanupError('BAD_BODY', 'ids and all cannot be sent together — say whether you mean some entries or all of them.')
     }
     send(200, { forgotten: all === true ? forgetAllLearned(ctx.db) : forgetLearned(ctx.db, ids) })
     return true
   }
 
   // `/learned/` 底下認不得的路徑：回一句人話，不是 404（404 會讓呼叫端以為自己打錯網址）
-  fail(send, 501, '這個功能還沒做好。', 'NOT_IMPLEMENTED')
+  fail(send, 501, 'This feature is not built yet.', 'NOT_IMPLEMENTED')
   return true
 }

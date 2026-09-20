@@ -33,13 +33,13 @@ const candidate = (over = {}) => ({
 })
 const renameItem = (over = {}) => ({
   itemId: 'r-1', name: '未命名文件 (3).txt', suggested: '作業系統_死結.txt',
-  course: '作業系統', topic: '死結', confidence: '高', evidence: '四個必要條件', seeded: false,
+  course: '作業系統', topic: '死結', confidence: 'high', evidence: '四個必要條件', seeded: false,
   learned: false, rejectedBefore: false, ...over,
 })
 const filingItem = (over = {}) => ({
-  itemId: 'f-1', name: 'IMG_2041.txt', course: '資料結構', modelCourse: '資料結構', kind: '考試',
-  topic: '期中考範圍', confidence: '高', evidence: '第一部分', seeded: false,
-  toFolder: '課程/資料結構/考試', learned: false, rejectedBefore: false, alsoKnownAs: '', ...over,
+  itemId: 'f-1', name: 'IMG_2041.txt', course: '資料結構', modelCourse: '資料結構', kind: 'Exam',
+  topic: '期中考範圍', confidence: 'high', evidence: '第一部分', seeded: false,
+  toFolder: 'Courses/資料結構/Exam', learned: false, rejectedBefore: false, alsoKnownAs: '', ...over,
 })
 
 function fakeApi({ candidates = [], renames = [], filings = [], learned = [], calls = [] } = {}) {
@@ -84,8 +84,8 @@ describe('面板裡的小標籤', () => {
       candidates: [candidate()], renames: [renameItem()], filings: [filingItem()],
     })
     assert.deepEqual(tabs(ui).map(b => b.textContent),
-      ['可以清理1', '連拍0', '建議的名字1', '歸檔1', '它學到的0'])
-    assert.equal(tabNamed(ui, '可以清理').getAttribute('aria-selected'), 'true')
+      ['Cleanup1', 'Bursts0', 'Suggested names1', 'Filing1', 'Learned0'])
+    assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
     assert.equal(shown(ui, 'clean'), true)
     assert.equal(shown(ui, 'filings'), false, '一次只顯示一區')
   })
@@ -94,7 +94,7 @@ describe('面板裡的小標籤', () => {
     const ui = await open(t, {
       candidates: [candidate()], renames: [renameItem()], filings: [filingItem()],
     })
-    await tabNamed(ui, '歸檔').onclick()
+    await tabNamed(ui, 'Filing').onclick()
     assert.equal(shown(ui, 'filings'), true)
     assert.equal(shown(ui, 'clean'), false)
     assert.equal(shown(ui, 'renames'), false)
@@ -105,24 +105,24 @@ describe('面板裡的小標籤', () => {
 
   test('空的那一區：標籤看得到但點不下去（不是整個消失）', async t => {
     const ui = await open(t, { candidates: [candidate()] })
-    const burst = tabNamed(ui, '連拍')
-    assert.ok(burst, '沒有連拍的時候標籤還是要在 —— 使用者要知道有這個功能')
+    const burst = tabNamed(ui, 'Bursts')
+    assert.ok(burst, '沒有Bursts的時候標籤還是要在 — 使用者要知道有這個功能')
     assert.equal(burst.disabled, true)
-    assert.equal(tabNamed(ui, '可以清理').disabled, false)
+    assert.equal(tabNamed(ui, 'Cleanup').disabled, false)
   })
 
   test('現在這一區變空了 → 跳到第一個有東西的', async t => {
     const ui = await open(t, { candidates: [], renames: [renameItem()] })
     // 沒有候選：不會停在空的「可以清理」
-    assert.equal(tabNamed(ui, '建議的名字').getAttribute('aria-selected'), 'true')
+    assert.equal(tabNamed(ui, 'Suggested names').getAttribute('aria-selected'), 'true')
     assert.equal(shown(ui, 'renames'), true)
   })
 
   test('全部都空 → 留在「可以清理」，那一區會講「目前沒有待清檔案」', async t => {
     const ui = await open(t, {})
-    assert.equal(tabNamed(ui, '可以清理').getAttribute('aria-selected'), 'true')
+    assert.equal(tabNamed(ui, 'Cleanup').getAttribute('aria-selected'), 'true')
     assert.equal(shown(ui, 'clean'), true)
-    assert.match(ui.$('cleanup-list').textContent, /目前沒有待清檔案/)
+    assert.match(ui.$('cleanup-list').textContent, /Nothing to clean up right now/)
   })
 
   test('示範模式（按 D）整條標籤不顯示，每一區照舊', async t => {

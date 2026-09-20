@@ -152,7 +152,7 @@ describe('R2-1a recoverInterrupted：只看檔案證據改 journal，不搬任�
     appendFileSync(r.to_path, '!')
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
     assert.equal(row(f, p.id, 'only.zip').status, 'done')
-    assert.match(f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=?').get(p.id).why, /隔離區/)
+    assert.match(f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=?').get(p.id).why, /quarantine/)
     assert.deepEqual(listQuarantine(f.db).map(q => q.name), ['only.zip'], '隔離區清單看得到它')
     assert.equal(readFileSync(r.to_path, 'utf8'), 'important-ish!', '沒有搬任何檔')
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
@@ -204,9 +204,9 @@ describe('R2-1a recoverInterrupted：只看檔案證據改 journal，不搬任�
     assert.equal(row(f, p.id, 'only.zip', 'restore').status, 'started', '前提')
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 1 })
     const r = row(f, p.id, 'only.zip', 'restore')
-    assert.deepEqual({ status: r.status, error: r.error }, { status: 'failed', error: '復原中斷，沒有放回' })
+    assert.deepEqual({ status: r.status, error: r.error }, { status: 'failed', error: 'the undo was interrupted, so it was not put back' })
     const o = outcomes(f, p.id)['only.zip']
-    assert.deepEqual({ outcome: o.outcome, why: o.why }, { outcome: 'moved', why: '復原中斷，沒有放回' })
+    assert.deepEqual({ outcome: o.outcome, why: o.why }, { outcome: 'moved', why: 'the undo was interrupted, so it was not put back' })
     assert.equal(readFileSync(q.to_path, 'utf8'), 'important-ish', '還在隔離區')
     assert.deepEqual(listQuarantine(f.db).map(x => x.name), ['only.zip'])
 
@@ -227,10 +227,10 @@ describe('R2-1b rename 之後驗證沒過：立刻搬回原位', () => {
     assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'aaaamore', '放回原位，後來寫進去的也在')
     const a = row(f, p.id, 'a.zip')
     assert.equal(a.status, 'failed')
-    assert.equal(a.error, '搬進去之後檔案還在變動，已經放回原位。')
+    assert.equal(a.error, 'The file kept changing after the move, so it was put back where it was.')
     assert.ok(!existsSync(a.to_path), '隔離區那個位置沒有留東西')
     const o = outcomes(f, p.id)['a.zip']
-    assert.deepEqual({ outcome: o.outcome, why: o.why }, { outcome: 'failed', why: '搬進去之後檔案還在變動，已經放回原位。' })
+    assert.deepEqual({ outcome: o.outcome, why: o.why }, { outcome: 'failed', why: 'The file kept changing after the move, so it was put back where it was.' })
     assert.deepEqual(listQuarantine(f.db).map(x => x.name), ['b.zip'])
     assert.equal(undoPlan(f.db, p.id, f.opts).status, 'restored', '復原不會卡在 a')
     assert.equal(readFileSync(join(f.downloads, 'b.zip'), 'utf8'), 'bbbbbb')
@@ -248,7 +248,7 @@ describe('R2-1b rename 之後驗證沒過：立刻搬回原位', () => {
     assert.equal(r.status, 'error')
     assert.equal(readFileSync(join(f.downloads, 'a.zip'), 'utf8'), 'aaaamore')
     assert.equal(row(f, p.id, 'a.zip').status, 'failed')
-    assert.equal(row(f, p.id, 'a.zip').error, '搬進去之後檔案還在變動，已經放回原位。')
+    assert.equal(row(f, p.id, 'a.zip').error, 'The file kept changing after the move, so it was put back where it was.')
   })
 
   test('對照：原位又出現同名的新檔 → 不搬回（新檔不動），那一列記成 done＋原因，看得到（R3-4）', t => {
@@ -266,10 +266,10 @@ describe('R2-1b rename 之後驗證沒過：立刻搬回原位', () => {
     // 檔確實在隔離區，就記成 done，把「沒有放回原位，請人工檢查隔離區」存起來（稽核第三輪 R3-4）
     assert.equal(a.status, 'done')
     assert.match(f.db.prepare('SELECT why FROM cleanup_item_errors WHERE plan_id=? AND item_id=?')
-      .get(p.id, a.item_id).why, /隔離區/)
+      .get(p.id, a.item_id).why, /quarantine/)
     assert.equal(readFileSync(a.to_path, 'utf8'), 'aaaamore', '檔在隔離區')
     assert.equal(outcomes(f, p.id)['a.zip'].outcome, 'moved')
-    assert.match(outcomes(f, p.id)['a.zip'].why, /隔離區/)
+    assert.match(outcomes(f, p.id)['a.zip'].why, /quarantine/)
     assert.deepEqual(listQuarantine(f.db).map(q => q.name).sort(), ['a.zip', 'b.zip'])
     // 收尾不會再被它卡住；undo 照實說隔離區那份對不上，兩邊的檔都不動
     assert.deepEqual(recoverInterrupted(f.db, f.opts), { recovered: 0 })
@@ -321,7 +321,7 @@ describe('R2-1c undo 碰到從沒完成的 quarantine 列', () => {
     const r = row(f, p.id, 'only.zip')
     assert.equal(r.status, 'reverted')
     assert.notEqual(r.error, NOT_MOVED, '原位已經沒有檔，不可以說「檔案還在原位」')
-    assert.equal(r.error, '搬到一半中斷，沒有搬進隔離區；原位置現在也找不到這個檔。')
+    assert.equal(r.error, 'Interrupted mid-move; it never reached quarantine, and it is no longer where it was either.')
     assert.equal(outcomes(f, p.id)['only.zip'].outcome, 'failed')
   })
 
@@ -335,7 +335,7 @@ describe('R2-1c undo 碰到從沒完成的 quarantine 列', () => {
     assert.equal(u.status, 'restored', `不是 partial／error：${u.error}`)
     const r = row(f, p.id, 'only.zip')
     assert.deepEqual({ status: r.status, error: r.error },
-      { status: 'reverted', error: '搬到一半中斷，沒有搬進隔離區；原位置的檔已經不是當初那一份。' })
+      { status: 'reverted', error: 'Interrupted mid-move; it never reached quarantine, and the file in its place is no longer the same one.' })
     assert.equal(readFileSync(join(f.downloads, 'only.zip'), 'utf8'), 'important-ishmore', '原位的檔不動')
   })
 
@@ -437,7 +437,7 @@ describe('R2-2 保留者平手（同一輪掃描看到的，first_seen_at 一樣
     assert.equal(seenAt(f, 'report.pdf'), seenAt(f, 'report (1).pdf'), '前提：同一輪看到，平手')
     const d = dups(f)
     assert.deepEqual(d.map(c => c.name), ['report (1).pdf'], '原檔被列成重複、複本被留著')
-    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /會留著「report\.pdf」/)
+    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /“report\.pdf” is the one being kept/)
     assert.equal(applyPlan(f.db, f.plan().id, f.opts).status, 'applied')
     assert.equal(readFileSync(join(f.downloads, 'report.pdf'), 'utf8'), 'same content')
     assert.ok(!existsSync(join(f.downloads, 'report (1).pdf')))
@@ -467,7 +467,7 @@ describe('R2-2 保留者平手（同一輪掃描看到的，first_seen_at 一樣
     f.scan()
     const d = dups(f)
     assert.deepEqual(d.map(c => c.name), ['report.pdf'])
-    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /會留著「report \(1\)\.pdf」/)
+    assert.match(d[0].reasons.find(r => r.kind === 'duplicate').evidence, /“report \(1\)\.pdf” is the one being kept/)
   })
 
   test('looksLikeCopy：瀏覽器、Windows、macOS 的複本字尾算；名字裡剛好有括號或「副本」兩個字的原檔不算', () => {
@@ -494,7 +494,7 @@ describe('R2-2 保留者平手（同一輪掃描看到的，first_seen_at 一樣
       x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x
       return ((x ^ (x >>> 14)) >>> 0) % n
     }
-    const bases = ['report', '報告', 'a', 'b', 'photo']
+    const bases = ['report', 'Report', 'a', 'b', 'photo']
     const tails = ['', ' (1)', ' (2)', '(3)', ' - Copy', ' - 副本', ' copy', ' copy 2', ' 拷貝', ' (2026)']
     const times = [new Date(Date.now() - 7200_000).toISOString(), new Date(Date.now() - 3600_000).toISOString()]
     const hits = { copyDecided: 0, timeBeatName: 0, pathDecided: 0 }
@@ -539,7 +539,7 @@ describe('R2-2 保留者平手（同一輪掃描看到的，first_seen_at 一樣
         const c = listed.get(r.id)
         assert.ok(c, `${r.name} 是多出來的，卻沒有列`)
         const ev = c.reasons.find(x => x.kind === 'duplicate').evidence
-        assert.ok(ev.includes(`會留著「${keeper.name}」`), `${r.name} 的證據指名的不是保留者 ${keeper.name}：${ev}`)
+        assert.ok(ev.includes(`“${keeper.name}” is the one being kept`), `${r.name} 的證據指名的不是保留者 ${keeper.name}：${ev}`)
       }
     }
     // 生成器驗收：三種決定方式都要真的走到

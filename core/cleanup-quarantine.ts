@@ -96,7 +96,7 @@ export function prepareEmptyQuarantine(db: DatabaseSync, opts: ExecOptions) {
   return withCleanupLock(db, () => {
     try { pruneEmptyRequests(db) } catch (e: any) {
       // 清不掉只是表多幾列，不可以讓預覽本身失敗
-      console.error('[contextbox] 清空預覽的舊紀錄清不掉：', e?.message ?? e)
+      console.error('[contextbox] could not clear old empty-preview rows:', e?.message ?? e)
     }
     const entries = activeQuarantine(db).filter(r => !restoring(db, r) && eligible(db, r.seq))
     const token = randomUUID()
@@ -108,7 +108,7 @@ export function prepareEmptyQuarantine(db: DatabaseSync, opts: ExecOptions) {
     return { token, expiresAt, itemCount: entries.length,
       bytes: entries.reduce((n, r) => n + moveFingerprint(db, r.seq).size, 0),
       ...(previous.count ? { previousDeleted: previous } : {}),
-      message: '這些檔案已隔離七天。再次確認後會永久刪除，無法復原。' }
+      message: 'These files have been in quarantine for seven days. Confirm again and they are deleted for good.' }
   })
 }
 
@@ -137,12 +137,12 @@ type EmptyReply = EmptyResult & { noop: boolean; stoppedEarly?: StoppedEarly }
 export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: string; confirmed: boolean }) {
   checkOptions(opts)
   if (opts.confirmed !== true || typeof opts.token !== 'string' || !opts.token) {
-    throw new CleanupError('CONFIRMATION_REQUIRED', '請先預覽，再次確認清空隔離區。')
+    throw new CleanupError('CONFIRMATION_REQUIRED', 'Preview first, then confirm emptying quarantine.')
   }
   return withCleanupLock(db, renew => {
     const request = db.prepare('SELECT * FROM cleanup_empty_requests WHERE token=?').get(opts.token) as
       { expires_at: string; entries: string; result: string | null } | undefined
-    if (!request) throw new CleanupError('CONFIRMATION_REQUIRED', '清空確認無效，請重新預覽。')
+    if (!request) throw new CleanupError('CONFIRMATION_REQUIRED', 'That confirmation code is not valid. Run the preview again.')
     // 重送已經做完的那一次：原樣回傳，**但講清楚這次一個檔都沒刪**（稽核第三輪 R3-2）
     if (request.result) return { ...JSON.parse(request.result), noop: true } as EmptyReply
     const progress = db.prepare('SELECT next, result FROM cleanup_empty_progress WHERE token=?').get(opts.token) as
@@ -151,7 +151,7 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
       // **過期也要把已經刪掉幾個講出來**（R3-13）：以前這一行排在讀進度之前，那個數字就此消失
       const already = progress ? Number((JSON.parse(progress.result) as EmptyResult)?.deletedCount) || 0 : 0
       throw new CleanupError('CONFIRMATION_EXPIRED',
-        already ? `清空確認已過期，請重新預覽。上次那批已經刪掉 ${already} 個。` : '清空確認已過期，請重新預覽。')
+        already ? `That confirmation code has expired. Run the preview again. The previous batch already deleted ${already}.` : 'That confirmation code has expired. Run the preview again.')
     }
     let result: EmptyResult = progress
       ? { setAside: [], ...JSON.parse(progress.result) as EmptyResult }
@@ -179,7 +179,7 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
       // 預覽之後有人按了復原、復原到一半中斷：那個檔要留給「再按一次復原」
       if (restoring(db, row)) continue
       try {
-        if (!eligible(db, seq)) throw new CleanupError('TOO_RECENT', '檔案隔離未滿七天，無法清空。')
+        if (!eligible(db, seq)) throw new CleanupError('TOO_RECENT', 'This file has not been in quarantine for seven days yet, so it cannot be emptied.')
         const path = checkedQuarantinePath(db, row, opts)
         const expected = moveFingerprint(db, seq)
         const prior = db.prepare('SELECT status FROM cleanup_purges WHERE seq=?').get(seq) as { status: string } | undefined
@@ -192,12 +192,12 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
           transaction(db, () => {
             db.prepare(`INSERT INTO cleanup_purges(seq,ts,status,error) VALUES (?,?,'done',?)
               ON CONFLICT(seq) DO UPDATE SET status='done',error=excluded.error`)
-              .run(seq, at, '清空時這個檔已經不在隔離區了（可能是手動刪掉的）。')
+              .run(seq, at, 'By the time of the empty, this file was no longer in quarantine (deleted by hand?).')
             saveProgress(index + 1, { ...result, setAside: [...result.setAside,
-              { seq, why: '這個檔已經不在隔離區了（可能是你自己刪掉的），從清單移除。' }] })
+              { seq, why: 'This file is no longer in quarantine (did you delete it?), so it was taken off the list.' }] })
           })
           result = { ...result, setAside: [...result.setAside,
-            { seq, why: '這個檔已經不在隔離區了（可能是你自己刪掉的），從清單移除。' }] }
+            { seq, why: 'This file is no longer in quarantine (did you delete it?), so it was taken off the list.' }] }
           continue
         }
         if (!missing) {
@@ -206,7 +206,7 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
               || actual.mtime !== expected.mtime || actual.sha256 !== expected.sha256) {
             // 不刪（沒驗證過的內容不刪），但也不算錯：放到一邊、照實講，留給使用者自己看
             result = { ...result, setAside: [...result.setAside,
-              { seq, why: '這個檔的內容跟當初搬進去的不一樣，沒有刪除；請自己看一眼再決定。' }] }
+              { seq, why: 'This file no longer matches what was moved in, so it was not deleted. Have a look and decide yourself.' }] }
             saveProgress(index + 1, result)
             continue
           }
@@ -217,7 +217,7 @@ export function emptyQuarantine(db: DatabaseSync, opts: ExecOptions & { token: s
           const final = lstatSync(path)
           if (!final.isFile() || final.nlink !== 1 || final.dev !== actual.dev || final.ino !== actual.ino
               || final.size !== actual.size || final.mtime.toISOString() !== actual.mtime) {
-            throw new CleanupError('CHANGED', '隔離檔案已變更，沒有刪除。')
+            throw new CleanupError('CHANGED', 'The quarantined file changed, so it was not deleted.')
           }
           unlinkSync(path)
         }

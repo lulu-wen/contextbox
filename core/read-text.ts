@@ -33,21 +33,21 @@ import { Worker } from 'node:worker_threads'
 export type TextKind = 'text' | 'docx' | 'pptx' | 'pdf'
 
 /**
- * `file_texts.reason` 的合法值。存中文是故意的：這幾個字直接就是要給人看的說法，
- * 不需要再翻一次（面板與 CLI 只會講「N 個檔看不懂」，逐檔的原因是查資料庫時看的）。
+ * `file_texts.reason` 的合法值。這幾個字直接就是要給人看的說法，不需要再翻一次
+ * （面板與 CLI 只會講「N 個檔看不懂」，逐檔的原因是查資料庫時看的）。
  */
 export const TEXT_REASON = Object.freeze({
   /** 解析不出來：不是這個格式、壞掉、加密、看不懂的編碼 */
-  unreadable: '看不懂',
+  unreadable: 'unreadable',
   /** 檔案超過上限，根本沒讀 */
-  tooLarge: '太大',
+  tooLarge: 'too large',
   /** 5 秒還沒讀完，或 worker 中途死掉 */
-  timeout: '逾時',
+  timeout: 'timed out',
   /** worker 自己接到的配置失敗 */
-  outOfMemory: '記憶體不足',
+  outOfMemory: 'out of memory',
 })
 
-export type TextReason = '看不懂' | '太大' | '逾時' | '記憶體不足'
+export type TextReason = 'unreadable' | 'too large' | 'timed out' | 'out of memory'
 
 /**
  * 會去試著讀內容的副檔名 → 存進 `file_texts.kind` 的種類。
@@ -273,7 +273,7 @@ export function createTextReader(opts: TextReaderOptions = {}): TextReader {
     const n = Atomics.load(c, LEN)
     let msg: any
     try {
-      if (n <= 0 || n > o.length) throw new Error('回應長度不合理')
+      if (n <= 0 || n > o.length) throw new Error('the response length makes no sense')
       msg = JSON.parse(Buffer.from(o.buffer as ArrayBufferLike, 0, n).toString('utf8'))
     } catch {
       // worker 回了看不懂的東西：當它壞了，換一個

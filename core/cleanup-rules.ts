@@ -1,7 +1,13 @@
 import { basename, extname } from 'node:path'
 import { execRefusesName } from './cleanup-journal.ts'
 
-export const CLEANUP_RULE_VERSION = 'cleanup-rules-v1'
+/**
+ * 規則版本。**理由（reason／evidence）的文字換了就要換版本**（稽核 2026-09-20）：
+ * 那兩段字是**存起來的**（cleanup_candidates 那一列），鍵是 (item_id, kind, rule_version)。
+ * 不換版本的話，舊資料庫在下一次完整掃描之前會把存起來的中文理由跟即時產生的英文片段
+ * 拼在同一句裡 —— 面板第一眼就是半中半英。換了版本，舊那幾列配不上、新的照英文重建。
+ */
+export const CLEANUP_RULE_VERSION = 'cleanup-rules-v2-en'
 
 /**
  * 每一種 kind 與它的信心值。**這裡是唯一的真值來源。**
@@ -138,8 +144,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'partial',
       95,
-      '下載中斷留下的半成品',
-      `${ext} 副檔名，而且 ${days} 天沒有變動`,
+      'A half-finished download',
+      `${ext} extension, and untouched for ${days} days`,
     ))
   }
 
@@ -147,8 +153,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'empty',
       95,
-      '空檔案',
-      `檔案大小是 0 byte，而且 ${days} 天沒有變動`,
+      'An empty file',
+      `0 bytes, and untouched for ${days} days`,
     ))
   }
 
@@ -156,8 +162,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'temp',
       85,
-      '舊暫存檔',
-      `${ext} 暫存檔，而且 ${days} 天沒有變動`,
+      'An old temporary file',
+      `${ext} temporary file, and untouched for ${days} days`,
     ))
   }
 
@@ -165,8 +171,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'installer',
       70,
-      '舊安裝檔通常裝完就不需要留在 Downloads',
-      `${ext} 安裝檔，而且 ${days} 天沒有變動`,
+      'Old installers rarely need to stay in Downloads',
+      `${ext} installer, and untouched for ${days} days`,
     ))
   }
 
@@ -174,8 +180,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'archive',
       65,
-      '舊壓縮檔通常是一次性下載',
-      `${ext} 壓縮檔，而且 ${days} 天沒有變動`,
+      'Old archives are usually one-off downloads',
+      `${ext} archive, and untouched for ${days} days`,
     ))
   }
 
@@ -183,8 +189,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'old-download',
       35,
-      '很久沒有動過的下載檔',
-      `${days} 天沒有變動，且副檔名 ${ext || '（沒有）'} 不在保護清單`,
+      'A download nobody has touched in a long time',
+      `untouched for ${days} days, and ${ext || '(no extension)'} is not on the protected list`,
     ))
   }
 
@@ -192,8 +198,8 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     out.push(draft(
       'screenshot-noise',
       35,
-      '舊截圖常常是暫時資訊',
-      `檔名是 ${name}，而且 ${days} 天沒有變動`,
+      'Old screenshots are usually throwaway',
+      `Named ${name}, and untouched for ${days} days`,
     ))
   }
 
@@ -231,9 +237,9 @@ export function burstDraft(level: 'same' | 'similar', keepName: string, gapSec: 
     'screenshot-noise',
     BURST_CONFIDENCE[level],
     level === 'same'
-      ? `跟「${keepName}」幾乎一樣`
-      : `跟「${keepName}」差不多`,
-    `同一批連拍，相隔 ${gapSec} 秒，會留著「${keepName}」`,
+      ? `Almost identical to “${keepName}”`
+      : `Much like “${keepName}”`,
+    `Same burst, ${gapSec}s apart; “${keepName}” is the one being kept`,
   )
 }
 
@@ -241,7 +247,7 @@ export function duplicateDraft(count: number): CleanupCandidateDraft {
   return draft(
     'duplicate',
     98,
-    '同內容的重複檔案',
-    `同一個 sha256 還有 ${count - 1} 份檔案存在`,
+    'A duplicate — same contents',
+    `${count - 1} other file${count - 1 === 1 ? '' : 's'} ${count - 1 === 1 ? 'has' : 'have'} the same sha256`,
   )
 }

@@ -256,7 +256,7 @@ describe('P6-3 看不到內容的檔照樣給大小、最後修改、為什麼�
     assert.equal(r.body.bytes, 4096)
     assert.equal(r.body.ext, '.exe')
     assert.ok(Date.parse(r.body.mtime) > 0, r.body.mtime)
-    assert.match(r.body.why, /安裝檔/, r.body.why)
+    assert.match(r.body.why, /installer/, r.body.why)
     assert.ok(!JSON.stringify(r.body).includes(path))
   })
 })
@@ -369,7 +369,7 @@ describe('P6-6 沒帶 token 是 401；回應裡沒有絕對路徑', () => {
         res.on('end', () => {
           const raw = Buffer.concat(chunks)
           let json = null
-          try { json = JSON.parse(raw.toString('utf8')) } catch { /* 不是 JSON */ }
+          try { json = JSON.parse(raw.toString('utf8')) } catch { /* not answer with JSON */ }
           resolve({ status: res.statusCode, raw, json })
         })
       })
@@ -494,7 +494,7 @@ describe('P6-11 已經清掉、還可以復原的檔也看得到內容', () => {
     const r = peek(s, id)
     assert.equal(r.code, 200, JSON.stringify(r.body))
     assert.equal(r.body.name, '舊壓縮檔.zip')
-    assert.match(r.body.why, /隔離區/, r.body.why)
+    assert.match(r.body.why, /quarantine/, r.body.why)
   })
 })
 
@@ -587,8 +587,8 @@ describe('P6 文件', () => {
     assert.match(section, /panelReason|同一支/, '要寫明跟預覽共用同一份判斷')
   })
 
-  test('docs/面板.md 講了分頁與「看內容」', () => {
-    const md = readFileSync(join(REPO, 'docs/面板.md'), 'utf8')
+  test('docs/panel.md 講了分頁與「看內容」', () => {
+    const md = readFileSync(join(REPO, 'docs/panel.md'), 'utf8')
     assert.match(md, /#files/)
     assert.match(md, /#facts/)
     assert.match(md, /localStorage/)

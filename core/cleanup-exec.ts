@@ -41,11 +41,11 @@ export function checkedPath(path: string, directory = false): string {
   let cur = parse(absolute).root
   for (const segment of relative(cur, absolute).split(sep).filter(Boolean)) {
     cur = join(cur, segment)
-    if (lstatSync(cur).isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', '路徑含有捷徑，無法安全處理。')
+    if (lstatSync(cur).isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', 'The path contains a symlink, so it cannot be handled safely.')
   }
   const st = lstatSync(absolute)
   if (directory ? !st.isDirectory() : !st.isFile() || st.nlink !== 1) {
-    throw new CleanupError('UNSAFE_PATH', '只處理一般檔案，不處理捷徑或硬鏈結。')
+    throw new CleanupError('UNSAFE_PATH', 'Only ordinary files are handled — not symlinks or hard links.')
   }
   return realpathSync(absolute)
 }
@@ -60,7 +60,7 @@ export function fingerprint(path: string, maxBytes: number): Fingerprint {
   try {
     const before = fstatSync(fd)
     if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || !before.ino) {
-      throw new CleanupError('UNSAFE_FILE', '檔案太大或無法確認身分，請人工檢查。')
+      throw new CleanupError('UNSAFE_FILE', 'The file is too large, or its identity cannot be confirmed. Check it yourself.')
     }
     const hash = createHash('sha256')
     const buffer = Buffer.alloc(64 * 1024)
@@ -68,14 +68,14 @@ export function fingerprint(path: string, maxBytes: number): Fingerprint {
     let total = 0
     while ((n = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
       total += n
-      if (total > maxBytes) throw new CleanupError('CHANGED', '讀取時檔案超過大小上限，請重新掃描。')
+      if (total > maxBytes) throw new CleanupError('CHANGED', 'The file grew past the size limit while being read. Scan again.')
       hash.update(buffer.subarray(0, n))
     }
     const after = fstatSync(fd)
     const atPath = lstatSync(path)
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
         || atPath.ino !== before.ino || atPath.dev !== before.dev || atPath.isSymbolicLink()) {
-      throw new CleanupError('CHANGED', '檔案在讀取時變更，請重新掃描。')
+      throw new CleanupError('CHANGED', 'The file changed while being read. Scan again.')
     }
     return { dev: before.dev, ino: before.ino, size: before.size, mtime: before.mtime.toISOString(), sha256: hash.digest('hex') }
   } finally { closeSync(fd) }
@@ -86,9 +86,9 @@ function same(a: Fingerprint, b: Fingerprint): boolean {
 }
 
 export function checkOptions(opts: ExecOptions) {
-  if (!opts || opts.readonly) throw new CleanupError('READ_ONLY', '目前不允許變更檔案。')
+  if (!opts || opts.readonly) throw new CleanupError('READ_ONLY', 'Changing files is not allowed right now.')
   if (!Array.isArray(opts.roots) || !opts.roots.length || !Number.isFinite(opts.maxBytes) || opts.maxBytes <= 0) {
-    throw new CleanupError('BAD_CONFIG', '請設定清理資料夾與檔案大小上限。')
+    throw new CleanupError('BAD_CONFIG', 'Set the cleanup folders and the file size limit first.')
   }
 }
 
@@ -131,16 +131,16 @@ function originalPath(path: string, opts: ExecOptions, allowMissing = false): st
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
   if (!underSomeRoot(opts.roots, target)) {
-    throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
+    throw new CleanupError('OUTSIDE_ROOT', 'The file is not inside a configured cleanup folder.')
   }
   const segments = lowerSegments(target)
   const name = segments.at(-1)!
   if (inProtectedDir(segments) || execRefusesName(name)) {
-    throw new CleanupError('PROTECTED', '這是受保護的檔案，請人工處理。')
+    throw new CleanupError('PROTECTED', 'This file is protected. Handle it yourself.')
   }
   if (!allowMissing) checkedPath(target)
   const q = resolve(opts.quarantine ?? DEFAULT_QUARANTINE)
-  if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', '不可把隔離區當成清理來源。')
+  if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', 'Quarantine cannot be a cleanup source.')
   return target
 }
 
@@ -161,13 +161,13 @@ function keeperPath(path: string, opts: ExecOptions): string {
   const parent = checkedPath(dirname(path), true)
   const target = join(parent, parse(path).base)
   if (!underSomeRoot(opts.roots, target)) {
-    throw new CleanupError('OUTSIDE_ROOT', '檔案不在設定的清理資料夾內。')
+    throw new CleanupError('OUTSIDE_ROOT', 'The file is not inside a configured cleanup folder.')
   }
   if (inProtectedDir(lowerSegments(target))) {
-    throw new CleanupError('PROTECTED', '這是受保護的檔案，請人工處理。')
+    throw new CleanupError('PROTECTED', 'This file is protected. Handle it yourself.')
   }
   const q = resolve(opts.quarantine ?? DEFAULT_QUARANTINE)
-  if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', '不可把隔離區當成清理來源。')
+  if (under(q, target) || q === target) throw new CleanupError('UNSAFE_PATH', 'Quarantine cannot be a cleanup source.')
   return target
 }
 
@@ -184,14 +184,14 @@ function verifySnapshot(item: PlanSnapshot, opts: ExecOptions): Fingerprint {
   const path = originalPath(item.path, opts)
   const f = fingerprint(path, opts.maxBytes)
   if (f.size !== item.bytes || f.mtime !== item.mtime || (item.sha256 && f.sha256 !== item.sha256)) {
-    throw new CleanupError('CHANGED', '檔案已變更或仍在下載，請重新掃描並建立計畫。')
+    throw new CleanupError('CHANGED', 'The file changed, or is still downloading. Scan again and build a new plan.')
   }
   // **靜置不是「變更」，要分開講。**
   // 併在一起的話，一個剛複製出來、什麼都沒動過的重複檔會得到
   // 「檔案已變更」—— 訊息在說謊，而使用者唯一能做的事（重新掃描）也沒用，
   // 因為重掃之後它還是一樣新。正確的指示是「等一下再試」。
   if (Date.now() - Date.parse(f.mtime) < SETTLE_MS) {
-    throw new CleanupError('TOO_FRESH', '這個檔案十分鐘內還在變動，先不搬。等一下再試一次。')
+    throw new CleanupError('TOO_FRESH', 'This file changed within the last ten minutes, so it stays put. Try again later.')
   }
   return f
 }
@@ -215,7 +215,7 @@ function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecO
       if (f.sha256 === item.sha256) return
     } catch { /* A stale duplicate record is not evidence of an existing copy. */ }
   }
-  throw new CleanupError('NO_DUPLICATE', '找不到會保留的相同檔案，請重新掃描。')
+  throw new CleanupError('NO_DUPLICATE', 'Cannot find the identical file that would be kept. Scan again.')
 }
 
 function latest(db: DatabaseSync, planId: string, itemId: string, op: string): JournalRow | undefined {
@@ -235,7 +235,7 @@ function startMove(db: DatabaseSync, planId: string, itemId: string, op: 'quaran
 
 export function moveFingerprint(db: DatabaseSync, seq: number): Fingerprint {
   const r = db.prepare('SELECT fingerprint FROM cleanup_move_details WHERE seq=?').get(seq) as { fingerprint: string } | undefined
-  if (!r) throw new CleanupError('UNSAFE_JOURNAL', '缺少搬移紀錄，請人工檢查。')
+  if (!r) throw new CleanupError('UNSAFE_JOURNAL', 'The move record is missing. Check it yourself.')
   return JSON.parse(r.fingerprint)
 }
 
@@ -244,10 +244,10 @@ export function checkedQuarantinePath(db: DatabaseSync, row: JournalRow, opts: E
   const root = quarantineRoot(opts)
   const expected = join(root, row.plan_id, row.item_id, 'content')
   if (!/^[\w-]+$/.test(row.plan_id) || !/^[\w-]+$/.test(row.item_id) || row.to_path !== expected) {
-    throw new CleanupError('UNSAFE_JOURNAL', '隔離紀錄路徑不符，請人工檢查。')
+    throw new CleanupError('UNSAFE_JOURNAL', 'The quarantine record points somewhere else. Check it yourself.')
   }
   const snapshot = planSnapshots(db, row.plan_id).find(i => i.id === row.item_id)
-  if (!snapshot || snapshot.path !== row.from_path) throw new CleanupError('UNSAFE_JOURNAL', '隔離紀錄來源不符。')
+  if (!snapshot || snapshot.path !== row.from_path) throw new CleanupError('UNSAFE_JOURNAL', 'The quarantine record came from somewhere else.')
   checkedPath(dirname(expected), true)
   return expected
 }
@@ -262,7 +262,7 @@ function reserveDestination(db: DatabaseSync, row: JournalRow) {
 }
 
 /** rename 之後驗證沒過、已經把檔搬回原位 —— 那一項的原因（逐項結果是 failed）。 */
-export const MOVED_BACK = '搬進去之後檔案還在變動，已經放回原位。'
+export const MOVED_BACK = 'The file kept changing after the move, so it was put back where it was.'
 /**
  * rename 之後驗證沒過、原位又有了別的檔（或搬不回去）—— **檔確實在隔離區**。
  *
@@ -271,7 +271,7 @@ export const MOVED_BACK = '搬進去之後檔案還在變動，已經放回原�
  * 隔離區清單／可復原清單／健康檢查／doctor 四個地方都看不到它 —— 檔案在隔離區裡隱形。
  * 現在**承認它在**：那一列記成 done，這句話存進 cleanup_item_errors 與 file_items.error。
  */
-export const LEFT_IN_QUARANTINE = '搬進去之後檔案還在變動，沒有放回原位，請人工檢查隔離區。'
+export const LEFT_IN_QUARANTINE = 'The file kept changing after the move and was not put back. Have a look in quarantine yourself.'
 
 /**
  * 隔離區那個位置有沒有**可能是搬進去的檔**：不存在、或是 0 byte（預留的空檔）→ 沒有。
@@ -330,7 +330,7 @@ function performMove(db: DatabaseSync, row: JournalRow, opts: ExecOptions, befor
   }
   beforeMove?.()
   if (!same(expected, fingerprint(row.from_path, opts.maxBytes))) {
-    throw new CleanupError('CHANGED', '來源檔案已變更，無法繼續搬移。')
+    throw new CleanupError('CHANGED', 'The source file changed, so the move cannot continue.')
   }
   if (!exists(row.to_path)) reserveDestination(db, row)
   const detail = db.prepare('SELECT reservation FROM cleanup_move_details WHERE seq=?').get(row.seq) as { reservation: string | null }
@@ -339,14 +339,14 @@ function performMove(db: DatabaseSync, row: JournalRow, opts: ExecOptions, befor
   const st = lstatSync(row.to_path)
   if (!reservation || st.dev !== reservation.dev || st.ino !== reservation.ino || st.size !== 0
       || st.mtime.toISOString() !== reservation.mtime) {
-    throw new CleanupError('CONFLICT', '目的地已被其他檔案佔用，沒有覆蓋任何檔案。')
+    throw new CleanupError('CONFLICT', 'Another file already holds the destination, so nothing was overwritten.')
   }
   checkedPath(row.from_path)
   renameSync(row.from_path, row.to_path)
   let problem: unknown = null
   try {
     if (!same(expected, fingerprint(row.to_path, opts.maxBytes))) {
-      problem = new CleanupError('VERIFY_FAILED', '搬移後驗證未通過，請保留隔離區並重試。')
+      problem = new CleanupError('VERIFY_FAILED', 'The post-move check did not pass. Leave quarantine alone and try again.')
     }
   } catch (e) { problem = e }
   if (problem === null) return
@@ -486,7 +486,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
     // 提早回傳的一律是 no-op：一個檔都不會動（R3-2）
     if (['applied', 'restored', 'dismissed'].includes(plan.status)) return result(db, id, { noop: true })
     if (db.prepare(`SELECT 1 FROM cleanup_journal WHERE plan_id=? AND op='restore' LIMIT 1`).get(id)) {
-      throw new CleanupError('CONFLICT', '計畫已開始復原，請繼續復原。')
+      throw new CleanupError('CONFLICT', 'This plan has started restoring. Carry on with the undo.')
     }
     // **計畫是一次性的**：跑完過一次（partial／error）就原樣回傳，不重試任何項目（稽核第二輪 R2-3）。
     // 以前會重試失敗項：失敗的檔可以再進別份計畫（partial／error 不佔檔），使用者用別份計畫搬走又
@@ -498,14 +498,14 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
     const started = Boolean(db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id))
     if (opts.skippedIds !== undefined) {
       const allowed = new Set(items.flatMap(i => candidateIdsFor(db, id, i.id)))
-      if (opts.skippedIds.some(s => !allowed.has(s))) throw new CleanupError('BAD_BODY', '略過清單包含不屬於這份計畫的候選。')
+      if (opts.skippedIds.some(s => !allowed.has(s))) throw new CleanupError('BAD_BODY', 'The skip list names candidates that are not in this plan.')
       const skip = new Set(opts.skippedIds)
       for (const i of items) {
         const ids = candidateIdsFor(db, id, i.id)
         const requested = ids.some(c => skip.has(c))
         const current = (db.prepare(`SELECT max(p.skipped) n FROM cleanup_plan_items p JOIN cleanup_candidates c ON c.id=p.candidate_id
           WHERE p.plan_id=? AND c.item_id=?`).get(id, i.id) as { n: number }).n === 1
-        if (started && requested !== current) throw new CleanupError('CONFLICT', '計畫已開始，不能更改略過項目。')
+        if (started && requested !== current) throw new CleanupError('CONFLICT', 'This plan has started, so the skip list cannot change.')
       }
       transaction(db, () => {
         for (const i of items) {
@@ -542,7 +542,7 @@ export function applyPlan(db: DatabaseSync, id: string, opts: ExecOptions & { sk
           const f = verifySnapshot(item, opts)
           verifyDuplicateKeeper(db, item, opts, selected, f)
           const dir = join(q, id, item.id)
-          if (!/^[\w-]+$/.test(id) || !/^[\w-]+$/.test(item.id)) throw new CleanupError('UNSAFE_PATH', '檔案識別碼不合法。')
+          if (!/^[\w-]+$/.test(id) || !/^[\w-]+$/.test(item.id)) throw new CleanupError('UNSAFE_PATH', 'That file id is not valid.')
           if (!exists(join(q, id))) mkdirSync(join(q, id), { mode: 0o700 })
           checkedPath(join(q, id), true)
           if (!exists(dir)) mkdirSync(dir, { mode: 0o700 })
@@ -585,20 +585,20 @@ function restoreTarget(path: string): string {
     const candidate = path + '.restored' + (n === 1 ? '' : '.' + n)
     if (!exists(candidate)) return candidate
   }
-  throw new CleanupError('CONFLICT', '復原檔名都已被佔用，請先整理目的資料夾。')
+  throw new CleanupError('CONFLICT', 'Every name the undo could use is taken. Tidy the destination folder first.')
 }
 
 /** 套用中斷在 rename 之前、復原時確認檔案還在原位 —— 那一項的原因（逐項結果是 failed）。 */
-export const NOT_MOVED = '搬到一半中斷，檔案還在原位，沒有搬。'
+export const NOT_MOVED = 'Interrupted mid-move; the file never left, so nothing moved.'
 /** 套用中斷在 rename 之前、隔離區只有預留的空檔，原位也找不到（使用者後來刪掉、搬走了）。 */
-export const NOT_MOVED_GONE = '搬到一半中斷，沒有搬進隔離區；原位置現在也找不到這個檔。'
+export const NOT_MOVED_GONE = 'Interrupted mid-move; it never reached quarantine, and it is no longer where it was either.'
 /**
  * 套用中斷在 rename 之前、隔離區只有預留的空檔，原位**有東西、但不是當初那一份**
  *（被改過、被換掉、換成資料夾或捷徑）。以前併在 NOT_MOVED_GONE 裡，檔明明在原位，卻說「找不到」。
  */
-export const NOT_MOVED_CHANGED = '搬到一半中斷，沒有搬進隔離區；原位置的檔已經不是當初那一份。'
+export const NOT_MOVED_CHANGED = 'Interrupted mid-move; it never reached quarantine, and the file in its place is no longer the same one.'
 /** 復原中斷在 rename 之前（recoverInterrupted 確認的）：檔還在隔離區，可以再復原。 */
-const RESTORE_NOT_DONE = '復原中斷，沒有放回'
+const RESTORE_NOT_DONE = 'the undo was interrupted, so it was not put back'
 
 /** 讀指紋；讀不到（不見了、被換成捷徑、還在變）回 null。只拿來當證據，不丟例外。 */
 function fingerprintOrNull(path: string, maxBytes: number): Fingerprint | null {
@@ -625,7 +625,7 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
     // **還沒開始的計畫沒有東西可以復原。** 以前照樣跑完、把計畫標成 restored，逐項變成
     // 「沒有搬動，原因不明」—— 一份從沒套用的計畫在歷史裡變成「復原過了」。判斷跟 releasePlan 一樣。
     if (plan.status === 'proposed' && !db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id)) {
-      throw new CleanupError('CONFLICT', '這份計畫還沒套用，沒有東西可以復原；不要了請用放棄（release）。')
+      throw new CleanupError('CONFLICT', 'This plan was never applied, so there is nothing to undo. If you do not want it, drop it (release).')
     }
     let restored = 0
     let stopped: StoppedEarly | null = null
@@ -644,7 +644,7 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
         const path = checkedQuarantinePath(db, q, opts)
         const purge = db.prepare('SELECT status FROM cleanup_purges WHERE seq=?').get(q.seq) as { status: string } | undefined
         if (purge?.status === 'done' || purge?.status === 'started' && !exists(path)) {
-          throw new CleanupError('PURGED', '這個檔案已確認清空，無法復原。')
+          throw new CleanupError('PURGED', 'This file was confirmed deleted, so it cannot be brought back.')
         }
         // Failed pre-move attempts have no quarantined data to restore.
         if (q.status !== 'done' && !row) {
@@ -653,7 +653,7 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
             // 隔離區那個位置有真的內容、又對不上：可能就是搬進去之後被改過的那份 ——
             // **不可以說它不在隔離區**，照實丟錯，那一列不動（稽核第二輪 R2-1b／R2-1c）
             if (mayHoldMovedFile(path)) {
-              throw new CleanupError('VERIFY_FAILED', '隔離區裡的這個檔跟當初搬進去的對不上，沒有放回；請人工檢查隔離區。')
+              throw new CleanupError('VERIFY_FAILED', 'The file in quarantine does not match what was moved in, so it was not put back. Have a look in quarantine yourself.')
             }
             // **這一項根本不在隔離區**（只有預留的空檔，或什麼都沒有）：沒有東西可以放回，跳過。
             // 以前這裡丟 VERIFY_FAILED：套用失敗、原檔後來被使用者刪掉的項目讓復原永遠是 partial，
@@ -671,11 +671,11 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
         const original = originalPath(item.path, opts, true)
         if (!row) {
           const f = fingerprint(path, opts.maxBytes)
-          if (!same(f, moveFingerprint(db, q.seq))) throw new CleanupError('CHANGED', '隔離區檔案已變更，無法安全復原。')
+          if (!same(f, moveFingerprint(db, q.seq))) throw new CleanupError('CHANGED', 'The quarantined file changed, so it cannot be put back safely.')
           row = startMove(db, id, item.id, 'restore', path, restoreTarget(original), f)
         }
         if (row.from_path !== path || !(row.to_path === original || /^\.restored(?:\.[1-9]\d*)?$/.test(row.to_path.slice(original.length)) && row.to_path.startsWith(original))) {
-          throw new CleanupError('UNSAFE_JOURNAL', '復原紀錄路徑不符。')
+          throw new CleanupError('UNSAFE_JOURNAL', 'The undo record points somewhere else.')
         }
         checkedPath(dirname(row.to_path), true)
         performMove(db, row, opts)
@@ -720,7 +720,7 @@ export function undoPlan(db: DatabaseSync, id: string, opts: ExecOptions) {
  */
 export function recoverInterrupted(db: DatabaseSync, opts: ExecOptions): { recovered: number } {
   if (!opts || !Number.isFinite(opts.maxBytes) || opts.maxBytes <= 0) {
-    throw new CleanupError('BAD_CONFIG', '請設定檔案大小上限。')
+    throw new CleanupError('BAD_CONFIG', 'Set the file size limit first.')
   }
   return withCleanupLock(db, () => {
     let recovered = 0
@@ -894,7 +894,7 @@ export function listQuarantine(db: DatabaseSync) {
 export function quarantineCompletedAt(db: DatabaseSync, seq: number): string {
   const r = db.prepare('SELECT completed_at FROM cleanup_move_details WHERE seq=?').get(seq) as { completed_at: string | null } | undefined
   if (!r?.completed_at || !Number.isFinite(Date.parse(r.completed_at))) {
-    throw new CleanupError('UNSAFE_JOURNAL', '缺少隔離完成時間，無法清空。')
+    throw new CleanupError('UNSAFE_JOURNAL', 'The quarantine timestamp is missing, so this cannot be emptied.')
   }
   return r.completed_at
 }

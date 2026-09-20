@@ -51,7 +51,7 @@ export function sandbox(t, files = {}, { days = 30 } = {}) {
       key: viewKey(textPayload(row.text)), item_id: item.id, source: 'text',
       course: view.course ?? '', topic: view.topic ?? '', kind: view.kind ?? '',
       suggested_name: view.suggestedName ?? '', evidence: view.evidence ?? '',
-      confidence: view.confidence ?? '高',
+      confidence: view.confidence ?? 'high',
       model: view.model ?? '測試用的假模型', prompt_version: PROMPT_VERSION,
       at: new Date().toISOString(), seeded: view.seeded ? 1 : 0,
     })
@@ -69,9 +69,9 @@ export function sandbox(t, files = {}, { days = 30 } = {}) {
     if (!item) throw new Error(`沙盒裡沒有 ${name}（掃描沒收到它）`)
     db.prepare(`INSERT INTO model_views
       (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-      VALUES (?,?,'text',?,?,?,?,?,?,?,'v1',?,?)`).run(
+      VALUES (?,?,'text',?,?,?,?,?,?,?,'${PROMPT_VERSION}',?,?)`).run(
       'seed-' + item.id, item.id, view.course ?? '', view.topic ?? '', view.kind ?? '',
-      view.suggestedName ?? '', view.evidence ?? '證據', view.confidence ?? '高',
+      view.suggestedName ?? '', view.evidence ?? '證據', view.confidence ?? 'high',
       view.model ?? '測試用的假模型', new Date().toISOString(), view.seeded ? 1 : 0)
     return item.id
   }

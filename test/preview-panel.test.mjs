@@ -105,13 +105,13 @@ async function press(btn) {
 describe('previewLines', () => {
   test('後設資料那一行：大小、最後修改、副檔名', () => {
     const l = previewLines(view({ bytes: 2048 }))
-    assert.match(l.meta, /^2\.0 KB · 最後修改 /)
+    assert.match(l.meta, /^2\.0 KB · last modified /)
     assert.ok(l.meta.endsWith('.zip'), l.meta)
   })
 
   test('為什麼被列出來一定要講；後端沒給就照實說，不編一個理由', () => {
-    assert.equal(previewLines(view()).why, '為什麼列出來：舊壓縮檔通常是一次性下載')
-    assert.equal(previewLines(view({ why: '   ' })).why, '為什麼列出來：（後端沒有說）')
+    assert.equal(previewLines(view()).why, 'Why it is listed: 舊壓縮檔通常是一次性下載')
+    assert.equal(previewLines(view({ why: '   ' })).why, 'Why it is listed: (the backend did not say)')
   })
 
   test('**內容是不可信的輸入**：控制字元與方向字元換掉，換行留著', () => {
@@ -129,9 +129,9 @@ describe('previewLines', () => {
 
   test('**沒有內容要分兩種說法**：這種檔本來就沒有 vs 還沒讀到', () => {
     const exe = previewLines(view({ name: 'x.exe', ext: '.exe', kind: 'none', text: null }))
-    assert.match(exe.empty, /沒有可以顯示的內容/)
+    assert.match(exe.empty, /nothing in this file to show/)
     const txt = previewLines(view({ name: 'x.txt', ext: '.txt', kind: 'none', text: null }))
-    assert.equal(txt.empty, '還沒讀到這個檔的內容。')
+    assert.equal(txt.empty, 'This file has not been read yet.')
     // 有圖就不是「沒有內容」
     assert.equal(previewLines(view({ kind: 'image', text: null, image: '/cleanup/thumb/it-1' })).empty, null)
   })
@@ -171,7 +171,7 @@ describe('面板的「看內容」', () => {
     })
     assert.equal(peeks(ui.$('cleanup-list')).length, 2)
     assert.deepEqual(previewCalls(ui), [], '一開面板就全抓的話，200 個檔就是 200 個請求')
-    for (const b of peeks(ui.$('cleanup-list'))) assert.equal(b.textContent, '看內容')
+    for (const b of peeks(ui.$('cleanup-list'))) assert.equal(b.textContent, 'View contents')
   })
 
   test('**點開在同一列底下展開**（不是彈窗），再點收起', async t => {
@@ -181,21 +181,21 @@ describe('面板的「看內容」', () => {
     await press(peeks(card)[0])
     const after = ui.$('cleanup-list').all('ARTICLE')[0]
     assert.ok(boxOf(after), '展開的內容要在那一列裡面')
-    assert.equal(peeks(after)[0].textContent, '收起')
+    assert.equal(peeks(after)[0].textContent, 'Hide')
     assert.equal(peeks(after)[0].getAttribute('aria-expanded'), 'true')
     // 面板本身還是那個面板，沒有多開一個彈窗
     assert.equal(ui.$('cleanup-panel').open, true)
     await press(peeks(after)[0])
     const closed = ui.$('cleanup-list').all('ARTICLE')[0]
     assert.equal(boxOf(closed), null)
-    assert.equal(peeks(closed)[0].textContent, '看內容')
+    assert.equal(peeks(closed)[0].textContent, 'View contents')
   })
 
   test('P6-12 **同一個檔連點兩次只送一次請求**（第二次用記住的）', async t => {
     const ui = await open(t, { candidates: [candidate()], previews: { 'it-1': view() } })
     const find = () => peeks(ui.$('cleanup-list').all('ARTICLE')[0])[0]
     await press(find())          // 展開
-    await press(find())          // 收起
+    await press(find())          // Hide
     await press(find())          // 再展開
     assert.deepEqual(previewCalls(ui).map(c => c.path), ['/cleanup/preview/it-1'])
     assert.ok(boxOf(ui.$('cleanup-list').all('ARTICLE')[0]), '第二次展開照樣看得到內容')
@@ -214,18 +214,18 @@ describe('面板的「看內容」', () => {
     assert.ok(pre[0].textContent.includes('<script>alert(1)</script>'), pre[0].textContent)
     assert.ok(!pre[0].textContent.includes(RLO), JSON.stringify(pre[0].textContent))
     // 後設資料與「為什麼列出來」也在
-    assert.match(box.textContent, /最後修改/)
-    assert.match(box.textContent, /為什麼列出來：/)
+    assert.match(box.textContent, /last modified/)
+    assert.match(box.textContent, /Why it is listed: /)
   })
 
   test('P6-8 截斷了要講「還有更多」；沒截斷就不要講', async t => {
     const ui = await open(t, { candidates: [candidate()], previews: { 'it-1': view({ truncated: true }) } })
     await press(peeks(ui.$('cleanup-list').all('ARTICLE')[0])[0])
-    assert.match(boxOf(ui.$('cleanup-list').all('ARTICLE')[0]).textContent, /還有更多/)
+    assert.match(boxOf(ui.$('cleanup-list').all('ARTICLE')[0]).textContent, /there is more in this file/)
 
     const ui2 = await open(t, { candidates: [candidate()], previews: { 'it-1': view({ truncated: false }) } })
     await press(peeks(ui2.$('cleanup-list').all('ARTICLE')[0])[0])
-    assert.ok(!boxOf(ui2.$('cleanup-list').all('ARTICLE')[0]).textContent.includes('還有更多'))
+    assert.ok(!boxOf(ui2.$('cleanup-list').all('ARTICLE')[0]).textContent.includes('there is more in this file'))
   })
 
   test('P6-3 沒有內容的檔：看得到大小、最後修改、為什麼被列出來', async t => {
@@ -241,9 +241,9 @@ describe('面板的「看內容」', () => {
     await press(peeks(ui.$('cleanup-list').all('ARTICLE')[0])[0])
     const text = boxOf(ui.$('cleanup-list').all('ARTICLE')[0]).textContent
     assert.match(text, /50\.0 MB/)
-    assert.match(text, /最後修改/)
-    assert.match(text, /為什麼列出來：舊安裝檔/)
-    assert.match(text, /沒有可以顯示的內容/)
+    assert.match(text, /last modified/)
+    assert.match(text, /Why it is listed: 舊安裝檔/)
+    assert.match(text, /nothing in this file to show/)
   })
 
   test('P6-4 還沒讀到的檔說「還沒讀到」，**而且面板不會自己再去要一次**', async t => {
@@ -253,7 +253,7 @@ describe('面板的「看內容」', () => {
     })
     const find = () => peeks(ui.$('cleanup-list').all('ARTICLE')[0])[0]
     await press(find())
-    assert.match(boxOf(ui.$('cleanup-list').all('ARTICLE')[0]).textContent, /還沒讀到這個檔的內容/)
+    assert.match(boxOf(ui.$('cleanup-list').all('ARTICLE')[0]).textContent, /This file has not been read yet/)
     await press(find())
     await press(find())
     assert.equal(previewCalls(ui).length, 1, '「還沒讀到」也是一個答案，不可以每次點都再問一次')
@@ -281,7 +281,7 @@ describe('面板的「看內容」', () => {
     const box = boxOf(ui.$('cleanup-list').all('ARTICLE')[0])
     assert.match(box.textContent, /沒有這個檔可以看/)
     assert.equal(box.all('PRE').length, 0)
-    await press(find())   // 收起
+    await press(find())   // Hide
     await press(find())   // 再展開 —— 失敗的不記，所以會再問一次
     assert.equal(previewCalls(ui).length, 2, '一時讀不到的下次要能再試')
   })
@@ -289,15 +289,15 @@ describe('面板的「看內容」', () => {
   test('「需要你查看」那幾列也有「看內容」（那一區最需要：太大、讀不到的檔更不記得是什麼）', async t => {
     const ui = await open(t, {
       candidates: [],
-      needsHuman: [{ itemId: 'nh-1', name: '大備份.bin', folder: 'Downloads', bytes: 9e9, why: '檔案太大' }],
-      previews: { 'nh-1': view({ name: '大備份.bin', ext: '.bin', kind: 'none', text: null, why: '檔案太大' }) },
+      needsHuman: [{ itemId: 'nh-1', name: '大備份.bin', folder: 'Downloads', bytes: 9e9, why: 'This file is too large' }],
+      previews: { 'nh-1': view({ name: '大備份.bin', ext: '.bin', kind: 'none', text: null, why: 'This file is too large' }) },
     })
     const host = ui.$('cleanup-needs-human')
     // 原本那一句話照舊（U5 守的是這一段不可以帶控制字元）
-    assert.match(host.all('P')[0].textContent, /需要你查看：大備份\.bin — 檔案太大（未列入清理）/)
+    assert.match(host.all('P')[0].textContent, /Needs your eyes: 大備份\.bin — This file is too large \(not included in the cleanup\)/)
     assert.equal(peeks(host).length, 1)
     await press(peeks(host)[0])
-    assert.match(boxOf(host).textContent, /為什麼列出來：檔案太大/)
+    assert.match(boxOf(host).textContent, /Why it is listed: This file is too large/)
   })
 
   test('示範模式沒有「看內容」（那時候是假的清單，後端根本沒有那幾個檔）', async t => {
@@ -325,7 +325,7 @@ describe('檔案管理那一塊（P6 的分頁）', () => {
     for (let i = 0; i < 100 && ui.$('files-candidate-count').textContent === '正在看……'; i++) {
       await new Promise(r => setTimeout(r, 10))
     }
-    assert.equal(ui.$('files-candidate-count').textContent, '2 個')
+    assert.equal(ui.$('files-candidate-count').textContent, '2 files')
     assert.match(ui.$('files-where').textContent, /Downloads/)
 
     await ui.$('files-open-cleanup').onclick()
@@ -374,6 +374,6 @@ describe('稽核 ・ 圖抓不回來的時候要講一句', () => {
     await press(peeks(ui.$('cleanup-list'))[0])
     const box = boxOf(ui.$('cleanup-list').all('ARTICLE')[0])
     assert.ok(box, '框要在')
-    assert.match(box.textContent, /這張圖現在看不到/)
+    assert.match(box.textContent, /This image cannot be shown right now/)
   })
 })

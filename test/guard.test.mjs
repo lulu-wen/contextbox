@@ -61,7 +61,7 @@ describe('擋下來的', () => {
   test('不在監看資料夾裡', () => {
     const v = admit(put(outside, 'e.png'), opts)
     assert.equal(v.ok, false)
-    assert.match(v.why, /不在監看資料夾/)
+    assert.match(v.why, /not inside a watched folder/)
   })
 
   test('用 .. 跳出去也不行', () => {
@@ -76,7 +76,7 @@ describe('擋下來的', () => {
     symlinkSync(target, link)
     const v = admit(link, opts)
     assert.equal(v.ok, false)
-    assert.match(v.why, /捷徑/)
+    assert.match(v.why, /symlink/)
   })
 
   test('捷徑就算指向監看資料夾裡面，一樣不跟', () => {
@@ -100,7 +100,7 @@ describe('擋下來的', () => {
     for (const ext of ['.crdownload', '.part', '.tmp', '.download']) {
       const v = admit(put(watchDir, 'h' + ext), opts)
       assert.equal(v.ok, false, ext + ' 應該被擋')
-      assert.match(v.why, /下載中/, '要分得出「還在下載」跟「這種檔不收」')
+      assert.match(v.why, /still downloading/, '要分得出「還在下載」跟「這種檔不收」')
     }
   })
 
@@ -113,13 +113,13 @@ describe('擋下來的', () => {
   test('空檔案（通常是還沒寫完）', () => {
     const v = admit(put(watchDir, 'm.png', ''), opts)
     assert.equal(v.ok, false)
-    assert.match(v.why, /空的/)
+    assert.match(v.why, /empty/)
   })
 
   test('超過大小上限', () => {
     const v = admit(put(watchDir, 'n.png', 'x'.repeat(2000)), { ...opts, maxBytes: 1000 })
     assert.equal(v.ok, false)
-    assert.match(v.why, /超過上限/)
+    assert.match(v.why, /over the/)
   })
 
   test('黑名單：就算白名單設錯，金鑰資料夾也撈不到', () => {
@@ -180,7 +180,7 @@ describe('擋下來的', () => {
     linkSync(target, link)
     const v = admit(link, opts)
     assert.equal(v.ok, false)
-    assert.match(v.why, /硬鏈結/)
+    assert.match(v.why, /hard-link/)
   })
 
   test('少給設定是關門，不是丟例外', () => {
@@ -207,7 +207,7 @@ describe('擋下來的', () => {
   test('排除清單：已經歸檔的不要再撿回來', () => {
     const v = admit(put(filed, 'q.png'), { ...opts, roots: [root], exclude: [filed] })
     assert.equal(v.ok, false)
-    assert.match(v.why, /排除/)
+    assert.match(v.why, /exclude/)
   })
 
   test('資料夾不是檔案', () => {
@@ -314,11 +314,11 @@ describe('暫時性的拒絕要分得出來', () => {
   test('等一下可能就好了 vs 永遠不會好', () => {
     // watcher 靠這個決定要不要重試。分不出來的話，截圖工具先建 0 byte
     // 再寫內容的那些檔案會永遠消失。
-    for (const why of ['檔案是空的', '讀不到這個檔案', 'realpath 失敗']) {
+    for (const why of ['the file is empty', 'cannot read this file', 'realpath failed']) {
       assert.equal(isTemporary(why), true, why + ' 是暫時的')
     }
-    for (const why of ['不在監看資料夾裡', '這是一個捷徑（symlink），我們不跟',
-                       '副檔名 .exe 不在收件清單裡', '這個檔案被硬鏈結到別的地方，我們不碰']) {
+    for (const why of ['not inside a watched folder', 'this is a symlink, and we do not follow those',
+                       'the extension .exe is not on the intake list', 'this file is hard-linked elsewhere, and we never touch those']) {
       assert.equal(isTemporary(why), false, why + ' 是永久的')
     }
   })

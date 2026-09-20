@@ -182,7 +182,7 @@ export function listLearned(db: DatabaseSync, limit = PREF_MAX): {
         // file_kind 的鍵是「課名＋換行＋類型」，換行不可以進畫面（會偽造一行字）。
         // **rejected 那一種一個字都不回**：改名的摘要是真的檔名，而規格講死了
         // 「回給畫面的沒有路徑、沒有檔名」（稽核 2026-09-20）。要忘掉它用 id 就夠了。
-        from: r.kind === 'rejected' ? '' : k.replace('\n', '／'),
+        from: r.kind === 'rejected' ? '' : k.replace('\n', ' / '),
         to: r.kind === 'rejected' ? '' : v,
         times: Number.isFinite(Number(r?.times)) ? Number(r.times) : 0,
         at: typeof r?.at === 'string' ? r.at : '',

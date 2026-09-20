@@ -59,7 +59,7 @@ describe('沒設定就完全不啟用', () => {
 
   test('沒開的時候講得出是哪一種沒開', t => {
     withKey(t, null)
-    assert.match(whyDisabled(cfg('')), /沒設定模型/)
+    assert.match(whyDisabled(cfg('')), /no model configured/)
     assert.match(whyDisabled(cfg('http://127.0.0.1:1/v1')), new RegExp(KEY_ENV))
     withKey(t, FAKE_KEY)
     assert.equal(whyDisabled(cfg('http://127.0.0.1:1/v1')), null)
@@ -70,7 +70,7 @@ describe('沒設定就完全不啟用', () => {
     withKey(t, '')
     const r = await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x'.repeat(100) })
     assert.equal(r.ok, false)
-    assert.match(r.error, /還沒設定/)
+    assert.match(r.error, /not configured/)
     assert.deepEqual(fake.requests, [], '沒設定卻送出去了')
   })
 })
@@ -111,7 +111,7 @@ describe('parseView：嚴格', () => {
     for (const c of CONFIDENCES) assert.ok(parseView(JSON.stringify({ ...good, confidence: c })), `${c} 應該收`)
     assert.equal(parseView(JSON.stringify({ ...good, kind: 'lecture' })), null)
     assert.equal(parseView(JSON.stringify({ ...good, kind: '' })), null)
-    assert.equal(parseView(JSON.stringify({ ...good, confidence: 'high' })), null)
+    assert.equal(parseView(JSON.stringify({ ...good, confidence: '高' })), null)   // 舊資料庫裡的中文值
     assert.equal(parseView(JSON.stringify({ ...good, confidence: '中等' })), null)
   })
 
@@ -241,7 +241,7 @@ describe('askModel 打假的伺服器', () => {
     const fake = await startFakeModel(t, ({ send, req }) =>
       req.method === 'POST' ? (send(status, { error: 'nope' }), true) : false)
     withKey(t, FAKE_KEY)
-    assert.match((await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' })).error, /金鑰/)
+    assert.match((await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' })).error, /key/)
     status = 503
     assert.match((await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' })).error, /503/)
   })
@@ -252,14 +252,14 @@ describe('askModel 打假的伺服器', () => {
     withKey(t, FAKE_KEY)
     const r = await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' })
     assert.equal(r.ok, false)
-    assert.match(r.error, /不是 JSON/)
+    assert.match(r.error, /not answer with JSON/)
   })
 
   test('回的 JSON 形狀不對 → 不採用、講得出是格式問題', async t => {
     const bad = [
       { ...GOOD_VIEW, extra: 1 },
       (() => { const o = { ...GOOD_VIEW }; delete o.topic; return o })(),
-      { ...GOOD_VIEW, confidence: 'high' },
+      { ...GOOD_VIEW, confidence: 'very high' },
     ]
     let i = 0
     const fake = await startFakeModel(t, ({ send, req }) =>
@@ -268,7 +268,7 @@ describe('askModel 打假的伺服器', () => {
     for (let k = 0; k < bad.length; k++) {
       const r = await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' })
       assert.equal(r.ok, false, `第 ${k} 種壞形狀被收下了`)
-      assert.match(r.error, /格式不對/)
+      assert.match(r.error, /wrong shape/)
     }
   })
 
@@ -289,7 +289,7 @@ describe('askModel 打假的伺服器', () => {
     const r = await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' }, { timeoutMs: 120 })
     assert.equal(r.ok, false)
     assert.equal(r.aborted, false, '逾時不是取消')
-    assert.match(r.error, /沒有回應/)
+    assert.match(r.error, /did not answer in/)
   })
 
   test('取消：aborted 為 true（那不算模型失敗）', async t => {
@@ -332,10 +332,10 @@ describe('askModel 打假的伺服器', () => {
     withKey(t, FAKE_KEY)
     const r = await askModel(cfg(fake.baseUrl), { source: 'text', text: 'x' }, { timeoutMs: 10_000 })
     assert.equal(r.ok, false)
-    assert.match(r.error, /太長|讀不完/)
+    assert.match(r.error, /too long|Could not read/)
   })
 
   test('提示詞版本是 v1（改了提示詞要一起改，不然舊答案會被當成新提示詞的）', () => {
-    assert.equal(PROMPT_VERSION, 'v1')
+    assert.equal(PROMPT_VERSION, 'v2-en')
   })
 })

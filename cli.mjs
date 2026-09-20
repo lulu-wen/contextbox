@@ -83,7 +83,7 @@ const RESCAN_MS = 30 * 60_000
  */
 const SCAN_TIMEOUT_MS = 10 * 60_000
 /** 背景掃描逾時記進 lastError 的那句話（掃描種類） */
-const SCAN_TIMEOUT_WHY = '背景掃描逾時（資料夾可能卡住了）'
+const SCAN_TIMEOUT_WHY = 'Background scan timed out (a folder may be stuck)'
 /**
  * pet 多久讓模型看一輪（P2）。比重掃密一點：新下載的檔十分鐘內就會有「模型認為⋯⋯」，
  * 而一輪最多 20 個檔（一個 7～10 秒），最壞情況三分鐘，不會兩輪疊在一起。
@@ -94,7 +94,7 @@ const STALE_PLAN_MS = 60 * 60_000
 /** 指名一份計畫時，自動放棄的門檻往前多留這麼久（第三輪 R3-6b，見 staleCutoffMs）。 */
 const SKIP_PLAN_MARGIN_MS = 5 * 60_000
 /** 放棄了的計畫是誰放棄的：人，或收尾（STALE_PLAN_MS）。CLI 分不出來，兩種都講 */
-const DISMISSED_WHO = '有人放棄了它，或建立之後超過一小時沒有套用、自動放棄'
+const DISMISSED_WHO = 'someone dropped it, or it sat unapplied for over an hour and was dropped automatically'
 /** `rename` 印幾筆「最近改過的」，也是 `--undo <編號>` 認得的範圍（兩邊一定要一樣）。 */
 const RENAME_LIST = 20
 /** `file` 印幾筆「最近整理過的」，也是 `--undo <編號>` 認得的範圍（跟改名同一個規矩）。 */
@@ -105,6 +105,9 @@ const CLI_FILE = fileURLToPath(import.meta.url)
 
 const mb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
   : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'
+
+/** 數字＋名詞。1 不加 s —— 畫面上的「1 files」看起來像程式壞了。 */
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /**
  * 顯示用的字串（檔名、資料夾名、錯誤訊息）：C0／C1 控制字元與換行一律換成「·」（RC14）。
@@ -121,7 +124,7 @@ const shown = s => String(s ?? '')
   .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, '·')
 
 /** 失敗原因一律經過核心唯一的翻譯函式（safeWhy），再拿掉控制字元 */
-const why = raw => shown(safeWhy(raw == null ? null : String(raw)) ?? '原因不明')
+const why = raw => shown(safeWhy(raw == null ? null : String(raw)) ?? 'reason unknown')
 
 const [, , cmd, ...args] = process.argv
 
@@ -132,8 +135,8 @@ try { db = open() }
 catch (e) {
   // 右鍵選單一次選 N 個檔就是 N 個行程同時開資料庫。
   // 讓它印一句人話，不要印一坨 Node 堆疊。
-  console.error(`打不開資料庫 ${DEFAULT_DB}：${e.message}`)
-  console.error('如果剛剛同時開了很多個，等一下再試一次就好。')
+  console.error(`Could not open the database ${DEFAULT_DB}: ${e.message}`)
+  console.error('If several copies started at once, wait a moment and try again.')
   // 打不開資料庫是**後端錯（2）**，不是輸入錯（1）。
   // 回 1 等於跟右鍵選單說「使用者打錯了」，而使用者什麼都沒打錯 ——
   // 呼叫端據此決定要不要重試，分錯就不會重試。
@@ -162,7 +165,13 @@ const CLEAN_ROOTS = config.cleanup.roots
 const SHOTS = config.cleanup.screenshotsDir ?? null
 /** 清單、預設清理、建計畫、健康檢查用的範圍：清理範圍＋截圖資料夾（核心的 CleanupScope） */
 const SCOPE = { roots: CLEAN_ROOTS, screenshotsDir: SHOTS }
-const rootsLabel = () => CLEAN_ROOTS.map(r => shown(basename(r) || r)).join('、') || 'Downloads'
+// 兩個以上的資料夾用英文的頓號串（`Downloads and Desktop`）—— 這一句會塞進英文句子裡
+const rootsLabel = () => {
+  const names = CLEAN_ROOTS.map(r => shown(basename(r) || r))
+  if (!names.length) return 'Downloads'
+  if (names.length === 1) return names[0]
+  return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
+}
 const execOpts = () => ({
   roots: CLEAN_ROOTS, quarantine: QUARANTINE,
   maxBytes: config.maxBytes, readonly: config.readonly,
@@ -219,9 +228,9 @@ const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { ret
 function emptyTokenProblem(token) {
   const ready = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='cleanup_empty_requests'`).get()
   const row = ready ? db.prepare('SELECT expires_at, result FROM cleanup_empty_requests WHERE token=?').get(token) : undefined
-  if (!row) return '清空確認無效，請重新預覽。'
+  if (!row) return 'That confirmation code is not valid. Run the preview again.'
   if (row.result) return null
-  return Date.now() >= Date.parse(row.expires_at) ? '清空確認已過期，請重新預覽。' : null
+  return Date.now() >= Date.parse(row.expires_at) ? 'That confirmation code has expired. Run the preview again.' : null
 }
 
 /**
@@ -388,7 +397,7 @@ function settleCleanupState({ skipPlanId = null } = {}) {
     try { step() }
     catch (e) {
       if (e instanceof CleanupError && e.code === 'BUSY') continue
-      warn(`⚠ 收尾上次中斷的清理時出錯（${e instanceof CleanupError ? shown(e.message) : why(e?.message ?? e)}），這次先略過。`)
+      warn(`⚠ Could not finish tidying up the interrupted cleanup (${e instanceof CleanupError ? shown(e.message) : why(e?.message ?? e)}). Skipping it this time.`)
     }
   }
   // pet 的 server 跟這裡是同一個行程：隔離區的計數有快取，journal 剛改過就不可以再用
@@ -443,7 +452,7 @@ function exitFor(e) {
  */
 const cliProblem = (e) => e instanceof CleanupError
   ? shown(e.message)
-  : `出錯了（${why(e?.message ?? e)}），這一步可能沒有完成。用 node cli.mjs doctor 看目前的狀態。`
+  : `Something went wrong (${why(e?.message ?? e)}), so this step may not have completed. Run node cli.mjs doctor to see the current state.`
 
 function fail(e, kind) {
   warn(cliProblem(e))
@@ -455,16 +464,18 @@ function fail(e, kind) {
 function ago(iso) {
   if (!iso) return null
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000)
-  if (s < 90) return `${Math.round(s)} 秒前`
-  if (s < 5400) return `${Math.round(s / 60)} 分鐘前`
-  if (s < 172800) return `${Math.round(s / 3600)} 小時前`
-  return `${Math.round(s / 86400)} 天前`
+  if (s < 90) return `${Math.round(s)}s ago`
+  if (s < 5400) return `${Math.round(s / 60)} min ago`
+  if (s < 172800) return `${Math.round(s / 3600)} hours ago`
+  return `${plural(Math.round(s / 86400), 'day')} ago`
 }
 
-const localTime = iso => new Date(iso).toLocaleString('zh-TW', { hour12: false })
+// 時間一律用 en-GB（24 小時制、日／月／年）—— zh-TW 會吐「上午／下午」，
+// 那是英文畫面裡最刺眼的一段中文（稽核 2026-09-20）
+const localTime = iso => new Date(iso).toLocaleString('en-GB', { hour12: false })
 
 /** 「每 30 分鐘」「每 0.2 秒」 */
-const every = ms => ms % 60_000 === 0 ? `${ms / 60_000} 分鐘` : `${ms / 1000} 秒`
+const every = ms => ms % 60_000 === 0 ? `${ms / 60_000} min` : `${ms / 1000}s`
 
 /**
  * 打一次 /models 看模型在不在，順便確認金鑰對不對。
@@ -477,17 +488,17 @@ async function probeModel(cfg, key) {
       headers: key ? { authorization: `Bearer ${key}` } : {},
       signal: AbortSignal.timeout(8000),
     })
-    if (res.status === 401 || res.status === 403) return `✗ 連得到，但金鑰不對（${res.status}）`
-    if (!res.ok) return `✗ ${url} 回了 ${res.status}`
+    if (res.status === 401 || res.status === 403) return `✗ Reachable, but the key was rejected (${res.status})`
+    if (!res.ok) return `✗ ${url} returned ${res.status}`
     const data = await res.json().catch(() => ({}))
     const names = (data.data ?? []).map(m => m.id)
-    if (!names.length) return '✓ 連得到，但這台沒有列出任何模型'
+    if (!names.length) return '✓ Reachable, but it lists no models'
     return names.includes(cfg.model.name)
-      ? `✓ 連得到，${cfg.model.name} 在線上（共 ${names.length} 個模型）`
-      : `✗ 連得到，但沒有叫 ${cfg.model.name} 的模型。有的是：${names.slice(0, 6).map(shown).join('、')}`
+      ? `✓ Reachable, ${cfg.model.name} is up (${names.length} models in all)`
+      : `✗ Reachable, but there is no model called ${cfg.model.name}. It has: ${names.slice(0, 6).map(shown).join(', ')}`
   } catch (e) {
-    const why = e?.name === 'TimeoutError' ? '8 秒沒回應' : (e?.message ?? e)
-    return `✗ 連不上 ${url}（${shown(why)}）`
+    const why = e?.name === 'TimeoutError' ? 'no response in 8s' : (e?.message ?? e)
+    return `✗ Cannot reach ${url} (${shown(why)})`
   }
 }
 
@@ -495,18 +506,18 @@ async function probeModel(cfg, key) {
 function intake(path, { quiet = false } = {}) {
   const v = admit(resolve(path), admitOpts)
   if (!v.ok) {
-    if (!quiet) warn(`✗ ${shown(basename(path))}：${shown(v.why)}`)
+    if (!quiet) warn(`✗ ${shown(basename(path))}: ${shown(v.why)}`)
     return 'rejected'
   }
   let added
   try { added = items.add(v) }
-  catch (e) { if (!quiet) warn(`✗ ${shown(basename(path))}：${shown(e.message)}`); return 'rejected' }
+  catch (e) { if (!quiet) warn(`✗ ${shown(basename(path))}: ${shown(e.message)}`); return 'rejected' }
 
   if (!quiet) {
     const sameContent = items.bySha(added.item.sha256, added.item.id)
     say(`✓ ${shown(basename(v.real))}  ${v.kind}  ${(v.bytes / 1024).toFixed(0)}KB`
-      + (added.fresh ? '' : '（已經收過了，沒有變）')
-      + (sameContent.length ? `　※ 另外有 ${sameContent.length} 份一樣的內容，理解可以共用` : ''))
+      + (added.fresh ? '' : ' (already taken in, unchanged)')
+      + (sameContent.length ? `  · ${sameContent.length} other files have the same contents, so the reading can be shared` : ''))
   }
   return added.fresh ? 'new' : 'known'
 }
@@ -534,12 +545,12 @@ function resolveCodes(rows, codes, flag) {
   const out = []
   for (const raw of codes) {
     const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
-    if (code.length < 4) return { error: `${flag} ${shown(raw)}：編號至少 4 碼，就是 cleanup list 上 [ ] 裡的那幾碼。` }
+    if (code.length < 4) return { error: `${flag} ${shown(raw)}: an id needs at least 4 characters — the ones in [ ] on the cleanup list.` }
     const hits = rows.filter(r => r.itemId.toLowerCase().startsWith(code))
-    if (!hits.length) return { error: `清單上沒有編號 ${shown(raw)}。先跑 node cli.mjs cleanup list 看現在的編號。` }
+    if (!hits.length) return { error: `No id ${shown(raw)} on the list. Run node cli.mjs cleanup list to see the current ids.` }
     if (hits.length > 1) {
       const short = shortIds(rows.map(r => r.itemId))
-      return { error: `編號 ${shown(raw)} 對到不只一個檔，請多打幾碼：\n`
+      return { error: `The id ${shown(raw)} matches more than one file. Type a few more characters:\n`
         + hits.slice(0, 10).map(r => `  [${short.get(r.itemId)}] ${shown(r.name)}`).join('\n') }
     }
     if (!out.includes(hits[0])) out.push(hits[0])
@@ -555,14 +566,14 @@ function learnedLine(r) {
   if (r.kind === 'rejected') {
     // **改名那一種不講名字**：那個摘要是真的檔名，而回給畫面的東西不可以有檔名（稽核 2026-09-20）。
     // 歸檔那一種的摘要是 `課程/<課名>/<類型>`，沒有檔名，講出來使用者才知道是哪一個建議。
-    const which = r.about ? `「${r.about}」這個建議` : '一個改名建議'
-    return `退過貨　你上次退掉了${which}（清單還是會列，只是不預設勾）`
+    const which = r.about ? `the suggestion “${r.about}”` : 'a rename suggestion'
+    return `turned down  You turned down ${which} last time (it still gets listed, just not ticked)`
   }
-  const times = `・用過 ${r.times} 次`
-  if (r.kind === 'file_kind') return `類型　${r.from} 的東西 ・ 你要「${r.to}」${times}`
+  const times = ` · used ${r.times} time${r.times === 1 ? '' : 's'}`
+  if (r.kind === 'file_kind') return `kind        ${r.from} files · you call them “${r.to}”${times}`
   // 又改回模型的說法時 from 與 to 會折成同一個（最後一次贏）—— 講清楚，不然看起來像沒意義的一列
-  const back = courseKey(r.from) === courseKey(r.to) ? '　（已經改回模型的說法了）' : ''
-  return `課名　模型說「${r.from}」 ・ 你要「${r.to}」${times}${back}`
+  const back = courseKey(r.from) === courseKey(r.to) ? '  (back to what the model said)' : ''
+  return `course      The model says “${r.from}” · you say “${r.to}”${times}${back}`
 }
 
 /**
@@ -589,7 +600,7 @@ function flagValue(list, name) {
   if (at < 0) return {}
   const v = list[at + 1]
   if (v === undefined || v.startsWith('--')) {
-    return { error: `${name} 後面要接一個值，例：node cli.mjs file --apply a1b2 ${name} OS` }
+    return { error: `${name} needs a value, e.g. node cli.mjs file --apply a1b2 ${name} OS` }
   }
   return { value: v }
 }
@@ -605,17 +616,17 @@ function parseApplyArgs(list) {
       const v = m[2] ?? list[++k]
       const codes = (v ?? '').split(/[,，]/).map(x => x.trim()).filter(Boolean)
       if (!codes.length || v.startsWith('--')) {
-        return bad(`--${m[1]} 後面要接清單上的編號，例：node cli.mjs cleanup apply --${m[1]} a1b2`)
+        return bad(`--${m[1]} needs an id from the list, e.g. node cli.mjs cleanup apply --${m[1]} a1b2`)
       }
       out[m[1]].push(...codes)
       continue
     }
-    if (a.startsWith('--')) return bad(`看不懂 ${shown(a)}。可以用：--skip <編號>、--also <編號>。`)
-    if (out.planId) return bad('一次只能套用一份計畫。')
+    if (a.startsWith('--')) return bad(`Don't know ${shown(a)}. You can use: --skip <id>, --also <id>.`)
+    if (out.planId) return bad('Only one plan can be applied at a time.')
     out.planId = a
   }
   if (out.planId && (out.skip.length || out.also.length)) {
-    return bad('--skip／--also 只能用在建新的清理（不給計畫 id 的時候）。')
+    return bad('--skip and --also only work when building a new cleanup (no plan id given).')
   }
   return out
 }
@@ -643,7 +654,7 @@ function printCandidate(c, code) {
   const where = c.subdir ? `${c.folder}/${c.subdir}` : c.folder
   say(`  [${code}] ${box} ${shown(c.name)}`)
   say(`         ${mb(c.bytes).padStart(8)}  ${shown(c.kind)}  ${shown(where)}`)
-  for (const r of c.reasons) say(`         · ${shown(r.reason)}（${shown(r.evidence)}）`)
+  for (const r of c.reasons) say(`         · ${shown(r.reason)} (${shown(r.evidence)})`)
   if (c.vetoed) say(`         ⚠ ${shown(c.vetoed)}`)
 }
 
@@ -655,19 +666,19 @@ function printCandidate(c, code) {
 
 /** 套用（或查看一份計畫）時每一項的樣子 */
 function applyLine(i, o) {
-  const head = `${shown(i.name)}　${mb(i.bytes)}`
+  const head = `${shown(i.name)}  ${mb(i.bytes)}`
   switch (o?.outcome) {
     case 'moved': return `  ✔ ${head}`
-    case 'skipped': return `  － ${head}　（你略過了）`
-    case 'failed': return `  ✘ ${head}　—— ${shown(o.why ?? '沒有搬動，原因不明')}`
-    case 'restored': return `  ↩ ${head}　（已經放回${o.restoredAs ? `，放回來的這份叫 ${shown(o.restoredAs)}` : ''}）`
-    case 'purged': return `  ⌫ ${head}　（已清空）`
-    case 'pending': return `  ○ ${head}　（還沒做）`
+    case 'skipped': return `  - ${head}  (you skipped it)`
+    case 'failed': return `  ✘ ${head}  — ${shown(o.why ?? 'did not move, reason unknown')}`
+    case 'restored': return `  ↩ ${head}  (put back${o.restoredAs ? ` as ${shown(o.restoredAs)}` : ''})`
+    case 'purged': return `  ⌫ ${head}  (emptied)`
+    case 'pending': return `  ○ ${head}  (not done yet)`
     // cancelled：計畫放棄了，或計畫跑過、這一項從來沒碰過（第二輪 R2-1e）。兩種都沒有搬移紀錄 —— 檔本來就在原位
-    case 'cancelled': return `  ⊘ ${head}　（沒有處理：計畫中途停了或放棄了，本來就在原位）`
+    case 'cancelled': return `  ⊘ ${head}  (not handled: the plan stopped or was dropped; the file never moved)`
     // unknown：journal 停在 started。**不可以說「沒有搬動」** —— rename 可能已經完成了（RC17）
-    case 'unknown': return `  ？ ${head}　—— 狀態不明：${shown(o.why ?? '搬到一半中斷，檔案可能已經在隔離區')}`
-    default: return `  ？ ${head}　—— 狀態不明`
+    case 'unknown': return `  ? ${head}  — state unknown: ${shown(o.why ?? 'the move was interrupted; the file may already be in quarantine')}`
+    default: return `  ? ${head}  — state unknown`
   }
 }
 
@@ -678,13 +689,13 @@ function undoLine(i, o) {
     // **不要講「之後不會再被提議」。** 那不一定是真的：之後符合新的理由會再出現；
     // 原位置被佔時放回來的那份會改名成 .restored，重掃後以重複檔的身分被預設勾起來。
     case 'restored': return o.restoredAs
-      ? `  ↩ ${head}　→ 原位置已經有同名檔案，放回來的這份叫 ${shown(o.restoredAs)}（沒有覆蓋任何檔案）`
+      ? `  ↩ ${head}  → a file of that name was already there, so this one is called ${shown(o.restoredAs)} (nothing was overwritten)`
       : `  ↩ ${head}`
-    case 'moved': return `  ✘ ${head}　—— 沒放回，還在隔離區：${shown(o.why ?? '原因不明')}`
-    case 'purged': return `  ✘ ${head}　—— 已經清空，放不回來了`
-    case 'unknown': return `  ？ ${head}　—— 狀態不明：${shown(o.why ?? '做到一半中斷')}`
+    case 'moved': return `  ✘ ${head}  — not put back, still in quarantine: ${shown(o.why ?? 'reason unknown')}`
+    case 'purged': return `  ✘ ${head}  — already emptied, cannot be put back`
+    case 'unknown': return `  ? ${head}  — state unknown: ${shown(o.why ?? 'interrupted partway')}`
     // skipped／failed／pending／cancelled：當初就沒有搬走
-    default: return `  － ${head}　（當初就沒有搬走，本來就在原位）`
+    default: return `  - ${head}  (never moved in the first place; it is where it always was)`
   }
 }
 
@@ -722,14 +733,14 @@ function planRestoring(id) {
 function startedChoices(id) {
   // 已經開始復原的那份：apply 一定 409，只剩一條路，不要叫人去撞（第二輪第二階段驗證員）
   if (planRestoring(id)) {
-    say('\n它已經開始復原了，不能繼續清理，也不能放棄（release）。一條路：')
-    say(`  接著把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+    say('\nThis plan has started restoring, so it can neither carry on cleaning up nor be dropped (release). One way out:')
+    say(`  Carry on putting back what already moved: node cli.mjs cleanup undo ${id}`)
     return
   }
-  say('\n它已經開始搬了，不能放棄（release）。兩個選擇：')
-  say(`  把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
-  say('    放回原位的檔之後不會再被自動提議（除非出現新的理由）；原位置被佔、改名放回的那份會當成新的檔重新評估。')
-  say(`  把它做完：node cli.mjs cleanup apply ${id}`)
+  say('\nThis plan has started moving files, so it cannot be dropped (release). Two choices:')
+  say(`  Put back what already moved: node cli.mjs cleanup undo ${id}`)
+  say('    Files put back are not suggested again unless a new reason turns up; one renamed on the way back counts as a new file.')
+  say(`  Finish it: node cli.mjs cleanup apply ${id}`)
 }
 
 /**
@@ -748,23 +759,23 @@ function explainConflict(e, candidateIds) {
   let b = null, started = false
   try { b = blockingPlanFor(db, candidateIds); started = Boolean(b) && planStarted(b.id) } catch { /* 找不到就只講原因 */ }
   if (!b || b.status !== 'proposed') {
-    say('\n找不到擋住的是哪一份。先跑 node cli.mjs cleanup scan 再試一次。')
+    say('\nCannot tell which plan is in the way. Run node cli.mjs cleanup scan and try again.')
   } else {
-    const when = `${ago(b.createdAt) ?? '不知道什麼時候'}建立`
+    const when = `created ${ago(b.createdAt) ?? 'at an unknown time'}`
     if (started) {
       let moved = 0
       try { moved = [...planOutcomes(db, b.id).values()].filter(o => o.outcome === 'moved').length } catch { /* 數不出來就不講 */ }
-      say(`\n擋住的是一份做到一半中斷的計畫 ${b.id}（${when}），裡面 ${b.items.length} 個檔已經有 ${moved} 個在隔離區：`)
+      say(`\nIn the way is a plan interrupted partway, ${b.id} (${when}): of its ${plural(b.items.length, 'file')}, ${moved} are already in quarantine:`)
     } else {
-      say(`\n擋住的是一份還沒套用的計畫 ${b.id}（${when}），裡面有 ${b.items.length} 個檔：`)
+      say(`\nIn the way is a plan that was never applied, ${b.id} (${when}), holding ${plural(b.items.length, 'file')}:`)
     }
-    for (const i of b.items.slice(0, 20)) say(`  ${shown(i.name)}　${mb(i.bytes)}`)
-    if (b.items.length > 20) say(`  …另外 ${b.items.length - 20} 個`)
+    for (const i of b.items.slice(0, 20)) say(`  ${shown(i.name)}  ${mb(i.bytes)}`)
+    if (b.items.length > 20) say(`  …and ${b.items.length - 20} more`)
     if (started) startedChoices(b.id)
     else {
-      say('\n兩個選擇：')
-      say(`  接著清那一份：node cli.mjs cleanup apply ${b.id}`)
-      say(`  放棄那一份（不動任何檔案，裡面的檔還是候選）：node cli.mjs cleanup release ${b.id}`)
+      say('\nTwo choices:')
+      say(`  Carry on with that plan: node cli.mjs cleanup apply ${b.id}`)
+      say(`  Drop that plan (nothing moves; its files stay candidates): node cli.mjs cleanup release ${b.id}`)
     }
   }
   process.exitCode = EXIT.badInput
@@ -805,7 +816,7 @@ function runApply(id, { remaining = 0, skippedRows = [], alreadyRun = false } = 
     stopped = cliProblem(e)
   }
   // 核心之後會改成回傳 stoppedEarly（不丟例外）：兩條路都要接得住
-  if (r?.stoppedEarly) stopped = shown(r.stoppedEarly.why ?? '被另一個清理動作打斷了。')
+  if (r?.stoppedEarly) stopped = shown(r.stoppedEarly.why ?? 'another cleanup action interrupted it.')
   // `noop` 是核心之後會回的欄位；它還沒到（或沒回）的時候，用「套用前就已經跑過了」判斷 ——
   // 那正是 applyPlan 原樣回傳的條件（cleanup-exec.ts 的 R2-3），兩者是同一件事。
   const noop = !stopped && (r?.noop === true || alreadyRun)
@@ -813,33 +824,33 @@ function runApply(id, { remaining = 0, skippedRows = [], alreadyRun = false } = 
   // 失敗原因**馬上**存起來：下一次掃描會改寫 file_items.error，重掃之後原因就變成「原因不明」（RC11）。
   // 存不進去不可以讓結果消失 —— 檔案已經搬了。
   try { recordItemErrors(db, id) }
-  catch (e) { warn(`⚠ 失敗原因存不進去（${why(e?.message)}），重新掃描之後可能看不到原因。`) }
+  catch (e) { warn(`⚠ Could not store the failure reason (${why(e?.message)}); it may be gone after the next scan.`) }
   // 被打斷的那一次不記：BUSY 本來就不算意外（核心的 isSurprise），而它也還沒做完，不是一次成功。
   if (!stopped) noteResult('apply', noop ? { ...r, noop: true } : r)
 
-  say(`計畫 ${id}`)
+  say(`Plan ${id}`)
   const outcomes = planOutcomes(db, id)
   // 被打斷的時候 r 是 null（核心丟了例外）：逐項要照資料庫裡現在的樣子印，不是照回傳值
   let items = r?.items ?? null
   if (!items) { try { items = getPlan(db, id).items } catch { items = [] } }
   for (const i of items) say(applyLine(i, outcomes.get(i.itemId)))
-  for (const row of skippedRows) say(`  － ${shown(row.name)}　${mb(row.bytes)}　（你略過了，這次不清）`)
+  for (const row of skippedRows) say(`  - ${shown(row.name)}  ${mb(row.bytes)}  (you skipped it; not cleaned this time)`)
 
   if (noop) {
-    say('\n這份計畫先前已經跑過了，這次什麼都沒做（沒有搬動、也沒有刪除任何檔案）。')
-    say('再套用不會重試沒搬成的（計畫是一次性的）。要重新清：node cli.mjs cleanup scan，'
-      + '再 node cli.mjs cleanup apply（會照現在的清單建一份新的）。')
+    say('\nThis plan had already run, so nothing happened this time — no file was moved and nothing was deleted.')
+    say('Applying again does not retry what failed — a plan runs once. To clean again: node cli.mjs cleanup scan, '
+      + 'then node cli.mjs cleanup apply, which builds a new plan from the current list.')
     const inQ = items.filter(i => outcomes.get(i.itemId)?.outcome === 'moved').length
-    if (inQ) say(`先前搬進隔離區的 ${inQ} 個還在裡面，要放回原位：node cli.mjs cleanup undo ${id}`)
+    if (inQ) say(`The ${plural(inQ, 'file')} moved to quarantine earlier ${inQ === 1 ? 'is' : 'are'} still there. To put ${inQ === 1 ? 'it' : 'them'} back: node cli.mjs cleanup undo ${id}`)
   } else if (stopped) {
     const moved = items.filter(i => outcomes.get(i.itemId)?.outcome === 'moved').length
-    warn(`\n⚠ 被另一個清理動作打斷，做到一半就停了（${stopped}）。`)
-    say(`已經搬進隔離區 ${moved} 個。再跑一次 node cli.mjs cleanup apply ${id} 會從停下來的地方接著做；`
-      + `要把已經搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+    warn(`\n⚠ Another cleanup action interrupted this one, so it stopped partway (${stopped}).`)
+    say(`${plural(moved, 'file')} already in quarantine. Running node cli.mjs cleanup apply ${id} again picks up where it stopped; `
+      + `to put back what already moved: node cli.mjs cleanup undo ${id}`)
   } else {
-    say(`\n搬進隔離區 ${r.quarantinedCount} 個，${mb(r.quarantinedBytes)}。`)
-    if (r.quarantinedCount) say(`後悔的話：node cli.mjs cleanup undo ${r.id}`)
-    if (remaining > 0) say(`一次最多清 ${PLAN_MAX} 個，剩下 ${remaining} 個下次再清（再跑一次 node cli.mjs cleanup apply）。`)
+    say(`\nMoved ${plural(r.quarantinedCount, 'file')} (${mb(r.quarantinedBytes)}) to quarantine.`)
+    if (r.quarantinedCount) say(`Changed your mind? node cli.mjs cleanup undo ${r.id}`)
+    if (remaining > 0) say(`At most ${PLAN_MAX} files per run, so ${remaining} are left for next time (run node cli.mjs cleanup apply again).`)
   }
 
   // **離開碼照逐項結果，不看計畫的 status**（第二輪 R2-1）。逐項才是實話：status 是整份計畫的摘要，
@@ -855,12 +866,12 @@ function runApply(id, { remaining = 0, skippedRows = [], alreadyRun = false } = 
   // no-op 與被打斷的那兩種也照印 —— 上面已經把「為什麼這一次沒動」講清楚了，這裡補「所以現在是什麼狀況」。
   // **「原檔都還在原位」只在失敗的全部是 failed 時才說**（RC17）。
   // unknown 是搬到一半中斷：rename 可能已經做完了，檔案可能在隔離區 —— 說「都還在原位」是在說謊。
-  if (failed && !unknown) warn('\n⚠ 上面 ✘ 的沒搬成。原檔都還在原位，沒有任何東西被刪除。')
-  else if (failed) warn('\n⚠ 上面 ✘ 的沒搬成。')
+  if (failed && !unknown) warn('\n⚠ The ✘ files above did not move. Every original is still where it was — nothing was deleted.')
+  else if (failed) warn('\n⚠ The ✘ files above did not move.')
   if (unknown) {
-    warn(`${failed ? '' : '\n'}⚠ 有 ${unknown} 個搬到一半中斷，檔案可能已經在隔離區，執行 node cli.mjs doctor 檢查。`)
+    warn(`${failed ? '' : '\n'}⚠ ${plural(unknown, 'file')} interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check.`)
   }
-  if (untouched) warn(`${failed || unknown ? '' : '\n'}⚠ 有 ${untouched} 個這次沒有處理到（計畫中途停了），還在原位。`)
+  if (untouched) warn(`${failed || unknown ? '' : '\n'}⚠ ${plural(untouched, 'file')} not handled this time (the plan stopped partway), still where they were.`)
   // 動作執行了，只是檔案沒全部搬成：3。全失敗也不是 2 —— 2 要留給「連跑都跑不起來」。
   process.exitCode = EXIT.partial
 }
@@ -873,15 +884,15 @@ function applyExisting(id) {
 
   // 已經復原過的再套用一次：B 會原樣回傳結果，逐項全是 restored —— 上一版把它們印成一排 ✘、回 0。
   if (plan.status === 'restored') {
-    say(`計畫 ${plan.id} 已經復原過了，檔案都放回原位，這次什麼都沒做。`)
-    say('要再清的話：node cli.mjs cleanup scan，再 node cli.mjs cleanup apply。')
+    say(`Plan ${plan.id} was already undone — the files are back where they were, so nothing happened this time.`)
+    say('To clean again: node cli.mjs cleanup scan, then node cli.mjs cleanup apply.')
     return
   }
   if (plan.status === 'dismissed') {
     // 放棄的可能是人（release），也可能是收尾自動放棄的（建立之後超過一小時沒套用，R2-5）：兩種都講，
     // 不然使用者會以為自己按錯了什麼
-    say(`計畫 ${plan.id} 已經放棄了（${DISMISSED_WHO}），沒有動過任何檔案，這次什麼都沒做。`)
-    say('要清的話：node cli.mjs cleanup apply（照現在的清單重新建一份）。')
+    say(`Plan ${plan.id} was dropped (${DISMISSED_WHO}). No file was ever moved, so nothing happened this time.`)
+    say('To clean: node cli.mjs cleanup apply, which builds a new plan from the current list.')
     printPlanItems(plan, applyLine)
     return
   }
@@ -892,9 +903,9 @@ function applyExisting(id) {
     // 這裡也不可以說「會清掉 N 個」。只有還是 proposed 的（還沒套用、或做到一半中斷）會接著做
     const todo = plan.status !== 'proposed' ? []
       : plan.items.filter(i => ['pending', 'failed', 'unknown'].includes(o.get(i.itemId)?.outcome ?? 'pending'))
-    say(`唯讀模式：會清掉 ${todo.length} 個檔案，但這次一個都沒動。`)
+    say(`Read-only mode: this would clean up ${plural(todo.length, 'file')}, but nothing was touched.`)
     if (plan.status === 'partial' || plan.status === 'error') {
-      say('這份計畫已經套用過，再套用不會重試沒搬成的。要重試：node cli.mjs cleanup scan，再 node cli.mjs cleanup apply。')
+      say('This plan was already applied; applying again does not retry what failed. To retry: node cli.mjs cleanup scan, then node cli.mjs cleanup apply.')
     }
     for (const i of plan.items) say(applyLine(i, o.get(i.itemId)))
     return
@@ -917,7 +928,7 @@ function applyDefault({ skip, also }) {
     all = listCandidates(db, { ...SCOPE, limit: Number.MAX_SAFE_INTEGER }).candidates
     ids = defaultCandidateIds(db, SCOPE)
   } catch (e) {
-    warn('讀不到清理候選：' + cliProblem(e))
+    warn('Could not read the cleanup candidates: ' + cliProblem(e))
     noteError(e, 'apply')
     process.exitCode = EXIT.backend
     return
@@ -930,7 +941,7 @@ function applyDefault({ skip, also }) {
   if (s.error || a.error) { warn(s.error ?? a.error); process.exitCode = EXIT.badInput; return }
   const skipSet = new Set(s.rows.map(r => r.itemId))
   if (a.rows.some(r => skipSet.has(r.itemId))) {
-    warn('同一個編號不可以同時 --skip 又 --also。')
+    warn('The same id cannot be both --skip and --also.')
     process.exitCode = EXIT.badInput
     return
   }
@@ -938,8 +949,8 @@ function applyDefault({ skip, also }) {
   const inDefault = new Set(idList)
   const chosen = all.filter(r => r.candidateIds.some(c => inDefault.has(c)))
   const chosenSet = new Set(chosen.map(r => r.itemId))
-  for (const r of s.rows) if (!chosenSet.has(r.itemId)) say(`${shown(r.name)} 本來就不在這次要清的裡面。`)
-  for (const r of a.rows) if (chosenSet.has(r.itemId)) say(`${shown(r.name)} 本來就打勾了。`)
+  for (const r of s.rows) if (!chosenSet.has(r.itemId)) say(`${shown(r.name)} was not in this cleanup anyway.`)
+  for (const r of a.rows) if (chosenSet.has(r.itemId)) say(`${shown(r.name)} was already ticked.`)
   const skippedRows = chosen.filter(r => skipSet.has(r.itemId))
   const final = [...chosen.filter(r => !skipSet.has(r.itemId)), ...a.rows.filter(r => !chosenSet.has(r.itemId))]
 
@@ -950,18 +961,18 @@ function applyDefault({ skip, also }) {
   // 先跑一次唯讀試跑。照著文件做就會壞掉。
   // 數字跟真的跑**同一份算法**（上面的 final），試跑說幾個、真的就清幾個。
   if (config.readonly) {
-    say(`唯讀模式：會清掉 ${final.length} 個檔案，${mb(final.reduce((n, r) => n + r.bytes, 0))}。`)
-    for (const r of final.slice(0, DRY_LIST)) say(`  ✔ ${shown(r.name)}　${mb(r.bytes)}`)
-    if (final.length > DRY_LIST) say(`  …另外 ${final.length - DRY_LIST} 個`)
-    for (const r of skippedRows) say(`  － ${shown(r.name)}　${mb(r.bytes)}　（你略過了，這次不清）`)
-    if (remaining > 0) say(`一次最多清 ${PLAN_MAX} 個，剩下 ${remaining} 個下次再清。`)
-    say('\n這次一個都沒動，也沒有建立計畫。')
+    say(`Read-only mode: this would clean up ${plural(final.length, 'file')} (${mb(final.reduce((n, r) => n + r.bytes, 0))}).`)
+    for (const r of final.slice(0, DRY_LIST)) say(`  ✔ ${shown(r.name)}  ${mb(r.bytes)}`)
+    if (final.length > DRY_LIST) say(`  …and ${final.length - DRY_LIST} more`)
+    for (const r of skippedRows) say(`  - ${shown(r.name)}  ${mb(r.bytes)}  (you skipped it; not cleaned this time)`)
+    if (remaining > 0) say(`At most ${PLAN_MAX} files per run, so ${remaining} are left for next time.`)
+    say('\nNothing was touched this time, and no plan was created.')
     return
   }
 
   if (!final.length) {
     // **沒東西要清是成功。** 回非 0 會讓每晚 smoke 一直紅。
-    say(chosen.length ? '這次沒有要清的：打勾的都被 --skip 略過了。' : `沒有東西需要清，${rootsLabel()} 很乾淨。`)
+    say(chosen.length ? 'Nothing to clean this time: --skip covered everything that was ticked.' : `Nothing needs cleaning — ${rootsLabel()} is tidy.`)
     return
   }
 
@@ -973,7 +984,7 @@ function applyDefault({ skip, also }) {
   } catch (e) {
     if (e instanceof CleanupError && e.code === 'CONFLICT') { explainConflict(e, candidateIds); return }
     if (e instanceof CleanupError && e.code === 'EMPTY_PLAN') {
-      say(`沒有東西需要清，${rootsLabel()} 很乾淨。`)
+      say(`Nothing needs cleaning — ${rootsLabel()} is tidy.`)
       return
     }
     fail(e, 'apply')
@@ -990,13 +1001,13 @@ function applyDefault({ skip, also }) {
  * needsHuman 陣列只回前 50 個，超過的部分上一版只能說「還有 N 個沒有列出來」，分不出是哪一種。
  */
 function needsHumanText(nh, fallbackTotal) {
-  if (!nh) return fallbackTotal ? `，另外 ${fallbackTotal} 個要你自己看一眼` : ''
+  if (!nh) return fallbackTotal ? `; ${fallbackTotal} more need your eyes` : ''
   if (!nh.needsHumanTotal) return ''
   const { tooLarge, unreadable } = nh.needsHumanCounts
   const parts = []
-  if (unreadable) parts.push(`${unreadable} 個讀不到或搬不動`)
-  if (tooLarge) parts.push(`${tooLarge} 個太大，這個工具不處理`)
-  return `；另外 ${parts.join('、')}（用 cleanup list 看是哪些）`
+  if (unreadable) parts.push(`${unreadable} unreadable or unmovable`)
+  if (tooLarge) parts.push(`${tooLarge} too large for this tool`)
+  return `; ${parts.join(', ')} (run cleanup list to see which)`
 }
 
 /** 看得懂的 CONTEXTBOX_PORT 才用（0 ＝ 讓系統挑）。看不懂就當沒設。 */
@@ -1004,7 +1015,7 @@ function portFromEnv() {
   const v = process.env.CONTEXTBOX_PORT
   if (v === undefined || v === '') return null
   if (!/^\d{1,5}$/.test(v) || Number(v) > 65535) {
-    warn(`⚠ CONTEXTBOX_PORT 看不懂（${shown(v)}），改用 ${DEFAULT_PORT}。`)
+    warn(`⚠ CONTEXTBOX_PORT is not a port (${shown(v)}); using ${DEFAULT_PORT} instead.`)
     return null
   }
   return Number(v)
@@ -1043,25 +1054,25 @@ function modelDoctorLines() {
   try { st = modelStats(db, startOfToday()) }
   catch { st = null }
   if (off) {
-    const lines = [`看懂內容  ✗ ${off}。`]
+    const lines = [`Reading     ✗ ${off}.`]
     // demo 沙盒沒有模型，但 --seed-model 已經把示範答案塞進快取了 ——
     // 不講的話，doctor 說「沒開」而面板上卻寫著「模型認為⋯⋯」，看起來像壞掉
-    if (st?.seeded) lines.push(`          （快取裡有 ${st.seeded} 筆 demo 的示範答案，面板上會標「示範答案」。）`)
+    if (st?.seeded) lines.push(`            (the cache holds ${plural(st.seeded, 'demo answer')}; the panel marks them “[demo answer]”.)`)
     return lines
   }
-  if (!st) return ['看懂內容  ✓ 開著（今天的紀錄讀不出來）']
+  if (!st) return ['Reading     ✓ on (today\'s log could not be read)']
   const secs = st.avgMs == null ? null : (st.avgMs / 1000).toFixed(1)
   const out = [
-    `看懂內容  ✓ 開著（提示詞版本 ${PROMPT_VERSION}）`,
-    `          今天送了 ${st.calls} 次`
-      + (st.ok ? `，${st.ok} 次有答案${secs === null ? '' : `（平均 ${secs} 秒）`}` : '')
-      + (st.failed ? `，${st.failed} 次失敗` : '，沒有失敗'),
+    `Reading     ✓ on (prompt version ${PROMPT_VERSION})`,
+    `            ${plural(st.calls, 'request')} sent today`
+      + (st.ok ? `, ${st.ok} answered${secs === null ? '' : ` (${secs}s on average)`}` : '')
+      + (st.failed ? `, ${st.failed} failed` : ', none failed'),
   ]
-  out.push(`          ${st.secretSkips} 個檔因為看起來像機密沒送`
-    + (st.skips > st.secretSkips ? `，另外 ${st.skips - st.secretSkips} 個因為太短或問不到沒送` : ''))
-  out.push(`          快取裡有 ${st.views} 筆看法`
-    + (st.seeded ? `（其中 ${st.seeded} 筆是 demo 的示範答案）` : '')
-    + '。這些是模型的意見，不會自動改名或搬檔。')
+  out.push(`            ${plural(st.secretSkips, 'file')} held back for looking like secrets`
+    + (st.skips > st.secretSkips ? `, and ${st.skips - st.secretSkips} more for being too short or unanswerable` : ''))
+  out.push(`            The cache holds ${plural(st.views, 'reading')}`
+    + (st.seeded ? ` (${st.seeded} of them demo answers)` : '')
+    + '. These are the model\'s opinions; nothing is renamed or moved automatically.')
   return out
 }
 
@@ -1113,12 +1124,12 @@ async function petUp(port, token, healthProof) {
 
 /** petUp 不是 'up' 的時候，「為什麼不把鑰匙交出去」那一句（open 與 pet 撞 port 共用） */
 function notPetText(port, up) {
-  if (up === 'stranger') return `127.0.0.1:${port} 上回應的不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
+  if (up === 'stranger') return `Whatever answers on 127.0.0.1:${port} is not the ContextBox pet, so the key is not handed to it.`
   if (up === 'unproven') {
-    return `127.0.0.1:${port} 上回應的像 ContextBox，但證明不了它手上有你的鑰匙（可能是冒牌的、別的帳號的，或是舊版的 pet），`
-      + '不把帶鑰匙的網址交給它。'
+    return `Something on 127.0.0.1:${port} looks like ContextBox but cannot prove it holds your key — it may be fake, another account's, or an old pet, `
+      + 'so the key is not handed to it.'
   }
-  return `127.0.0.1:${port} 被佔著，但問不到回應，看不出是不是 ContextBox 的 pet，不把帶鑰匙的網址交給它。`
+  return `127.0.0.1:${port} is taken but does not answer, so there is no telling whether it is the ContextBox pet. The key is not handed to it.`
 }
 
 /**
@@ -1141,19 +1152,19 @@ function inOneDrive(p) {
 }
 
 /** 錯誤種類的說法（doctor 用） */
-const KIND_LABEL = { scan: '掃描', apply: '清理（套用）', undo: '復原', empty: '清空隔離區', model: '問模型' }
+const KIND_LABEL = { scan: 'a scan', apply: 'a cleanup', undo: 'an undo', empty: 'emptying quarantine', model: 'a model request' }
 
 /** `think` 的逐項那一行。**只印檔名與模型講的字，不印內容、不印路徑。** */
 function thinkLine(p) {
   const head = `[${p.index}/${p.total}] ${shown(p.name)}`
-  const what = p.source === 'image' ? '截圖' : '文件'
+  const what = p.source === 'image' ? 'screenshot' : 'document'
   if (p.outcome === 'asked' || p.outcome === 'cached') {
-    const who = p.outcome === 'cached' ? '（之前問過一樣的內容，直接用那次的答案）' : ''
-    return `  ✔ ${head}　—— 模型認為：${shown(p.course || '看不出來')}／${shown(p.topic || '看不出來')}`
-      + `（信心 ${shown(p.confidence || '低')}）${who}`
+    const who = p.outcome === 'cached' ? ' (same contents were asked before; reusing that answer)' : ''
+    return `  ✔ ${head}  — The model thinks: ${shown(p.course || 'Unknown')} / ${shown(p.topic || 'Unknown')}`
+      + ` (confidence ${shown(p.confidence || 'low')})${who}`
   }
-  if (p.outcome === 'skipped') return `  － ${head}　—— ${shown(p.why ?? '沒送出去')}`
-  return `  ✘ ${head}（${what}）　—— ${shown(p.why ?? '問不到')}`
+  if (p.outcome === 'skipped') return `  - ${head}  — ${shown(p.why ?? 'not sent')}`
+  return `  ✘ ${head} (${what})  — ${shown(p.why ?? 'no answer')}`
 }
 
 /**
@@ -1191,32 +1202,32 @@ switch (cmd) {
     // 先收尾（R2-1a）：中斷的搬移不結掉的話，下面的隔離區會少算、中斷的計畫也列不出來。
     // 唯讀模式它自己會整個跳過（R3-9）—— 純診斷不可以改資料庫，下面那一行會講清楚。
     settleCleanupState()
-    say('ContextBox 檢查')
+    say('ContextBox check')
     say('')
-    say(`設定檔    ${shown(cfgPath)}${created ? '（還沒有，剛剛幫你建了一份）' : ''}`)
-    say(`資料庫    ${shown(DEFAULT_DB)}`)
-    say(`唯讀模式  ${config.readonly ? '開著（清理只會說，不會搬也不會刪任何檔案）' : '關著'}`)
+    say(`Config      ${shown(cfgPath)}${created ? ' (there was none, so one was just created)' : ''}`)
+    say(`Database    ${shown(DEFAULT_DB)}`)
+    say(`Read-only   ${config.readonly ? 'on (cleanup only talks; it moves and deletes nothing)' : 'off'}`)
     // 唯讀模式連收尾都不做（R3-9）：中斷的搬移不會結掉、放太久的計畫不會自動放棄。
     // 不講的話，doctor 底下那些數字（隔離區、中斷計畫）看起來像是「已經收過尾」的樣子。
     if (config.readonly) {
-      say('          唯讀模式：不會自動收尾 —— 中斷的搬移不會結掉，放太久沒套用的計畫也不會自動放棄。')
-      say('          要真的收尾，把 CONTEXTBOX_READONLY 關掉再跑一次。')
+      say('            Read-only mode does not tidy up: interrupted moves stay open and stale plans are not dropped.')
+      say('            To let it tidy up, turn CONTEXTBOX_READONLY off and run again.')
     }
     say('')
-    say('監看資料夾（截圖與收件）')
-    for (const r of config.watch) say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
-    say('清理範圍（只有這裡面的檔會被清）')
+    say('Watched folders (screenshots and intake)')
+    for (const r of config.watch) say(`  ${existsSync(r) ? '✓' : '✗ missing'}  ${shown(r)}`)
+    say('Cleanup scope (only files in here are ever cleaned)')
     for (const r of CLEAN_ROOTS) {
-      say(`  ${existsSync(r) ? '✓' : '✗ 不存在'}  ${shown(r)}`)
+      say(`  ${existsSync(r) ? '✓' : '✗ missing'}  ${shown(r)}`)
       // R2-11：OneDrive 同步資料夾裡的檔，搬進隔離區就是雲端刪除。工具不替你挑，但一定要講
       if (inOneDrive(r)) {
-        say('     ⚠ 這個資料夾在 OneDrive 裡：搬進隔離區等於在雲端與所有裝置上刪掉這個檔，'
-          + '只存在雲端的檔掃描時還會被整個下載回來。要清的話把 cleanup.roots 改成不同步的資料夾。')
+        say('     ⚠ This folder is inside OneDrive: moving a file to quarantine deletes it in the cloud and on every device, '
+          + 'and cloud-only files get downloaded in full during a scan. Point cleanup.roots at a folder that is not synced.')
       }
     }
     // R2-8：截圖資料夾在清理範圍裡，但那底下只清截圖（macOS 的截圖資料夾就是桌面）
-    if (SHOTS) say(`  （「${shown(basename(SHOTS) || SHOTS)}」是截圖資料夾：那底下只清截圖，其他檔不動）`)
-    say(`歸檔到    ${shown(config.filed)}${existsSync(config.filed) ? '' : '（同意第一份提案時才會建）'}`)
+    if (SHOTS) say(`  (“${shown(basename(SHOTS) || SHOTS)}” is the screenshots folder: only screenshots are cleaned there)`)
+    say(`Files to    ${shown(config.filed)}${existsSync(config.filed) ? '' : ' (created when you accept the first suggestion)'}`)
     say('')
 
     // 監看到底有沒有在跑？設定正確不代表有人在看。
@@ -1226,27 +1237,27 @@ switch (cmd) {
     // 心跳只證明「它上次寫的時候還活著」。被 kill -9 掉的話，
     // 心跳會停在那裡，而 doctor 會繼續說「還活著」說滿五分鐘 ——
     // 這個心跳本來就是為了「靜默失敗是最大的敵人」加的，不能自己說謊。
-    if (!beat) say('監看      ✗ 從來沒跑過。要它一直看著就開一個終端機跑 `node cli.mjs watch`。')
+    if (!beat) say('Watcher     ✗ never ran. To keep an eye on things, open a terminal and run `node cli.mjs watch`.')
     else if (!Number.isInteger(beatPid) || !alive(beatPid)) {
-      say(`監看      ✗ 那個行程（pid ${beatPid || '?'}）已經不在了，最後一次心跳是 ${beatAgo}。`)
+      say(`Watcher     ✗ that process (pid ${beatPid || '?'}) is gone; its last heartbeat was ${beatAgo}.`)
     } else if ((Date.now() - Date.parse(beat)) > 5 * 60_000) {
-      say(`監看      ✗ 行程還在，但最後一次心跳是 ${beatAgo}，看起來卡住了。`)
-    } else say(`監看      ✓ ${beatAgo}還活著（pid ${beatPid}）`)
+      say(`Watcher     ✗ the process is alive but its last heartbeat was ${beatAgo}, so it looks stuck.`)
+    } else say(`Watcher     ✓ alive as of ${beatAgo} (pid ${beatPid})`)
 
     // doctor 是本機的人自己在看，給完整版（lastError 的內容只有帶 token 的才看得到）
     const h = healthSnapshot(db, { ...SCOPE, quarantine: QUARANTINE, full: true })
-    say(`隔離區    ${shown(QUARANTINE)}`)
-    say(`          ${h.quarantine.items} 個檔案，${mb(h.quarantine.bytes)}`
+    say(`Quarantine  ${shown(QUARANTINE)}`)
+    say(`            ${plural(h.quarantine.items, 'file')}, ${mb(h.quarantine.bytes)}`
       + (h.quarantine.items
         // canEmptyNow 的意思是「按下去**會有東西**被刪掉」，不是「整區都能清」。
         // 講成「現在可以清空」的話，使用者按完發現還有東西，會以為壞了。
-        ? (h.quarantine.canEmptyNow ? '，其中有滿七天可以清空的' : '，最舊的還不到七天')
+        ? (h.quarantine.canEmptyNow ? ', some of them old enough to empty' : ', the oldest is not yet seven days old')
         : '')
-      + (h.quarantine.orphans ? `\n          另有 ${h.quarantine.orphans} 個來路不明的檔，清空不會動到它們` : '')
-      + (h.quarantine.truncated ? '\n          ⚠ 隔離區沒讀完，數字可能不準' : ''))
+      + (h.quarantine.orphans ? `\n            ${plural(h.quarantine.orphans, 'file')} of unknown origin ${h.quarantine.orphans === 1 ? 'is' : 'are'} also here; emptying leaves them alone` : '')
+      + (h.quarantine.truncated ? '\n            ⚠ quarantine was not read to the end, so the numbers may be off' : ''))
     let nh = null
     try { nh = listCandidates(db, { ...SCOPE, limit: 0 }) } catch { /* 用 health 的總數 */ }
-    say(`待清候選  ${h.pendingCandidates} 個` + needsHumanText(nh, h.needsHumanCount))
+    say(`Candidates  ${h.pendingCandidates}` + needsHumanText(nh, h.needsHumanCount))
 
     // 做到一半中斷的計畫（第二輪 R2-5）：proposed 而且已經有 journal。它佔著它的檔（預設清理會撞 CONFLICT），
     // 已經搬的在隔離區 —— 只有兩條路，不能放棄。以前沒有任何指令會把它的 id 印出來。
@@ -1256,7 +1267,7 @@ switch (cmd) {
         AND EXISTS (SELECT 1 FROM cleanup_journal j WHERE j.plan_id=p.id) ORDER BY created_at DESC, rowid DESC`).all()
     } catch { /* 還沒有清理的表：沒有中斷的計畫 */ }
     if (cut.length) {
-      say(`中斷計畫  ${cut.length} 份做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：`)
+      say(`Interrupted ${plural(cut.length, 'plan')} stopped partway (killed mid-apply, a crash, or Ctrl+C):`)
       for (const p of cut.slice(0, 5)) {
         let total = 0, moved = 0, unknown = 0
         try {
@@ -1266,30 +1277,30 @@ switch (cmd) {
           unknown = o.filter(k => k === 'unknown').length
         } catch { /* 數不出來就講 0 */ }
         const where = moved || unknown
-          ? `${moved} 個已經在隔離區` + (unknown ? `，${unknown} 個狀態不明` : '')
-          : '一個檔都還沒搬走'
-        say(`          ${p.id}（${ago(p.created_at) ?? '不知道什麼時候'}建立）：${total} 個檔，${where}`)
+          ? `${moved} already in quarantine` + (unknown ? `, ${unknown} in an unknown state` : '')
+          : 'not one file has moved yet'
+        say(`            ${p.id} (created ${ago(p.created_at) ?? 'at an unknown time'}): ${plural(total, 'file')}, ${where}`)
         if (planRestoring(p.id)) {
-          say(`            它開始復原了，只能接著放回：node cli.mjs cleanup undo ${p.id}`)
+          say(`              It has started restoring; the only way on is to carry on: node cli.mjs cleanup undo ${p.id}`)
         } else {
-          if (moved || unknown) say(`            把已經搬走的放回原位：node cli.mjs cleanup undo ${p.id}`)
-          say(`            把它做完：node cli.mjs cleanup apply ${p.id}`)
-          if (!moved && !unknown) say(`            或放棄它（不動任何檔）：node cli.mjs cleanup undo ${p.id}`)
+          if (moved || unknown) say(`              Put back what already moved: node cli.mjs cleanup undo ${p.id}`)
+          say(`              Finish it: node cli.mjs cleanup apply ${p.id}`)
+          if (!moved && !unknown) say(`              Or drop it (nothing moves): node cli.mjs cleanup undo ${p.id}`)
         }
       }
-      if (cut.length > 5) say(`          …另外 ${cut.length - 5} 份`)
+      if (cut.length > 5) say(`            …and ${cut.length - 5} more`)
     }
 
     // 最近一次完整掃描回報的問題（第二輪 R2-10）：保險絲、打不開的資料夾。以前只印在背景行程的 stderr，沒有人看得到
     // 超過 50 條的話，核心存的最後一條是「還有 N 條沒有列出來。」：總數要把它算回去，不可以說成 50 個
     const probs = Array.isArray(h.scanProblems) ? h.scanProblems : []
-    const over = /^還有 (\d+) 條沒有列出來。$/.exec(probs.at(-1) ?? '')
+    const over = /^(\d+) more are not listed\.$/.exec(probs.at(-1) ?? '')
     const listed = over ? probs.slice(0, -1) : probs
     const totalProbs = listed.length + (over ? Number(over[1]) : 0)
     if (totalProbs) {
-      say(`掃描問題  上次掃描回報了 ${totalProbs} 個問題：`)
+      say(`Scan issues The last scan reported ${totalProbs} problems:`)
       for (const x of listed.slice(0, 10)) say(`          ⚠ ${shown(x)}`)
-      if (totalProbs > 10) say(`          …另外 ${totalProbs - Math.min(10, listed.length)} 個`)
+      if (totalProbs > 10) say(`            …and ${totalProbs - Math.min(10, listed.length)} more`)
     }
 
     // 最近一次意外（RC5）：人話＋時間。寵物還擔不擔心它，**跟寵物用同一個判斷**（errorStillActive，R2-10）：
@@ -1298,56 +1309,56 @@ switch (cmd) {
     const errWhy = h.lastError
       ? (errAt && h.lastError.startsWith(errAt + ' ') ? h.lastError.slice(errAt.length + 1) : h.lastError)
       : null
-    if (!errWhy) say('最近出錯  沒有')
+    if (!errWhy) say('Last error  none')
     else {
-      say(`最近出錯  ${errAt ? `${ago(errAt)}（${localTime(errAt)}）` : '時間不明'}：${shown(errWhy)}`)
+      say(`Last error  ${errAt ? `${ago(errAt)} (${localTime(errAt)})` : 'time unknown'}: ${shown(errWhy)}`)
       const label = KIND_LABEL[h.lastErrorKind] ?? null
       if (!errorStillActive(h)) {
         const okAt = label ? h.lastOkByKind?.[h.lastErrorKind] : h.lastOkAt
-        say(`          之後${label ?? ''}已經成功過（${ago(okAt) ?? '時間不明'}），寵物不會再為它擔心。`)
+        say(`            ${label ?? 'Something'} has succeeded since (${ago(okAt) ?? 'time unknown'}), so the pet has stopped worrying.`)
       } else {
-        say('          寵物還在為它擔心：'
-          + (label ? `這是${label}出的錯，之後還沒有成功的${label}。` : '之後還沒有成功過任何一次清理動作。'))
+        say('            The pet is still worried: '
+          + (label ? `this came from ${label}, and there has been no successful one since.` : 'no cleanup action has succeeded since.'))
       }
     }
     say('')
 
     const last = items.lastSeen()
-    say(`最後收到  ${last ? `${ago(last)}（${last}）` : '還沒收過任何東西'}`)
+    say(`Last intake ${last ? `${ago(last)} (${last})` : 'nothing taken in yet'}`)
     say('')
 
     if (!modelReady(config)) {
-      say('模型      ✗ 還沒設定。請在設定檔填 model.baseUrl 與 model.name。')
+      say('Model       ✗ not configured. Fill in model.baseUrl and model.name in the config file.')
     } else {
-      say(`模型      ${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
+      say(`Model       ${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
       const key = modelKey(config)
-      say(`金鑰      ${key ? '✓ 從 ' + config.model.keyEnv + ' 讀到了' : '✗ 環境變數 ' + config.model.keyEnv + ' 是空的'}`)
+      say(`Key         ${key ? '✓ read from ' + config.model.keyEnv : '✗ the environment variable ' + config.model.keyEnv + ' is empty'}`)
       // 真的打一次。設定檔填對不代表連得到——靜默失敗是這種工具最大的敵人。
-      say(`連線      ${await probeModel(config, key)}`)
+      say(`Connection  ${await probeModel(config, key)}`)
     }
     // P2：看懂內容。**沒設定就只講一句「沒開」**，不報錯、不留空白
     for (const line of modelDoctorLines()) say(line)
     say('')
     const c = items.counts()
     const total = Object.values(c).reduce((a, b) => a + b, 0)
-    say(`收件匣    共 ${total} 筆` + (total ? '：' + Object.entries(c).map(([k, v]) => `${k} ${v}`).join('、') : ''))
+    say(`Inbox       ${plural(total, 'item')}` + (total ? ': ' + Object.entries(c).map(([k, v]) => `${k} ${v}`).join(', ') : ''))
     showProblems()
     break
   }
 
   case 'propose': {
     showProblems()
-    if (!args.length) { warn('要給檔案路徑。例：node cli.mjs propose ~/Downloads/a.pdf'); process.exit(1) }
+    if (!args.length) { warn('Give a file path, e.g. node cli.mjs propose ~/Downloads/a.pdf'); process.exit(1) }
     const r = { new: 0, known: 0, rejected: 0 }
     for (const a of args) r[intake(a)]++
     // 「已經收過了」是成功。右鍵選單靠離開碼判斷成敗，
     // 回非零會在 Windows／Nautilus 上跳一個錯誤視窗給使用者看。
     if (r.new + r.known === 0) { process.exitCode = 1; break }
-    say(`\n收了 ${r.new} 個新檔案`
-      + (r.known ? `，${r.known} 個之前就收過了` : '')
-      + (r.rejected ? `，${r.rejected} 個被擋下` : '') + '。')
+    say(`\nTook in ${plural(r.new, 'new file')}`
+      + (r.known ? `, ${r.known} were already known` : '')
+      + (r.rejected ? `, ${r.rejected} were turned away` : '') + '.')
     if (!modelReady(config)) {
-      say('（模型還沒設定，所以只有記下來，還沒有人去看懂它。設定好之後跑 `node cli.mjs doctor` 確認。）')
+      say('(No model is configured, so these were only recorded, not read. Once one is set up, run `node cli.mjs doctor` to check.)')
     }
     break
   }
@@ -1361,9 +1372,9 @@ switch (cmd) {
   case 'think': {
     showProblems()
     if (!modelEnabled(config)) {
-      say(`看懂內容還沒開：${whyDisabled(config)}。`)
-      say(`設定檔 ${shown(cfgPath)} 裡的 model.baseUrl 與 model.name 填好，金鑰放進環境變數 ${shown(config.model.keyEnv)}，再跑一次。`)
-      say('（沒有模型不影響其他功能：掃描、清理、面板照常。）')
+      say(`Reading is not on: ${whyDisabled(config)}.`)
+      say(`Fill in model.baseUrl and model.name in ${shown(cfgPath)}, put the key in ${shown(config.model.keyEnv)}, and run again.`)
+      say('(Everything else works without a model: scanning, cleanup and the panel are unaffected.)')
       break
     }
     let limit = ROUND_MAX_ITEMS
@@ -1371,14 +1382,14 @@ switch (cmd) {
     if (li >= 0) {
       const n = Number(args[li + 1])
       if (!Number.isInteger(n) || n < 1 || n > 500) {
-        warn('--limit 要是 1 到 500 之間的整數。')
+        warn('--limit must be a whole number between 1 and 500.')
         process.exitCode = EXIT.badInput
         break
       }
       limit = n
     }
-    say(`問模型：${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
-    say(`一次問一個檔，每個最多 60 秒。按 Ctrl+C 可以停（停在哪裡就是哪裡，不會留下半筆）。`)
+    say(`Asking the model: ${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
+    say(`One file at a time, 60 seconds each. Ctrl+C stops it wherever it is, with no half-written records.`)
     const ac = new AbortController()
     const stopThinking = () => { if (!ac.signal.aborted) ac.abort() }
     process.on('SIGINT', stopThinking)
@@ -1392,13 +1403,13 @@ switch (cmd) {
     process.off('SIGTERM', stopThinking)
     say('')
     if (!r.total) {
-      say('沒有需要問的檔（有文字的文件與截圖都已經看過了，或還沒掃描過）。')
+      say('Nothing to ask about — every document and screenshot with text has been read, or nothing has been scanned yet.')
       break
     }
-    say(`這一輪：排了 ${r.total} 個，問到 ${r.asked} 個`
-      + `，命中快取 ${r.cached} 個，沒送出去 ${r.skipped} 個，失敗 ${r.failed} 次。`)
-    if (r.cancelled) say('（你按了停，剩下的等下一輪。）')
-    say('模型講的是**意見**，不是事實：不會因為它說了就自動改名或搬檔。面板上都標著「模型認為」。')
+    say(`This round: ${r.total} queued, ${r.asked} asked`
+      + `, ${r.cached} served from cache, ${r.skipped} not sent, ${r.failed} failed.`)
+    if (r.cancelled) say('(You stopped it; the rest wait for the next round.)')
+    say('What the model says is an **opinion**, not a fact: nothing is renamed or moved because it said so. The panel marks every one “The model thinks”.')
     if (r.asked) noteOk('model')
     if (r.stopped) {
       warn('⚠ ' + shown(r.stopped))
@@ -1422,25 +1433,25 @@ switch (cmd) {
     const scope = { roots: CLEAN_ROOTS, quarantine: QUARANTINE, readonly: config.readonly }
     // 每一次都先收尾上一次被砍在中間的改名（看檔案實際在哪決定那一列是 done 還是 reverted）
     try { recoverInterruptedRenames(db) }
-    catch (e) { warn(`⚠ 收尾上次中斷的改名時出錯（${why(e?.message ?? e)}），這次先略過。`) }
+    catch (e) { warn(`⚠ Could not finish tidying up the interrupted rename (${why(e?.message ?? e)}). Skipping it this time.`) }
 
     const undoAt = args.indexOf('--undo')
     const applyAt = args.indexOf('--apply')
     if (undoAt >= 0 && applyAt >= 0) {
-      warn('--apply 與 --undo 不能一起用。')
+      warn('--apply and --undo cannot be used together.')
       process.exitCode = EXIT.badInput
       break
     }
     const unknown = args.find(a => a.startsWith('--') && a !== '--apply' && a !== '--undo' && a !== '--to')
     if (unknown) {
-      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>、--to <新名字>。`)
+      warn(`Don't know ${shown(unknown)}. You can use: --apply <id>, --undo <record id>, --to <new name>.`)
       process.exitCode = EXIT.badInput
       break
     }
     const to = flagValue(args, '--to')
     if (to.error) { warn(to.error); process.exitCode = EXIT.badInput; break }
     if (to.value !== undefined && applyAt < 0) {
-      warn('--to 只有跟 --apply 一起用才有意義（它是「這一個檔要叫什麼」）。')
+      warn('--to only means something with --apply — it is the name for one particular file.')
       process.exitCode = EXIT.badInput
       break
     }
@@ -1458,10 +1469,10 @@ switch (cmd) {
         for (const raw of ids) {
           const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
           const hits = done.filter(r => r.id.toLowerCase().startsWith(code))
-          if (code.length < 4) { warn(`--undo ${shown(raw)}：紀錄 id 至少 4 碼，就是 rename 清單上 [ ] 裡的那幾碼。`); picked = null; break }
-          if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一筆可以復原。先跑 node cli.mjs rename 看紀錄。`); picked = null; break }
+          if (code.length < 4) { warn(`--undo ${shown(raw)}: a record id needs at least 4 characters — the ones in [ ] on the rename list.`); picked = null; break }
+          if (!hits.length) { warn(`There is no record ${shown(raw)} to undo. Run node cli.mjs rename to see the records.`); picked = null; break }
           if (hits.length > 1) {
-            warn(`編號 ${shown(raw)} 對到不只一筆，請多打幾碼：\n`
+            warn(`The id ${shown(raw)} matches more than one record. Type a few more characters:\n`
               + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(r.to)}`).join('\n'))
             picked = null
             break
@@ -1474,12 +1485,12 @@ switch (cmd) {
       try { r = undoRenames(db, picked ? { ids: picked } : { last: true }, scope) }
       catch (e) { fail(e, 'undo'); break }
       for (const o of r.results) {
-        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.to)}　（原本的名字被佔走了，放回來的這一份叫這個，沒有覆蓋任何檔）`)
+        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.to)}  (another file had taken the original name, so this is what it is called; nothing was overwritten)`)
         else if (o.ok) say(`  ↩ ${shown(o.to)}`)
-        else say(`  ✘ 沒有放回　—— ${shown(o.why)}`)
+        else say(`  ✘ Not changed back  — ${shown(o.why)}`)
       }
       const bad = r.results.filter(o => !o.ok).length
-      say(`\n復原了 ${r.results.length - bad} 個${bad ? `，${bad} 個沒有放回` : ''}。`)
+      say(`\nChanged ${r.results.length - bad} back${bad ? `, ${bad} not changed back` : ''}.`)
       if (bad) process.exitCode = EXIT.partial
       break
     }
@@ -1493,24 +1504,24 @@ switch (cmd) {
 
     if (applyAt < 0) {
       if (!rows.length) {
-        say(`${rootsLabel()} 裡沒有可以改名的檔。`)
-        say('（只會提議「沒取名」而且模型看得出內容的檔；模型還沒看過的先跑 node cli.mjs think。）')
+        say(`Nothing in ${rootsLabel()} can be renamed.`)
+        say('(Only unnamed files the model can make sense of get suggested. For files it has not read yet, run node cli.mjs think first.)')
       } else {
-        say(`有 ${rows.length} 個檔可以改名（**這些是模型的意見，不是事實**）：\n`)
+        say(`${plural(rows.length, 'file')} can be renamed (**these are the model's opinions, not facts**):\n`)
         for (const r of rows) {
           say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
-          say(`         → ${shown(r.suggested)}${r.learned ? '　（課名照你上次改的寫）' : ''}`)
-          say(`         模型認為：${shown(r.course || '看不出來')}／${shown(r.topic || '看不出來')}`
-            + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
-          if (r.evidence) say(`         證據：${shown(r.evidence)}`)
-          if (r.rejectedBefore) say('         ⟲ 你上次退過這個建議 —— 不給編號的話不會做到它。')
+          say(`         → ${shown(r.suggested)}${r.learned ? '  (course spelled the way you changed it last time)' : ''}`)
+          say(`         The model thinks: ${shown(r.course || 'Unknown')} / ${shown(r.topic || 'Unknown')}`
+            + ` (confidence ${shown(r.confidence)})${r.seeded ? ' [demo answer]' : ''}`)
+          if (r.evidence) say(`         Evidence: ${shown(r.evidence)}`)
+          if (r.rejectedBefore) say('         ⟲ You turned this suggestion down last time — it is skipped unless you name its id.')
         }
-        say(`\n要改的話：node cli.mjs rename --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
-        say('改完反悔：node cli.mjs rename --undo')
+        say(`\nTo rename: node cli.mjs rename --apply${rows.length > 1 ? ' [id…]' : ''}`)
+        say('Changed your mind afterwards: node cli.mjs rename --undo')
       }
       const recent = listRenames(db, RENAME_LIST).filter(r => r.status === 'done')
       if (recent.length) {
-        say('\n最近改過的（都還可以復原）：')
+        say('\nRecently renamed (all still undoable):')
         const rs = shortIds(recent.map(r => r.id))
         for (const r of recent) say(`  [${rs.get(r.id)}] ${shown(r.from)} → ${shown(r.to)}`)
       }
@@ -1530,21 +1541,21 @@ switch (cmd) {
       const back = rows.filter(r => r.rejectedBefore)
       chosen = rows.filter(r => !r.rejectedBefore)
       if (back.length) {
-        say(`（${back.length} 個你上次退過的沒有算進去；要做的話指名編號：`
-          + `${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')}）`)
+        say(`(${back.length} ${back.length === 1 ? 'suggestion you turned down last time is' : 'suggestions you turned down last time are'} left out. `
+          + `To do them, name their ids: ${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')})`)
       }
     }
     if (!chosen.length) {
-      say(`${rootsLabel()} 裡沒有可以改名的檔，這次什麼都沒做。`)
+      say(`Nothing in ${rootsLabel()} can be renamed, so nothing happened.`)
       break
     }
     if (to.value !== undefined && chosen.length > 1) {
-      warn(`--to 一次只能指名一個檔（現在選到 ${chosen.length} 個）。先用 --apply <編號> 指定是哪一個。`)
+      warn(`--to names one file at a time (${chosen.length} are selected right now). Use --apply <id> to pick one.`)
       process.exitCode = EXIT.badInput
       break
     }
     if (config.readonly) {
-      warn('目前是唯讀模式，不會改任何檔案的名字。')
+      warn('Read-only mode is on, so no file gets renamed.')
       process.exitCode = EXIT.badInput
       break
     }
@@ -1556,13 +1567,13 @@ switch (cmd) {
     catch (e) { fail(e, 'rename'); break }
     for (const o of r.results) {
       if (o.ok) say(`  ✔ ${shown(o.from)} → ${shown(o.to)}`)
-      else say(`  ✘ ${shown(o.from || '這個檔')}　—— ${shown(o.why)}`)
+      else say(`  ✘ ${shown(o.from || 'this file')}  — ${shown(o.why)}`)
     }
     const ok = r.results.filter(o => o.ok).length
     const bad = r.results.length - ok
-    say(`\n改好 ${ok} 個${bad ? `，${bad} 個沒有改` : ''}。`)
-    if (r.remaining) say(`一次最多改 ${RENAME_BATCH_MAX} 個，還有 ${r.remaining} 個，再跑一次就會做到它們。`)
-    if (ok) say('反悔的話：node cli.mjs rename --undo')
+    say(`\nRenamed ${ok}${bad ? `, ${bad} not renamed` : ''}.`)
+    if (r.remaining) say(`At most ${RENAME_BATCH_MAX} per run, so ${r.remaining} are still to go. Run it again and they get done too.`)
+    if (ok) say('Changed your mind? node cli.mjs rename --undo')
     if (bad) process.exitCode = EXIT.partial
     break
   }
@@ -1587,19 +1598,19 @@ switch (cmd) {
     }
     // 每一次都先收尾上一次被砍在中間的整理（看檔案實際在哪決定那一列是 done 還是 reverted）
     try { recoverInterruptedFilings(db) }
-    catch (e) { warn(`⚠ 收尾上次中斷的整理時出錯（${why(e?.message ?? e)}），這次先略過。`) }
+    catch (e) { warn(`⚠ Could not finish tidying up the interrupted filing (${why(e?.message ?? e)}). Skipping it this time.`) }
 
     const undoAt = args.indexOf('--undo')
     const applyAt = args.indexOf('--apply')
     if (undoAt >= 0 && applyAt >= 0) {
-      warn('--apply 與 --undo 不能一起用。')
+      warn('--apply and --undo cannot be used together.')
       process.exitCode = EXIT.badInput
       break
     }
     const known = ['--apply', '--undo', '--course', '--kind']
     const unknown = args.find(a => a.startsWith('--') && !known.includes(a))
     if (unknown) {
-      warn(`看不懂 ${shown(unknown)}。可以用：--apply <編號>、--undo <紀錄 id>、--course <課名>、--kind <類型>。`)
+      warn(`Don't know ${shown(unknown)}. You can use: --apply <id>, --undo <record id>, --course <course>, --kind <kind>.`)
       process.exitCode = EXIT.badInput
       break
     }
@@ -1608,7 +1619,7 @@ switch (cmd) {
     const badFlag = course.error ?? kind.error
     if (badFlag) { warn(badFlag); process.exitCode = EXIT.badInput; break }
     if ((course.value !== undefined || kind.value !== undefined) && applyAt < 0) {
-      warn('--course 與 --kind 只有跟 --apply 一起用才有意義（它們是「這幾個檔要歸到哪」）。')
+      warn('--course and --kind only mean something with --apply — they say where the files should go.')
       process.exitCode = EXIT.badInput
       break
     }
@@ -1625,10 +1636,10 @@ switch (cmd) {
         for (const raw of ids) {
           const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
           const hits = done.filter(r => r.id.toLowerCase().startsWith(code))
-          if (code.length < 4) { warn(`--undo ${shown(raw)}：紀錄 id 至少 4 碼，就是 file 清單上 [ ] 裡的那幾碼。`); picked = null; break }
-          if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一筆可以復原。先跑 node cli.mjs file 看紀錄。`); picked = null; break }
+          if (code.length < 4) { warn(`--undo ${shown(raw)}: a record id needs at least 4 characters — the ones in [ ] on the file list.`); picked = null; break }
+          if (!hits.length) { warn(`There is no record ${shown(raw)} to undo. Run node cli.mjs file to see the records.`); picked = null; break }
           if (hits.length > 1) {
-            warn(`編號 ${shown(raw)} 對到不只一筆，請多打幾碼：\n`
+            warn(`The id ${shown(raw)} matches more than one record. Type a few more characters:\n`
               + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(r.to)}`).join('\n'))
             picked = null
             break
@@ -1641,12 +1652,12 @@ switch (cmd) {
       try { r = undoFilings(db, picked ? { ids: picked } : { last: true }, scope) }
       catch (e) { fail(e, 'undo'); break }
       for (const o of r.results) {
-        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.name)}　（原本的位置已經有同名的檔，放回來的這一份叫這個，沒有覆蓋任何檔）`)
+        if (o.ok && o.restoredAs) say(`  ↩ ${shown(o.name)}  (a file of that name was already in the original place, so this is what it is called; nothing was overwritten)`)
         else if (o.ok) say(`  ↩ ${shown(o.name)}`)
-        else say(`  ✘ 沒有搬回　—— ${shown(o.why)}`)
+        else say(`  ✘ Not moved back  — ${shown(o.why)}`)
       }
       const bad = r.results.filter(o => !o.ok).length
-      say(`\n搬回 ${r.results.length - bad} 個${bad ? `，${bad} 個沒有搬回` : ''}。`)
+      say(`\nMoved ${r.results.length - bad} back${bad ? `, ${bad} not moved back` : ''}.`)
       if (bad) process.exitCode = EXIT.partial
       break
     }
@@ -1660,31 +1671,31 @@ switch (cmd) {
 
     if (applyAt < 0) {
       if (!rows.length) {
-        say(`${rootsLabel()} 裡沒有可以整理的檔。`)
-        say('（只會提議模型看得出是哪一堂課的檔；模型還沒看過的先跑 node cli.mjs think。）')
+        say(`Nothing in ${rootsLabel()} can be filed.`)
+        say('(Only files the model can place in a course get suggested. For files it has not read yet, run node cli.mjs think first.)')
       } else {
-        say(`有 ${rows.length} 個檔可以整理（**這些是模型的意見，不是事實**）：\n`)
+        say(`${plural(rows.length, 'file')} can be filed (**these are the model's opinions, not facts**):\n`)
         for (const r of rows) {
           say(`  [${short.get(r.itemId)}] ${shown(r.name)}`)
-          say(`         → ${shown(r.toFolder)}/${r.learned ? '　（照你上次改的寫）' : ''}`)
+          say(`         → ${shown(r.toFolder)}/${r.learned ? '  (the way you changed it last time)' : ''}`)
           // **模型說的那一句一定用模型自己的課名**：套了偏好之後 course 是使用者的寫法，
           // 印它就變成「把使用者自己的話說成模型講的」
-          say(`         模型認為：${shown(r.modelCourse || r.course)}／${shown(r.topic || '看不出來')}`
-            + `（信心 ${shown(r.confidence)}）${r.seeded ? '［示範答案］' : ''}`)
-          if (r.evidence) say(`         證據：${shown(r.evidence)}`)
+          say(`         The model thinks: ${shown(r.modelCourse || r.course)} / ${shown(r.topic || 'Unknown')}`
+            + ` (confidence ${shown(r.confidence)})${r.seeded ? ' [demo answer]' : ''}`)
+          if (r.evidence) say(`         Evidence: ${shown(r.evidence)}`)
           // 舊資料夾**沒有被搬走也沒有改名**，只是之後的檔不再進去（P5 預期行為 12）
           if (r.alsoKnownAs) {
-            say(`         你之前把它叫「${shown(r.alsoKnownAs)}」，那個資料夾還在（沒有動它）。`)
+            say(`         You used to call it “${shown(r.alsoKnownAs)}”; that folder is still there, untouched.`)
           }
-          if (r.rejectedBefore) say('         ⟲ 你上次退過這個建議 —— 不給編號的話不會做到它。')
+          if (r.rejectedBefore) say('         ⟲ You turned this suggestion down last time — it is skipped unless you name its id.')
         }
-        say(`\n要整理的話：node cli.mjs file --apply${rows.length > 1 ? ' [編號⋯]' : ''}`)
-        say(`整理好的東西會放在 ${shown(config.filed)}，之後不會再被清理提議。`)
-        say('整理完反悔：node cli.mjs file --undo')
+        say(`\nTo file them: node cli.mjs file --apply${rows.length > 1 ? ' [id…]' : ''}`)
+        say(`Filed things land in ${shown(config.filed)} and are never suggested for cleanup again.`)
+        say('Changed your mind afterwards: node cli.mjs file --undo')
       }
       const recent = listFilings(db, FILING_LIST).filter(r => r.status === 'done')
       if (recent.length) {
-        say('\n最近整理過的（都還可以復原）：')
+        say('\nRecently filed (all still undoable):')
         const rs = shortIds(recent.map(r => r.id))
         for (const r of recent) say(`  [${rs.get(r.id)}] ${shown(r.to)} → ${shown(r.toFolder)}/`)
       }
@@ -1704,16 +1715,16 @@ switch (cmd) {
       const back = rows.filter(r => r.rejectedBefore)
       chosen = rows.filter(r => !r.rejectedBefore)
       if (back.length) {
-        say(`（${back.length} 個你上次退過的沒有算進去；要做的話指名編號：`
-          + `${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')}）`)
+        say(`(${back.length} ${back.length === 1 ? 'suggestion you turned down last time is' : 'suggestions you turned down last time are'} left out. `
+          + `To do them, name their ids: ${back.map(r => '[' + short.get(r.itemId) + ']').join(' ')})`)
       }
     }
     if (!chosen.length) {
-      say(`${rootsLabel()} 裡沒有可以整理的檔，這次什麼都沒做。`)
+      say(`Nothing in ${rootsLabel()} can be filed, so nothing happened.`)
       break
     }
     if (config.readonly) {
-      warn('目前是唯讀模式，不會搬動任何檔案。')
+      warn('Read-only mode is on, so no file gets moved.')
       process.exitCode = EXIT.badInput
       break
     }
@@ -1728,13 +1739,13 @@ switch (cmd) {
     catch (e) { fail(e, 'file'); break }
     for (const o of r.results) {
       if (o.ok) say(`  ✔ ${shown(o.name)} → ${shown(o.toFolder)}/${o.to === o.name ? '' : shown(o.to)}`)
-      else say(`  ✘ ${shown(o.name || '這個檔')}　—— ${shown(o.why)}`)
+      else say(`  ✘ ${shown(o.name || 'this file')}  — ${shown(o.why)}`)
     }
     const ok = r.results.filter(o => o.ok).length
     const bad = r.results.length - ok
-    say(`\n整理好 ${ok} 個${bad ? `，${bad} 個沒有搬` : ''}。`)
-    if (r.remaining) say(`一次最多整理 ${FILING_BATCH_MAX} 個，還有 ${r.remaining} 個，再跑一次就會做到它們。`)
-    if (ok) say('反悔的話：node cli.mjs file --undo')
+    say(`\nFiled ${ok}${bad ? `, ${bad} not filed` : ''}.`)
+    if (r.remaining) say(`At most ${FILING_BATCH_MAX} per run, so ${r.remaining} are still to go. Run it again and they get done too.`)
+    if (ok) say('Changed your mind? node cli.mjs file --undo')
     if (bad) process.exitCode = EXIT.partial
     break
   }
@@ -1753,13 +1764,13 @@ switch (cmd) {
     const forgetAt = args.indexOf('--forget')
     const all = args.includes('--forget-all')
     if (forgetAt >= 0 && all) {
-      warn('--forget 與 --forget-all 不能一起用。')
+      warn('--forget and --forget-all cannot be used together.')
       process.exitCode = EXIT.badInput
       break
     }
     const unknown = args.find(a => a.startsWith('--') && a !== '--forget' && a !== '--forget-all')
     if (unknown) {
-      warn(`看不懂 ${shown(unknown)}。可以用：--forget <編號>、--forget-all。`)
+      warn(`Don't know ${shown(unknown)}. You can use: --forget <id>, --forget-all.`)
       process.exitCode = EXIT.badInput
       break
     }
@@ -1772,18 +1783,18 @@ switch (cmd) {
     // ── 忘掉 ─────────────────────────────────────────────────
     if (forgetAt >= 0 || all) {
       if (config.readonly) {
-        warn('目前是唯讀模式，不會改任何東西（包括忘掉學過的事）。')
+        warn('Read-only mode is on, so nothing changes — not even forgetting what it learned.')
         process.exitCode = EXIT.badInput
         break
       }
       if (all) {
         const n = forgetAllLearned(db)
-        say(n ? `全部忘掉了（${n} 條）。之後的建議回到模型原本的說法。` : '本來就什麼都沒學過。')
+        say(n ? `Forgot all ${n} of them. Future suggestions go back to what the model says.` : 'There was nothing learned to begin with.')
         break
       }
       const codes = codesAfter(args, forgetAt)
       if (!codes.length) {
-        warn('--forget 後面要接編號，就是 learned 清單上 [ ] 裡的那幾碼。要全清的話用 --forget-all。')
+        warn('--forget needs an id — the characters in [ ] on the learned list. To clear everything, use --forget-all.')
         process.exitCode = EXIT.badInput
         break
       }
@@ -1791,11 +1802,11 @@ switch (cmd) {
       let bad = false
       for (const raw of codes) {
         const code = raw.replace(/^\[|\]$/g, '').toLowerCase()
-        if (code.length < 4) { warn(`--forget ${shown(raw)}：編號至少 4 碼，就是 learned 清單上 [ ] 裡的那幾碼。`); bad = true; break }
+        if (code.length < 4) { warn(`--forget ${shown(raw)}: an id needs at least 4 characters — the ones in [ ] on the learned list.`); bad = true; break }
         const hits = rows.filter(r => r.id.toLowerCase().startsWith(code))
-        if (!hits.length) { warn(`沒有編號 ${shown(raw)} 這一條。先跑 node cli.mjs learned 看清單。`); bad = true; break }
+        if (!hits.length) { warn(`There is no entry ${shown(raw)}. Run node cli.mjs learned to see the list.`); bad = true; break }
         if (hits.length > 1) {
-          warn(`編號 ${shown(raw)} 對到不只一條，請多打幾碼：\n`
+          warn(`The id ${shown(raw)} matches more than one entry. Type a few more characters:\n`
             + hits.slice(0, 10).map(r => `  [${short.get(r.id)}] ${shown(learnedLine(r))}`).join('\n'))
           bad = true
           break
@@ -1804,32 +1815,32 @@ switch (cmd) {
       }
       if (bad) { process.exitCode = EXIT.badInput; break }
       const n = forgetLearned(db, picked)
-      say(`忘掉 ${n} 條了。那幾條不會再影響建議。`)
+      say(`Forgot ${n} of them. They no longer shape any suggestion.`)
       break
     }
 
     // ── 列清單 ───────────────────────────────────────────────
     if (!rows.length) {
-      say('它還沒學到任何東西。')
-      say('（改名或整理的時候，你把建議改成別的寫法，它才會記下來 —— 照單全收不算。）')
+      say('It has not learned anything yet.')
+      say('(It only remembers when you change a rename or filing suggestion into something else. Accepting one as-is teaches it nothing.)')
       break
     }
-    say(`它學到 ${rows.length} 條（都是你自己改過的，**它不會自己動檔案**）：\n`)
+    say(`It learned ${plural(rows.length, 'thing')}, all from changes you made (**it never moves a file on its own**):\n`)
     for (const r of rows) {
       say(`  [${short.get(r.id)}] ${shown(learnedLine(r))}`)
     }
     if (learned.evicted.count) {
-      say(`\n（記太多了，已經丟掉最舊、最少用的 ${learned.evicted.count} 條`
-        + `${learned.evicted.at ? `，最後一次 ${shown(learned.evicted.at)}` : ''}。）`)
+      say(`\n(Too much to remember, so the ${learned.evicted.count} oldest and least-used got dropped`
+        + `${learned.evicted.at ? `, most recently ${shown(learned.evicted.at)}` : ''}.)`)
     }
-    say('\n忘掉一條：node cli.mjs learned --forget [編號]')
-    say('全部忘掉：node cli.mjs learned --forget-all')
+    say('\nForget one: node cli.mjs learned --forget [id]')
+    say('Forget everything: node cli.mjs learned --forget-all')
     break
   }
 
   case 'watch': {
     showProblems()
-    if (!config.watch.length) { warn('設定裡沒有任何監看資料夾。'); process.exit(1) }
+    if (!config.watch.length) { warn('The config lists no watched folders.'); process.exit(1) }
 
     const beat = () => { try { setMeta(META.heartbeat, new Date().toISOString()); setMeta(META.pid, process.pid) } catch { /* 資料庫忙就下次再寫 */ } }
 
@@ -1838,14 +1849,14 @@ switch (cmd) {
       maxBytes: config.maxBytes,
       exclude: [config.filed],
       onSeed: count => {
-        say(`開機掃描：記住了 ${count} 個既有檔案，全部當成已經看過。`)
-        say('之後才落地、或是內容有變的檔案才會進收件匣。要處理舊檔就用 propose 手動指定。')
+        say(`Startup scan: noted ${plural(count, 'existing file')} and treated them all as already seen.`)
+        say('Only files that land later, or whose contents change, reach the inbox. For older files, name them with propose.')
       },
       onFile: v => {
         // 這裡丟例外不會讓檔案消失 —— watcher 會重試，重試太多次才放棄
         const { fresh } = items.add(v)
-        say(`＋ ${new Date().toLocaleTimeString('zh-TW')}  ${shown(basename(v.real))}（${v.kind}）`
-          + (fresh ? '' : '（內容沒變）'))
+        say(`+ ${new Date().toLocaleTimeString('en-GB', { hour12: false })}  ${shown(basename(v.real))} (${v.kind})`
+          + (fresh ? '' : ' (contents unchanged)'))
       },
       onProblem: m => warn('⚠ ' + shown(m)),
     })
@@ -1853,11 +1864,11 @@ switch (cmd) {
     beat()
     w.start()
     const heartbeat = setInterval(beat, 30_000)
-    say(`正在看：\n  ${config.watch.map(shown).join('\n  ')}`)
-    say('按 Ctrl+C 停止。')
-    if (!modelReady(config)) say('⚠ 模型還沒設定，收到的檔案只會被記下來，不會被看懂。')
+    say(`Watching:\n  ${config.watch.map(shown).join('\n  ')}`)
+    say('Ctrl+C to stop.')
+    if (!modelReady(config)) say('⚠ No model is configured, so incoming files are only recorded, never read.')
 
-    const bye = () => { clearInterval(heartbeat); w.stop(); say('\n停了。'); process.exit(0) }
+    const bye = () => { clearInterval(heartbeat); w.stop(); say('\nStopped.'); process.exit(0) }
     process.on('SIGINT', bye)
     process.on('SIGTERM', bye)
     setInterval(() => {}, 1 << 30)          // 讓行程活著
@@ -1892,17 +1903,17 @@ switch (cmd) {
         if (up === 'up') {
           // 網址**帶鑰匙**（RC16）：不帶 k 的網址打開是 401
           const url = uiUrl(want, srv.token)
-          say(`已經有一個 ContextBox 在跑了。打開 ${url} 就好。`)
+          say(`A ContextBox is already running. Just open ${url}.`)
           // **順便打開**（R2-9，稽核 C-e7）：Windows 的捷徑開的是最小化視窗，這裡印完就結束，
           // pet 開著時再點一次捷徑等於沒反應 —— 那正是使用者想打開面板的時候
-          if (!(await openInBrowser(url))) warn('打不開瀏覽器，請自己複製上面的網址貼到瀏覽器。')
+          if (!(await openInBrowser(url))) warn('Could not open a browser. Copy the address above and paste it in yourself.')
           break
         }
-        warn(notPetText(want, up) + '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。')
+        warn(notPetText(want, up) + ' See what is holding that port, or set CONTEXTBOX_PORT to move the pet to another one.')
         process.exitCode = EXIT.backend
         break
       }
-      warn('起不來：' + why(e?.message ?? e))
+      warn('Could not start: ' + why(e?.message ?? e))
       process.exitCode = EXIT.backend
       break
     }
@@ -1915,13 +1926,13 @@ switch (cmd) {
     try { setMeta(META.petPort, port) } catch { /* open 找不到就用預設的 port */ }
 
     // **印出來的網址一律帶鑰匙**（RC16）。只印 http://127.0.0.1:<port> 的話，使用者點下去是 401。
-    say(`ContextBox 開在 127.0.0.1 的 ${port} 埠。`)
-    say(`寵物與清理面板：${uiUrl(port, srv.token)}`)
-    say('　（鑰匙已經帶在網址裡，直接打開就能用；之後要再打開：node cli.mjs open）')
+    say(`ContextBox is listening on 127.0.0.1 port ${port}.`)
+    say(`Pet and cleanup panel: ${uiUrl(port, srv.token)}`)
+    say('  (the key is already in the address, so it just opens; to open it again later: node cli.mjs open)')
     say('')
-    say(`清理範圍：${rootsLabel()}`)
-    if (SHOTS) say(`　（「${shown(basename(SHOTS) || SHOTS)}」是截圖資料夾：那底下只清截圖，其他檔不動）`)
-    say(`隔離區：${shown(QUARANTINE)}`)
+    say(`Cleanup scope: ${rootsLabel()}`)
+    if (SHOTS) say(`  (“${shown(basename(SHOTS) || SHOTS)}” is the screenshots folder: only screenshots are cleaned there)`)
+    say(`Quarantine: ${shown(QUARANTINE)}`)
 
     // **一啟動就全部掃一次，之後定期重掃**（RC2）。watcher 只看得到有事件的檔：
     // pet 沒開的時候刪掉、下載的檔，不全量掃描的話會一直（不）留在清單與徽章上。
@@ -1979,27 +1990,27 @@ switch (cmd) {
       if (stopping) return
       if (timedOut) {
         noteError(new Error(SCAN_TIMEOUT_WHY), 'scan')
-        warn(`⚠ 背景掃描超過 ${every(scanTimeoutMs)}沒有結束（資料夾可能卡住了），先停掉它，${every(rescanMs)}後會再試。`
-          + '掃描不會搬動或刪除任何檔案。')
+        warn(`⚠ The background scan ran longer than ${every(scanTimeoutMs)} without finishing (a folder may be stuck), so it was stopped. It will try again in ${every(rescanMs)}.`
+          + ' A scan never moves or deletes anything.')
         return
       }
       let r = null
       try { r = JSON.parse(out.trim().split('\n').pop() || 'null') } catch { /* 沒交代結果 */ }
       if (r?.ok === true) {
-        if (first) say(`開機掃描：掃了 ${r.scanned} 個檔案，${r.files} 個可以清。`)
+        if (first) say(`Startup scan: looked at ${plural(r.scanned, 'file')}; ${r.files} can be cleaned up.`)
         return
       }
       if (r?.ok === false) {
         // 原因子行程印過了，記不記 lastError 也是它照 isSurprise 決定的（BUSY 不算意外）
-        warn(`⚠ 這次全部重掃沒有完成，${every(rescanMs)}後會再試。`)
+        warn(`⚠ This full rescan did not finish. It will try again in ${every(rescanMs)}.`)
         return
       }
-      const how = err ? why(err?.message ?? err) : signal ? `被 ${signal} 結束` : `離開碼 ${code}`
-      noteError(new Error(`全部重掃的背景行程意外結束（${how}）`), 'scan')
-      warn(`⚠ 全部重掃的背景行程意外結束（${how}）。掃描不會搬動或刪除任何檔案，${every(rescanMs)}後會再試。`)
+      const how = err ? why(err?.message ?? err) : signal ? `ended by ${signal}` : `exit code ${code}`
+      noteError(new Error(`The full-rescan background process ended unexpectedly (${how})`), 'scan')
+      warn(`⚠ The full-rescan background process ended unexpectedly (${how}). A scan never moves or deletes anything; it will try again in ${every(rescanMs)}.`)
     }
     fullScan(true)
-    say(`開機掃描在背景跑，掃完會講一聲；之後每 ${every(rescanMs)}全部重掃一次。`)
+    say(`The startup scan runs in the background and says so when it finishes; after that it rescans everything every ${every(rescanMs)}.`)
     const rescan = setInterval(fullScan, rescanMs)
 
     const w = createCleanupWatcher({
@@ -2027,7 +2038,7 @@ switch (cmd) {
         })
         if (r.asked) {
           noteOk('model')
-          say(`模型看懂了 ${r.asked} 個檔（另外 ${r.cached} 個用之前的答案）。打開面板就看得到「模型認為⋯⋯」。`)
+          say(`The model read ${plural(r.asked, 'file')} (${r.cached} more reused earlier answers). Open the panel to see “The model thinks…”.`)
         }
         if (r.stopped) warn('⚠ ' + shown(r.stopped))
       } catch (e) {
@@ -2036,17 +2047,17 @@ switch (cmd) {
       } finally { thinking = false }
     }
     if (modelEnabled(config)) {
-      say(`看懂內容：${shown(config.model.name)} —— 背景每 ${every(thinkMs)}看一輪還沒看過的檔，一次一個。`)
-      say('　（模型講的是意見，面板會標明；不會因為它說了就自動改名或搬檔。）')
+      say(`Reading: ${shown(config.model.name)} — every ${every(thinkMs)} it works through the unread files in the background, one at a time.`)
+      say('  (What the model says is an opinion and the panel labels it as such; nothing is renamed or moved because of it.)')
       // 開機先讓掃描與面板站穩再問（模型一個檔要 7～10 秒）
       setTimeout(() => { void thinkOnce() }, Math.min(3000, thinkMs)).unref()
       thinkTimer = setInterval(() => { void thinkOnce() }, thinkMs)
     } else {
       const off = whyDisabled(config)
-      if (off) say(`看懂內容：沒開（${off}）。其他功能照常。`)
+      if (off) say(`Reading: off (${off}). Everything else works as usual.`)
     }
 
-    say('按 Ctrl+C 停止。')
+    say('Ctrl+C to stop.')
     const bye = () => {
       stopping = true
       thinkAbort.abort()
@@ -2056,7 +2067,7 @@ switch (cmd) {
       if (scanning) { try { scanning.kill() } catch { /* 已經結束了 */ } }
       // pet_port 清掉（C3）：留著的話 open 會去問一個已經不是 pet 的東西。只清自己寫的那個值
       try { db.prepare('DELETE FROM meta WHERE k=? AND v=?').run(META.petPort, String(port)) } catch { /* 忙就算了：open 還會要對方證明 */ }
-      say('\n停了。')
+      say('\nStopped.')
       process.exit(0)
     }
     process.on('SIGINT', bye)
@@ -2072,7 +2083,7 @@ switch (cmd) {
     const { loadToken, uiUrl, healthProof } = await import('./core/server.ts')
     let token
     try { token = loadToken() }
-    catch (e) { warn('讀不到鑰匙：' + why(e?.message ?? e)); process.exitCode = EXIT.backend; break }
+    catch (e) { warn('Could not read the key: ' + why(e?.message ?? e)); process.exitCode = EXIT.backend; break }
     const port = petPort()
     const url = uiUrl(port, token)
     // 要它證明手上有鑰匙（R2-9），不看形狀、不看 pid：直接跑 `node core/server.ts` 的也認得（稽核 C-e9）
@@ -2080,20 +2091,20 @@ switch (cmd) {
     if (up === 'down') {
       // **沒在跑就不印帶鑰匙的網址**（R2-9）。上一版照印：之後佔住那個埠的不管是誰，
       // 使用者把這一行貼進瀏覽器，鑰匙就交給它了 —— 跟「不是 pet 就連網址都不印」同一個原則。pet 起來會自己印
-      warn(`pet 好像沒在跑（127.0.0.1:${port} 沒有回應）。先跑 node cli.mjs pet，它會印出帶鑰匙的網址。`)
+      warn(`The pet does not look like it is running (nothing answers on 127.0.0.1:${port}). Run node cli.mjs pet first; it prints the address with the key in it.`)
       process.exitCode = EXIT.backend
       break
     }
     if (up !== 'up') {
       // 有東西在回應、但不是（或證明不了是）我們的 pet：**連網址都不印**，免得被人複製去貼給它
       warn(notPetText(port, up) + (up === 'stranger'
-        ? '先看看那個埠被誰佔著，或用 CONTEXTBOX_PORT 讓 pet 換一個埠。'
-        : '如果那是你自己開的舊版 pet，關掉它再跑 node cli.mjs pet；不是的話先看看那個埠被誰佔著。'))
+        ? ' See what is holding that port, or set CONTEXTBOX_PORT to move the pet to another one.'
+        : ' If that is an old pet of yours, close it and run node cli.mjs pet again; otherwise see what is holding that port.'))
       process.exitCode = EXIT.backend
       break
     }
     say(url)
-    if (!(await openInBrowser(url))) warn('打不開瀏覽器，請自己複製上面的網址貼到瀏覽器。')
+    if (!(await openInBrowser(url))) warn('Could not open a browser. Copy the address above and paste it in yourself.')
     break
   }
 
@@ -2122,7 +2133,7 @@ switch (cmd) {
         })
       } catch (e) {
         noteError(e, 'scan')
-        warn(`掃描出錯（${why(e?.message ?? e)}），這次掃描可能沒有完成。掃描不會搬動或刪除任何檔案。`)
+        warn(`The scan hit an error (${why(e?.message ?? e)}), so it may not have finished. A scan never moves or deletes anything.`)
         if (json) say(JSON.stringify({ ok: false }))
         process.exitCode = EXIT.backend
         break
@@ -2137,15 +2148,15 @@ switch (cmd) {
       if (json) {
         // 給 pet 讀的：stdout 只有這一行。problem 與「太多了」照樣印到 stderr
         say(JSON.stringify({ ok: true, scanned: r.scanned, files, skipped: r.skipped, errors: r.errors, truncated: r.truncated }))
-        if (r.truncated) warn('⚠ 檔案太多，這次只掃了前面那些。把清理範圍縮小。')
+        if (r.truncated) warn('⚠ Too many files, so only the first ones were scanned. Narrow the cleanup scope.')
         break
       }
-      say(`掃了 ${r.scanned} 個檔案，${files} 個可以清。`)
-      if (r.skipped) say(`${r.skipped} 個還在變動，這次跳過。`)
+      say(`Looked at ${plural(r.scanned, 'file')}; ${files} can be cleaned up.`)
+      if (r.skipped) say(`${r.skipped} are still changing and were skipped this time.`)
       // 讀不到的檔案**不算掃描失敗** —— 掃描的工作是更新資料庫，那件事成功了。
       // 它們已經記成 status=error，在 list 裡看得到。回非 0 會讓每晚 smoke 一直紅。
-      if (r.errors) say(`${r.errors} 個讀不到，用 cleanup list 看是哪些。`)
-      if (r.truncated) warn('⚠ 檔案太多，這次只掃了前面那些。把清理範圍縮小。')
+      if (r.errors) say(`${r.errors} could not be read; run cleanup list to see which.`)
+      if (r.truncated) warn('⚠ Too many files, so only the first ones were scanned. Narrow the cleanup scope.')
       break
     }
 
@@ -2154,7 +2165,7 @@ switch (cmd) {
       try { r = listCandidates(db, { ...SCOPE, limit: Number.MAX_SAFE_INTEGER }) }
       catch (e) {
         // 後端錯是 2 不是 1，而且不要噴一坨 Node 堆疊
-        warn('讀不到清理候選：' + cliProblem(e))
+        warn('Could not read the cleanup candidates: ' + cliProblem(e))
         process.exitCode = EXIT.backend
         break
       }
@@ -2163,29 +2174,30 @@ switch (cmd) {
         // 沒東西要清是**成功**，不是失敗
         const scanned = db.prepare(`SELECT count(*) n FROM file_items`).get().n
         say(scanned
-          ? `沒有東西需要清，${rootsLabel()} 很乾淨。`
-          : '還沒掃過。先跑 `node cli.mjs cleanup scan`。')
+          ? `Nothing needs cleaning — ${rootsLabel()} is tidy.`
+          : 'Nothing has been scanned yet. Run `node cli.mjs cleanup scan` first.')
         break
       }
       if (r.totalAvailable) {
         // 編號看**全部**的候選算，不是只看列出來的那 500 個 —— --skip／--also 對的是全部
         const code = shortIds(r.candidates.map(c => c.itemId))
         const rows = r.candidates.slice(0, LIST_LIMIT)
-        say(`有 ${r.totalAvailable} 個可以清掉的東西，大概 ${mb(r.bytes)}`
-          + (rows.length < r.totalAvailable ? `（這裡只列前 ${rows.length} 個）` : '') + '\n')
+        say(`${plural(r.totalAvailable, 'thing')} can be cleaned up, roughly ${mb(r.bytes)}`
+          + (rows.length < r.totalAvailable ? ` (only the first ${rows.length} are listed)` : '') + '\n')
         for (const c of rows) { printCandidate(c, code.get(c.itemId)); say('') }
         // 頁尾的數字要算**全部**打勾的，不受顯示上限影響（RC12）。自己數 rows 的話只有前 500 個。
         const n = r.defaultCheckedCount ?? r.candidates.filter(c => c.defaultChecked).length
         const bytes = r.defaultCheckedBytes ?? r.candidates.filter(c => c.defaultChecked).reduce((s, c) => s + c.bytes, 0)
-        say(`☐ 的預設不清。cleanup apply 會清掉打勾的 ${n} 個，${mb(bytes)}`
-          + (n > PLAN_MAX ? `（一次最多 ${PLAN_MAX} 個，剩下的下次再清）` : '') + '。')
-        say('  跳過其中幾個：node cli.mjs cleanup apply --skip <編號>')
-        say('  多清幾個 ☐ 的：node cli.mjs cleanup apply --also <編號>')
+        say(`☐ means it stays put unless you say otherwise. `
+          + `cleanup apply clears the ${plural(n, 'ticked file')}, ${mb(bytes)}`
+          + (n > PLAN_MAX ? ` (at most ${PLAN_MAX} per run; the rest wait for next time)` : '') + '.')
+        say('  Skip a few of them: node cli.mjs cleanup apply --skip <id>')
+        say('  Also clear some ☐ ones: node cli.mjs cleanup apply --also <id>')
       }
       if (r.needsHuman.length) {
-        say(`\n另外 ${nhTotal} 個需要你自己看一眼：`
-          + (r.needsHumanTruncated ? `（只列前 ${r.needsHuman.length} 個）` : ''))
-        for (const h of r.needsHuman) say(`  ${shown(h.name)}　${mb(h.bytes)}　—— ${shown(h.why)}`)
+        say(`\n${nhTotal} more ${nhTotal === 1 ? 'needs' : 'need'} your eyes:`
+          + (r.needsHumanTruncated ? ` (only the first ${r.needsHuman.length} are listed)` : ''))
+        for (const h of r.needsHuman) say(`  ${shown(h.name)}  ${mb(h.bytes)}  — ${shown(h.why)}`)
       }
       break
     }
@@ -2212,12 +2224,12 @@ switch (cmd) {
         try { last = listPlans(db, { filter: 'undoable', limit: 1 }).operations[0] }
         catch (e) { fail(e, 'undo'); break }
         if (!last) {
-          warn('沒有可以復原的計畫：隔離區裡沒有這個工具搬過去、還沒放回的檔。')
+          warn('There is no cleanup to undo: nothing this tool moved to quarantine is still waiting there.')
           process.exitCode = EXIT.badInput
           break
         }
         id = last.id
-        say(`復原最近一次清理：計畫 ${id}（${ago(last.appliedAt ?? last.createdAt) ?? '時間不明'}）`)
+        say(`Undoing the most recent cleanup: plan ${id} (${ago(last.appliedAt ?? last.createdAt) ?? 'time unknown'})`)
       }
       let plan
       try { plan = getPlan(db, id) }
@@ -2230,22 +2242,22 @@ switch (cmd) {
         try { started = planStarted(plan.id) }
         catch (e) { fail(e, 'undo'); break }
         if (!started) {
-          warn(`計畫 ${plan.id} 還沒套用，沒有東西可以復原。要放棄它：node cli.mjs cleanup release ${plan.id}`)
+          warn(`Plan ${plan.id} was never applied, so there is nothing to undo. To drop it: node cli.mjs cleanup release ${plan.id}`)
           process.exitCode = EXIT.badInput
           break
         }
-        say(`計畫 ${plan.id} 做到一半中斷了，把已經搬走的放回原位。`)
+        say(`Plan ${plan.id} was interrupted partway; putting back what already moved.`)
       }
-      if (plan.status === 'dismissed') { say(`計畫 ${plan.id} 已經放棄了（${DISMISSED_WHO}），沒有動過任何檔案，不用復原。`); break }
+      if (plan.status === 'dismissed') { say(`Plan ${plan.id} was dropped (${DISMISSED_WHO}). No file was ever moved, so there is nothing to undo.`); break }
       if (plan.status === 'restored') {
-        say(`計畫 ${plan.id} 已經復原過了。`)
+        say(`Plan ${plan.id} has already been undone.`)
         printPlanItems(plan, undoLine)
         break
       }
       if (config.readonly) {
         const o = planOutcomes(db, plan.id)
         const back = plan.items.filter(i => o.get(i.itemId)?.outcome === 'moved')
-        say(`唯讀模式：會放回 ${back.length} 個檔案，但這次一個都沒動。`)
+        say(`Read-only mode: this would put back ${plural(back.length, 'file')}, but nothing was touched.`)
         for (const i of back) say(`  ↩ ${shown(i.name)}`)
         break
       }
@@ -2258,19 +2270,19 @@ switch (cmd) {
       // 列全部都打 ↩ 的話會出現「放回 2 個」後面接三行 ↩ —— 跟 apply 一律印 ✔ 是同一類的畫面說謊。
       // 不講資料夾名：放回的可能是舊版搬走的桌面檔，不一定在清理範圍裡（面板也是講「放回原位」）。
       const outcomes = planOutcomes(db, id)
-      say(`放回原位 ${r.restoredCount} 個檔案。`)
+      say(`Put ${plural(r.restoredCount, 'file')} back.`)
       for (const i of r.items) say(undoLine(i, outcomes.get(i.itemId)))
       // **離開碼照逐項結果，不看計畫的 status**（第二輪 R2-1，稽核 A-exp2）：3 只給真的有檔沒放回
       // （還在隔離區、已經清空、狀態不明）。上一版 status 是 partial 就回 3，畫面卻印「有 0 個沒放回」。
       const left = r.items.map(i => outcomes.get(i.itemId)?.outcome).filter(k => ['moved', 'purged', 'unknown'].includes(k))
       if (left.length) {
-        warn(`\n⚠ 有 ${left.length} 個沒放回（原因寫在上面）。`
-          + (left.includes('unknown') ? '狀態不明的，執行 node cli.mjs doctor 檢查。' : ''))
+        warn(`\n⚠ ${left.length} were not put back; the reasons are above.`
+          + (left.includes('unknown') ? ' For the ones in an unknown state, run node cli.mjs doctor to check.' : ''))
         process.exitCode = EXIT.partial
       } else if (r.status === 'partial' || r.status === 'error') {
         // 核心說有一步沒做好，但逐項看沒有任何搬走的檔留在隔離區（例如隔離區裡那個位置的內容對不上、沒有動它）：
         // 照印核心的原因，不吞掉；離開碼照逐項（0）
-        warn(`\n⚠ ${shown(safeWhy(r.error) ?? '復原時有一步沒做好，原因不明。')}`)
+        warn(`\n⚠ ${shown(safeWhy(r.error) ?? 'One step of the undo did not go through; reason unknown.')}`)
       }
       break
     }
@@ -2279,7 +2291,7 @@ switch (cmd) {
       // 放棄一份**還沒開始**的計畫：計畫作廢、檔案不動、候選還在（撞到 CONFLICT 時的第二條路）
       const id = args[1]
       if (!id) {
-        warn('要給計畫 id。例：node cli.mjs cleanup release <plan-id>')
+        warn('Give a plan id, e.g. node cli.mjs cleanup release <plan-id>')
         process.exitCode = EXIT.badInput
         break
       }
@@ -2292,18 +2304,18 @@ switch (cmd) {
         let status = null
         try { status = getPlan(db, id).status } catch { /* 講不出來就只講原因 */ }
         if (status === 'proposed') startedChoices(id)
-        else if (['applied', 'partial', 'error'].includes(status)) say(`要把搬走的放回原位：node cli.mjs cleanup undo ${id}`)
+        else if (['applied', 'partial', 'error'].includes(status)) say(`To put back what moved: node cli.mjs cleanup undo ${id}`)
         process.exitCode = EXIT.badInput
         break
       }
-      say(`放棄了計畫 ${r.id}：沒有動任何檔案。裡面的 ${r.items.length} 個檔還是候選，下次 cleanup apply 會再算進去。`)
+      say(`Dropped plan ${r.id}. Nothing moved. Its ${plural(r.items.length, 'file')} are still candidates and count again on the next cleanup apply.`)
       break
     }
 
     if (sub === 'quarantine') {
       const wantsEmpty = args.includes('--empty')
       const yesAt = args.indexOf('--yes')
-      if (yesAt >= 0 && !wantsEmpty) { warn('--yes 要跟 --empty 一起用。'); process.exitCode = EXIT.badInput; break }
+      if (yesAt >= 0 && !wantsEmpty) { warn('--yes only works together with --empty.'); process.exitCode = EXIT.badInput; break }
 
       // ── 第二步：帶著預覽給的確認碼真的刪 ──
       // **這是整個專案唯一會刪檔的路徑。** 確認的就是預覽的那一個：不再產生新的預覽（RC13）。
@@ -2311,7 +2323,7 @@ switch (cmd) {
       if (wantsEmpty && yesAt >= 0) {
         const token = args[yesAt + 1]
         if (!token || token.startsWith('--')) {
-          warn('--yes 後面要接預覽時印出來的確認碼。先跑：node cli.mjs cleanup quarantine --empty')
+          warn('--yes needs the confirmation code the preview printed. Run: node cli.mjs cleanup quarantine --empty')
           process.exitCode = EXIT.badInput
           break
         }
@@ -2321,11 +2333,11 @@ switch (cmd) {
           try { bad = emptyTokenProblem(token) }
           catch (e) { fail(e, 'empty'); break }
           if (bad) {
-            warn(`${bad}先跑：node cli.mjs cleanup quarantine --empty`)
+            warn(`${bad} Run: node cli.mjs cleanup quarantine --empty`)
             process.exitCode = EXIT.badInput
             break
           }
-          say('唯讀模式：不會刪任何檔案，這次一個都沒動。')
+          say('Read-only mode: nothing gets deleted, so nothing was touched.')
           break
         }
         let r = null, stopped = null
@@ -2335,7 +2347,7 @@ switch (cmd) {
         try { r = emptyQuarantine(db, { ...execOpts(), token, confirmed: true }) }
         catch (e) {
           if (e instanceof CleanupError && (e.code === 'CONFIRMATION_REQUIRED' || e.code === 'CONFIRMATION_EXPIRED')) {
-            warn(`${shown(e.message)}先跑：node cli.mjs cleanup quarantine --empty`)
+            warn(`${shown(e.message)} Run: node cli.mjs cleanup quarantine --empty`)
             process.exitCode = EXIT.badInput
             break
           }
@@ -2350,29 +2362,29 @@ switch (cmd) {
         // 核心之後會改成回傳 stoppedEarly（不丟例外）：兩條路都要接得住
         if (r?.stoppedEarly) {
           if (countPurged() === purgedBefore) { fail(new CleanupError('BUSY', r.stoppedEarly.why), 'empty'); break }
-          stopped = { ...r, why: shown(r.stoppedEarly.why ?? '被另一個清理動作打斷了。') }
+          stopped = { ...r, why: shown(r.stoppedEarly.why ?? 'another cleanup action interrupted it.') }
         }
         if (stopped) {
-          say(`刪掉 ${stopped.deletedCount} 個，${mb(stopped.deletedBytes)}。`)
-          warn(`\n⚠ 被另一個清理動作打斷，刪到一半就停了（${stopped.why}）。`)
-          say('刪掉的救不回來了。剩下的要接著刪：再跑一次 '
+          say(`Deleted ${plural(stopped.deletedCount, 'file')}, ${mb(stopped.deletedBytes)}.`)
+          warn(`\n⚠ Another cleanup action interrupted this one, so it stopped partway (${stopped.why}).`)
+          say('What was deleted is gone for good. To carry on with the rest, run '
             + `node cli.mjs cleanup quarantine --empty --yes ${shown(token)}`
-            + '（確認碼過期的話重新預覽：node cli.mjs cleanup quarantine --empty）。')
+            + ' again (if the code has expired, preview again: node cli.mjs cleanup quarantine --empty).')
           process.exitCode = EXIT.partial
           break
         }
         // noop：同一個確認碼重送，核心回上一次存下來的結果、一個檔都沒再刪（不記成「清空成功過」，R3-2b）
         noteResult('empty', r)
-        say(`刪掉 ${r.deletedCount} 個，${mb(r.deletedBytes)}。`)
-        if (r.noop === true) say('這個確認碼先前已經用過了，這次什麼都沒做（上面是那一次的結果）。')
+        say(`Deleted ${plural(r.deletedCount, 'file')}, ${mb(r.deletedBytes)}.`)
+        if (r.noop === true) say('That confirmation code had already been used, so nothing happened this time — the numbers above are from that run.')
         // 放到一邊的（內容跟當初不一樣、或已經不在隔離區）：講清楚，但**不算失敗**
         // —— 以前算成錯，清空從此固定回 3，隔離區永遠清不空（稽核第三輪）。
         for (const x of r.setAside ?? []) say(`  ・${shown(x.why)}`)
         if ((r.setAside ?? []).length) {
-          say(`隔離區在 ${shown(QUARANTINE)}，看完自己刪掉就好；下一次清空會把那幾列收掉。`)
+          say(`Quarantine is at ${shown(QUARANTINE)}; look and delete them yourself. The next empty tidies those rows away.`)
         }
         if (r.errors.length) {
-          warn(`${r.errors.length} 個沒刪成：`)
+          warn(`${r.errors.length} could not be deleted:`)
           for (const x of r.errors) warn(`  ${shown(x.error)}`)
           process.exitCode = EXIT.partial
         }
@@ -2391,42 +2403,42 @@ switch (cmd) {
           // 沒有東西可清就不產生預覽（確認碼）
           const soonest = rows.map(r => Date.parse(r.canEmptyAt)).sort((a, b) => a - b)[0]
           say(rows.length
-            ? `還沒有滿七天的檔案。最早的那個還要等 ${days(soonest)} 天。`
-            : '隔離區是空的。')
+            ? `No file is seven days old yet. The oldest has ${plural(days(soonest), 'day')} to go.`
+            : 'Quarantine is empty.')
           break
         }
         if (config.readonly) {
-          say(`唯讀模式：滿七天的有 ${ready.length} 個，${mb(ready.reduce((n, r) => n + r.bytes, 0))}，這次一個都沒動。`)
+          say(`Read-only mode: ${plural(ready.length, 'file')} old enough (${mb(ready.reduce((n, r) => n + r.bytes, 0))}), but nothing was touched.`)
           break
         }
         let prep
         try { prep = prepareEmptyQuarantine(db, execOpts()) }
         catch (e) { fail(e, 'empty'); break }
-        if (!prep.itemCount) { say('還沒有滿七天的檔案。'); break }
+        if (!prep.itemCount) { say('No file is seven days old yet.'); break }
         say(shown(prep.message))
-        say(`會永久刪除 ${prep.itemCount} 個檔案，${mb(prep.bytes)}。`)
+        say(`This will permanently delete ${plural(prep.itemCount, 'file')}, ${mb(prep.bytes)}.`)
         // **二次確認要人真的再打一次。**
-        say(`確定的話跑：node cli.mjs cleanup quarantine --empty --yes ${prep.token}`)
+        say(`If you are sure, run: node cli.mjs cleanup quarantine --empty --yes ${prep.token}`)
         break
       }
 
-      if (!rows.length) { say('隔離區是空的。'); break }
-      say(`隔離區有 ${rows.length} 個檔案，${mb(rows.reduce((n, r) => n + r.bytes, 0))}：\n`)
+      if (!rows.length) { say('Quarantine is empty.'); break }
+      say(`Quarantine holds ${plural(rows.length, 'file')}, ${mb(rows.reduce((n, r) => n + r.bytes, 0))}:\n`)
       for (const r of rows) {
-        say(`  ${shown(r.name)}　${mb(r.bytes)}`)
-        say(`         ${r.canEmptyNow ? '可以清空了' : `還要等 ${days(Date.parse(r.canEmptyAt))} 天`}`)
+        say(`  ${shown(r.name)}  ${mb(r.bytes)}`)
+        say(`         ${r.canEmptyNow ? 'old enough to empty' : `${plural(days(Date.parse(r.canEmptyAt)), 'day')} to go`}`)
       }
       break
     }
 
     if (sub === 'dismiss') {
       // 不是「還沒做好的後端」（2），是這個指令根本不存在：輸入錯（1）
-      warn('cleanup dismiss 這個指令還沒有。要放棄一份還沒套用的計畫：node cli.mjs cleanup release <plan-id>')
+      warn('There is no cleanup dismiss command. To drop a plan that was never applied: node cli.mjs cleanup release <plan-id>')
       process.exitCode = EXIT.badInput
       break
     }
 
-    warn(`不認得 cleanup ${shown(sub ?? '')}。可以用：scan、list、apply、undo、release、quarantine`)
+    warn(`Don't know cleanup ${shown(sub ?? '')}. You can use: scan, list, apply, undo, release, quarantine`)
     process.exitCode = EXIT.badInput
     break
   }
@@ -2435,16 +2447,16 @@ switch (cmd) {
     showProblems()
     const status = args[0]
     const rows = items.list(status, 50)
-    if (!rows.length) { say(status ? `沒有狀態是 ${shown(status)} 的東西。` : '收件匣是空的。'); break }
+    if (!rows.length) { say(status ? `Nothing has the status ${shown(status)}.` : 'The inbox is empty.'); break }
     for (const r of rows) say(`${r.status.padEnd(13)} ${r.kind.padEnd(10)} ${shown(basename(r.path))}`)
-    say(`\n共 ${rows.length} 筆。`)
+    say(`\n${rows.length} in all.`)
     break
   }
 
   case 'search': {
     showProblems()
     const q = args.join(' ').trim()
-    if (!q) { warn('要給搜尋字詞。'); process.exit(1) }
+    if (!q) { warn('Give something to search for.'); process.exit(1) }
 
     // trigram 索引至少要三個字元才建得起來，所以短詞走 LIKE。
     // 中文的詞大多是兩個字（發票、收據、學費），不處理的話這個工具
@@ -2467,15 +2479,15 @@ switch (cmd) {
              WHERE items_fts MATCH ? ORDER BY rank LIMIT 20`
           ).all(ftsQuery(q))
     } catch (e) {
-      warn(`這個搜尋字詞資料庫看不懂（${shown(e.message)}）。換個說法再試一次。`)
+      warn(`The database could not parse that search (${shown(e.message)}). Try wording it differently.`)
       process.exitCode = 1
       break
     }
 
     if (!rows.length) {
-      say(`找不到「${shown(q)}」。`)
+      say(`Nothing found for “${shown(q)}”.`)
       const n = db.prepare(`SELECT count(*) n FROM understanding`).get().n
-      if (!n) say('（目前一份文件都還沒被看懂，所以搜尋還沒有東西可以找。那是 P1 的事。）')
+      if (!n) say('(No document has been read yet, so there is nothing to search. That comes with P1.)')
       break
     }
     for (const r of rows) say(`${shown(basename(r.path))}\n   ${shown(r.summary ?? '')}\n   ${shown(r.path)}\n`)
@@ -2483,36 +2495,36 @@ switch (cmd) {
   }
 
   default: {
-    say(`ContextBox —— 檔案與截圖管線
+    say(`ContextBox — a pipeline for files and screenshots
 
-  node cli.mjs doctor                      這台機器現在什麼狀況
-  node cli.mjs pet                         啟動寵物與清理面板
-  node cli.mjs open                        打開寵物與清理面板（pet 要先在跑）
-  node cli.mjs cleanup scan                掃一次清理範圍（預設只有 Downloads）
-  node cli.mjs cleanup list                看有什麼可以清
-  node cli.mjs cleanup apply [--skip 編號] [--also 編號]
-                                           清掉打勾的（編號是 list 上 [ ] 裡的那幾碼）
-  node cli.mjs cleanup undo [計畫 id]       復原（不給 id 就是最近一次）
-  node cli.mjs cleanup release <計畫 id>    放棄一份還沒套用的計畫（不動檔案）
-  node cli.mjs cleanup quarantine [--empty] 看隔離區／清空（要滿七天、要二次確認）
-  node cli.mjs think                       讓模型看一輪還沒看過的檔（沒設定模型就不做事）
-  node cli.mjs rename                      看有哪些沒取名的檔可以改名（模型的建議）
-  node cli.mjs rename --apply [編號⋯]       改名（改得回來）
-  node cli.mjs rename --undo [紀錄 id⋯]     復原改名（不給 id 就是最近那一次）
+  node cli.mjs doctor                      how this machine is doing right now
+  node cli.mjs pet                         start the pet and the cleanup panel
+  node cli.mjs open                        open the pet and cleanup panel (pet must be running)
+  node cli.mjs cleanup scan                scan the cleanup scope once (Downloads only, by default)
+  node cli.mjs cleanup list                see what can be cleaned up
+  node cli.mjs cleanup apply [--skip id] [--also id]
+                                           clear the ticked ones (ids are the characters in [ ] on the list)
+  node cli.mjs cleanup undo [plan id]      undo a cleanup (no id means the most recent)
+  node cli.mjs cleanup release <plan id>   drop a plan that was never applied (nothing moves)
+  node cli.mjs cleanup quarantine [--empty] see quarantine, or empty it (seven days old, and a second confirmation)
+  node cli.mjs think                       let the model read a round of unread files (does nothing without a model)
+  node cli.mjs rename                      see which unnamed files could be renamed (the model's suggestions)
+  node cli.mjs rename --apply [id…]        rename them (undoable)
+  node cli.mjs rename --undo [record id…]  undo a rename (no id means the most recent)
 
-  node cli.mjs file                        看哪些檔可以歸到課程資料夾（模型的建議）
-  node cli.mjs file --apply [編號⋯] [--course 課名] [--kind 類型]
-                                           整理（搬得回來；課名跟建議不一樣就會被記住）
-  node cli.mjs file --undo [紀錄 id⋯]       復原整理（不給 id 就是最近那一次）
-  node cli.mjs learned                     它從你的修改學到什麼（不會自己動檔案）
-  node cli.mjs learned --forget [編號⋯]     忘掉那幾條
-  node cli.mjs learned --forget-all         全部忘掉
-  node cli.mjs watch                       常駐監看
-  node cli.mjs propose <檔案>...            手動收一個檔案
-  node cli.mjs list [狀態]                  看收件匣
-  node cli.mjs search <詞>                  全文搜尋
+  node cli.mjs file                        see which files belong in a course folder (the model's suggestions)
+  node cli.mjs file --apply [id…] [--course name] [--kind kind]
+                                           file them (undoable; a course name you change gets remembered)
+  node cli.mjs file --undo [record id…]    undo a filing (no id means the most recent)
+  node cli.mjs learned                     what it learned from your changes (it never moves a file)
+  node cli.mjs learned --forget [id…]      forget those entries
+  node cli.mjs learned --forget-all        forget everything
+  node cli.mjs watch                       keep watching in the foreground
+  node cli.mjs propose <file>...           take a file in by hand
+  node cli.mjs list [status]               see the inbox
+  node cli.mjs search <words>              full-text search
 
-設定檔在 ${shown(CONFIG_PATH)}`)
+The config file is at ${shown(CONFIG_PATH)}`)
     if (cmd) process.exit(1)
   }
 }

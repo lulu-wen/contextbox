@@ -165,7 +165,7 @@ test('purge rejects symlink/hardlink substitutions and modified contents', t => 
   // 不刪、但也不算錯 —— 以前算錯，清空從此固定回離開碼 3，隔離區永遠清不空。
   assert.equal(r.errors.length, 2, '捷徑、硬鏈結還是錯')
   assert.deepEqual(r.setAside.length, 1, '內容改過的那個放到一邊')
-  assert.match(r.setAside[0].why, /內容跟當初搬進去的不一樣/)
+  assert.match(r.setAside[0].why, /no longer matches what was moved in/)
   assert.equal(readFileSync(external, 'utf8'), 'keep')
 })
 

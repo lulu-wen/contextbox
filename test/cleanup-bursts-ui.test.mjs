@@ -55,7 +55,7 @@ function candidate(itemId, name, extra = {}) {
     itemId, name, folder: 'Downloads', subdir: '', bytes: 2048, mtime: new Date().toISOString(),
     kind: 'screenshot-noise', confidence: 40, defaultChecked: false, vetoed: null,
     candidateIds: [itemId + '-c1'],
-    reasons: [{ kind: 'screenshot-noise', confidence: 40, reason: '同一批連拍', evidence: '會留著「keep.png」' }],
+    reasons: [{ kind: 'screenshot-noise', confidence: 40, reason: 'one burstBursts', evidence: '會Keeping“keep.png”' }],
     ...extra,
   }
 }
@@ -185,12 +185,12 @@ describe('A 主動詢問要講的話', () => {
   })
 
   test('一組：講**張數**（留下的那張也算一張）', () => {
-    assert.equal(burstAskMessage(normalizeBurstGroups([g(2)])), '這 3 張截圖看起來是同一批，要留最新的就好嗎？')
+    assert.equal(burstAskMessage(normalizeBurstGroups([g(2)])), 'These 3 screenshots look like one burst. Keep only the newest?')
   })
 
   test('兩組：講組數與總張數', () => {
     assert.equal(burstAskMessage(normalizeBurstGroups([g(1), g(2)])),
-      '有 2 組截圖看起來是同一批（一共 5 張），要各留最新的那張就好嗎？')
+      '2 groups of screenshots look like bursts (5 shots in all). Keep only the newest of each?')
   })
 
   test('沒有組就沒有話講（不可以彈一句空的）', () => {
@@ -200,12 +200,12 @@ describe('A 主動詢問要講的話', () => {
 
   test('那一組的標題講「會留著哪一張」，檔名走 safeName', () => {
     const [one] = normalizeBurstGroups([{ ...g(2), keep: shot('k', 'a\nb.png') }])
-    assert.equal(burstGroupLine(one), '3 張看起來是同一批 · 會留著「a·b.png」（最新的那張）')
+    assert.equal(burstGroupLine(one), '3 shots look like one burst · keeping “a·b.png” (the newest)')
   })
 
   test('**similar 那一句照抄**；same 是另一句', () => {
-    assert.equal(burstNote('similar'), '這一組有看得見的變化，自己看一眼再決定。')
-    assert.equal(BURST_SIMILAR_NOTE, '這一組有看得見的變化，自己看一眼再決定。')
+    assert.equal(burstNote('similar'), 'This group has visible differences. Take a look before you decide.')
+    assert.equal(BURST_SIMILAR_NOTE, 'This group has visible differences. Take a look before you decide.')
     assert.notEqual(burstNote('same'), burstNote('similar'))
   })
 })
@@ -331,8 +331,8 @@ describe('B 連拍區（假的 api、真的面板）', () => {
     assert.equal(rows.length, 1, '一組一列')
     const cells = shotsOf(rows[0])
     assert.equal(cells.length, 3, '三張並排（留下的那張也要看得到）')
-    assert.match(rows[0].textContent, /3 張看起來是同一批 · 會留著「截圖 3\.png」（最新的那張）/)
-    assert.match(cells[0].textContent, /留著/)
+    assert.match(rows[0].textContent, /3 shots look like one burst · keeping “截圖 3\.png” \(the newest\)/)
+    assert.match(cells[0].textContent, /Keeping/)
     assert.equal(cells[0].all('input').length, 0, '留下的那張不可以有勾選框')
     assert.deepEqual(burstChecks(ui).map(c => c.name), ['截圖 1.png', '截圖 2.png'])
   })
@@ -340,7 +340,7 @@ describe('B 連拍區（假的 api、真的面板）', () => {
   test('**similar 預設不勾，而且要講那一句**', async t => {
     const { ui } = await open(t, similarFixture())
     assert.deepEqual(burstChecks(ui).map(c => c.input.checked), [false, false])
-    assert.match(rowsOf(ui)[0].textContent, /這一組有看得見的變化，自己看一眼再決定。/)
+    assert.match(rowsOf(ui)[0].textContent, /This group has visible differences. Take a look before you decide./)
   })
 
   test('**後端把 similar 的 defaultChecked 給成 true，面板照樣不勾**（成對）', async t => {
@@ -348,7 +348,7 @@ describe('B 連拍區（假的 api、真的面板）', () => {
     for (const c of fx.candidates) if (c.itemId.startsWith('m')) c.defaultChecked = true
     const { ui } = await open(t, fx)
     assert.deepEqual(burstChecks(ui).map(c => c.input.checked), [false, false])
-    assert.equal(ui.$('cleanup-summary').textContent.startsWith('已選 0 /'), true, ui.$('cleanup-summary').textContent)
+    assert.equal(ui.$('cleanup-summary').textContent.startsWith('0 of '), true, ui.$('cleanup-summary').textContent)
   })
 
   test('對照：same 的照後端的預設勾起來，也不講那一句', async t => {
@@ -401,21 +401,21 @@ describe('B 連拍區（假的 api、真的面板）', () => {
     const { ui } = await open(t, fx)
     assert.equal(ui.$('cleanup-bursts').hidden, true)
     assert.deepEqual(listNames(ui), ['截圖 1.png', '截圖 2.png', '很久沒動.zip'])
-    assert.match(ui.$('cleanup-summary').textContent, /已選 \d+ \/ 3 個檔案/)
+    assert.match(ui.$('cleanup-summary').textContent, /\d+ of 3 files selected/)
   })
 
   test('檔名是不可信的輸入：換行不可以在畫面上偽造一行', async t => {
     const fx = similarFixture()
-    fx.bursts.groups[0].members[0].name = 'a\n留著 99 張.png'
-    fx.candidates[0].name = 'a\n留著 99 張.png'
+    fx.bursts.groups[0].members[0].name = 'a\nKeeping 99 張.png'
+    fx.candidates[0].name = 'a\nKeeping 99 張.png'
     const { ui } = await open(t, fx)
-    assert.match(ui.$('cleanup-bursts').textContent, /a·留著 99 張\.png/)
-    assert.doesNotMatch(ui.$('cleanup-bursts').textContent, /a\n留著/)
+    assert.match(ui.$('cleanup-bursts').textContent, /a·Keeping 99 張\.png/)
+    assert.doesNotMatch(ui.$('cleanup-bursts').textContent, /a\nKeeping/)
   })
 
   test('示範模式（按 D）不顯示連拍區 —— 那時候畫面上是假的清單', async t => {
     const { ui } = await open(t, similarFixture(), { fetch: demoFetch })
-    assert.equal(ui.$('cleanup-bursts').hidden, false, '前提：本機模式有連拍區')
+    assert.equal(ui.$('cleanup-bursts').hidden, false, '前提：本機模式有Bursts區')
     await ui.key('d')
     await ui.click('quaso-cleanup-alert')
     assert.equal(ui.$('cleanup-bursts').hidden, true)
@@ -428,7 +428,7 @@ describe('B 主動詢問：有新的組才彈', () => {
     const f = fakeApi({ ...fx, pet: { burst: { groups: 1, newGroups: 1 } } })
     const ui = await mountPanel(t, { api: f.api })
     assert.equal(ui.$('quaso-dialog').hidden, false)
-    assert.equal(ui.$('quaso-status').textContent, '這 3 張截圖看起來是同一批，要留最新的就好嗎？')
+    assert.equal(ui.$('quaso-status').textContent, 'These 3 screenshots look like one burst. Keep only the newest?')
     assert.equal(ui.$('quaso-burst-open').hidden, false)
     await ui.click('quaso-burst-open')
     assert.equal(ui.$('cleanup-panel').open, true, '點一下要打開面板')
@@ -439,13 +439,13 @@ describe('B 主動詢問：有新的組才彈', () => {
     const fx = similarFixture()
     const f = fakeApi({ ...fx, pet: { burst: { groups: 1, newGroups: 1 } } })
     const ui = await mountPanel(t, { api: f.api })
-    assert.equal(ui.$('quaso-status').textContent, '這 3 張截圖看起來是同一批，要留最新的就好嗎？', '前提：第一次彈了')
+    assert.equal(ui.$('quaso-status').textContent, 'These 3 screenshots look like one burst. Keep only the newest?', '前提：第一次彈了')
     // 把泡泡收起來，再輪詢一次
     ui.$('quaso-status').textContent = '（沒有人講話）'
     ui.$('quaso-dialog').hidden = true
     ui.$('quaso-burst-open').hidden = true
     await ui.click('quaso-connection-retry')
-    assert.equal(ui.$('quaso-dialog').hidden, true, '同一批不可以再彈一次')
+    assert.equal(ui.$('quaso-dialog').hidden, true, 'one burst不可以再彈一次')
     assert.equal(ui.$('quaso-burst-open').hidden, true)
     // 舊的組還在：打開面板照樣看得到
     await ui.click('quaso-cleanup-alert')
@@ -467,7 +467,7 @@ describe('B 主動詢問：有新的組才彈', () => {
     f.pet.burst = { groups: 1, newGroups: 1 }
     await ui.click('quaso-connection-retry')
     assert.equal(ui.$('quaso-dialog').hidden, false, '新的一組沒有被問到（數量比上次少就不問是錯的）')
-    assert.match(ui.$('quaso-status').textContent, /同一批/)
+    assert.match(ui.$('quaso-status').textContent, /one burst/)
   })
 
   test('**又出現一組（newGroups 變大）→ 再彈一次**', async t => {
@@ -485,7 +485,7 @@ describe('B 主動詢問：有新的組才彈', () => {
     assert.equal(ui.$('quaso-dialog').hidden, false)
     // **只講新的那一組**：問過的那一組不再重提（面板端記的是「問過哪幾組」，不是「問過幾組」）。
     // 拿數量當高水位會安靜地漏問：問過 2 組、那 2 組被清掉、又冒出 1 組時 1 ≤ 2 就再也不問了。
-    assert.equal(ui.$('quaso-status').textContent, '這 2 張截圖看起來是同一批，要留最新的就好嗎？')
+    assert.equal(ui.$('quaso-status').textContent, 'These 2 screenshots look like one burst. Keep only the newest?')
   })
 
   test('**沒有新的組（newGroups 0）就不要主動彈**，組還是列得出來', async t => {
@@ -494,7 +494,7 @@ describe('B 主動詢問：有新的組才彈', () => {
     const ui = await mountPanel(t, { api: f.api })
     assert.equal(ui.$('quaso-dialog').hidden, true, '沒有新的組不可以彈')
     await ui.click('quaso-cleanup-alert')
-    assert.equal(rowsOf(ui).length, 1, '舊的組還在連拍區裡')
+    assert.equal(rowsOf(ui).length, 1, '舊的組還在Bursts區裡')
   })
 
   test('舊版後端（/pet/state 沒有 burst）→ 不彈、不壞掉', async t => {
@@ -646,7 +646,7 @@ describe('C 真的 server', () => {
     checks[0].input.checked = true
     checks[0].input.onchange()
     await ui.click('cleanup-apply')
-    assert.match(ui.$('cleanup-result').textContent, /搬進隔離區 1 個檔案/, ui.$('cleanup-result').textContent)
+    assert.match(ui.$('cleanup-result').textContent, /Moved 1 file/, ui.$('cleanup-result').textContent)
     assert.ok(!s.has('shot-1.png'), '勾了的要真的搬走')
     assert.ok(s.has('shot-2.png'), '沒勾的不可以動')
     assert.ok(s.has('shot-3.png'), '**留下的那張永遠不會被清掉**')

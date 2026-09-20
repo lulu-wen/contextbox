@@ -197,7 +197,7 @@ describe('K2 保留者可以是受保護的檔名，但不可以在隱藏資料�
       assert.ok(existsSync(s.notes), '唯一「看得見」的一份不可以被搬走')
       assert.ok(existsSync(s.keeper))
       const why = [...routes.planOutcomes(s.db, s.p.id).values()][0].why
-      assert.match(why ?? '', /找不到會保留的相同檔案/)
+      assert.match(why ?? '', /Cannot find the identical file that would be kept/)
     })
   }
 })
@@ -478,28 +478,28 @@ describe('K7 /pet/state 的 watching 文字：講清理資料夾的名字（只�
   test('roots=[下載, Screenshots]：兩個名字都講，不可以出現 Downloads', t => {
     const { message, dir } = pet(t, ['下載', 'Screenshots'])
     assert.doesNotMatch(message, /Downloads/)
-    assert.match(message, /「下載」/)
-    assert.match(message, /「Screenshots」/)
+    assert.match(message, /“下載”/)
+    assert.match(message, /“Screenshots”/)
     assert.ok(!message.includes(dir), `帶了路徑：${message}`)
   })
 
   test('邊界的另一側：roots=[Downloads] → 講 Downloads', t => {
-    assert.match(pet(t, ['Downloads']).message, /「Downloads」/)
+    assert.match(pet(t, ['Downloads']).message, /“Downloads”/)
   })
 
   test('名字是不可信的輸入：換行、bidi 控制字元換成「·」', t => {
     const { message } = pet(t, ['a\nb', 'invoice\u202efdp'])
     assert.doesNotMatch(message, /[\n\u202e]/)
-    assert.match(message, /「a·b」/)
-    assert.match(message, /「invoice·fdp」/)
+    assert.match(message, /“a·b”/)
+    assert.match(message, /“invoice·fdp”/)
   })
 
   test('家目錄當根目錄：不講它的名字（那是使用者名稱）；四個以上講「等 N 個」', t => {
     const home = pet(t, [null])
     assert.ok(!home.message.includes(basename(FAKE_HOME)), `講出了家目錄的名字：${home.message}`)
-    assert.match(home.message, /監看資料夾/)
+    assert.match(home.message, /watched folder/)
     const many = pet(t, ['A1', 'B2', 'C3', 'D4'])
-    assert.match(many.message, /「A1」、「B2」、「C3」等 4 個資料夾/)
+    assert.match(many.message, /“A1”, “B2”, “C3” and more \(4 folders\)/)
     assert.doesNotMatch(many.message, /D4/)
   })
 })

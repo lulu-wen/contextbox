@@ -15,7 +15,7 @@ type PlanRow = {
 
 export function planRow(db: DatabaseSync, id: string): PlanRow {
   const row = db.prepare('SELECT * FROM cleanup_plans WHERE id=?').get(id) as PlanRow | undefined
-  if (!row) throw new CleanupError('NOT_FOUND', '找不到這份清理計畫。')
+  if (!row) throw new CleanupError('NOT_FOUND', 'There is no such cleanup plan.')
   return row
 }
 
@@ -50,7 +50,7 @@ export function getPlan(db: DatabaseSync, id: string) {
 
 export function validateIds(value: unknown): asserts value is string[] {
   if (!Array.isArray(value) || value.length > 5000 || value.some(v => typeof v !== 'string' || !v || v.length > 200)) {
-    throw new CleanupError('BAD_BODY', '候選 id 必須是字串陣列，最多 5000 筆。')
+    throw new CleanupError('BAD_BODY', 'Candidate ids must be an array of strings, at most 5000 of them.')
   }
 }
 
@@ -60,7 +60,7 @@ export function validateIds(value: unknown): asserts value is string[] {
 export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; requestId?: string } = {}) {
   if (opts.candidateIds !== undefined) validateIds(opts.candidateIds)
   if (opts.requestId !== undefined && (typeof opts.requestId !== 'string' || !opts.requestId || opts.requestId.length > 200)) {
-    throw new CleanupError('BAD_BODY', 'requestId 必須是 1 到 200 字元的字串。')
+    throw new CleanupError('BAD_BODY', 'requestId must be a string of 1 to 200 characters.')
   }
   const selection = JSON.stringify(opts.candidateIds === undefined ? null : [...new Set(opts.candidateIds)].sort())
   return withCleanupLock(db, () => transaction(db, () => {
@@ -68,7 +68,7 @@ export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; re
       const prior = db.prepare('SELECT * FROM cleanup_plan_requests WHERE request_id=?').get(opts.requestId) as
         { selection: string; plan_id: string } | undefined
       if (prior) {
-        if (prior.selection !== selection) throw new CleanupError('CONFLICT', '同一個 requestId 不能指定不同候選。')
+        if (prior.selection !== selection) throw new CleanupError('CONFLICT', 'The same requestId cannot name a different set of candidates.')
         return getPlan(db, prior.plan_id)
       }
     }
@@ -85,10 +85,10 @@ export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; re
     const selected = new Set<string>()
     for (const id of ids) {
       const c = candidates.find(c => c.id === id)
-      if (!c) throw new CleanupError('STALE_CANDIDATE', '候選已變更，請重新掃描並建立計畫。')
+      if (!c) throw new CleanupError('STALE_CANDIDATE', 'The candidates changed. Scan again and build a new plan.')
       selected.add(c.item_id)
     }
-    if (!selected.size) throw new CleanupError('EMPTY_PLAN', '沒有選擇可清理的檔案。')
+    if (!selected.size) throw new CleanupError('EMPTY_PLAN', 'No file was picked for cleanup.')
     // **只有還沒套用的（proposed）計畫佔住檔案。** 計畫是一次性的：套用過的
     // （applied／partial／error）不再佔住，失敗的檔要重試就建一份新計畫。
     // 以前連 partial／error 都佔住，一個永遠搬不動的檔會讓之後每一次清理都撞
@@ -96,7 +96,7 @@ export function createPlan(db: DatabaseSync, opts: { candidateIds?: string[]; re
     for (const id of selected) {
       if (db.prepare(`SELECT 1 FROM cleanup_snapshots s JOIN cleanup_plans p ON p.id=s.plan_id
         WHERE s.item_id=? AND p.status='proposed' LIMIT 1`).get(id)) {
-        throw new CleanupError('CONFLICT', '這個檔案已有待處理的清理計畫。')
+        throw new CleanupError('CONFLICT', 'This file already belongs to a pending cleanup plan.')
       }
     }
     const id = randomUUID()
@@ -143,11 +143,11 @@ export function dismissPlan(db: DatabaseSync, id: string) {
     const p = planRow(db, id)
     if (p.status === 'dismissed' && !released(db, id)) return getPlan(db, id)
     if (p.status !== 'dismissed' && (p.status !== 'proposed' || db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id))) {
-      throw new CleanupError('CONFLICT', '計畫已開始執行，請使用復原。')
+      throw new CleanupError('CONFLICT', 'This plan has started running. Use undo instead.')
     }
     if (db.prepare(`SELECT 1 FROM cleanup_snapshots s JOIN cleanup_snapshots o ON o.item_id=s.item_id AND o.plan_id<>s.plan_id
         JOIN cleanup_plans op ON op.id=o.plan_id WHERE s.plan_id=? AND op.status='proposed' LIMIT 1`).get(id)) {
-      throw new CleanupError('CONFLICT', '這份計畫裡的檔已經在另一份還沒套用的清理計畫裡；要拒絕它們，請先拒絕或放棄那一份。')
+      throw new CleanupError('CONFLICT', 'Files in this plan already belong to another plan that was never applied. Reject or drop that one first.')
     }
     db.prepare(`UPDATE cleanup_candidates SET status='dismissed' WHERE status<>'quarantined' AND id IN
       (SELECT candidate_id FROM cleanup_plan_items WHERE plan_id=?)`).run(id)
@@ -183,7 +183,7 @@ export function releasePlan(db: DatabaseSync, id: string) {
     const p = planRow(db, id)
     if (p.status === 'dismissed') return getPlan(db, id)
     if (p.status !== 'proposed' || db.prepare('SELECT 1 FROM cleanup_journal WHERE plan_id=? LIMIT 1').get(id)) {
-      throw new CleanupError('CONFLICT', '這份計畫已經開始執行，不能放棄；要還原請用復原。')
+      throw new CleanupError('CONFLICT', 'This plan has started running, so it cannot be dropped. Use undo to put things back.')
     }
     release(db, id)
     return getPlan(db, id)
@@ -206,11 +206,11 @@ export function releaseStalePlans(
   db: DatabaseSync, olderThanMs: number, opts: { skipPlanId?: string } = {},
 ): number {
   if (!Number.isFinite(olderThanMs) || olderThanMs < 0) {
-    throw new CleanupError('BAD_CONFIG', '自動放棄計畫的時間要是 0 以上的毫秒數。')
+    throw new CleanupError('BAD_CONFIG', 'The auto-drop age must be a number of milliseconds, 0 or more.')
   }
   const skip = opts?.skipPlanId
   if (skip !== undefined && (typeof skip !== 'string' || !skip || skip.length > 200)) {
-    throw new CleanupError('BAD_BODY', '要跳過的計畫 id 必須是 1 到 200 字元的字串。')
+    throw new CleanupError('BAD_BODY', 'The plan id to skip must be a string of 1 to 200 characters.')
   }
   return withCleanupLock(db, () => transaction(db, () => {
     const cutoff = Date.now() - olderThanMs

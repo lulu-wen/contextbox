@@ -20,7 +20,7 @@ import * as server from '../core/server.ts'
 import { sandbox, OS_DEADLOCK, OS_SCHEDULING, DS_MIDTERM } from './helpers/rename.mjs'
 
 const TOKEN = 'learn-wire-token'
-const OS_VIEW = { course: '作業系統', topic: '死結', kind: '筆記', suggestedName: '作業系統_死結', confidence: '高' }
+const OS_VIEW = { course: '作業系統', topic: '死結', kind: 'Notes', suggestedName: '作業系統_死結', confidence: 'high' }
 
 async function serve(t, s, extra = {}) {
   const S = server.start({
@@ -37,7 +37,7 @@ async function serve(t, s, extra = {}) {
     const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body })
     const text = await r.text()
     let json = null
-    try { json = JSON.parse(text) } catch { /* 不是 JSON */ }
+    try { json = JSON.parse(text) } catch { /* not answer with JSON */ }
     return { status: r.status, json, text, headers: r.headers }
   }
   const api = (method, path, body) => raw(method, path, { body: body === undefined ? undefined : JSON.stringify(body) })
@@ -52,7 +52,7 @@ function fixture(t) {
   })
   s.seed('未命名文件 (3).txt', OS_VIEW)
   s.seed('未命名文件 (4).txt', { ...OS_VIEW, topic: '行程排程', suggestedName: '作業系統_排程' })
-  s.seed('IMG_2041.txt', { course: '資料結構', topic: '期中考範圍', kind: '考試', suggestedName: '資料結構_期中考範圍', confidence: '高' })
+  s.seed('IMG_2041.txt', { course: '資料結構', topic: '期中考範圍', kind: 'Exam', suggestedName: '資料結構_期中考範圍', confidence: 'high' })
   return s
 }
 
@@ -149,7 +149,7 @@ describe('DELETE /learned', () => {
     assert.deepEqual((await api('GET', '/learned')).json.items, [])
     // 忘掉之後建議回到模型的說法
     const after = await api('GET', '/file/suggestions')
-    assert.equal(after.json.items.find(i => i.name === '未命名文件 (4).txt').toFolder, '課程/作業系統/筆記')
+    assert.equal(after.json.items.find(i => i.name === '未命名文件 (4).txt').toFolder, 'Courses/作業系統/Notes')
   })
 
   test('{ all: true } 全部忘掉', async t => {
@@ -180,7 +180,7 @@ describe('DELETE /learned', () => {
     const r = await api('DELETE', '/learned', { IDs: ['x'] })
     assert.equal(r.status, 400)
     assert.equal(r.json.code, 'BAD_BODY')
-    assert.match(r.json.error, /不認得的欄位/)
+    assert.match(r.json.error, /unknown field/)
     assert.equal((await api('GET', '/learned')).json.items.length, 1)
   })
 
@@ -257,11 +257,11 @@ describe('建議那兩條多出來的欄位', () => {
     const after = await api('GET', '/file/suggestions')
     const second = after.json.items.find(i => i.name === '未命名文件 (4).txt')
     assert.equal(second.learned, true)
-    assert.equal(second.toFolder, '課程/OS/筆記')
+    assert.equal(second.toFolder, 'Courses/OS/Notes')
     const moved = await api('POST', '/file/apply', { items: [{ itemId: second.itemId, course: second.course, kind: second.kind }] })
-    assert.equal(moved.json.results[0].toFolder, '課程/OS/筆記')
+    assert.equal(moved.json.results[0].toFolder, 'Courses/OS/Notes')
     assert.deepEqual(s.filedTree().filter(p => p.endsWith('.txt')).sort(),
-      ['課程/OS/筆記/未命名文件 (3).txt', '課程/OS/筆記/未命名文件 (4).txt'])
+      ['Courses/OS/Notes/未命名文件 (3).txt', 'Courses/OS/Notes/未命名文件 (4).txt'])
   })
 
   test('undo 之後 rejectedBefore 變 true（清單照樣列它）', async t => {

@@ -28,32 +28,32 @@ export function parseKey(key: string) {
  */
 export function normalizeValue(def: FactKeyDef, raw: unknown): unknown {
   if (raw === null || raw === undefined) {
-    throw new ValidationError(`${def.key}：值是空的`)
+    throw new ValidationError(`${def.key}: the value is empty`)
   }
   const s = typeof raw === 'string' ? raw.trim() : raw
   // 空字串要在 trim 之後才判得準：全形空格「　」跟一串半形空白 trim 完都是空的，
   // 只比 raw === '' 的話它們會整個漏過去 —— 走到 number 分支變成 Number('') = 0，
   // 走到預設分支變成空字串。兩種都是「其實沒有值」被安靜存成「有值」。
   if (s === '') {
-    throw new ValidationError(`${def.key}：值是空的`)
+    throw new ValidationError(`${def.key}: the value is empty`)
   }
 
   switch (def.type) {
     case 'date': {
       const d = toDate(String(s))            // toDate 內部已折全形（foldFullWidth）
-      if (!d || d.length !== 10) throw new ValidationError(`${def.key}：看不懂的日期「${s}」`)
+      if (!d || d.length !== 10) throw new ValidationError(`${def.key}: “${s}” is not a date we can read`)
       return d
     }
     case 'month': {
       const d = toDate(String(s))            // 同上
-      if (!d) throw new ValidationError(`${def.key}：看不懂的年月「${s}」`)
+      if (!d) throw new ValidationError(`${def.key}: “${s}” is not a year and month we can read`)
       return d.slice(0, 7)
     }
     case 'tel': {
       // toE164 內部折全形＋量長度，量不出來會回 null。這裡照樣丟錯 ——
       // 電話這一條的規矩是「寧可要人重打，也不要存半截號碼」。
       const t = toE164(String(s))
-      if (!t) throw new ValidationError(`${def.key}：看不懂的電話「${s}」`)
+      if (!t) throw new ValidationError(`${def.key}: “${s}” is not a phone number we can read`)
       return t
     }
     case 'email': {
@@ -61,7 +61,7 @@ export function normalizeValue(def: FactKeyDef, raw: unknown): unknown {
       // 「ｗａｎｇ＠ｅｘａｍｐｌｅ．ｃｏｍ」折完還是比不中下面的格式，整筆被擋掉。
       // email 裡的 @ 和 . 不可能是「內容」，一律折成半形才是它的正規格式。
       const e = foldFullWidth(String(s)).toLowerCase()
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new ValidationError(`${def.key}：不是 email「${s}」`)
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new ValidationError(`${def.key}: “${s}” is not an email address`)
       return e
     }
     case 'url': {
@@ -74,14 +74,14 @@ export function normalizeValue(def: FactKeyDef, raw: unknown): unknown {
       // ｈｔｔｐｓ：／／ｅｘａｍｐｌｅ．ｃｏｍ 折完就是一個正常網址。
       const folded = tryURL(foldFullWidth(original))
       if (folded) return folded
-      throw new ValidationError(`${def.key}：不是網址「${s}」`)
+      throw new ValidationError(`${def.key}: “${s}” is not a URL`)
     }
     case 'enum': {
       // 折英數就好，不折標點：enum 的值是人寫在註冊表裡的中文（「役畢」「可遠端」），
       // 但值本身若含英數（未來可能有「B1」「Level 2」這種），全形版要比得中。
       const v = toHalfWidth(String(s))
       if (!def.enum?.includes(v)) {
-        throw new ValidationError(`${def.key}：「${v}」不在允許的值裡（${def.enum?.join('、')}）`)
+        throw new ValidationError(`${def.key}: “${v}” is not one of the allowed values (${def.enum?.join(', ')})`)
       }
       return v
     }
@@ -89,7 +89,7 @@ export function normalizeValue(def: FactKeyDef, raw: unknown): unknown {
       // Number('１２３') 是 NaN —— 不折的話，全形數字一律變成「不是數字」被擋掉。
       // 注意 raw 也可能本來就是 number，那就不要拿它去跑字串處理。
       const n = typeof s === 'string' ? Number(toHalfWidth(s)) : Number(s)
-      if (!Number.isFinite(n)) throw new ValidationError(`${def.key}：不是數字「${s}」`)
+      if (!Number.isFinite(n)) throw new ValidationError(`${def.key}: “${s}” is not a number`)
       return n
     }
     case 'boolean':
@@ -133,10 +133,10 @@ const addMonths = (d: Date, n: number) => {
 export function vet(key: string, raw: unknown, now: Date, explicitExpiry?: string | null) {
   const { keyDef, idx } = parseKey(key)
   const def = defOf(keyDef)
-  if (!def) throw new ValidationError(`不認得的 key：${key}`)
-  if (def.repeatable && idx === null) throw new ValidationError(`${key} 是可重複欄位，要帶序號，例如 ${keyDef.replace('[]', '[0]')}`)
-  if (!def.repeatable && idx !== null) throw new ValidationError(`${key} 不是可重複欄位，不該帶序號`)
-  if (def.sensitivity === 'secret') throw new ValidationError(`${key} 是 secret 級，這個系統不存這種東西`)
+  if (!def) throw new ValidationError(`Unknown key: ${key}`)
+  if (def.repeatable && idx === null) throw new ValidationError(`${key} is a repeatable field and needs an index, e.g. ${keyDef.replace('[]', '[0]')}`)
+  if (!def.repeatable && idx !== null) throw new ValidationError(`${key} is not a repeatable field, so it must not carry an index`)
+  if (def.sensitivity === 'secret') throw new ValidationError(`${key} is secret-level, and this system does not store those`)
 
   return {
     def, keyDef, idx,

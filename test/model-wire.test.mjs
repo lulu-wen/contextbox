@@ -131,15 +131,15 @@ describe('第 1 條 ・ 沒設定模型：一切照常，一個請求都不送',
     const s = sandbox(t, { '作業系統_第6章.txt': OS_CH6 })
     const r = await runCli(s, ['doctor'], { [KEY_ENV]: '' })
     assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /看懂內容\s+✗ 沒設定模型/)
+    assert.match(r.stdout, /Reading\s+✗ no model configured/)
   })
 
   test('CLI 的 think 也不做事，而且離開碼是 0（那不是錯，是還沒接）', async t => {
     const s = sandbox(t, { '作業系統_第6章.txt': OS_CH6 })
     const r = await runCli(s, ['think'], { [KEY_ENV]: '' })
     assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /看懂內容還沒開/)
-    assert.match(r.stdout, /掃描、清理、面板照常/)
+    assert.match(r.stdout, /Reading is not on/)
+    assert.match(r.stdout, /scanning, cleanup and the panel are unaffected/)
   })
 })
 
@@ -259,7 +259,7 @@ describe('第 3、4 條 ・ 像機密的檔不送，而且講得出為什麼', (
       const skip = modelSkipOf(s.db, s.idOf(n))
       assert.ok(skip, `${n}：model_skips 沒有這一列`)
       assert.equal(skip.why, SECRET_WHY)
-      assert.match(skip.why, /看起來像機密/)
+      assert.match(skip.why, /looks like a secret/)
     }
   })
 
@@ -283,7 +283,7 @@ describe('第 3、4 條 ・ 像機密的檔不送，而且講得出為什麼', (
     const r = await round(s, cfg([s.downloads], fake.baseUrl))
     assert.equal(r.asked, 0)
     assert.deepEqual(fake.requests, [], '**私鑰被送出去了**')
-    assert.match(modelSkipOf(s.db, s.idOf('筆記.txt')).why, /看起來像機密/)
+    assert.match(modelSkipOf(s.db, s.idOf('筆記.txt')).why, /looks like a secret/)
   })
 
   test('一整批混著：只有乾淨的那幾個出得去，而且送出去的內容裡沒有任何一段秘密', async t => {
@@ -307,7 +307,7 @@ describe('第 3、4 條 ・ 像機密的檔不送，而且講得出為什麼', (
     for (const name of Object.keys(secrets)) {
       const id = s.idOf(name)
       assert.ok(id, `前提：掃描有收到 ${name}`)
-      assert.match(modelSkipOf(s.db, id)?.why ?? '', /看起來像機密/, `${name} 沒有記下為什麼沒送`)
+      assert.match(modelSkipOf(s.db, id)?.why ?? '', /looks like a secret/, `${name} 沒有記下為什麼沒送`)
     }
   })
 
@@ -359,9 +359,9 @@ describe('第 5 條 ・ 未命名文件 (3).txt：course 含「作業系統」�
     assert.ok(card.model, '卡片上沒有模型的看法')
     assert.equal(card.model.seeded, false)
     const lines = modelOpinionLines(card.model)
-    assert.match(lines.head, /^模型認為：作業系統／死結（信心 高）$/)
-    assert.match(lines.note, /證據：/)
-    assert.match(lines.note, /這是模型的意見，不是事實/)
+    assert.match(lines.head, /^The model thinks: 作業系統 \/ 死結 \(confidence high\)$/)
+    assert.match(lines.note, /Evidence: /)
+    assert.match(lines.note, /This is the model's opinion, not a fact/)
     // **不可以因為模型說了就自動勾選**（screenshot-noise 信心 35，低於預設門檻）
     assert.equal(card.defaultChecked, false, '模型說了就自動勾起來了')
   })
@@ -437,7 +437,7 @@ describe('第 8 條 ・ 模型回了不合格式的東西：不採用、記一�
     ['少一欄', () => { const o = { ...GOOD_VIEW }; delete o.evidence; return completion(o) }],
     ['多一欄', () => completion({ ...GOOD_VIEW, extra: '多的' })],
     ['不是 JSON', () => ({ choices: [{ message: { content: '我覺得這是作業系統的講義。' } }] })],
-    ['選項不對', () => completion({ ...GOOD_VIEW, confidence: 'high' })],
+    ['選項不對', () => completion({ ...GOOD_VIEW, confidence: 'very high' })],
   ]
   for (const [label, body] of BAD) {
     test(label, async t => {
@@ -466,7 +466,7 @@ describe('第 8 條 ・ 模型回了不合格式的東西：不採用、記一�
     const r = await round(s, config)
     assert.equal(fake.requests.length, 3, '第四輪不該再問')
     assert.equal(r.skipped, 1)
-    assert.match(modelSkipOf(s.db, s.idOf('講義.txt')).why, /問不到|沒有給出可用/)
+    assert.match(modelSkipOf(s.db, s.idOf('講義.txt')).why, /no answer|no usable answer/)
   })
 })
 
@@ -600,7 +600,7 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
     seedShot(s, name, { ...GOOD_VIEW })
     const card = listCandidates(s.db, { roots: [s.downloads] }).candidates.find(c => c.name === name)
     assert.ok(card?.model?.seeded, '沒有標成示範答案')
-    assert.match(modelOpinionLines(card.model).head, /^［示範答案］模型認為：/)
+    assert.match(modelOpinionLines(card.model).head, /^\[demo answer\] The model thinks: /)
     assert.equal(card.defaultChecked, false, '示範答案不可以讓它自動打勾')
   })
 
@@ -645,14 +645,14 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
     const r = spawnSync(process.execPath, [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', join(dir, 'box'), '--seed-model'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, HOME: home, USERPROFILE: home } })
     assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.match(r.stdout, /已經預先塞了 3 筆/)
+    assert.match(r.stdout, /Seeded 3 model answers/)
     const db = openDb(join(dir, 'box', 'data.db'))
     t.after(() => db.close())
     const rows = db.prepare('SELECT course, topic, seeded FROM model_views ORDER BY course, topic').all()
     assert.deepEqual(rows.map(x => [x.course, x.topic, x.seeded]), [
-      ['作業系統', '死結', 1],
-      ['作業系統', '行程排程', 1],
-      ['資料結構', '期中考範圍', 1],
+      ['Data Structures', 'Midterm scope', 1],
+      ['Operating Systems', 'Deadlock', 1],
+      ['Operating Systems', 'Process Scheduling', 1],
     ])
   })
 })
@@ -729,11 +729,11 @@ describe('第 12 條 ・ doctor 講得出這幾件事', () => {
     const r = await runCli(s, ['doctor'], { [KEY_ENV]: FAKE_KEY },
       { baseUrl: fake.baseUrl, name: 'fake-model', keyEnv: KEY_ENV })
     assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /看懂內容\s+✓ 開著/)
-    assert.match(r.stdout, /今天送了 1 次/)
-    assert.match(r.stdout, /1 次有答案（平均 \d+\.\d 秒）/)
-    assert.match(r.stdout, /沒有失敗/)
-    assert.match(r.stdout, /2 個檔因為看起來像機密沒送/)
+    assert.match(r.stdout, /Reading\s+✓ on/)
+    assert.match(r.stdout, /1 request sent today/)
+    assert.match(r.stdout, /1 answered \(\d+\.\ds on average\)/)
+    assert.match(r.stdout, /none failed/)
+    assert.match(r.stdout, /2 files held back for looking like secrets/)
     assert.ok(!r.stdout.includes(FAKE_KEY), 'doctor 把金鑰印出來了')
   })
 
@@ -741,14 +741,14 @@ describe('第 12 條 ・ doctor 講得出這幾件事', () => {
     const s = sandbox(t, { '未命名文件 (3).txt': OS_CH6 })
     putModelView(s.db, {
       key: viewKey(textPayload(OS_CH6)), item_id: s.idOf('未命名文件 (3).txt'), source: 'text',
-      course: '作業系統', topic: '死結', kind: '講義', suggested_name: '作業系統_死結',
-      evidence: '看到「死結」', confidence: '高', model: '示範答案', prompt_version: PROMPT_VERSION,
+      course: '作業系統', topic: '死結', kind: 'Lecture', suggested_name: '作業系統_死結',
+      evidence: '看到「死結」', confidence: 'high', model: '示範答案', prompt_version: PROMPT_VERSION,
       at: new Date().toISOString(), seeded: 1,
     })
     const r = await runCli(s, ['doctor'], { [KEY_ENV]: '' })
     assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /看懂內容\s+✗ 沒設定模型/)
-    assert.match(r.stdout, /1 筆 demo 的示範答案/)
+    assert.match(r.stdout, /Reading\s+✗ no model configured/)
+    assert.match(r.stdout, /1 demo answer/)
   })
 
   test('失敗過就講得出幾次失敗', async t => {
@@ -757,9 +757,9 @@ describe('第 12 條 ・ doctor 講得出這幾件事', () => {
     const url = await deadUrl(t)
     await round(s, cfg([s.downloads], url))
     const r = await runCli(s, ['doctor'], { [KEY_ENV]: FAKE_KEY }, { baseUrl: url, name: 'fake-model', keyEnv: KEY_ENV })
-    assert.match(r.stdout, /今天送了 3 次/)
-    assert.match(r.stdout, /3 次失敗/)
-    assert.match(r.stdout, /最近出錯/)
+    assert.match(r.stdout, /3 requests sent today/)
+    assert.match(r.stdout, /3 failed/)
+    assert.match(r.stdout, /Last error/)
   })
 })
 
@@ -772,10 +772,10 @@ describe('CLI 的 think', () => {
     const r = await runCli(s, ['think'], { [KEY_ENV]: FAKE_KEY },
       { baseUrl: fake.baseUrl, name: 'fake-model', keyEnv: KEY_ENV })
     assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.match(r.stdout, /模型認為：作業系統／死結（信心 高）/)
-    assert.match(r.stdout, /server\.key.*看起來像機密/)
-    assert.match(r.stdout, /排了 2 個，問到 1 個/)
-    assert.match(r.stdout, /不會因為它說了就自動改名或搬檔|不是事實/)
+    assert.match(r.stdout, /The model thinks: 作業系統 \/ 死結 \(confidence high\)/)
+    assert.match(r.stdout, /server\.key.*looks like a secret/)
+    assert.match(r.stdout, /2 queued, 1 asked/)
+    assert.match(r.stdout, /not a fact/)
     assert.ok(!r.stdout.includes('ZXQWVU-42'), 'CLI 把檔案內容印出來了')
     assert.ok(!r.stdout.includes(FAKE_KEY), 'CLI 把金鑰印出來了')
   })
@@ -793,7 +793,7 @@ describe('CLI 的 think', () => {
     const url = await deadUrl(t)
     const r = await runCli(s, ['think'], { [KEY_ENV]: FAKE_KEY }, { baseUrl: url, name: 'fake-model', keyEnv: KEY_ENV })
     assert.equal(r.status, 2, r.stdout + r.stderr)
-    assert.match(r.stderr, /連續 3 次/)
+    assert.match(r.stderr, /failed to answer 3 times in a row/)
     assert.equal((await runCli(s, ['cleanup', 'scan'], {}, null)).status, 0)
   })
 })
@@ -809,7 +809,7 @@ describe('payloadFor 自己的把關（直接呼叫，不經過 pendingItems）'
       const p = payloadFor(s.db, { id: s.idOf(name), name, source: 'text' }, FAKE_KEY)
       assert.equal(p.ok, false, `${name} 竟然組得出要送的東西`)
       assert.equal(p.remember, true)
-      assert.match(p.why, /太短/)
+      assert.match(p.why, /too little content/)
     }
   })
 

@@ -62,11 +62,11 @@ const realDir = existsSync(dir) ? realpathSync(dir) : resolve(dir)
 const stateDir = join(realHome, '.contextbox')
 if (!isOurSandbox) {
   if (realDir === realHome || isUnder(realDir, realHome)) {
-    console.error(`✘ ${dir} 是你的家目錄（或它的上層）。demo 沙盒要做在別的地方。`)
+    console.error(`✘ ${dir} is your home directory, or sits above it. Build the demo sandbox somewhere else.`)
     process.exit(1)
   }
   if (isUnder(stateDir, realDir)) {
-    console.error(`✘ ${dir} 在你真的 ${stateDir} 底下 —— 那裡有隔離區（你的檔案）與鑰匙，不敢動它。`)
+    console.error(`✘ ${dir} is inside your real ${stateDir}, which holds quarantine (your files) and the key. Not touching it.`)
     process.exit(1)
   }
 }
@@ -76,8 +76,8 @@ if (!isOurSandbox) {
 // 清單就空了。重來一次最乾淨的方式是丟掉這個沙盒的紀錄。
 if (reset) {
   if (!isOurSandbox) {
-    console.error(`✘ ${dir} 不是這支程式建的 demo 沙盒（沒有 ${MARKER}），不敢刪它的紀錄。`)
-    console.error('  真的要重來的話，自己確認那個資料夾之後手動刪掉，再重新建一個沙盒。')
+    console.error(`✘ ${dir} is not a demo sandbox this script built (no ${MARKER}), so its records are left alone.`)
+    console.error('  If you really want to start over, check that folder yourself, delete it by hand, and build a new sandbox.')
     process.exit(1)
   }
   for (const name of ['data.db', 'data.db-wal', 'data.db-shm', 'token']) {
@@ -86,12 +86,12 @@ if (reset) {
   }
   const q = join(dir, 'quarantine')
   if (existsSync(q)) rmSync(q, { recursive: true })
-  console.log(`已經把 ${dir} 的紀錄清掉（Downloads 裡的檔沒有動）。可以再跑一次 scan。`)
+  console.log(`Cleared the records in ${dir}. The files in Downloads were not touched. You can run scan again.`)
   if (!flag('--force')) process.exit(0)
 }
 
 if (existsSync(dir) && readdirSync(dir).length && !flag('--force')) {
-  console.error(`✘ ${dir} 已經有東西了。換一個資料夾，或加 --force（只會補檔，不會刪任何東西）。`)
+  console.error(`✘ ${dir} already has things in it. Pick another folder, or add --force, which only adds files and deletes nothing.`)
   process.exit(1)
 }
 
@@ -168,12 +168,12 @@ const note = (name, days, what) => files.push({ name, days, what })
 mkdirSync(downloads, { recursive: true })
 
 // 很久沒動的下載（規則：old-download、archive、installer）
-put('Node-v24-安裝檔.exe', Buffer.alloc(9_400_000, 7), 45);        note('Node-v24-安裝檔.exe', 45, '45 天沒動的安裝檔')
-put('資料結構_lab3.zip', Buffer.from('lab3 內容 '.repeat(2000)), 62); note('資料結構_lab3.zip', 62, '兩個月沒動的壓縮檔')
-put('資料結構_lab3 (1).zip', Buffer.from('lab3 內容 '.repeat(2000)), 60); note('資料結構_lab3 (1).zip', 60, '跟上面一模一樣的重複下載')
-put('會議記錄草稿.tmp', Buffer.from('暫存'), 30);                   note('會議記錄草稿.tmp', 30, '暫存檔')
-put('空的.txt', Buffer.alloc(0), 21);                              note('空的.txt', 21, '空檔')
-put('下載到一半的影片.mp4.part', Buffer.alloc(3_200_000, 3), 18);   note('下載到一半的影片.mp4.part', 18, '下載到一半的檔')
+put('Node-v24-installer.exe', Buffer.alloc(9_400_000, 7), 45);     note('Node-v24-installer.exe', 45, 'an installer nobody has touched in 45 days')
+put('data-structures-lab3.zip', Buffer.from('lab3 contents '.repeat(2000)), 62); note('data-structures-lab3.zip', 62, 'an archive nobody has touched in two months')
+put('data-structures-lab3 (1).zip', Buffer.from('lab3 contents '.repeat(2000)), 60); note('data-structures-lab3 (1).zip', 60, 'the same download again, byte for byte')
+put('meeting-notes-draft.tmp', Buffer.from('scratch'), 30);         note('meeting-notes-draft.tmp', 30, 'a temporary file')
+put('empty.txt', Buffer.alloc(0), 21);                              note('empty.txt', 21, 'an empty file')
+put('half-downloaded-video.mp4.part', Buffer.alloc(3_200_000, 3), 18); note('half-downloaded-video.mp4.part', 18, 'a download that never finished')
 
 // 連拍截圖（P0 的主角）：同一個畫面，差別很小。
 // **差異要夠小才算同一批**：換掉一整行字在比對模組裡是「不一樣」（那是刻意的，寧可少問），
@@ -181,34 +181,34 @@ put('下載到一半的影片.mp4.part', Buffer.alloc(3_200_000, 3), 18);   note
 put('Screenshot 2026-09-18 at 10.31.02.png', shot({ badge: 1 }), 2)
 put('Screenshot 2026-09-18 at 10.31.05.png', shot({ badge: 1, cursor: true }), 2)
 put('Screenshot 2026-09-18 at 10.31.09.png', shot({ badge: 2 }), 2)
-note('Screenshot …10.31.02／05／09.png', 2, '連拍三張：只差游標與未讀數字')
+note('Screenshot …10.31.02/05/09.png', 2, 'a burst of three: only the cursor and the unread badge differ')
 // 對照：同一個版面但內容不同，不可以被當成連拍
 put('Screenshot 2026-09-18 at 14.02.44.png', shot({ lines: 9, badge: 3 }), 2)
-note('Screenshot …14.02.44.png', 2, '同版面但內容不同的截圖（不可以被當成連拍）')
+note('Screenshot …14.02.44.png', 2, 'same layout, different content — must not count as a burst')
 
 // 課程檔案（P2／P3／P4 的主角）：有的取好名字，有的沒有
-put('作業系統_第5章_行程排程.txt', Buffer.from(
-  '作業系統 第 5 章 行程排程\n\n'
-  + '一、排班準則：CPU 使用率、產能、周轉時間、等待時間、回應時間。\n'
-  + '二、FCFS：先到先服務，會有護送效應（convoy effect）。\n'
-  + '三、SJF：最短工作優先，理論上平均等待時間最小，但需要預估執行時間。\n'
-  + '四、Round Robin：時間配額 q 的選擇；q 太大退化成 FCFS，太小則切換成本高。\n'
-  + '課堂練習：給定五個行程的到達時間與執行時間，畫出甘特圖並算平均等待時間。\n'), 9)
-note('作業系統_第5章_行程排程.txt', 9, '取好名字的講義')
-put('未命名文件 (3).txt', Buffer.from(
-  '作業系統 第 6 章 死結\n\n'
-  + '死結的四個必要條件：互斥、持有並等待、不可搶奪、環狀等待。\n'
-  + '處理方式：預防、避免（銀行家演算法）、偵測與恢復、鴕鳥策略。\n'
-  + '銀行家演算法：Available、Max、Allocation、Need 四張表，檢查安全序列是否存在。\n'
-  + '小考範圍到這裡，記得練習資源配置圖判斷有沒有環。\n'), 7)
-note('未命名文件 (3).txt', 7, '沒取名、但內容看得出是哪一堂課')
+put('operating-systems-ch5-scheduling.txt', Buffer.from(
+  'Operating Systems, Chapter 5: Process Scheduling\n\n'
+  + '1. Scheduling criteria: CPU utilisation, throughput, turnaround time, waiting time, response time.\n'
+  + '2. FCFS: first come, first served, which produces the convoy effect.\n'
+  + '3. SJF: shortest job first. In theory the smallest average waiting time, but it needs an estimate of the run time.\n'
+  + '4. Round robin: choosing the quantum q. Too large and it degrades to FCFS; too small and switching costs dominate.\n'
+  + 'Exercise: given five processes with arrival and burst times, draw the Gantt chart and compute the average waiting time.\n'), 9)
+note('operating-systems-ch5-scheduling.txt', 9, 'a lecture handout that already has a good name')
+put('Untitled document (3).txt', Buffer.from(
+  'Operating Systems, Chapter 6: Deadlock\n\n'
+  + 'The four necessary conditions for deadlock: mutual exclusion, hold and wait, no preemption, circular wait.\n'
+  + 'Ways to handle it: prevention, avoidance (the banker\'s algorithm), detection and recovery, and the ostrich approach.\n'
+  + 'The banker\'s algorithm: the Available, Max, Allocation and Need tables, checked for a safe sequence.\n'
+  + 'The quiz covers up to here. Practise spotting cycles in a resource allocation graph.\n'), 7)
+note('Untitled document (3).txt', 7, 'no real name, but the contents say which course it is')
 put('IMG_2041.txt', Buffer.from(
-  '資料結構 期中考範圍\n\n'
-  + '第一部分：堆疊與佇列的實作與應用（中序轉後序、BFS 佇列）。\n'
-  + '第二部分：二元搜尋樹的插入、刪除與走訪；AVL 的四種旋轉。\n'
-  + '第三部分：圖的表示法、DFS 與 BFS、最短路徑（Dijkstra）。\n'
-  + '考試時間：下週三第 3、4 節，可帶一張 A4 手寫小抄。\n'), 5)
-note('IMG_2041.txt', 5, '相機預設名，內容是考試範圍')
+  'Data Structures: what the midterm covers\n\n'
+  + 'Part 1: implementing and using stacks and queues (infix to postfix, the BFS queue).\n'
+  + 'Part 2: insertion, deletion and traversal in binary search trees; the four AVL rotations.\n'
+  + 'Part 3: graph representations, DFS and BFS, shortest paths (Dijkstra).\n'
+  + 'When: next Wednesday, periods 3 and 4. One handwritten A4 sheet allowed.\n'), 5)
+note('IMG_2041.txt', 5, 'a camera default name; the contents are an exam syllabus')
 
 // ── 一份不可以被送出去的檔 ──────────────────────────────────
 //
@@ -223,7 +223,7 @@ put('logins.csv', Buffer.from(
   + 'https://portal.example.edu,s1234567@example.edu,DemoOnly-NotARealPassword-1,,,{demo-1},1694500000000,1694500000000\n'
   + 'https://mail.example.com,demo.user@example.com,DemoOnly-NotARealPassword-2,,,{demo-2},1694500000000,1694500000000\n'
   + 'https://shop.example.net,demo.user@example.com,DemoOnly-NotARealPassword-3,,,{demo-3},1694500000000,1694500000000\n'), 12)
-note('logins.csv', 12, '瀏覽器匯出的密碼清單 —— 檔名不可疑，靠內容擋下來，不會送給模型')
+note('logins.csv', 12, 'a password export from a browser — the name looks innocent; the contents are what stops it reaching the model')
 
 // ── --live-model：現場真的問模型 ──────────────────────────────
 //
@@ -254,13 +254,13 @@ if (live) {
     }
   } catch { /* 沒有、讀不到、不是 JSON —— 都當成沒設定，不要讓 demo 做不起來 */ }
 
-  if (fromFlag.baseUrl && fromFlag.name) { Object.assign(modelCfg, fromFlag); modelFrom = '指令上給的' }
-  else if (fromEnv.baseUrl && fromEnv.name) { Object.assign(modelCfg, fromEnv); modelFrom = '環境變數' }
+  if (fromFlag.baseUrl && fromFlag.name) { Object.assign(modelCfg, fromFlag); modelFrom = 'the command line' }
+  else if (fromEnv.baseUrl && fromEnv.name) { Object.assign(modelCfg, fromEnv); modelFrom = 'the environment' }
   else if (fromFile.baseUrl && fromFile.name) {
     modelCfg.baseUrl = fromFile.baseUrl
     modelCfg.name = fromFile.name
     if (fromFile.keyEnv) modelCfg.keyEnv = fromFile.keyEnv
-    modelFrom = '你自己的 ~/.contextbox/config.json'
+    modelFrom = 'your own ~/.contextbox/config.json'
   }
 }
 
@@ -277,7 +277,7 @@ const cfgPath = join(dir, 'config.json')
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n')
 // 記號：`--reset` 只認這個。真的安裝也有 config.json，光看它會把使用者的隔離區刪掉。
 writeFileSync(join(dir, MARKER),
-  '這個資料夾是 tools/demo-setup.mjs 建的 demo 沙盒，可以整個刪掉。\n'
+  'This folder is a demo sandbox built by tools/demo-setup.mjs. Deleting the whole thing is safe.\n'
   + 'Generated by tools/demo-setup.mjs — safe to delete the whole folder.\n')
 
 // ── --seed-model：把示範用的「模型答案」預先塞進快取（P2） ──────
@@ -290,23 +290,23 @@ writeFileSync(join(dir, MARKER),
 // 所以要先掃一次：`file_items` 有 id、`file_texts` 有讀出來的文字，算出來的鍵才跟真的問一次一樣
 // （真的接上模型跑 think 時會直接命中，不會把示範答案蓋掉）。
 const SEEDED = [
-  ['作業系統_第5章_行程排程.txt', {
-    course: '作業系統', topic: '行程排程', kind: '作業',
-    suggestedName: '作業系統_行程排程',
-    evidence: '作業系統 第 5 章 行程排程 一、排班準則：CPU 使用率、產能、周轉時間⋯⋯ 二、FCFS：先到先服務，會有護送效應',
-    confidence: '高',
+  ['operating-systems-ch5-scheduling.txt', {
+    course: 'Operating Systems', topic: 'Process Scheduling', kind: 'Lecture',
+    suggestedName: 'Operating Systems_Process Scheduling',
+    evidence: 'Operating Systems, Chapter 5: Process Scheduling — 1. Scheduling criteria: CPU utilisation, throughput, turnaround time… 2. FCFS: first come, first served, which produces the convoy effect',
+    confidence: 'high',
   }],
-  ['未命名文件 (3).txt', {
-    course: '作業系統', topic: '死結', kind: '筆記',
-    suggestedName: '作業系統_死結',
-    evidence: '作業系統 第 6 章 死結 死結的四個必要條件：互斥、持有並等待、不可搶奪、環狀等待',
-    confidence: '高',
+  ['Untitled document (3).txt', {
+    course: 'Operating Systems', topic: 'Deadlock', kind: 'Notes',
+    suggestedName: 'Operating Systems_Deadlock',
+    evidence: 'Operating Systems, Chapter 6: Deadlock — the four necessary conditions: mutual exclusion, hold and wait, no preemption, circular wait',
+    confidence: 'high',
   }],
   ['IMG_2041.txt', {
-    course: '資料結構', topic: '期中考範圍', kind: '考試',
-    suggestedName: '資料結構_期中考範圍',
-    evidence: '資料結構 期中考範圍 第一部分：堆疊與佇列的實作與應用（中序轉後序、BFS 佇列）',
-    confidence: '高',
+    course: 'Data Structures', topic: 'Midterm scope', kind: 'Exam',
+    suggestedName: 'Data Structures_Midterm scope',
+    evidence: 'Data Structures: what the midterm covers — Part 1: implementing and using stacks and queues (infix to postfix, the BFS queue)',
+    confidence: 'high',
   }],
 ]
 
@@ -325,21 +325,21 @@ if (flag('--seed-model') && !live) {
     for (const [name, view] of SEEDED) {
       const path = join(downloads, name)
       const item = db.prepare('SELECT id FROM file_items WHERE path=?').get(path)
-      if (!item) { console.error(`  （跳過 ${name}：掃描沒有收到它）`); continue }
+      if (!item) { console.error(`  (skipping ${name}: the scan did not pick it up)`); continue }
       const row = db.prepare('SELECT text FROM file_texts WHERE item_id=?').get(item.id)
       const text = typeof row?.text === 'string' ? row.text : null
-      if (!text) { console.error(`  （跳過 ${name}：還沒讀到它的文字）`); continue }
+      if (!text) { console.error(`  (skipping ${name}: its text has not been read yet)`); continue }
       putModelView(db, {
         key: viewKey(textPayload(text)), item_id: item.id, source: 'text',
         course: view.course, topic: view.topic, kind: view.kind,
         suggested_name: view.suggestedName, evidence: view.evidence, confidence: view.confidence,
-        model: '示範答案（demo-setup 預先塞的）', prompt_version: PROMPT_VERSION, at, seeded: 1,
+        model: 'demo answer (seeded by demo-setup)', prompt_version: PROMPT_VERSION, at, seeded: 1,
       })
       n++
     }
     console.log('')
-    console.log(`已經預先塞了 ${n} 筆「模型的答案」到快取裡（畫面上會標「示範答案」）。`)
-    console.log('沒有模型叢集也看得到完整流程；真的接上模型之後，這幾筆不會被蓋掉。')
+    console.log(`Seeded ${n} model answers into the cache. The screen marks each one “[demo answer]”.`)
+    console.log('You can walk the whole flow without a model cluster, and a real model will not overwrite these.')
   } finally { db.close() }
 }
 
@@ -363,14 +363,14 @@ const env = pairs.map(([k, v]) => isWindows ? `$env:${k} = "${v}"` : `export ${k
 // 所以兩種都印。
 const bashEnv = pairs.map(([k, v]) => `export ${k}="${v.split('\\').join('/')}"`)
 
-console.log(`demo 沙盒做好了：${dir}`)
+console.log(`Demo sandbox ready: ${dir}`)
 console.log('')
-console.log('Downloads 裡放了：')
-for (const f of files) console.log(`  ${f.name}　—— ${f.what}（${f.days} 天沒動）`)
+console.log('Downloads now holds:')
+for (const f of files) console.log(`  ${f.name}  — ${f.what} (untouched for ${f.days} days)`)
 console.log('')
 console.log(isWindows
-  ? '把這幾行貼進 PowerShell（只影響這個視窗，不會動到你真的設定）：'
-  : '把這幾行貼進終端機（只影響這個視窗，不會動到你真的設定）：')
+  ? 'Paste these into PowerShell. They only affect this window and never touch your real settings:'
+  : 'Paste these into your terminal. They only affect this window and never touch your real settings:')
 console.log('')
 for (const line of env) console.log('  ' + line)
 console.log('')
@@ -379,43 +379,43 @@ console.log('')
 if (live) {
   console.log('')
   if (modelCfg.baseUrl && modelCfg.name) {
-    console.log(`模型：現場真的問（設定抄自${modelFrom}，模型名稱 ${modelCfg.name}）。`)
-    console.log('　　　沒有預塞任何答案 —— 畫面上看到的每一句都是這一次問出來的。')
+    console.log(`Model: asking for real (settings copied from ${modelFrom}, model ${modelCfg.name}).`)
+    console.log('       Nothing is seeded — every line on screen came from this run.')
     if (!String(process.env[modelCfg.keyEnv] ?? '').trim()) {
-      console.log(`⚠ 這個視窗還沒有 ${modelCfg.keyEnv}。金鑰只從環境變數讀，貼上面那幾行之後記得也 export 它。`)
+      console.log(`⚠ This window has no ${modelCfg.keyEnv} yet. The key is only ever read from the environment, so export it too after pasting the lines above.`)
     }
   } else {
-    console.log('⚠ --live-model 但找不到可以用的模型設定（旗標、環境變數、你自己的 ~/.contextbox/config.json 都沒有）。')
-    console.log('　 沙盒照樣做好了，但「看懂內容」是關的。要嘛補設定，要嘛改用 --seed-model 跑示範答案。')
+    console.log('⚠ --live-model, but no usable model settings were found — not in the flags, the environment, or your own ~/.contextbox/config.json.')
+    console.log('  The sandbox is ready anyway, but reading is off. Either add the settings, or use --seed-model for demo answers.')
   }
 }
 
 console.log('')
 if (isWindows) {
-  console.log('在 Git Bash（或 MSYS／Cygwin）裡的話，改貼這幾行：')
+  console.log('In Git Bash (or MSYS/Cygwin), paste these instead:')
   console.log('')
   for (const line of bashEnv) console.log('  ' + line)
   console.log('')
-  console.log('（cmd.exe 則是 set X=Y，不要加引號。）')
+  console.log('(In cmd.exe it is set X=Y, without quotes.)')
 } else {
-  console.log('（Windows 上跑這支程式會直接印成 PowerShell 與 Git Bash 兩種寫法。）')
+  console.log('(Run this on Windows and it prints both the PowerShell and the Git Bash form.)')
 }
 console.log('')
-console.log('然後照著跑：')
+console.log('Then walk through these:')
 console.log(`  cd ${REPO}`)
-console.log('  node cli.mjs cleanup scan       # 掃一遍，看它找到什麼')
-console.log('  node cli.mjs cleanup list       # 清單：✔ 的是預設會清的')
-console.log('  node cli.mjs cleanup apply      # 搬進隔離區（七天內都放得回來）')
-console.log('  node cli.mjs cleanup undo       # 反悔：全部放回原位')
-console.log('  node cli.mjs pet                # 開寵物與面板（網址會印出來）')
+console.log('  node cli.mjs cleanup scan       # look around and see what it finds')
+console.log('  node cli.mjs cleanup list       # the list; ✔ means it gets cleaned by default')
+console.log('  node cli.mjs cleanup apply      # move them to quarantine (undoable for seven days)')
+console.log('  node cli.mjs cleanup undo       # changed your mind: put everything back')
+console.log('  node cli.mjs pet                # open the pet and the panel (it prints the address)')
 console.log(live
-  ? '  node cli.mjs think              # **真的問模型**（一次一個檔，一個檔幾秒；失敗會講是連不上還是答不對）'
-  : '  node cli.mjs think              # 讓模型看一輪（沒設定模型就不做事；--seed-model 已經先塞好答案）')
-console.log('  node cli.mjs rename             # 它怎麼稱呼這些檔（改得回來）')
-console.log('  node cli.mjs file               # 同一堂課歸在一起（搬得回來）')
+  ? '  node cli.mjs think              # **really ask the model** (one file at a time, a few seconds each; failures say whether it was the connection or the answer)'
+  : '  node cli.mjs think              # let the model read a round (does nothing without a model; --seed-model already seeded the answers)')
+console.log('  node cli.mjs rename             # what it would call these files (undoable)')
+console.log('  node cli.mjs file               # put one course together (undoable)')
 console.log('')
 console.log('')
-console.log('想再 demo 一次（清單會因為「放回去的不再提議」而變空）：')
+console.log('To demo again — the list empties out because anything put back is not suggested again:')
 console.log(`  node tools/demo-setup.mjs --dir ${dir} --reset`)
 console.log('')
-console.log(`玩完直接刪掉整個 ${dir} 就乾淨了。`)
+console.log(`When you are done, delete the whole of ${dir} and nothing is left behind.`)

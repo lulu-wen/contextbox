@@ -96,7 +96,7 @@ test('token 錯的讀不到', async () => {
 test('惡意網頁就算猜到 token 也讀不到', async () => {
   const r = await call('/facts', { origin: 'https://evil.example.com' })
   assert.equal(r.status, 403)
-  assert.match((await r.json()).error, /網頁不能直接讀/)
+  assert.match((await r.json()).error, /cannot read the fact store directly/)
 })
 
 test('擴充套件帶對 token 才進得來', async () => {
@@ -125,7 +125,7 @@ test('亂填的值會被擋，而且講得出為什麼', async () => {
   const r = await call('/facts', { method: 'POST',
     body: JSON.stringify({ key: 'person.gender', value: '外星人' }) })
   assert.equal(r.status, 400)
-  assert.match((await r.json()).error, /不在允許的值裡/)
+  assert.match((await r.json()).error, /not one of the allowed values/)
 })
 
 test('復原會退回上一步', async () => {

@@ -297,26 +297,26 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 ### `cleanup list`
 
 ```
-有 3 個可以清掉的東西，大概 75 B
+3 things can be cleaned up, roughly 75 B
 
   [4d1d] ✔ smoke-report.pdf
              34 B  duplicate  Downloads
-         · 同內容的重複檔案（同一個 sha256 還有 1 份檔案存在，會留著「smoke-report (1).pdf」）
+         · A duplicate — same contents (1 other file has the same sha256; “smoke-report (1).pdf” is the one being kept)
 
   [e2dc] ✔ smoke-assets.zip
              19 B  archive  Downloads
-         · 舊壓縮檔通常是一次性下載（.zip 壓縮檔，而且 60 天沒有變動）
+         · Old archives are usually one-off downloads (.zip archive, and untouched for 60 days)
 
   [c136] ☐ smoke-old.bin
              22 B  old-download  Downloads
-         · 很久沒有動過的下載檔（200 天沒有變動，且副檔名 .bin 不在保護清單）
+         · A download nobody has touched in a long time (untouched for 200 days, and .bin is not on the protected list)
 
-☐ 的預設不清。cleanup apply 會清掉打勾的 2 個，53 B。
-  跳過其中幾個：node cli.mjs cleanup apply --skip <編號>
-  多清幾個 ☐ 的：node cli.mjs cleanup apply --also <編號>
+☐ means it stays put unless you say otherwise. cleanup apply clears the 2 ticked files, 53 B.
+  Skip a few of them: node cli.mjs cleanup apply --skip <id>
+  Also clear some ☐ ones: node cli.mjs cleanup apply --also <id>
 
-另外 1 個需要你自己看一眼：
-  備份.tar　65 KB　—— 檔案太大，這個工具不處理，要不要留請自己決定。
+1 more needs your eyes:
+  備份.tar  65 KB  — This file is too large for this tool to handle. Whether to keep it is your call.
 ```
 
 這一段是 CLI 真的印的（`test/repo.test.mjs` 照這個例子擺一個 Downloads、真的跑一次 `cleanup list`，只把編號換成範例的，整段逐行比）。
@@ -353,7 +353,7 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 | `restored` | `↩ 檔名`，註明「已經放回」 |
 | `purged` | 檔名，註明「已清空」 |
 | `pending` | 檔名，註明「還沒做」 |
-| `cancelled` | 檔名，註明「沒有處理（計畫中途停了或放棄了），本來就在原位」 |
+| `cancelled` | 檔名，註明「not handled: the plan stopped or was dropped; the file never moved」 |
 | `unknown` | 檔名，註明「狀態不明」與原因（搬到一半中斷，說不準檔案現在在原位還是在隔離區） |
 
 - 有 ✘、「狀態不明」或「沒有處理」的時候**離開碼是 3**，已經搬成功的**仍然可以 undo**。
@@ -372,13 +372,13 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
   那一項要用 `doctor` 看、`undo` 放回。）最後一行印：
 
   ```
-  ⚠ 有 1 個搬到一半中斷，檔案可能已經在隔離區，執行 node cli.mjs doctor 檢查。
+  ⚠ 有 1 個interrupted mid-move and may already be in quarantine. Run node cli.mjs doctor to check。
   ```
 - 一個都沒搬成的時候不印任何 ✔、不給復原指令。
 - 預設清理一次最多 1000 個檔，超過的這次先不收，最後一行講「剩下 N 個下次再清」，離開碼 0。
 - 唯讀模式（`CONTEXTBOX_READONLY=1`）：印「唯讀模式：會清掉 N 個檔案」與清單，**不建計畫、不搬**，離開碼 0。
   `apply <已經套用過的計畫>`（`applied`／`partial`／`error`）的 N 是 0：真的套用也是原樣回傳（見下一條），
-  `partial`／`error` 的另外講「再套用不會重試沒搬成的」與怎麼重試。
+  `partial`／`error` 的另外講「Applying again does not retry what failed」與怎麼重試。
 - `apply <已經放棄的計畫>`：印「已經放棄了（有人放棄了它，或建立之後超過一小時沒有套用、自動放棄）」，
   不動任何檔案，離開碼 0。自動放棄見「每個清理指令之前先收尾」。
 - **計畫是一次性的**（第二輪 R2-3）：`applied`／`partial`／`error` 的計畫再 `apply <id>` **一個檔都不會動**，
@@ -390,7 +390,7 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 
   ```
   這份計畫先前已經跑過了，這次什麼都沒做（沒有搬動、也沒有刪除任何檔案）。
-  再套用不會重試沒搬成的（計畫是一次性的）。要重新清：node cli.mjs cleanup scan，再 node cli.mjs cleanup apply（會照現在的清單建一份新的）。
+  Applying again does not retry what failed — a plan runs once. To clean again: node cli.mjs cleanup scan, then node cli.mjs cleanup apply, which builds a new plan from the current list.
   先前搬進隔離區的 1 個還在裡面，要放回原位：node cli.mjs cleanup undo <id>
   ```
 
@@ -440,9 +440,9 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 
 擋住的是一份還沒套用的計畫 5c1e…（3 分鐘前建立），裡面有 2 個檔：
   …
-兩個選擇：
-  接著清那一份：node cli.mjs cleanup apply 5c1e…
-  放棄那一份（不動任何檔案，裡面的檔還是候選）：node cli.mjs cleanup release 5c1e…
+Two choices:
+  Carry on with that plan: node cli.mjs cleanup apply 5c1e…
+  Drop that plan (nothing moves; its files stay candidates): node cli.mjs cleanup release 5c1e…
 ```
 
 「放棄那一份」是 **`release`**（放棄那份計畫，檔案不動），**不是 `undo`** —— 對一份已經搬過的計畫按 undo
@@ -456,10 +456,10 @@ macOS 的截圖資料夾就是桌面，所以開了這個開關，桌面上的�
 
 擋住的是一份做到一半中斷的計畫 5c1e…（3 分鐘前建立），裡面 300 個檔已經有 20 個在隔離區：
   …
-它已經開始搬了，不能放棄（release）。兩個選擇：
-  把已經搬走的放回原位：node cli.mjs cleanup undo 5c1e…
-    放回原位的檔之後不會再被自動提議（除非出現新的理由）；原位置被佔、改名放回的那份會當成新的檔重新評估。
-  把它做完：node cli.mjs cleanup apply 5c1e…
+This plan has started moving files, so it cannot be dropped (release). Two choices:
+  Put back what already moved: node cli.mjs cleanup undo 5c1e…
+    Files put back are not suggested again unless a new reason turns up; one renamed on the way back counts as a new file.
+  Finish it: node cli.mjs cleanup apply 5c1e…
 ```
 
 對這種計畫跑 `cleanup release` 也是回 1，並印同樣這兩條路。
@@ -503,10 +503,10 @@ undo 底下那一句是實話，不是安撫：放回原位的檔，候選記成
 隔離區    /home/alice/.contextbox/quarantine
           12 個檔案，458 MB，其中有滿七天可以清空的
 待清候選  6 個；另外 3 個讀不到或搬不動、60 個太大，這個工具不處理（用 cleanup list 看是哪些）
-中斷計畫  1 份做到一半中斷了（套用時被砍、當機或按了 Ctrl+C）：
-          5c1e…（3 分鐘前建立）：300 個檔，20 個已經在隔離區
-            把已經搬走的放回原位：node cli.mjs cleanup undo 5c1e…
-            把它做完：node cli.mjs cleanup apply 5c1e…
+Interrupted 1 plan stopped partway (killed mid-apply, a crash, or Ctrl+C):
+            5c1e… (created 3 min ago): 300 files, 20 already in quarantine
+              Put back what already moved: node cli.mjs cleanup undo 5c1e…
+              Finish it: node cli.mjs cleanup apply 5c1e…
 掃描問題  上次掃描回報了 1 個問題：
           ⚠ 資料夾「舊專案」打不開（沒有權限），裡面的檔這次沒有掃到。
 最近出錯  5 分鐘前（2026/9/19 14:03:11）：路徑含有捷徑，無法安全處理。

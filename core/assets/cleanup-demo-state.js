@@ -28,9 +28,9 @@ export function createDemo(data) {
       candidates = source.filter(c => existing.has(c.itemId) || restored.has(c.itemId))
     },
     apply() {
-      if (lastPlan) throw new Error('請先復原或重新開始示範。')
+      if (lastPlan) throw new Error('Undo it first, or restart the demo.')
       const items = candidates.filter(c => selected.has(c.itemId))
-      if (!items.length) throw new Error('請至少選擇一個檔案。')
+      if (!items.length) throw new Error('Pick at least one file.')
       lastPlan = { items, selected: new Set(selected) }
       candidates = candidates.filter(c => !selected.has(c.itemId))
       selected = new Set()
@@ -41,7 +41,7 @@ export function createDemo(data) {
       }
     },
     undo() {
-      if (!lastPlan) throw new Error('目前沒有可以復原的清理。')
+      if (!lastPlan) throw new Error('There is no cleanup to undo.')
       const restored = lastPlan.items.length
       const ids = new Set([...candidates, ...lastPlan.items].map(c => c.itemId))
       candidates = source.filter(c => ids.has(c.itemId))

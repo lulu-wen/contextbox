@@ -177,7 +177,7 @@ describe('A3 duplicate 要說留哪一份', () => {
     const survivor = ['report.pdf', 'report (1).pdf'].find(n => n !== dup.name)
     assert.match(dup.reasons[0].evidence, new RegExp(survivor.replace(/[()]/g, '\\$&')),
       'evidence 要指名留著的是哪一個檔，不然使用者不敢勾')
-    assert.match(dup.reasons[0].evidence, /會留著/)
+    assert.match(dup.reasons[0].evidence, /is the one being kept/)
   })
 
   test('留著的那一份不會自己也變成候選', () => {
@@ -260,7 +260,7 @@ describe('B 路徑不可以外洩到 UI', () => {
 
     assert.ok(!JSON.stringify(r).includes(dl), '錯誤項目把路徑帶出來了')
     assert.ok(r.needsHuman.some(x => x.name === '機密.pdf'), '讀不到的檔要讓使用者知道')
-    assert.equal(r.needsHuman[0].why, '沒有權限讀這個檔案', '要換成人話，不是吐原文')
+    assert.equal(r.needsHuman[0].why, 'no permission to read this file', '要換成人話，不是吐原文')
   })
 })
 
@@ -411,10 +411,10 @@ describe('B2 錯誤原文不可以直通到 UI', () => {
   // 「讀不到這個檔案」這種預設句由呼叫端自己給（needsHumanWhy、outcomesOf 都是）。
   test('每一種 fs 錯誤都換成人話，而且不含路徑', () => {
     const cases = [
-      ["EACCES: permission denied, open '/home/u/Downloads/薪資單.pdf'", '沒有權限讀這個檔案'],
-      ["ENOENT: no such file or directory, stat '/home/u/Downloads/x.zip'", '這個檔案已經不在了'],
-      ["EBUSY: resource busy or locked, rename '/home/u/a' -> '/home/u/b'", '這個檔案正在被別的程式使用'],
-      ['某個沒看過的錯誤 /home/u/secret.pdf', '讀不到這個檔案'],
+      ["EACCES: permission denied, open '/home/u/Downloads/薪資單.pdf'", 'no permission to read this file'],
+      ["ENOENT: no such file or directory, stat '/home/u/Downloads/x.zip'", 'this file is no longer there'],
+      ["EBUSY: resource busy or locked, rename '/home/u/a' -> '/home/u/b'", 'another program is using this file'],
+      ['某個沒看過的錯誤 /home/u/secret.pdf', 'cannot read this file'],
     ]
     for (const [raw, want] of cases) {
       const got = safeWhy(raw)
@@ -528,7 +528,7 @@ describe('duplicate 同名不同目錄', () => {
       .run('c1', 'dup', 'duplicate', CLEANUP_RULE_VERSION, 98, 'r', '同一個 sha256 還有 1 份檔案存在', 'proposed', now)
 
     const e = listCandidates(db, { roots: [dl] }).candidates[0].reasons[0].evidence
-    assert.match(e, /會留著/, '同名不同目錄時這句話也要在')
+    assert.match(e, /is the one being kept/, '同名不同目錄時這句話也要在')
     assert.ok(!e.includes(dl), '補上的位置資訊不可以是絕對路徑')
   })
 })
@@ -568,7 +568,7 @@ describe('health 要真的能回報不健康', () => {
     assert.equal(h.db.ok, true)
     assert.equal(h.ok, true, 'watcher 沒跑，但後端是好的')
     assert.equal(h.watcher.ok, false, 'watcher 自己的狀態還是要如實回報')
-    assert.equal(h.watcher.why, '從來沒跑過')
+    assert.equal(h.watcher.why, 'never ran')
   })
 
   test('心跳的 key 兩邊要對得上', () => {
@@ -600,7 +600,7 @@ describe('否決旗標', () => {
     assert.equal(r.candidates.length, 0, '不可以列成候選（連 ☐ 都不行）')
     const h = r.needsHuman.find(x => x.name === '婚禮影片備份.zip')
     assert.ok(h, '要在「需要你查看」')
-    assert.match(h.why, /太大/)
+    assert.match(h.why, /too large/)
   })
 
   test('**大的**半下載檔也不可以誤殺', () => {
@@ -636,7 +636,7 @@ describe('否決旗標', () => {
     for (const opts of [{ roots: [dl] }, { roots: [dl], limit: 10 }]) {
       const r = listCandidates(db, opts)
       assert.equal(r.candidates.length, 0)
-      assert.match(r.needsHuman.find(x => x.name === '備份.zip')?.why ?? '', /太大/)
+      assert.match(r.needsHuman.find(x => x.name === '備份.zip')?.why ?? '', /too large/)
     }
   })
 })
@@ -661,7 +661,7 @@ describe('免 token 的 /health 要瘦身', () => {
     // 2026-09-19 稽核 RC5：帶 token 也**不給原文**，只給翻過的人話（原文只進 console）
     assert.ok(full.lastError, '帶 token 就給得出來')
     assert.ok(!JSON.stringify(full).includes('/home/alice'), '帶 token 也不可以有路徑')
-    assert.match(full.lastError, /沒有權限/)
+    assert.match(full.lastError, /no permission/)
   })
 
   test('監看資料夾不存在時 watcher 不是 ok', () => {
@@ -669,7 +669,7 @@ describe('免 token 的 /health 要瘦身', () => {
     db.prepare(`INSERT INTO meta (k,v) VALUES (?,?)`).run(META.pid, String(process.pid))
     const h = healthSnapshot(db, { roots: [join(root, '不存在的資料夾')], quarantine: join(root, 'q') })
     assert.equal(h.watcher.ok, false, '掃描會安靜地回 0 個檔，跟「很乾淨」長得一樣')
-    assert.equal(h.watcher.why, '有監看資料夾不存在')
+    assert.equal(h.watcher.why, 'a watched folder does not exist')
   })
 })
 

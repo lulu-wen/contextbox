@@ -67,7 +67,7 @@ describe('cleanup scanner', () => {
     const rows = candidates()
     assert.equal(rows.length, 1)
     assert.equal(rows[0].kind, 'archive')
-    assert.match(rows[0].evidence, /40 天/)
+    assert.match(rows[0].evidence, /40 days/)
   })
 
   test('同內容檔案只提議清掉後看到的那份，重掃不會長出重複卡片', () => {
@@ -133,7 +133,7 @@ describe('cleanup scanner', () => {
     const problems = []
     const r = scan({ paths: [p], onProblem: m => problems.push(m) })
     assert.equal(r.errors, 1)
-    assert.ok(problems.some(m => /檔案不見了/.test(m)))
+    assert.ok(problems.some(m => /the file is gone/.test(m)))
     assert.equal(db.prepare(`SELECT status FROM file_items WHERE name='gone.zip'`).get().status, 'missing')
   })
 

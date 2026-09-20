@@ -83,6 +83,6 @@ describe('cleanup rules', () => {
   test('duplicate draft 說得出還有幾份', () => {
     const d = duplicateDraft(3)
     assert.equal(d.kind, 'duplicate')
-    assert.match(d.evidence, /2 份/)
+    assert.match(d.evidence, /2 other files/)
   })
 })

@@ -136,8 +136,18 @@ export function cleanName(suggested: unknown, ext = ''): string {
 
 /** 課名的上限，**用碼位算**（預想 Step 1）。比檔名短：它是資料夾名字，長了很難用。 */
 export const COURSE_MAX_CODEPOINTS = 40
-/** 模型說不出是哪一堂課時回的那四個字。這種不提議、也不學。 */
-export const UNKNOWN_COURSE = '看不出來'
+/** 模型說不出是哪一堂課時要回的那個字。這種不提議、也不學。 */
+export const UNKNOWN_COURSE = 'Unknown'
+/**
+ * 「其實就是說不出來」的各種寫法。**不可以只認字面的 `Unknown`**（稽核 2026-09-20）：
+ * prompt 講死了要用英文回答，但模型不一定聽話 —— 中文講義很容易換來「未知」「看不出來」，
+ * 而那時 cleanCourse 會把它當成一堂真的課，磁碟上就長出一個 `Courses/未知/` 資料夾。
+ * 舊資料庫裡存的也是中文的那一個，一併認。
+ * 判錯的代價只是「少提議一個檔」，反過來是替使用者建一個他沒要過的資料夾。
+ */
+const UNKNOWN_COURSES: readonly string[] = Object.freeze([
+  UNKNOWN_COURSE, '看不出來', '未知', '不知道', 'unclear', 'not sure', 'none', 'n/a', 'na', 'null', 'undefined',
+])
 
 /**
  * 模型（或使用者）給的課名 → 一個安全的**資料夾名**。用不了回空字串 ＝ 不提議。
@@ -157,8 +167,8 @@ export function cleanCourse(raw: unknown): string {
   const capped = [...once].slice(0, COURSE_MAX_CODEPOINTS).join('')
   const twice = cleanName(capped)
   if (!twice) return ''
-  // 「看不出來」不是一堂課。折過再比：`看不出來 ` 也算。
-  if (courseKey(twice) === courseKey(UNKNOWN_COURSE)) return ''
+  // 「說不出來」不是一堂課。折過再比：`Unknown `、`未知`、`ＵＮＫＮＯＷＮ` 都算。
+  if (UNKNOWN_COURSES.some(u => courseKey(twice) === courseKey(u))) return ''
   return twice
 }
 
@@ -185,7 +195,7 @@ export const RENAMABLE_STATUSES = ['candidate', 'kept', 'restored'] as const
  * 信心「低」的不提議（不變量 7）。**只有「高」與「中」算數** ——
  * 空的、看不懂的一律當成不夠有把握：這個方向錯了只是少提議一個，反過來是拿模型的胡說去改檔名。
  */
-export const confidentEnough = (c: unknown): boolean => c === '高' || c === '中'
+export const confidentEnough = (c: unknown): boolean => c === 'high' || c === 'medium'
 
 export type RenameSuggestion = {
   itemId: string
@@ -313,14 +323,21 @@ export function inQuarantine(scope: RenameScope, target: string): boolean {
 }
 
 /**
- * 訊息裡那兩個會隨動作變的詞。**只有詞不一樣，判斷完全一樣** ——
+ * 訊息裡那幾個會隨動作變的詞。**只有詞不一樣，判斷完全一樣** ——
  * 改名（P3）與歸檔（P4）擋的是同一批檔，不可以有兩份會走樣的判斷。
  *
- * - `act`：動作本身（「改名」／「歸檔」），接在「先不⋯⋯」「不能⋯⋯」「上一次⋯⋯還沒收尾」後面
- * - `it`：整句的「不動它」（「不改它的名字」／「不搬它」）
+ * 英文化之後**分成三個**（稽核 2026-09-20）：中文一個「改名」到處塞得進去，英文不行 ——
+ * 一個 `act` 同時塞進 `will not ${act} yet` 與 `the last attempt to ${act}` 會變成
+ * 「it will not rename it yet」這種句子。
+ *
+ * - `act`：被動的原形，接在 `will not …` 後面（`be renamed`／`be filed`）
+ * - `doIt`：不定詞，接在 `the last attempt to …` 後面（`rename this file`／`file this file`）
+ * - `it`：整句的「不動它」（`its name is left alone`／`it is left where it is`）
  */
-export type MoveWords = { act: string; it: string }
-export const RENAME_WORDS: MoveWords = { act: '改名', it: '不改它的名字' }
+export type MoveWords = { act: string; doIt: string; it: string }
+export const RENAME_WORDS: MoveWords = {
+  act: 'be renamed', doIt: 'rename this file', it: 'its name is left alone',
+}
 
 /**
  * 動使用者的檔之前，**改名與歸檔共用**的那幾條擋門。可以動回 null，不可以回一句人話（不帶路徑）。
@@ -334,23 +351,23 @@ export function whyNotTouchable(
   db: DatabaseSync, item: ItemRow, scope: RenameScope, words: MoveWords,
   mid?: (db: DatabaseSync, itemId: string) => boolean,
 ): string | null {
-  if (item.error) return `這個檔上次掃描就出過問題，先不${words.act}。`
-  if (item.status === 'new') return '這個檔才剛出現，還在等它穩定下來。'
+  if (item.error) return `The last scan already hit a problem with this file, so it will not ${words.act} for now.`
+  if (item.status === 'new') return 'This file just turned up; waiting for it to settle.'
   if (!(RENAMABLE_STATUSES as readonly string[]).includes(item.status)) {
-    return `這個檔現在的狀態不能${words.act}（可能在隔離區，或已經不見了）。`
+    return `This file's current state does not let it ${words.act} — it may be in quarantine, or gone.`
   }
   if (execRefusesName(item.name) || inProtectedDir(item.path)) {
-    return `這是受保護的檔案，${words.it}。`
+    return `This file is protected, so ${words.it}.`
   }
-  if (inQuarantine(scope, item.path)) return `這個檔在隔離區裡，${words.it}。`
-  if (!underSomeRoot(scope.roots, item.path)) return '這個檔不在設定的清理資料夾裡。'
-  if (heldByPlan(db, item.id)) return '它在一份還沒處理完的清理計畫裡，先把那一份做完或放棄。'
-  if (mid && mid(db, item.id)) return `上一次${words.act}還沒收尾，先跑一次收尾再試。`
+  if (inQuarantine(scope, item.path)) return `This file is in quarantine, so ${words.it}.`
+  if (!underSomeRoot(scope.roots, item.path)) return 'This file is not inside a configured cleanup folder.'
+  if (heldByPlan(db, item.id)) return 'It belongs to an unfinished cleanup plan. Finish or drop that plan first.'
+  if (mid && mid(db, item.id)) return `The last attempt to ${words.doIt} was never tidied up. Let it tidy up, then try again.`
   // 十分鐘內還在變動的不碰（跟清理同一條規矩）。這裡看的是上次掃描記下來的 mtime ——
   // 便宜、不用碰磁碟，列清單時每一列都要算。真的動手前 checkFile 會再用磁碟上的時間確認一次。
   const mtime = Date.parse(item.mtime)
   if (Number.isFinite(mtime) && Date.now() - mtime < SETTLE_MS) {
-    return `這個檔十分鐘內還在變動，先不${words.act}。等一下再試一次。`
+    return `This file changed within the last ten minutes, so it will not ${words.act} yet. Try again later.`
   }
   return null
 }
@@ -362,7 +379,7 @@ export function whyNotTouchable(
  */
 export function whyNotRenamable(db: DatabaseSync, item: ItemRow, scope: RenameScope): string | null {
   if (item.naming !== 'untitled' && item.naming !== 'generic') {
-    return '這個檔已經有名字了，不動使用者自己取的名字。'
+    return 'This file already has a name, and a name you chose is never touched.'
   }
   return whyNotTouchable(db, item, scope, RENAME_WORDS, midRename)
 }
@@ -485,11 +502,11 @@ export function freeName(wanted: string, ext: string, taken: ReadonlySet<string>
 export function checkFile(path: string, words: MoveWords = RENAME_WORDS):
   { dev: number; ino: number; mtimeMs: number } {
   const st = lstatSync(path)
-  if (st.isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', `這是一個捷徑（symlink），${words.it}。`)
-  if (!st.isFile()) throw new CleanupError('UNSAFE_FILE', `這不是一般檔案，${words.it}。`)
-  if (st.nlink > 1) throw new CleanupError('UNSAFE_FILE', `這個檔案被硬鏈結到別的地方，${words.it}。`)
+  if (st.isSymbolicLink()) throw new CleanupError('UNSAFE_PATH', `This is a symlink, so ${words.it}.`)
+  if (!st.isFile()) throw new CleanupError('UNSAFE_FILE', `This is not an ordinary file, so ${words.it}.`)
+  if (st.nlink > 1) throw new CleanupError('UNSAFE_FILE', `This file is hard-linked elsewhere, so ${words.it}.`)
   if (Date.now() - st.mtimeMs < SETTLE_MS) {
-    throw new CleanupError('TOO_FRESH', `這個檔十分鐘內還在變動，先不${words.act}。等一下再試一次。`)
+    throw new CleanupError('TOO_FRESH', `This file changed within the last ten minutes, so it will not ${words.act} yet. Try again later.`)
   }
   return { dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs }
 }
@@ -502,7 +519,7 @@ function namingOf(name: string): { state: string; why: string } {
   } catch (e) {
     return {
       state: 'generic',
-      why: e instanceof UntitledError ? '檔名不像正常的檔名，拿不準' : '判斷檔名時出錯，拿不準',
+      why: e instanceof UntitledError ? 'the name does not look like a normal file name, so this is a guess' : 'something went wrong reading the name, so this is a guess',
     }
   }
 }
@@ -552,20 +569,20 @@ export const itemById = (db: DatabaseSync, id: string): ItemRow | null =>
 
 function validateRequests(items: unknown): asserts items is RenameRequest[] {
   if (!Array.isArray(items) || !items.length) {
-    throw new CleanupError('BAD_BODY', '要指名改哪幾個檔（items 是一個陣列，每一項有 itemId）。')
+    throw new CleanupError('BAD_BODY', 'Name which files to rename: items is an array and each entry has an itemId.')
   }
-  if (items.length > 5000) throw new CleanupError('BAD_BODY', '一次最多 5000 項。')
+  if (items.length > 5000) throw new CleanupError('BAD_BODY', 'At most 5000 entries at a time.')
   for (const it of items) {
     if (!it || typeof it !== 'object' || Array.isArray(it)) {
-      throw new CleanupError('BAD_BODY', 'items 的每一項要是 { itemId, to }。')
+      throw new CleanupError('BAD_BODY', 'Each entry in items must be { itemId, to }.')
     }
     const id = (it as RenameRequest).itemId
     if (typeof id !== 'string' || !id || id.length > 200) {
-      throw new CleanupError('BAD_BODY', 'itemId 必須是 1 到 200 字元的字串。')
+      throw new CleanupError('BAD_BODY', 'itemId must be a string of 1 to 200 characters.')
     }
     const to = (it as RenameRequest).to
     if (to !== undefined && (typeof to !== 'string' || to.length > 4096)) {
-      throw new CleanupError('BAD_BODY', 'to 必須是字串（最多 4096 字元）。')
+      throw new CleanupError('BAD_BODY', 'to must be a string of at most 4096 characters.')
     }
   }
 }
@@ -584,7 +601,7 @@ export function applyRenames(db: DatabaseSync, items: unknown, scope: RenameScop
 } {
   validateRequests(items)
   if (scope.readonly) {
-    throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會改任何檔案的名字。')
+    throw new CleanupError('READ_ONLY', 'Read-only mode is on, so no file gets renamed.')
   }
   // 同一個檔送兩次只做一次（第二次的目標會是第一次改完的名字，很難講清楚）
   const seen = new Set<string>()
@@ -618,7 +635,7 @@ function renameOne(
 ): RenameOutcome {
   const itemId = String(req.itemId)
   const item = itemById(db, itemId)
-  if (!item) return { itemId, ok: false, from: '', to: '', why: '找不到這個檔（可能已經被清掉或重新掃描過）。' }
+  if (!item) return { itemId, ok: false, from: '', to: '', why: 'Cannot find this file — it may have been cleaned up, or rescanned.' }
   const from = item.name
   const no = (why: string): RenameOutcome => ({ itemId, ok: false, from, to: '', why })
 
@@ -635,16 +652,16 @@ function renameOne(
   const asked = req.to === undefined ? offer.suggested : suggestedFileName(from, req.to)
   if (!asked) {
     return no(req.to === undefined
-      ? '沒有可以用的建議名字（模型沒有看法、信心太低，或建議洗完是空的）。'
-      : '這個名字洗完是空的（只剩路徑符號、控制字元或保留名稱），不能用。')
+      ? 'There is no usable suggested name: the model had no view, was not confident enough, or the suggestion washed out to nothing.'
+      : 'That name washes out to nothing — only path separators, control characters or reserved names are left — so it cannot be used.')
   }
-  if (asked === from) return no('新名字跟現在一樣，沒有改。')
+  if (asked === from) return no('The new name is the same as the current one, so nothing changed.')
   const source = asked === modelName && modelName ? 'model' : 'manual'
 
   let dir: string
   try { dir = checkedPath(dirname(item.path), true) } catch (e) { return no(cleanupProblem(e)) }
   // 資料夾攤開之後還要在清理範圍裡（父層是捷徑時 path 與 dir 會不一樣）
-  if (!underSomeRoot(scope.roots, join(dir, from))) return no('這個檔不在設定的清理資料夾裡。')
+  if (!underSomeRoot(scope.roots, join(dir, from))) return no('This file is not inside a configured cleanup folder.')
 
   let before
   try { before = checkFile(join(dir, from)) } catch (e) { return no(cleanupProblem(e)) }
@@ -656,7 +673,7 @@ function renameOne(
   }
   const ext = originalExt(from)
   const to = freeName(asked, ext, taken)
-  if (!to) return no(`「${asked}」與它的 -2⋯-${SUFFIX_MAX} 都已經有人用了，這一個先跳過。`)
+  if (!to) return no(`“${asked}” and its -2…-${SUFFIX_MAX} variants are all taken, so this one is skipped.`)
 
   const id = randomUUID()
   db.prepare(
@@ -696,7 +713,7 @@ function renameOne(
   // 用真正落地的名字：undo 記的也是它（同名加了序號的那種對不上，那就維持沒標 ——
   // 沒標等於回到 P3 的行為，只會少一個提示，不會多勾任何東西）。
   forgetRejected(db, itemId, renameSummary(to), scope)
-  return { itemId, ok: true, from, to, why: '改好了。反悔的話可以復原。', id }
+  return { itemId, ok: true, from, to, why: 'Renamed. Changed your mind? It can be undone.', id }
 }
 
 /**
@@ -713,10 +730,10 @@ function moveInDir(dir: string, from: string, to: string, before: { dev: number;
     if (e?.code !== 'ENOENT') throw e
     exists = false
   }
-  if (exists) throw new CleanupError('CONFLICT', '目標名字剛剛被別的東西佔走了，這一個先跳過。')
+  if (exists) throw new CleanupError('CONFLICT', 'Something just took the target name, so this one is skipped.')
   const now = lstatSync(join(dir, from))
   if (now.dev !== before.dev || now.ino !== before.ino) {
-    throw new CleanupError('CHANGED', '這個檔剛剛被換掉了，先不改名。')
+    throw new CleanupError('CHANGED', 'This file was just swapped out, so it is not renamed.')
   }
   renameSync(join(dir, from), join(dir, to))
 }
@@ -749,22 +766,22 @@ export function undoRenames(db: DatabaseSync, sel: UndoSelection, scope: RenameS
   results: UndoOutcome[]
 } {
   if (scope.readonly) {
-    throw new CleanupError('READ_ONLY', '目前是唯讀模式，不會改任何檔案的名字。')
+    throw new CleanupError('READ_ONLY', 'Read-only mode is on, so no file gets renamed.')
   }
   const wantLast = sel.last === true
   if (sel.last !== undefined && typeof sel.last !== 'boolean') {
-    throw new CleanupError('BAD_BODY', 'last 要是 true 或 false。')
+    throw new CleanupError('BAD_BODY', 'last must be true or false.')
   }
   let ids: string[] = []
   if (sel.ids !== undefined) {
     if (!Array.isArray(sel.ids) || sel.ids.length > 1000
       || sel.ids.some(v => typeof v !== 'string' || !v || v.length > 200)) {
-      throw new CleanupError('BAD_BODY', 'ids 必須是字串陣列，最多 1000 筆。')
+      throw new CleanupError('BAD_BODY', 'ids must be an array of strings, at most 1000 of them.')
     }
     ids = [...new Set(sel.ids as string[])]
   }
   if (!ids.length && !wantLast) {
-    throw new CleanupError('BAD_BODY', '要指名 ids，或送 { "last": true } 復原最近一次改名。')
+    throw new CleanupError('BAD_BODY', 'Name the ids, or send { "last": true } to undo the most recent rename.')
   }
 
   return withCleanupLock(db, renew => {
@@ -776,11 +793,11 @@ export function undoRenames(db: DatabaseSync, sel: UndoSelection, scope: RenameS
       ).all(...ids) as RenameRow[]
       const found = new Set(rows.map(r => r.id))
       const missing = ids.filter(i => !found.has(i))
-      if (missing.length) throw new CleanupError('NOT_FOUND', '找不到這幾筆改名紀錄。')
+      if (missing.length) throw new CleanupError('NOT_FOUND', 'Cannot find those rename records.')
     } else {
       const last = db.prepare(`SELECT at FROM renames WHERE status='done' ORDER BY at DESC LIMIT 1`)
         .get() as { at: string } | undefined
-      if (!last) throw new CleanupError('NOT_FOUND', '沒有可以復原的改名。')
+      if (!last) throw new CleanupError('NOT_FOUND', 'There is no rename to undo.')
       rows = db.prepare(`SELECT * FROM renames WHERE status='done' AND at=? ORDER BY id`)
         .all(last.at) as RenameRow[]
     }
@@ -798,19 +815,19 @@ function undoOne(db: DatabaseSync, row: RenameRow, scope: RenameScope): UndoOutc
     id: row.id, itemId: row.item_id, ok: false, to: '', restoredAs: null, why: '',
   }
   const no = (why: string): UndoOutcome => ({ ...base, why })
-  if (row.status === 'reverted') return { ...base, ok: true, to: row.from_name, why: '這一筆本來就已經復原過了。' }
-  if (row.status !== 'done') return no('這一筆沒有改成功，沒有東西要復原。')
+  if (row.status === 'reverted') return { ...base, ok: true, to: row.from_name, why: 'This one had already been undone.' }
+  if (row.status !== 'done') return no('This one never succeeded, so there is nothing to undo.')
 
   let dir: string
   try { dir = checkedPath(row.dir, true) } catch (e) { return no(cleanupProblem(e)) }
   if (!underSomeRoot(scope.roots, join(dir, row.to_name))) {
-    return no('那個資料夾現在不在設定的清理資料夾裡，先不動它。')
+    return no('That folder is no longer inside a configured cleanup folder, so it is left alone.')
   }
   // **在一份還沒處理完的清理計畫裡的檔不可以改名 —— 復原也是改名**（稽核 2026-09-20）。
   // apply 那一邊擋了，undo 這一邊漏掉：改回原名之後，那份計畫的快照對不上磁碟上的檔名，
   // 之後 apply 那一項就永遠是 error。訊息跟 apply 那邊一字不差。
   if (heldByPlan(db, row.item_id)) {
-    return no('它在一份還沒處理完的清理計畫裡，先把那一份做完或放棄。')
+    return no('It belongs to an unfinished cleanup plan. Finish or drop that plan first.')
   }
   let before
   try { before = checkFile(join(dir, row.to_name)) } catch (e) { return no(cleanupProblem(e)) }
@@ -821,7 +838,7 @@ function undoOne(db: DatabaseSync, row: RenameRow, scope: RenameScope): UndoOutc
   taken.delete(row.to_name.toLowerCase())
   const ext = originalExt(row.from_name)
   const back = freeName(row.from_name, ext, taken)
-  if (!back) return no(`原本的名字與它的 -2⋯-${SUFFIX_MAX} 都已經有人用了，沒有放回去。`)
+  if (!back) return no(`The original name and its -2…-${SUFFIX_MAX} variants are all taken, so it was not put back.`)
 
   try {
     moveInDir(dir, row.to_name, back, before)
@@ -844,8 +861,8 @@ function undoOne(db: DatabaseSync, row: RenameRow, scope: RenameScope): UndoOutc
   return {
     ...base, ok: true, to: back, restoredAs,
     why: restoredAs
-      ? `原本的名字已經被別的檔佔走了，放回來的這一份叫「${restoredAs}」（沒有覆蓋任何檔）。`
-      : '名字改回去了。',
+      ? `Another file had taken the original name, so this one is called “${restoredAs}” (nothing was overwritten).`
+      : 'The name is back.',
   }
 }
 
@@ -888,17 +905,17 @@ export function recoverInterruptedRenames(db: DatabaseSync): { recovered: number
         })
       } else if (there(row.from_name)) {
         changed = db.prepare(`UPDATE renames SET status='reverted', undone_at=?, error=? WHERE id=? AND status='started'`)
-          .run(new Date().toISOString(), '改名中斷，檔案還在原位，沒有改。', row.id).changes
+          .run(new Date().toISOString(), 'Interrupted mid-rename; the file never changed, so nothing was renamed.', row.id).changes
       } else {
         changed = db.prepare(`UPDATE renames SET status='failed', error=? WHERE id=? AND status='started'`)
-          .run('改名中斷，新舊兩個名字現在都找不到，請人工確認。', row.id).changes
+          .run('Interrupted mid-rename; neither the old nor the new name can be found. Check it yourself.', row.id).changes
       }
       if (changed) recovered++
     } catch (e: any) {
       // 收不掉要留下線索：以前整個吞掉，使用者只看到「上一次改名還沒收尾」卻永遠收不完
       try {
         db.prepare(`UPDATE renames SET error=? WHERE id=? AND status='started'`)
-          .run(`收尾失敗：${String(e?.message ?? e).slice(0, 150)}`, row.id)
+          .run(`Tidying up failed: ${String(e?.message ?? e).slice(0, 150)}`, row.id)
       } catch { /* 連這個都寫不進去就算了 */ }
     }
   }
