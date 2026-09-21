@@ -102,7 +102,7 @@ function proposalItems(s) {
  * 做不成的話把使用者原本的勾選放回去（他可能勾了一堆，只是想先清這一個）。
  */
 async function cleanOne(s, item) {
-  if (busy || s.canUndo || s.locked) return
+  if (busy || s.locked) return
   const before = new Set(s.selected)
   for (const id of before) s.select(id, false)
   s.select(item.itemId, true)
@@ -145,7 +145,7 @@ async function oneOf(store, operate, item) {
 }
 
 function skipItem(s, item) {
-  if (busy || s.canUndo || s.locked) return
+  if (busy || s.locked) return
   let op = proposalSkips().find(op => op.pending && op.owner === s)
   if (!op) {
     op = { id: 'skip-' + crypto.randomUUID(), owner: s, demo: demoEnabled, kind: 'skip', pending: true,
@@ -413,7 +413,9 @@ function announce() {
   updateAlert()
 }
 function applyLabel(s) {
-  if (s.canUndo) return 'Cleanup done'
+  // **勾了新的就變回動作**（2026-09-21）：清完一輪之後 canUndo 是 true，
+  // 但那不代表使用者不能再清第二批。有勾東西就講「清掉這幾個」，沒勾才講狀態。
+  if (s.canUndo && s.selected.size === 0) return 'Cleanup done'
   if (isDemo()) return 'Run the simulated cleanup'
   if (s.pendingPlan) return `Finish the last plan (${s.pendingPlan.items.length})`
   if (s.locked) return 'Try again'
@@ -431,7 +433,8 @@ function summary() {
   // **但「Cleanup done」要按不下去**（2026-09-21 實機回報）：清完之後這顆的字是
   //「Cleanup done」，那是一句狀態、不是一個動作，可是它還亮著、按下去毫無反應。
   // 看起來能按又什麼都不做的按鈕，使用者只會以為是壞了。旁邊的「Undo this cleanup」才是動作。
-  $('cleanup-apply').disabled = busy || s.canUndo || (!s.locked && s.selected.size === 0)
+  // 「Cleanup done」是狀態不是動作，按不下去；但一旦勾了新的東西就要能按。
+  $('cleanup-apply').disabled = busy || (!s.locked && s.selected.size === 0)
   $('cleanup-apply').textContent = applyLabel(s)
   $('cleanup-undo').hidden = !s.canUndo
   $('cleanup-undo').disabled = busy
@@ -442,7 +445,7 @@ function summary() {
   $('cleanup-release').disabled = busy
   $('cleanup-putback').hidden = isDemo() || !started
   $('cleanup-putback').disabled = busy
-  $('cleanup-dismiss').hidden = s.canUndo
+  $('cleanup-dismiss').hidden = s.canUndo && s.selected.size === 0
   $('cleanup-dismiss').disabled = busy
   $('cleanup-reset').disabled = busy
 }
@@ -606,7 +609,7 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   // 萬一它不在清單上（後端兩邊不同步），給看但不給勾：勾了也送不出去。
   const listed = state.candidates.some(c => c.itemId === shot.itemId)
   check.checked = state.selected.has(shot.itemId)
-  check.disabled = busy || state.canUndo || Boolean(state.locked) || !listed
+  check.disabled = busy || Boolean(state.locked) || !listed
   check.onchange = () => { state.select(shot.itemId, check.checked); request = null; summary() }
   const name = document.createElement('strong')
   name.textContent = safeName(shot.name)
@@ -1132,9 +1135,9 @@ function render() {
       restore.type = 'button'
       restore.className = 'cleanup-restore-skipped'
       restore.textContent = 'Put it back on the list ›'
-      restore.disabled = busy || s.canUndo || Boolean(s.locked)
+      restore.disabled = busy || Boolean(s.locked)
       restore.onclick = () => {
-        if (busy || s.canUndo || s.locked) return
+        if (busy || s.locked) return
         const saved = pendingSkip.items.find(i => i.itemId === item.itemId)
         pendingSkip.items = pendingSkip.items.filter(i => i.itemId !== item.itemId)
         if (!pendingSkip.items.length) skippedOperations.splice(skippedOperations.indexOf(pendingSkip), 1)
@@ -1150,8 +1153,15 @@ function render() {
     const check = document.createElement('input')
     check.type = 'checkbox'
     check.checked = s.selected.has(item.itemId)
-    // 結果不明時要鎖住：改了勾選就會撞上自己剛建的那份計畫
-    check.disabled = busy || s.canUndo || Boolean(s.locked)
+    // 結果不明、或有一份卡住的計畫時要鎖住：改了勾選就會撞上那一份。
+    //
+    // **清成功了不算**（2026-09-21 使用者實機回報：「刪掉第一輪以後，想要再打勾其他東西
+    // 再刪掉就沒辦法打勾了」）。以前這裡也看 s.canUndo，而 canUndo 在 apply 成功之後就是 true、
+    // 而且 lastPlan 除了重新載入頁面之外永遠不會被清掉 —— 於是清完一輪，所有勾選框全部停用，
+    // 唯一能解鎖的辦法是按「Undo this cleanup」把剛清的東西全部放回去。
+    // 後端本來就允許連續清理（實測：apply 兩批、中間不 undo，兩批都 applied），
+    // 是面板自己把使用者關在門外。
+    check.disabled = busy || Boolean(s.locked)
     check.onchange = () => { s.select(item.itemId, check.checked); request = null; summary() }
     const name = document.createElement('strong')
     name.textContent = uiSafeName(item.name)
@@ -1176,7 +1186,7 @@ function render() {
     one.type = 'button'
     one.className = 'cleanup-one'
     one.textContent = 'Clean up'
-    one.disabled = busy || s.canUndo || Boolean(s.locked)
+    one.disabled = busy || Boolean(s.locked)
     one.onclick = () => cleanOne(s, item)
     row.append(label, size, one, skip)
     // 理由收在「Why this one」裡：一眼掃過去是檔名與大小，想知道為什麼再點開
@@ -1325,7 +1335,7 @@ $('cleanup-select-all').onclick = () => {
   if (busy) return
 
   const s = session()
-  if (!s || s.canUndo || s.locked) return
+  if (!s || s.locked) return
 
   for (const item of proposalItems(s)) {
     s.select(item.itemId, true)
@@ -1339,7 +1349,7 @@ $('cleanup-select-none').onclick = () => {
   if (busy) return
 
   const s = session()
-  if (!s || s.canUndo || s.locked) return
+  if (!s || s.locked) return
 
   for (const item of proposalItems(s)) {
     s.select(item.itemId, false)
@@ -1354,7 +1364,7 @@ $('cleanup-close').onclick = () => {
 }
 function selectPage(checked) {
   const s = session()
-  if (busy || !s || s.canUndo || s.locked) return
+  if (busy || !s || s.locked) return
   const eligible = new Set(proposalItems(s).map(item => item.itemId))
   for (const item of proposalRows(s).slice(cleanupPage * cleanupPageSize, (cleanupPage + 1) * cleanupPageSize)) {
     if (!eligible.has(item.itemId)) continue

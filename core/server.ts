@@ -609,7 +609,10 @@ export function start(opts: {
         },
         // onProblem 一定要傳：保險絲與讀不到的檔只經由它報，回應的 problems 就是這些
         scan: onProblem => scanDownloads({ db: F.db, roots: roots(),
-          maxBytes: opts.maxBytes ?? cfg().maxBytes, protectDays: cfg().cleanup?.protectDays, onProblem }),
+          maxBytes: opts.maxBytes ?? cfg().maxBytes,
+          // **loaded 可能是 null**（測試直接給 opts、沒有設定檔）。原本那行靠 ?? 短路
+          // 所以永遠不會呼叫到 cfg()，照抄一份無條件呼叫就會炸「reading 'config'」。
+          protectDays: loaded ? cfg().cleanup.protectDays : undefined, onProblem }),
       })) return
 
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。

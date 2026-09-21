@@ -47,6 +47,7 @@ function fakeApi(opts = {}) {
   // **每一次請求都重讀 opts**：測試要能在中途換掉後端的回答（背景問完模型那一刻），
   // 解構一次的話那份陣列就定住了。
   const { calls = [] } = opts
+  opts.planSeq = opts.planSeq ?? 0
   const list = k => opts[k] ?? []
   return async (path, init = {}) => {
     const candidates = list('candidates'), renames = list('renames')
@@ -66,6 +67,26 @@ function fakeApi(opts = {}) {
       return { candidates, needsHuman: [], total: candidates.length, needsHumanTotal: 0 }
     }
     if (path.startsWith('/cleanup/plans?')) return { total: 0, offset: 0, limit: 20, operations: [] }
+    // 建計畫／套用（給「清完一輪還能不能再勾」那組測試用）
+    if (path === '/cleanup/plans' && init?.method === 'POST') {
+      const ids = JSON.parse(init.body).candidateIds
+      const items = candidates.filter(c => c.candidateIds.some(id => ids.includes(id)))
+        .map(c => ({ itemId: c.itemId, name: c.name, outcome: 'pending', why: null }))
+      return { id: 'plan-' + (++opts.planSeq), status: 'proposed', items, undoable: false,
+        quarantinedCount: 0, quarantinedBytes: 0 }
+    }
+    const ap = /^\/cleanup\/plans\/([^/]+)\/apply$/.exec(path)
+    if (ap && init?.method === 'POST') {
+      const applied = opts.appliedItems ?? []
+      const moved = applied.map(c =>
+        ({ itemId: c.itemId, name: c.name, outcome: 'quarantined', why: null }))
+      // 搬走的檔會離開清單（真後端：status 變 quarantined，就不在候選裡了）。
+      // 假後端不做這件事的話，測試裡那個檔會一直留著又一直被勾著。
+      const gone = new Set(applied.map(c => c.itemId))
+      opts.candidates = candidates.filter(c => !gone.has(c.itemId))
+      return { id: ap[1], status: 'applied', items: moved, undoable: true,
+        quarantinedCount: moved.length, quarantinedBytes: 0, noop: false, stoppedEarly: false }
+    }
     if (path === '/cleanup/bursts') return { groups: [] }
     if (path.startsWith('/cleanup/thumb/')) return new Blob([PNG], { type: 'image/png' })
     if (path.startsWith('/rename/suggestions')) return { items: renames }
@@ -267,5 +288,69 @@ describe('檔案大小要講得出 1 KB 以下', () => {
 
   test('負數與壞值不可以印出「-0.0 KB」這種東西', () => {
     assert.equal(formatBytes(-1), '0 B')
+  })
+})
+
+// 2026-09-21 使用者實機回報：
+//   > 我發現會有一個 bug 就是我刪掉第一輪以後，想要再打勾其他東西再刪掉就沒辦法打勾了
+//
+// 原因：勾選框的停用條件裡有 s.canUndo，而 canUndo 在 apply 成功之後就是 true，
+// 而且 lastPlan 除了重新載入頁面之外永遠不會被清掉。於是清完一輪 → 全部勾選框停用 →
+// 唯一的解鎖辦法是按「Undo this cleanup」把剛清的東西全部放回去。
+// 後端本來就允許連續清理（實測：apply 兩批、中間不 undo，兩批都 applied）。
+describe('清完一輪之後還要能再勾', () => {
+  const two = [
+    candidate({ itemId: 'a', name: 'a.zip', candidateIds: ['ca'] }),
+    candidate({ itemId: 'b', name: 'b.zip', candidateIds: ['cb'] }),
+  ]
+
+  async function applyFirstRound(t) {
+    const opts = { candidates: two, appliedItems: [two[0]] }
+    const ui = await open(t, opts)
+    const boxes = ui.$('cleanup-list').all('INPUT').filter(i => i.type === 'checkbox')
+    assert.equal(boxes.length, 2, '前提：兩列都畫出來了')
+    // 第一輪：勾第一個、清掉它
+    boxes[0].checked = true
+    await boxes[0].onchange()
+    assert.equal(ui.$('cleanup-apply').disabled, false, '前提：勾了就按得下去')
+    await ui.click('cleanup-apply')
+    return ui
+  }
+
+  test('**清完一輪，勾選框還勾得動**', async t => {
+    const ui = await applyFirstRound(t)
+    const boxes = ui.$('cleanup-list').all('INPUT').filter(i => i.type === 'checkbox')
+    assert.ok(boxes.length, '清完之後清單還在')
+    for (const b of boxes) {
+      assert.equal(b.disabled, false, '清完一輪不該把勾選框鎖住')
+    }
+  })
+
+  test('清完一輪，「Undo this cleanup」還在（復原沒有被犧牲）', async t => {
+    const ui = await applyFirstRound(t)
+    assert.equal(ui.$('cleanup-undo').hidden, false)
+  })
+
+  test('**勾了新的，主按鈕就從狀態變回動作**', async t => {
+    const ui = await applyFirstRound(t)
+    const apply = ui.$('cleanup-apply')
+    assert.match(apply.textContent, /Cleanup done/, '沒勾東西的時候講狀態')
+    assert.equal(apply.disabled, true, '狀態不是動作，按不下去')
+
+    const box = ui.$('cleanup-list').all('INPUT').filter(i => i.type === 'checkbox')[0]
+    box.checked = true
+    await box.onchange()
+
+    assert.match(apply.textContent, /Clean up 1 selected file/, '勾了就要變回動作')
+    assert.equal(apply.disabled, false, '勾了就要按得下去')
+  })
+
+  test('「先不清」在勾了新的之後也要回來（第二批要有出口）', async t => {
+    const ui = await applyFirstRound(t)
+    assert.equal(ui.$('cleanup-dismiss').hidden, true, '沒勾東西的時候不需要它')
+    const box = ui.$('cleanup-list').all('INPUT').filter(i => i.type === 'checkbox')[0]
+    box.checked = true
+    await box.onchange()
+    assert.equal(ui.$('cleanup-dismiss').hidden, false)
   })
 })
