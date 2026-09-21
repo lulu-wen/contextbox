@@ -531,6 +531,70 @@ Things to know:
 supported. If `Filed` is on a different drive from the file, that item fails and says why. The only way to
 implement a cross-device move is copy-then-delete, and deleting is not something this project does.</div>
 
+### Everything that is not coursework: `group`
+
+Filing puts a file with the rest of its course. But **most of what is in Downloads is not coursework** — a CV,
+a scholarship form, a paper, a contract, a poster. On one real machine, of 202 files the model had read, 186
+had no course at all. Those used to get no suggestion of any kind.
+
+`group` gives them somewhere to go. It asks the model **once per batch of forty** — not once per file — about
+the *kinds* of document you have, and turns the answers into folders:
+
+```
+node cli.mjs group                        # ask, work out the categories, print them. Moves nothing.
+node cli.mjs group --show                 # the categories from last time. No model call.
+node cli.mjs group --apply [CATEGORY]…    # file the files that match. No name means all of them.
+```
+
+What it looks like on a real Downloads folder (354 files with no course, 177 distinct kinds, about four
+minutes):
+
+```
+$ node cli.mjs group
+Asking the model: Qwen/Qwen3-VL-8B-Instruct @ http://…/v1
+It is asked about the kinds of file you have, not about each file, so this costs the same
+whether you have a hundred files or a thousand. Nothing moves. Ctrl+C stops it wherever it is.
+  1/5  40 kinds of file → 8 categories so far
+  …
+  5/5  17 kinds of file → 18 categories so far
+
+12 categories out of 177 kinds of file across 354 files (**these are the model's opinions, not facts**):
+
+  Lab reports/  (13 kinds of file)
+         Documents detailing lab experiments and results
+         evaluation lab interface, final project report, homework report, lab report, and 9 more
+  Exams/  (11 kinds of file)
+         Assessment tests with questions and answers
+         a math exam question, exam, exam question, a multiple-choice question, and 7 more
+  Scholarship applications/  (10 kinds of file)
+         Forms and supporting documents for scholarships
+         scholarship application, scholarship application form, scholarship application resume, and 7 more
+  …
+
+24 kinds of file did not land in any category, so those files stay where they are.
+```
+
+Then `node cli.mjs group --apply` files them into `Filed/Lab reports/`, `Filed/Exams/` and so on — one level,
+no course, no kind.
+
+Things to know:
+
+* **The categories come from your files, not from a list someone wrote.** There is no built-in set of folders.
+  The model is shown the phrases it itself used to describe your documents ("resume", "lab handout",
+  "feasibility study") and asked which ones belong together.
+* **It is told nothing else.** Not your filenames, not the text of your files, not the evidence it quoted
+  earlier. Only the phrases, and how many files use each one. A test compares the request body byte for byte.
+* **A course beats a category.** A file the model *can* place in a course goes through `file` and never
+  appears here. One file, one destination.
+* **"Miscellaneous" is not a folder.** Names that could hold anything — `Misc`, `Other`, `Documents`,
+  `Technical` — are thrown out, and the files that would have landed there stay where they are. The model
+  proposed exactly that on the first real run.
+* **Not everything gets a home, and it says so.** The line about kinds that did not land anywhere is the point,
+  not an apology: putting a file in a folder that does not fit is worse than leaving it alone.
+* **Undo is the same undo.** `group --apply` goes through the same move, the same journal and the same
+  seven-day window as `file`, so `node cli.mjs file --undo` puts it back.
+* **`group` itself moves nothing.** Working out categories and acting on them are two commands, always.
+
 ### Learning from your edits
 
 When you override a suggestion, the override is remembered. Once — not three times.
@@ -906,6 +970,9 @@ Every flag, every exit code and every edge case is in the [CLI reference](cli.ht
 | **See filing suggestions** | `node cli.mjs file` | `node cli.mjs file` |
 | **File** | `node cli.mjs file --apply [ID]… [--course NAME] [--kind KIND]` | `node cli.mjs file --apply f5f0 --course OS` |
 | **Undo a filing** | `node cli.mjs file --undo [RECORD_ID]…` | `node cli.mjs file --undo` |
+| **Work out categories** | `node cli.mjs group` | `node cli.mjs group` |
+| **See the categories** | `node cli.mjs group --show` | `node cli.mjs group --show` |
+| **File by category** | `node cli.mjs group --apply [CATEGORY]…` | `node cli.mjs group --apply Resumes` |
 | **See what it learned** | `node cli.mjs learned` | `node cli.mjs learned` |
 | **Forget something** | `node cli.mjs learned --forget [ID]…` | `node cli.mjs learned --forget 6eab` |
 | **Forget everything** | `node cli.mjs learned --forget-all` | `node cli.mjs learned --forget-all` |

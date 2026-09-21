@@ -90,8 +90,27 @@ export function cleanGroupName(raw: unknown): string {
   if (!s) return ''
   // Windows 保留名稱
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(s)) return ''
+  if (UMBRELLA.has(s.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase())) return ''
   return s
 }
+
+/**
+ * 什麼都裝得下的名字 —— **這些不算資料夾**。
+ *
+ * 使用者（2026-09-21）：「a folder that could hold anything is not a folder」。
+ * PHRASE_SYSTEM 已經叫模型不要用這些名字，但**叫了不等於守了**：實機第一次跑
+ * 就回了一個 Miscellaneous，裡面塞了九種毫不相干的東西。叫得動的事情寫在提示詞裡，
+ * 叫不動的事情寫在程式裡 —— 這一條是後者。
+ *
+ * 只擋**整個名字就是這些字**的：「Application forms」「Lecture materials」照過，
+ * 因為它們真的說得出裡面是什麼。
+ */
+const UMBRELLA: ReadonlySet<string> = new Set([
+  'misc', 'miscellaneous', 'other', 'others', 'other files', 'other documents',
+  'document', 'documents', 'file', 'files', 'stuff', 'various', 'general',
+  'uncategorized', 'uncategorised', 'unsorted', 'unclassified', 'unknown',
+  'personal', 'professional', 'academic', 'technical', 'assorted', 'everything else',
+])
 
 /**
  * 模型回的分組 → 可以用的提議。
@@ -291,11 +310,63 @@ export const PHRASE_USER =
   + 'members: the line numbers of the phrases that belong in it. '
   + 'Every number may appear in at most one folder.'
 
-export function phraseMessages(rows: readonly { phrase: string; count: number }[]): unknown[] {
+/**
+ * 已經做出來的資料夾，接著問下一批的時候要帶上去。
+ *
+ * **一次問太多會爛掉**（2026-09-21 實機：177 種說法一次問，回答在 max_tokens 被切掉，
+ * 而且模型只是把連號的一整段倒進同一組 —— 那不是分類，那是切蛋糕）。所以改成一批一批問，
+ * 而一批一批問就會各自發明名字：第一批叫 Research papers、第二批叫 Papers。
+ * 把已經有的名字帶上去，**能沿用就沿用**，最後 mergePhraseGroups 才併得起來。
+ */
+export function carryOver(existing: readonly string[]): string {
+  const names = [...new Set(existing.map(s => cleanGroupName(s)).filter(Boolean))]
+  if (!names.length) return ''
+  return 'Folders you have already made: ' + names.join(', ') + '. '
+    + 'When a phrase fits one of those, put it there and **write the name exactly as it appears above**. '
+    + 'Only make a new folder when none of them fits.'
+}
+
+export function phraseMessages(
+  rows: readonly { phrase: string; count: number }[], existing: readonly string[] = [],
+): unknown[] {
+  const carry = carryOver(existing)
+  const parts: unknown[] = [{ type: 'text', text: PHRASE_USER }]
+  if (carry) parts.push({ type: 'text', text: carry })
+  parts.push({ type: 'text', text: phraseDigest(rows) })
   return [
     { role: 'system', content: PHRASE_SYSTEM },
-    { role: 'user', content: [{ type: 'text', text: PHRASE_USER }, { type: 'text', text: phraseDigest(rows) }] },
+    { role: 'user', content: parts },
   ]
+}
+
+/**
+ * 好幾批的答案併成一份。**照資料夾名字折大小寫比對** —— 一批一批問的時候
+ * Research papers 與 research papers 是同一個資料夾，不可以在磁碟上變成兩個。
+ *
+ * 名字與理由留**第一次**出現的（排前面的那批說法比較常見，它取的名字比較有代表性）；
+ * 說法聯集起來，重複的留一次。
+ */
+export function mergePhraseGroups(groups: readonly PhraseGroup[]): PhraseGroup[] {
+  const byName = new Map<string, PhraseGroup>()
+  const seen = new Set<string>()
+  for (const g of groups) {
+    const name = cleanGroupName(g.name)
+    if (!name) continue
+    const key = phraseKey(name)
+    let hit = byName.get(key)
+    if (!hit) {
+      hit = { name, why: g.why ?? '', phrases: [] }
+      byName.set(key, hit)
+    } else if (!hit.why && g.why) hit.why = g.why
+    for (const p of g.phrases) {
+      const k = phraseKey(p)
+      // 一個說法只能對到一個資料夾 —— 跨批也一樣（規格第 5 條）
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      hit.phrases.push(k)
+    }
+  }
+  return [...byName.values()].filter(g => g.phrases.length)
 }
 
 /** 一組分類：資料夾名 ＋ 一句理由 ＋ 對到它的那些說法（已折鍵）。 */

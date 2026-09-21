@@ -104,6 +104,7 @@ node cli.mjs cleanup apply    # moved to quarantine. Not deleted. `cleanup undo`
 node cli.mjs think            # ask the model (about 80 seconds for 14 files)
 node cli.mjs rename           # "Untitled document (3).txt → Operating Systems_Deadlock.txt", with evidence
 node cli.mjs file             # same course → Courses/Operating Systems/Notes/
+node cli.mjs group            # the rest of Downloads isn't coursework: CVs, forms, papers → Filed/Resumes/
 node cli.mjs file --undo      # never mind, put it all back
 node cli.mjs pet              # the panel: everything above, but clickable
 ```

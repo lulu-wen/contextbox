@@ -52,6 +52,11 @@ node cli.mjs file --apply [id…] --course <course> [--kind <kind>]
                                              #   name the course/kind yourself (unlike the suggestion gets remembered, P5)
 node cli.mjs file --undo [record id…]        #   undo a filing (no id means the most recent)
 
+node cli.mjs group                           # work out categories from what the model says your files are (P7)
+                                             #   asks the model, writes the categories, and **moves nothing**
+node cli.mjs group --show                    #   see the categories from last time (no model call; works read-only)
+node cli.mjs group --apply [category…]       #   file the files that match (no name means all of them; undo with `file --undo`)
+
 node cli.mjs learned                         # what it learned from your changes (P5; it touches no file)
 node cli.mjs learned --forget <id…>          #   forget those entries
 node cli.mjs learned --forget-all            #   forget everything

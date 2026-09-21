@@ -471,27 +471,48 @@ export type AskOptions = {
   timeoutMs?: number
 }
 
+/** 一次 chat/completions 的結果。**內容還沒解析** —— 怎麼讀是呼叫端的事。 */
+export type ChatOk = { ok: true; content: string; ms: number }
+export type ChatFail = {
+  ok: false; error: string; ms: number
+  aborted: boolean; blame: 'answer' | 'transport'
+}
+export type ChatResult = ChatOk | ChatFail
+
+/** 一次要問的東西。 */
+export type ChatRequest = {
+  /**
+   * 送出去的訊息。**給函式的話，會等到真的要送的那一刻才呼叫** ——
+   * 組訊息本身就可能丟（壞掉的 PNG 解不開），而那要算成一次失敗、不可以變成例外。
+   */
+  messages: unknown[] | (() => unknown[])
+  responseFormat: Record<string, unknown>
+  /** 回答的 token 上限。逐檔是 600；分類那一次要塞十幾組，所以大一些。 */
+  maxTokens?: number
+}
+
 /**
- * 問一次。**保證不丟例外** —— 任何失敗都回 `{ ok: false, error }`。
+ * **唯一一個真的會把東西送出這台機器的函式。**
  *
- * 呼叫端要自己確定：modelEnabled 是 true、這個檔過得了 model-guard。
+ * 逐檔的看法（askModel）與分類（P7 的 group）都走這裡 —— 逾時、取消、金鑰遮蔽、
+ * 回應長度上限、狀態碼的處理**只有一份**，不會有第二條路偷偷少掉一道防線。
+ *
+ * **保證不丟例外**：任何失敗都回 `{ ok: false, error }`。
  */
-export async function askModel(config: Config, input: AskInput, opts: AskOptions = {}): Promise<AskResult> {
+export async function chatJson(config: Config, req: ChatRequest, opts: AskOptions = {}): Promise<ChatResult> {
   const key = modelKey(config)
-  const charsSent = input.source === 'text' ? countCodePoints(input.text) : 0
-  const bytesSent = input.source === 'image'
-    ? input.png.length
-    : Buffer.byteLength(input.text, 'utf8')
   const started = Date.now()
-  const fail = (error: string, aborted = false, blame: 'answer' | 'transport' = 'transport'): AskFail =>
-    ({ ok: false, error, ms: Date.now() - started, charsSent, bytesSent, aborted, blame })
+  const fail = (error: string, aborted = false, blame: 'answer' | 'transport' = 'transport'): ChatFail =>
+    ({ ok: false, error, ms: Date.now() - started, aborted, blame })
 
   if (!modelEnabled(config)) return fail('The model is not configured')
   if (opts.signal?.aborted) return fail('Cancelled', true)
 
-  const timeout = AbortSignal.timeout(Math.max(1, opts.timeoutMs ?? MODEL_TIMEOUT_MS))
+  const timeoutMs = Math.max(1, opts.timeoutMs ?? MODEL_TIMEOUT_MS)
+  const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
   const doFetch = opts.fetchImpl ?? fetch
+  const tooSlow = () => `The model did not answer in ${Math.round(timeoutMs / 1000)}s`
 
   let res: Response
   try {
@@ -504,17 +525,17 @@ export async function askModel(config: Config, input: AskInput, opts: AskOptions
       },
       body: JSON.stringify({
         model: config.model.name,
-        messages: buildMessages(input),
-        response_format: responseFormat(),
+        messages: typeof req.messages === 'function' ? req.messages() : req.messages,
+        response_format: req.responseFormat,
         temperature: 0,
-        max_tokens: 600,
+        max_tokens: req.maxTokens ?? 600,
         stream: false,
       }),
       signal,
     })
   } catch (e) {
     if (opts.signal?.aborted) return fail('Cancelled', true)
-    if (timeout.aborted) return fail(`The model did not answer in ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)}s`)
+    if (timeout.aborted) return fail(tooSlow())
     return fail(`Cannot reach the model (${safeError(e, key)})`)
   }
 
@@ -525,7 +546,7 @@ export async function askModel(config: Config, input: AskInput, opts: AskOptions
   try { text = await readCapped(res, MAX_RESPONSE_BYTES) }
   catch (e) {
     if (opts.signal?.aborted) return fail('Cancelled', true)
-    if (timeout.aborted) return fail(`The model did not answer in ${Math.round((opts.timeoutMs ?? MODEL_TIMEOUT_MS) / 1000)}s`)
+    if (timeout.aborted) return fail(tooSlow())
     return fail(`Could not read the model's response through (${safeError(e, key)})`)
   }
 
@@ -533,9 +554,35 @@ export async function askModel(config: Config, input: AskInput, opts: AskOptions
   try { body = JSON.parse(text) } catch { return fail('The model did not answer with JSON', false, 'answer') }
   const content = body?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || !content.trim()) return fail('The model answered with nothing', false, 'answer')
-  const view = parseView(content)
+  return { ok: true, content, ms: Date.now() - started }
+}
+
+/**
+ * 問一次。**保證不丟例外** —— 任何失敗都回 `{ ok: false, error }`。
+ *
+ * 呼叫端要自己確定：modelEnabled 是 true、這個檔過得了 model-guard。
+ */
+export async function askModel(config: Config, input: AskInput, opts: AskOptions = {}): Promise<AskResult> {
+  const charsSent = input.source === 'text' ? countCodePoints(input.text) : 0
+  const bytesSent = input.source === 'image'
+    ? input.png.length
+    : Buffer.byteLength(input.text, 'utf8')
+
+  const r = await chatJson(config, {
+    messages: () => buildMessages(input),
+    responseFormat: responseFormat(),
+    maxTokens: 600,
+  }, opts)
+  if (!r.ok) return { ...r, charsSent, bytesSent }
+
+  const view = parseView(r.content)
   // **形狀不對就整筆不採用。** 少一欄、多一欄、選項不對 —— 一律當成一次失敗，
   // 不可以把半筆資料存進去（預想的預期行為第 8 條）
-  if (!view) return fail('The model answered in the wrong shape; this one is discarded', false, 'answer')
-  return { ok: true, view, ms: Date.now() - started, charsSent, bytesSent }
+  if (!view) {
+    return {
+      ok: false, error: 'The model answered in the wrong shape; this one is discarded',
+      ms: r.ms, charsSent, bytesSent, aborted: false, blame: 'answer',
+    }
+  }
+  return { ok: true, view, ms: r.ms, charsSent, bytesSent }
 }

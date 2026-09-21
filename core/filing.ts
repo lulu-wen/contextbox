@@ -32,7 +32,7 @@ import { CleanupError, cleanupProblem, transaction, withCleanupLock } from './cl
 import { checkedPath } from './cleanup-exec.ts'
 import { VIEW_KINDS } from './model.ts'
 import { modelViewForItem, opinionOf, type ModelOpinion } from './model-store.ts'
-import { cleanGroupName, phraseKey } from './grouping.ts'
+import { cleanGroupName, distinctPhrases, phraseKey } from './grouping.ts'
 import {
   checkFile, cleanCourse, confidentEnough, followFile, freeName, itemById, namesTaken, originalExt,
   underSomeRoot, whyNotTouchable, COURSE_MAX_CODEPOINTS, RENAMABLE_STATUSES, SUFFIX_MAX, UNKNOWN_COURSE,
@@ -55,6 +55,7 @@ export const FILING_BATCH_MAX = 100
 export { cleanCourse, COURSE_MAX_CODEPOINTS, UNKNOWN_COURSE }
 /** 歸檔樹的第一層。`<filed>/課程/<課名>/<類型>/` */
 export const COURSES_DIR = 'Courses'
+
 /**
  * 「這是什麼文件」→ 資料夾名。沒對到回空字串（＝這一輪不提議這個檔）。
  *
@@ -196,6 +197,29 @@ export function whyNotFilable(db: DatabaseSync, item: ItemRow, scope: FilingScop
 }
 
 /**
+ * 有模型看法、而且現在還活著的檔。**歸檔建議與分類（P7）用同一份名單** ——
+ * 兩邊看到的檔不一樣的話，分類分出來的資料夾會對不上真的要搬的檔。
+ *
+ * **先在 SQL 裡縮小**：沒有任何模型看法的檔不可能被建議，一列一列去問 modelViewForItem
+ * （而且對不到時還會再打一次 sha256 的 JOIN）會讓成本跟「總檔數」成正比 —— 兩萬個檔就是 0.8 秒。
+ * 下面這個條件是 modelViewForItem 的**超集合**（它自己還會再看新不新鮮），
+ * 兩條路各自有索引：ix_model_views_item、ix_file_items_sha。
+ */
+function filableRows(db: DatabaseSync): ItemRow[] {
+  try {
+    return db.prepare(
+      `SELECT id, path, name, status, error, naming, mtime FROM file_items f
+        WHERE f.error IS NULL AND f.status IN (${RENAMABLE_STATUSES.map(() => '?').join(',')})
+          AND (EXISTS (SELECT 1 FROM model_views v WHERE v.item_id = f.id)
+               OR (f.sha256 IS NOT NULL AND EXISTS (
+                     SELECT 1 FROM model_views v JOIN file_items j ON j.id = v.item_id
+                      WHERE j.sha256 = f.sha256)))
+        ORDER BY f.last_seen_at DESC, f.id`
+    ).all(...RENAMABLE_STATUSES) as ItemRow[]
+  } catch { return [] }
+}
+
+/**
  * 建議清單。**只列**：模型看得出是哪一堂課（信心不是低、course 不是「看不出來」）、
  * 而且現在真的可以動的檔。
  *
@@ -206,22 +230,7 @@ export function filingSuggestions(db: DatabaseSync, scope: FilingScope, opts: { 
   items: FilingSuggestion[]
 } {
   const limit = Math.max(1, Math.min(1000, opts.limit ?? 500))
-  let rows: ItemRow[] = []
-  try {
-    // **先在 SQL 裡縮小**：沒有任何模型看法的檔不可能被建議，一列一列去問 modelViewForItem
-    // （而且對不到時還會再打一次 sha256 的 JOIN）會讓成本跟「總檔數」成正比 —— 兩萬個檔就是 0.8 秒。
-    // 下面這個條件是 modelViewForItem 的**超集合**（它自己還會再看新不新鮮），
-    // 兩條路各自有索引：ix_model_views_item、ix_file_items_sha。
-    rows = db.prepare(
-      `SELECT id, path, name, status, error, naming, mtime FROM file_items f
-        WHERE f.error IS NULL AND f.status IN (${RENAMABLE_STATUSES.map(() => '?').join(',')})
-          AND (EXISTS (SELECT 1 FROM model_views v WHERE v.item_id = f.id)
-               OR (f.sha256 IS NOT NULL AND EXISTS (
-                     SELECT 1 FROM model_views v JOIN file_items j ON j.id = v.item_id
-                      WHERE j.sha256 = f.sha256)))
-        ORDER BY f.last_seen_at DESC, f.id`
-    ).all(...RENAMABLE_STATUSES) as ItemRow[]
-  } catch { rows = [] }
+  const rows = filableRows(db)
 
   // 一次就好：整份清單共用同一張「已經有哪些課」的表（不碰磁碟的話會建出第二個同名資料夾）
   const known = existingCourses(join(resolve(scope.filed ?? '.'), COURSES_DIR))
@@ -895,4 +904,43 @@ export function listFilings(db: DatabaseSync, limit = 20): {
     id: r.id, itemId: r.item_id, name: r.name, to: r.to_name, toFolder: folderOf(r.to_dir),
     course: r.course, kind: r.kind, status: r.status, at: r.at,
   }))
+}
+
+/** 走分類那條路的檔案數，以及它們說自己是什麼。 */
+export type GroupCandidates = {
+  /** 不重複的「這是什麼文件」，常見的排前面。 */
+  phrases: { phrase: string; count: number }[]
+  /** 走分類那條路的檔案數（course 說不出來、但模型看得懂的那些）。 */
+  files: number
+  /** 其中連「這是什麼文件」都說不出來的。**要算出來給人看**，不可以安靜消失。 */
+  speechless: number
+}
+
+/**
+ * 分類那一次要問的東西（P7，2026-09-21）。
+ *
+ * **對象是「不重複的說法」，不是檔案。** 1164 個檔取 distinct whatItIs 之後
+ * 剩一兩百種說法，一次呼叫就收斂得完 —— 1164 個檔跟 100 個檔成本一樣。
+ *
+ * 名單跟 filingSuggestions 走同一份（filableRows ＋ 同一組門檻），
+ * 而且**只收 course 說不出來的那些**：屬於某門課的檔已經有去處，
+ * 把它們的說法也丟進來只會讓分類被課程教材帶偏。
+ */
+export function groupCandidates(db: DatabaseSync, scope: FilingScope): GroupCandidates {
+  const said: string[] = []
+  let files = 0
+  let speechless = 0
+  for (const row of filableRows(db)) {
+    let opinion: ModelOpinion | null = null
+    try { opinion = opinionOf(modelViewForItem(db, row.id)) } catch { opinion = null }
+    if (!opinion) continue
+    if (!confidentEnough(opinion.confidence)) continue
+    if (cleanCourse(opinion.course)) continue
+    if (whyNotFilable(db, row, scope)) continue
+    files++
+    const what = phraseKey(opinion.whatItIs) ? String(opinion.whatItIs) : ''
+    if (!what) { speechless++; continue }
+    said.push(what)
+  }
+  return { phrases: distinctPhrases(said), files, speechless }
 }

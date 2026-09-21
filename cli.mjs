@@ -9,7 +9,8 @@
  *   node cli.mjs think               讓模型看一輪還沒看過的檔（要先設定 model 與金鑰）
  *   node cli.mjs rename              替沒取名的檔改名（列建議／--apply／--undo，改得回來）
  *   node cli.mjs file                把同一堂課的檔歸成資料夾（列建議／--apply／--undo，搬得回來）
- *   node cli.mjs learned             它從你的修改學到什麼（--forget／--forget-all 忘得掉）
+ *   node cli.mjs group               不屬於任何課的檔也分得出類（--show 看／--apply 搬，搬得回來）
+ *   node cli.mjs learned           它從你的修改學到什麼（--forget／--forget-all 忘得掉）
  *   node cli.mjs propose <檔案>...    手動收一個檔案（右鍵選單走的就是這條）
  *   node cli.mjs watch               常駐監看設定裡的資料夾
  *   node cli.mjs list [狀態]          看收件匣
@@ -47,6 +48,7 @@ import {
 import {
   applyFilings, FILING_BATCH_MAX, filingSuggestions, listFilings, recoverInterruptedFilings, undoFilings,
 } from './core/filing.ts'
+import { readGroupMap, runGrouping } from './core/grouping-run.ts'
 import { courseKey, forgetAllLearned, forgetLearned, listLearned } from './core/learn.ts'
 import { getPlan, releasePlan, releaseStalePlans } from './core/cleanup-plans.ts'
 import { prepareEmptyQuarantine, emptyQuarantine } from './core/cleanup-quarantine.ts'
@@ -109,6 +111,10 @@ const mb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
 
 /** 數字＋名詞。1 不加 s —— 畫面上的「1 files」看起來像程式壞了。 */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// plural 只會加 s，所以 category → categorys、kind of file → kind of files。這兩個詞常用，給它們自己的。
+const categories = n => `${n} ${n === 1 ? 'category' : 'categories'}`
+const kindsOfFile = n => `${n} ${n === 1 ? 'kind of file' : 'kinds of file'}`
 
 /**
  * 顯示用的字串（檔名、資料夾名、錯誤訊息）：C0／C1 控制字元與換行一律換成「·」（RC14）。
@@ -1731,7 +1737,8 @@ switch (cmd) {
     if (applyAt < 0) {
       if (!rows.length) {
         say(`Nothing in ${rootsLabel()} can be filed.`)
-        say('(Only files the model can place in a course get suggested. For files it has not read yet, run node cli.mjs think first.)')
+        say('(A file gets suggested when the model can place it in a course, or when what it says the file is has a category —'
+          + ' node cli.mjs group works those out. For files it has not read yet, run node cli.mjs think first.)')
       } else {
         say(`${plural(rows.length, 'file')} can be filed (**these are the model's opinions, not facts**):\n`)
         for (const r of rows) {
@@ -1739,8 +1746,16 @@ switch (cmd) {
           say(`         → ${shown(r.toFolder)}/${r.learned ? '  (the way you changed it last time)' : ''}`)
           // **模型說的那一句一定用模型自己的課名**：套了偏好之後 course 是使用者的寫法，
           // 印它就變成「把使用者自己的話說成模型講的」
-          say(`         The model thinks: ${shown(r.modelCourse || r.course)} / ${shown(r.topic || 'Unknown')}`
-            + ` (confidence ${shown(r.confidence)})${r.seeded ? ' [demo answer]' : ''}`)
+          // 走分類那條路的檔**沒有課名**（P7）—— 印一個空的課名等於騙人。
+          // 講它自己說的那句話（whatItIs），並且說清楚這不是課程教材。
+          if (r.course || r.modelCourse) {
+            say(`         The model thinks: ${shown(r.modelCourse || r.course)} / ${shown(r.topic || 'Unknown')}`
+              + ` (confidence ${shown(r.confidence)})${r.seeded ? ' [demo answer]' : ''}`)
+          } else {
+            say(`         The model thinks this is: ${shown(r.whatItIs || 'Unknown')}`
+              + `${r.topic && !/^unknown$/i.test(r.topic) ? ` — ${shown(r.topic)}` : ''}`
+              + ` (confidence ${shown(r.confidence)}; not course material)${r.seeded ? ' [demo answer]' : ''}`)
+          }
           if (r.evidence) say(`         Evidence: ${shown(r.evidence)}`)
           // 舊資料夾**沒有被搬走也沒有改名**，只是之後的檔不再進去（P5 預期行為 12）
           if (r.alsoKnownAs) {
@@ -1791,6 +1806,10 @@ switch (cmd) {
     try {
       r = applyFilings(db, chosen.map(c => ({
         itemId: c.itemId,
+        // **走分類那條路的檔要把資料夾帶下去**（P7）：它的 course 是空的，不帶的話
+        // fileOne 會在「沒有可用的課名」那一關把它擋掉 —— 而那正是這一期要修掉的事。
+        // --course 指名了就是使用者要它進課程那棵樹，那就不帶 folder（兩條路互斥）。
+        ...(c.course || course.value !== undefined ? {} : { folder: c.toFolder }),
         course: course.value ?? c.course,
         kind: kind.value ?? c.kind,
       })), scope)
@@ -1806,6 +1825,192 @@ switch (cmd) {
     if (r.remaining) say(`At most ${FILING_BATCH_MAX} per run, so ${r.remaining} are still to go. Run it again and they get done too.`)
     if (ok) say('Changed your mind? node cli.mjs file --undo')
     if (bad) process.exitCode = EXIT.partial
+    break
+  }
+
+  /**
+   * 讓每個檔都有資料夾可以放（P7）。**分類是從模型自己說的話長出來的**，不是誰寫死的。
+   *
+   *   node cli.mjs group                   問一次模型，算出「說法 → 資料夾」的對照表（**一個檔都不動**）
+   *   node cli.mjs group --show            只看現在那張對照表（不問模型、什麼都不寫）
+   *   node cli.mjs group --apply [分類⋯]    真的搬（不給名字 ＝ 全部；走 file 那條既有的搬移路徑，照樣復原得了）
+   *
+   * 為什麼要有這個指令：這個工具本來只有「課程」一個分類軸，而使用者的 Downloads 大半是
+   * CV、自傳、推薦書、法規、論文 —— 實機 202 筆答案裡 186 筆 course=Unknown，
+   * 也就是它對自己實際看到的大部分檔案束手無策，而原因不是看不懂。
+   *
+   * 離開碼照 docs/cli.md：0 成功（含「沒有東西可以分」）、1 輸入錯、2 後端錯、3 部分失敗。
+   */
+  case 'group': {
+    showProblems()
+    const scope = {
+      roots: CLEAN_ROOTS, filed: config.filed, quarantine: QUARANTINE,
+      readonly: config.readonly, restoreRoots: restoreRootList(),
+    }
+    const applyAt = args.indexOf('--apply')
+    const show = args.includes('--show')
+    const known = ['--apply', '--show']
+    const unknown = args.find(a => a.startsWith('--') && !known.includes(a))
+    if (unknown) {
+      warn(`Don't know ${shown(unknown)}. You can use: --show, --apply [category…].`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+    if (show && applyAt >= 0) {
+      warn('--show and --apply cannot be used together.')
+      process.exitCode = EXIT.badInput
+      break
+    }
+
+    /** 對照表印出來。 */
+    const printMap = map => {
+      for (const g of map) {
+        say(`  ${shown(g.folder)}/  (${kindsOfFile(g.phrases.length)})`)
+        if (g.why) say(`         ${shown(g.why)}`)
+        say(`         ${shown(g.phrases.slice(0, 6).join(', '))}`
+          + `${g.phrases.length > 6 ? `, and ${g.phrases.length - 6} more` : ''}`)
+      }
+    }
+
+    // ── 只看現在那張表 ──────────────────────────────────────
+    if (show) {
+      const map = readGroupMap(db)
+      if (!map.length) {
+        say('No categories worked out yet. Run node cli.mjs group and it asks the model once.')
+        break
+      }
+      say(`${categories(map.length)} (**these are the model's opinions, not facts**):\n`)
+      printMap(map)
+      say('\nTo file the files that match: node cli.mjs group --apply')
+      break
+    }
+
+    // ── 真的搬 ──────────────────────────────────────────────
+    if (applyAt >= 0) {
+      // 每一次都先收尾上一次被砍在中間的整理（跟 file 同一個理由）
+      try { recoverInterruptedFilings(db) }
+      catch (e) { warn(`⚠ Could not finish tidying up the interrupted filing (${why(e?.message ?? e)}). Skipping it this time.`) }
+
+      // 分類名稱可以有空白，所以不能用 codesAfter（那是給編號用的）：吃到下一個旗標為止
+      const wanted = []
+      for (let i = applyAt + 1; i < args.length && !args[i].startsWith('--'); i++) wanted.push(args[i])
+
+      let list
+      try { list = filingSuggestions(db, scope) }
+      catch (e) { fail(e, 'group'); break }
+      // **只有走分類那條路的**：有課名的檔歸 file 管，一個檔不可以出現在兩邊
+      let rows = list.items.filter(r => !r.course && r.toFolder)
+
+      if (wanted.length) {
+        const have = new Set(rows.map(r => r.toFolder.toLowerCase()))
+        const missing = wanted.filter(w => !have.has(w.toLowerCase()))
+        if (missing.length) {
+          warn(`No files are waiting for ${missing.map(m => shown(m)).join(', ')}. `
+            + `Run node cli.mjs group --show to see the categories`
+            + `${rows.length ? `, or: ${[...new Set(rows.map(r => shown(r.toFolder)))].slice(0, 8).join(', ')}` : ''}.`)
+          process.exitCode = EXIT.badInput
+          break
+        }
+        const pick = new Set(wanted.map(w => w.toLowerCase()))
+        rows = rows.filter(r => pick.has(r.toFolder.toLowerCase()))
+      } else {
+        // **退過貨的不預設做**（跟 file 同一條規矩）：要做就指名它的分類
+        const back = rows.filter(r => r.rejectedBefore)
+        rows = rows.filter(r => !r.rejectedBefore)
+        if (back.length) {
+          say(`(${plural(back.length, 'suggestion')} you turned down last time left out. `
+            + `To do them, name the category: ${[...new Set(back.map(r => shown(r.toFolder)))].slice(0, 8).join(', ')})`)
+        }
+      }
+      if (!rows.length) {
+        say('Nothing is waiting for a category, so nothing happened.')
+        break
+      }
+      if (config.readonly) {
+        warn('Read-only mode is on, so no file gets moved.')
+        process.exitCode = EXIT.badInput
+        break
+      }
+      let r
+      try { r = applyFilings(db, rows.map(c => ({ itemId: c.itemId, folder: c.toFolder })), scope) }
+      catch (e) { fail(e, 'group'); break }
+      for (const o of r.results) {
+        if (o.ok) say(`  ✔ ${shown(o.name)} → ${shown(o.toFolder)}/${o.to === o.name ? '' : shown(o.to)}`)
+        else say(`  ✘ ${shown(o.name || 'this file')}  — ${shown(o.why)}`)
+      }
+      const ok = r.results.filter(o => o.ok).length
+      const bad = r.results.length - ok
+      say(`\nFiled ${ok}${bad ? `, ${bad} not filed` : ''}.`)
+      if (r.remaining) say(`At most ${FILING_BATCH_MAX} per run, so ${r.remaining} are still to go. Run it again and they get done too.`)
+      if (ok) say('Changed your mind? node cli.mjs file --undo')
+      if (bad) process.exitCode = EXIT.partial
+      break
+    }
+
+    // ── 問一次、寫對照表 ────────────────────────────────────
+    if (!modelEnabled(config)) {
+      say(`Working out categories needs the model: ${whyDisabled(config)}.`)
+      say(`Fill in model.baseUrl and model.name in ${shown(cfgPath)}, put the key in ${shown(config.model.keyEnv)}, and run again.`)
+      say('(node cli.mjs group --show still shows the categories from last time.)')
+      break
+    }
+    if (config.readonly) {
+      warn('Read-only mode is on, so the categories are not worked out. node cli.mjs group --show still shows the last ones.')
+      process.exitCode = EXIT.badInput
+      break
+    }
+    say(`Asking the model: ${shown(config.model.name)} @ ${shown(config.model.baseUrl)}`)
+    // **問的是「不重複的說法」，不是檔案** —— 一千個檔跟一百個檔幾乎同價
+    say('It is asked about the kinds of file you have, not about each file, so this costs the same')
+    say('whether you have a hundred files or a thousand. Nothing moves. Ctrl+C stops it wherever it is.')
+    const gac = new AbortController()
+    const stopGrouping = () => { if (!gac.signal.aborted) gac.abort() }
+    process.on('SIGINT', stopGrouping)
+    process.on('SIGTERM', stopGrouping)
+    let gr
+    try {
+      gr = await runGrouping(db, config, scope, {
+        signal: gac.signal,
+        // 一批四十秒，不講話會像當掉
+        onProgress: p => say(`  ${p.batch}/${p.batches}  ${kindsOfFile(p.phrases)}`
+          + ` → ${categories(p.folders)} so far${p.error ? `  — this batch failed: ${shown(p.error)}` : ''}`),
+      })
+    }
+    catch (e) { process.off('SIGINT', stopGrouping); process.off('SIGTERM', stopGrouping); fail(e, 'group'); break }
+    process.off('SIGINT', stopGrouping)
+    process.off('SIGTERM', stopGrouping)
+    say('')
+
+    if (!gr.phrases.length) {
+      say('Nothing to sort into categories: no file the model has read is outside a course.')
+      if (gr.speechless) say(`(${plural(gr.speechless, 'file')} the model could not say anything about. node cli.mjs think reads the ones it has not seen.)`)
+      break
+    }
+    if (!gr.ok) {
+      warn(`⚠ ${shown(gr.error ?? 'reason unknown')}`)
+      say('Nothing was changed — the categories from last time are still there (node cli.mjs group --show).')
+      noteError(new Error(gr.error ?? 'grouping failed'), 'model')
+      process.exitCode = EXIT.backend
+      break
+    }
+    noteOk('model')
+    // 有幾批壞掉但其他批做成了：對照表是寫進去了，可是**要講出來它不完整**
+    if (gr.error) {
+      warn(`⚠ Some of it did not work: ${shown(gr.error)}. The categories below are what did.`)
+      process.exitCode = EXIT.partial
+    }
+    say(`${categories(gr.groups.length)} out of ${kindsOfFile(gr.phrases.length)}`
+      + ` across ${plural(gr.files, 'file')} (**these are the model's opinions, not facts**):\n`)
+    printMap(readGroupMap(db))
+    // 沒對到的要講出來：使用者才知道還有多少檔沒有去處
+    if (gr.unmatched.length) {
+      say(`\n${kindsOfFile(gr.unmatched.length)} did not land in any category, so those files stay where they are.`)
+    }
+    if (gr.speechless) {
+      say(`${plural(gr.speechless, 'file')} the model could not say anything about at all.`)
+    }
+    say('\nNothing has moved. To file the files that match: node cli.mjs group --apply')
+    say(`They land in ${shown(config.filed)} and are never suggested for cleanup again. Changed your mind: node cli.mjs file --undo`)
     break
   }
 
@@ -2634,7 +2839,10 @@ switch (cmd) {
   node cli.mjs file --apply [id…] [--course name] [--kind kind]
                                            file them (undoable; a course name you change gets remembered)
   node cli.mjs file --undo [record id…]    undo a filing (no id means the most recent)
-  node cli.mjs learned                     what it learned from your changes (it never moves a file)
+  node cli.mjs group                       work out categories from what the model says your files are (nothing moves)
+  node cli.mjs group --show                see the categories from last time (no model call)
+  node cli.mjs group --apply [category…]   file the files that match (undoable; no name means all of them)
+  node cli.mjs learned                   what it learned from your changes (it never moves a file)
   node cli.mjs learned --forget [id…]      forget those entries
   node cli.mjs learned --forget-all        forget everything
   node cli.mjs watch                       keep watching in the foreground
