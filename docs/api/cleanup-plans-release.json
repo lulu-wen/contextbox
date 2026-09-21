@@ -1,34 +1,34 @@
 {
-  "id": "2c82564a-b928-4294-afc5-2b7be3807fac",
+  "id": "29bb3722-73d4-42d1-a051-23d027359dc4",
   "status": "dismissed",
   "itemCount": 1,
-  "createdAt": "2026-09-20T12:32:38.226Z",
+  "createdAt": "2026-09-21T12:08:40.969Z",
   "appliedAt": null,
   "error": null,
   "bytes": 16,
   "items": [
     {
-      "itemId": "e62b7310-1eba-4ce6-b281-c064d2721781",
+      "itemId": "64149c4b-a8a4-40cb-91b5-9dd4f6254022",
       "name": "Screenshot 2026-01-02 141203.png",
       "bytes": 16,
-      "mtime": "2026-05-23T12:32:37.392Z",
+      "mtime": "2026-05-24T12:08:39.639Z",
       "candidateIds": [
-        "0d89ea67-3b80-4503-9ceb-a344730bc923",
-        "3d1f70e7-befb-4376-87b9-5187fb883d0a"
+        "d429aaf6-0bfc-4a1d-a82b-072241bfb16c",
+        "da017e0a-08be-4315-ab8c-ecd417ae5a94"
       ],
       "skipped": false,
       "reasons": [
-        {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "A download nobody has touched in a long time",
-          "evidence": "untouched for 120 days, and .png is not on the protected list"
-        },
         {
           "kind": "screenshot-noise",
           "confidence": 35,
           "reason": "Old screenshots are usually throwaway",
           "evidence": "Named Screenshot 2026-01-02 141203.png, and untouched for 120 days"
+        },
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "A download nobody has touched in a long time",
+          "evidence": "untouched for 120 days, and .png is not on the protected list"
         }
       ],
       "outcome": "cancelled",

@@ -1,5 +1,5 @@
 {
-  "path": "~/.contextbox/config.json",
+  "path": "~\\.contextbox\\config.json",
   "editable": {
     "readonly": false,
     "model": {
@@ -14,13 +14,13 @@
   "keySet": true,
   "shown": {
     "watch": [
-      "~/Downloads"
+      "~\\Downloads"
     ],
-    "filed": "~/Documents/Filed",
+    "filed": "~\\Documents\\Filed",
     "cleanupRoots": [
-      "~/Downloads"
+      "~\\Downloads"
     ],
-    "quarantine": "~/.contextbox/quarantine",
+    "quarantine": "~\\.contextbox\\quarantine",
     "pdfPages": 3,
     "maxBytes": 20971520
   },

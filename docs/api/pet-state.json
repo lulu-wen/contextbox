@@ -1,7 +1,7 @@
 {
   "state": "worried",
   "message": "Something is off in the backend. Have a look at doctor.",
-  "pendingCount": 2,
+  "pendingCount": 3,
   "quarantinedCount": 1,
   "undoable": true,
   "scanProblems": [

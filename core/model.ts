@@ -172,6 +172,11 @@ export function whyDisabled(config: Config): string | null {
 const ABS_PATH = /(?:~|\/(?:home|Users|var|tmp|private|etc|opt|mnt|media|root|srv|usr)|[A-Za-z]:)[\\/][^\s"'，。；：）】]*/g
 
 /** 顯示用的清洗：控制字元與方向字元換掉、絕對路徑遮掉，再砍長度。 */
+/** 欄位清洗：控制字元、方向字元換成空白，絕對路徑換成 ⋯，截到 max。describe 那條路共用。 */
+export function cleanField(s: string, max: number): string {
+  return clean(s, max)
+}
+
 function clean(s: string, max: number): string {
   return String(s)
     .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, ' ')

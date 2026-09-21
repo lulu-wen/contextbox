@@ -22,8 +22,8 @@
     "orphans": 0,
     "truncated": false
   },
-  "pendingCandidates": 2,
-  "needsHumanCount": 2,
+  "pendingCandidates": 3,
+  "needsHumanCount": 1,
   "lastError": "yes, but only visible with a token",
   "lastErrorAt": null,
   "lastOkAt": null,

@@ -6,8 +6,8 @@
   },
   "watcher": {
     "ok": true,
-    "lastHeartbeatAt": "2026-09-20T12:32:38.252Z",
-    "pid": 1103293,
+    "lastHeartbeatAt": "2026-09-21T12:08:41.007Z",
+    "pid": 32840,
     "rootsMissing": 0,
     "watchingCount": 1,
     "watching": [
@@ -18,22 +18,22 @@
   "quarantine": {
     "items": 1,
     "bytes": 13,
-    "oldestMtimeAt": "2026-08-06T12:32:37.392Z",
-    "canEmptyAt": "2026-09-19T12:32:38.248Z",
+    "oldestMtimeAt": "2026-08-07T12:08:39.663Z",
+    "canEmptyAt": "2026-09-20T12:08:41.000Z",
     "canEmptyNow": true,
     "orphans": 0,
     "truncated": false
   },
-  "pendingCandidates": 2,
-  "needsHumanCount": 2,
-  "lastError": "2026-09-20T12:32:38.133Z Only ordinary files are handled — not symlinks or hard links.",
-  "lastErrorAt": "2026-09-20T12:32:38.133Z",
-  "lastOkAt": "2026-09-20T12:32:38.199Z",
+  "pendingCandidates": 3,
+  "needsHumanCount": 1,
+  "lastError": "2026-09-21T12:08:40.783Z Only ordinary files are handled — not symlinks or hard links.",
+  "lastErrorAt": "2026-09-21T12:08:40.783Z",
+  "lastOkAt": "2026-09-21T12:08:40.955Z",
   "lastErrorKind": "apply",
   "lastOkByKind": {
-    "scan": "2026-09-20T12:32:37.874Z",
-    "apply": "2026-09-20T12:32:38.099Z",
-    "undo": "2026-09-20T12:32:38.199Z",
+    "scan": "2026-09-21T12:08:40.242Z",
+    "apply": "2026-09-21T12:08:40.728Z",
+    "undo": "2026-09-21T12:08:40.955Z",
     "empty": null,
     "model": null
   },

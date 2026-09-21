@@ -1,25 +1,25 @@
 {
-  "total": 8,
-  "totalAvailable": 8,
+  "total": 9,
+  "totalAvailable": 9,
   "truncated": false,
-  "bytes": 139,
+  "bytes": 66699,
   "defaultCheckedCount": 6,
   "defaultCheckedBytes": 101,
-  "generatedAt": "2026-09-20T12:32:37.891Z",
+  "generatedAt": "2026-09-21T12:08:40.292Z",
   "candidates": [
     {
-      "itemId": "87dae15f-691e-474b-b698-851fa0958499",
+      "itemId": "c40cfb80-8395-46b4-9b4d-08cfe67438dd",
       "name": "報告 (1).pdf",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 34,
-      "mtime": "2026-09-20T10:32:37.392Z",
+      "mtime": "2026-09-21T10:08:39.596Z",
       "kind": "duplicate",
       "confidence": 98,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "cfe86732-cc1e-4819-b95e-3a65ddec2c37"
+        "ae7c8697-29b4-401d-99ed-68e45b03a660"
       ],
       "reasons": [
         {
@@ -32,18 +32,18 @@
       "model": null
     },
     {
-      "itemId": "9e67476a-f7ce-457c-991b-3d4a105594ef",
+      "itemId": "89200ea6-b1c4-4dae-a81b-137b67ef7443",
       "name": "空的.txt",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 0,
-      "mtime": "2026-09-17T12:32:37.392Z",
+      "mtime": "2026-09-18T12:08:39.618Z",
       "kind": "empty",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "8343518e-9472-48e9-a326-a52010279889"
+        "a23fb3ba-46b7-4a93-b8dd-74a25e926300"
       ],
       "reasons": [
         {
@@ -56,18 +56,18 @@
       "model": null
     },
     {
-      "itemId": "581e4599-c1f0-4fed-958e-6656d03b8719",
+      "itemId": "a9c3de9a-2f5d-4124-999a-73c6b6f6eff3",
       "name": "下載中.iso.crdownload",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-09-17T12:32:37.392Z",
+      "mtime": "2026-09-18T12:08:39.651Z",
       "kind": "partial",
       "confidence": 95,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "60c4d568-28e9-4551-85bd-34e5a152e707"
+        "94dcaeac-66dc-40a8-99fc-cb57ac7a05c5"
       ],
       "reasons": [
         {
@@ -80,18 +80,18 @@
       "model": null
     },
     {
-      "itemId": "e09f0be0-aad0-4b31-9ddd-214d94264101",
+      "itemId": "14ac325e-4cb8-49cf-ba22-2274d73f6003",
       "name": "安裝檔.msi",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 19,
-      "mtime": "2026-08-21T12:32:37.392Z",
+      "mtime": "2026-08-22T12:08:39.605Z",
       "kind": "installer",
       "confidence": 70,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "ec76501e-2daf-4291-8aa1-dbcf7c603a74"
+        "9c5babab-9d68-41a8-b05b-5bd13b481524"
       ],
       "reasons": [
         {
@@ -104,42 +104,18 @@
       "model": null
     },
     {
-      "itemId": "06b1dcd1-feb6-43ec-ada3-77b4fbe4123f",
-      "name": "素材包.zip",
-      "folder": "Downloads",
-      "subdir": "",
-      "bytes": 19,
-      "mtime": "2026-07-22T12:32:37.392Z",
-      "kind": "archive",
-      "confidence": 65,
-      "defaultChecked": true,
-      "vetoed": null,
-      "candidateIds": [
-        "5de31ed1-b0cb-4da2-b822-5504b805a3c2"
-      ],
-      "reasons": [
-        {
-          "kind": "archive",
-          "confidence": 65,
-          "reason": "Old archives are usually one-off downloads",
-          "evidence": ".zip archive, and untouched for 60 days"
-        }
-      ],
-      "model": null
-    },
-    {
-      "itemId": "0ab15d33-7419-4c2a-88f4-1dfe94c42185",
+      "itemId": "12647839-fbc2-4c73-bbe4-f81fb62bb514",
       "name": "發票.zip",
       "folder": "Downloads",
-      "subdir": "2026/09",
+      "subdir": "2026\\09",
       "bytes": 13,
-      "mtime": "2026-08-06T12:32:37.392Z",
+      "mtime": "2026-08-07T12:08:39.663Z",
       "kind": "archive",
       "confidence": 65,
       "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "48a4a084-82fa-476f-9b5f-e082d26f6efc"
+        "acc293c8-d537-435e-84d7-3c244c52749a"
       ],
       "reasons": [
         {
@@ -152,43 +128,74 @@
       "model": null
     },
     {
-      "itemId": "de596b71-9e97-4be2-bad3-0f131f609973",
-      "name": "很舊的.bin",
+      "itemId": "2a04a393-21a7-455c-8fcd-cf01c545187d",
+      "name": "素材包.zip",
       "folder": "Downloads",
       "subdir": "",
-      "bytes": 22,
-      "mtime": "2026-03-04T12:32:37.392Z",
-      "kind": "old-download",
-      "confidence": 35,
-      "defaultChecked": false,
+      "bytes": 19,
+      "mtime": "2026-07-23T12:08:39.613Z",
+      "kind": "archive",
+      "confidence": 65,
+      "defaultChecked": true,
       "vetoed": null,
       "candidateIds": [
-        "b0a869a6-bcf0-4729-ba60-95905f640d70"
+        "37da8f29-dd17-405b-a420-f8b6c9047ecc"
       ],
       "reasons": [
         {
-          "kind": "old-download",
-          "confidence": 35,
-          "reason": "A download nobody has touched in a long time",
-          "evidence": "untouched for 200 days, and .bin is not on the protected list"
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "Old archives are usually one-off downloads",
+          "evidence": ".zip archive, and untouched for 60 days"
         }
       ],
       "model": null
     },
     {
-      "itemId": "e62b7310-1eba-4ce6-b281-c064d2721781",
+      "itemId": "7cc08881-59f2-40a4-b486-a407fac2c4f8",
+      "name": "備份.tar",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 66560,
+      "mtime": "2026-03-05T12:08:39.682Z",
+      "kind": "archive",
+      "confidence": 65,
+      "defaultChecked": false,
+      "vetoed": null,
+      "candidateIds": [
+        "c15af111-dc06-4214-92d9-f27cf0c35d28",
+        "62db2575-bc15-4007-b31b-bdaf045f9094"
+      ],
+      "reasons": [
+        {
+          "kind": "archive",
+          "confidence": 65,
+          "reason": "Old archives are usually one-off downloads",
+          "evidence": ".tar archive, and untouched for 200 days"
+        },
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "A download nobody has touched in a long time",
+          "evidence": "untouched for 200 days, and .tar is not on the protected list"
+        }
+      ],
+      "model": null
+    },
+    {
+      "itemId": "64149c4b-a8a4-40cb-91b5-9dd4f6254022",
       "name": "Screenshot 2026-01-02 141203.png",
       "folder": "Downloads",
       "subdir": "",
       "bytes": 16,
-      "mtime": "2026-05-23T12:32:37.392Z",
+      "mtime": "2026-05-24T12:08:39.639Z",
       "kind": "old-download",
       "confidence": 35,
       "defaultChecked": false,
       "vetoed": null,
       "candidateIds": [
-        "0d89ea67-3b80-4503-9ceb-a344730bc923",
-        "3d1f70e7-befb-4376-87b9-5187fb883d0a"
+        "da017e0a-08be-4315-ab8c-ecd417ae5a94",
+        "d429aaf6-0bfc-4a1d-a82b-072241bfb16c"
       ],
       "reasons": [
         {
@@ -205,21 +212,37 @@
         }
       ],
       "model": null
+    },
+    {
+      "itemId": "849bf766-24b6-4b96-ad82-dbe5cdaaad23",
+      "name": "很舊的.bin",
+      "folder": "Downloads",
+      "subdir": "",
+      "bytes": 22,
+      "mtime": "2026-03-05T12:08:39.627Z",
+      "kind": "old-download",
+      "confidence": 35,
+      "defaultChecked": false,
+      "vetoed": null,
+      "candidateIds": [
+        "5294e96e-6e3b-473b-bfcc-1b4af18460b8"
+      ],
+      "reasons": [
+        {
+          "kind": "old-download",
+          "confidence": 35,
+          "reason": "A download nobody has touched in a long time",
+          "evidence": "untouched for 200 days, and .bin is not on the protected list"
+        }
+      ],
+      "model": null
     }
   ],
-  "needsHumanTotal": 1,
+  "needsHumanTotal": 0,
   "needsHumanCounts": {
-    "tooLarge": 1,
+    "tooLarge": 0,
     "unreadable": 0
   },
   "needsHumanTruncated": false,
-  "needsHuman": [
-    {
-      "itemId": "b9c8e656-f1c6-4ca1-924d-83e87cc3a694",
-      "name": "備份.tar",
-      "folder": "Downloads",
-      "bytes": 66560,
-      "why": "This file is too large for this tool to handle. Whether to keep it is your call."
-    }
-  ]
+  "needsHuman": []
 }
