@@ -8,7 +8,7 @@
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import * as sqlite from 'node:sqlite'
 import { tmpdir } from 'node:os'
@@ -255,5 +255,59 @@ describe('cleanup 的離開碼契約', () => {
   test('不認得的子指令是 1（輸入錯）', () => {
     const r = run('cleanup', '亂打的東西')
     assert.equal(r.code, 1)
+  })
+})
+
+/**
+ * 一個指令跑完所有「看」的工作（2026-09-22，使用者說的）。
+ *
+ * **它的價值全部建立在「一個檔都不動」上**：使用者肯放心一次跑完三件事，是因為跑完
+ * 什麼都沒變。所以這幾條裡最重要的是那一條 —— 跑完磁碟上一模一樣。
+ */
+describe('sweep', () => {
+  test('**一個檔都不動**，而且講清楚它不會動', () => {
+    const a = join(watchDir, 'sweep-a.txt')
+    const b = join(watchDir, 'sweep-b.txt')
+    writeFileSync(a, 'x'.repeat(400))
+    writeFileSync(b, 'y'.repeat(400))
+    const before = readdirSync(watchDir).sort()
+    const r = run('sweep')
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(readdirSync(watchDir).sort(), before, 'sweep 動了檔案')
+    assert.match(r.out, /Nothing is moved or deleted by this command/)
+    // 有建議的時候印「Nothing has moved」，沒建議的時候印「Nothing to suggest」——
+    // 兩句都在講同一件事：跑完什麼都沒變
+    assert.match(r.out, /Nothing has moved|Nothing to suggest/)
+    rmSync(a, { force: true })
+    rmSync(b, { force: true })
+  })
+
+  test('三步都要講自己做了什麼 —— 跳過的那幾步也要講為什麼', () => {
+    const r = run('sweep')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /1\/3/)
+    assert.match(r.out, /2\/3/)
+    assert.match(r.out, /3\/3/)
+    // 這個沙盒沒設模型，所以第二、三步一定是跳過 —— **跳過不可以是安靜的**
+    assert.match(r.out, /2\/3 {2}Reading — skipped/)
+    assert.match(r.out, /Reading is not on/)
+  })
+
+  test('--no-model 是自己選的，講法要跟「沒設定」不一樣', () => {
+    const r = run('sweep', '--no-model')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /You asked for no model this time/)
+  })
+
+  test('旗標打錯是 1（輸入錯），不是 2', () => {
+    const r = run('sweep', '--nope')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /--no-model/)
+  })
+
+  test('沒東西可建議也是 0，而且講一句 —— 空的畫面看起來像壞掉', () => {
+    const r = run('sweep', '--no-model')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /What you can do now/)
   })
 })

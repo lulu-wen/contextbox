@@ -108,6 +108,30 @@ describe('filingLines', () => {
     assert.ok(!l.note.includes('\n'), l.note)
   })
 
+  // P7（2026-09-22）：course 是空的那幾列走「分類」那條路。
+  // 以前 course 會退回 'Unknown'，畫面就寫「The model thinks: Unknown / Unknown」——
+  // 而模型其實很確定那是一份履歷。那句話會讓使用者以為它看不懂，於是不敢按。
+  test('**沒有課名的那一列要講它說這是什麼**，不可以寫 Unknown / Unknown', () => {
+    const l = filingLines(suggestion({
+      course: '', modelCourse: '', kind: 'Other', topic: 'Computer Science student profile',
+      whatItIs: 'resume', toFolder: 'Resumes',
+    }))
+    assert.equal(l.head, '未命名文件 (3).txt → Resumes')
+    assert.equal(l.why,
+      'The model thinks this is: resume — Computer Science student profile (confidence high; not course material)')
+    assert.ok(!l.why.includes('Unknown'), l.why)
+  })
+
+  test('沒有課名、連 whatItIs 都沒有 → 寫 Unknown，但不寫成課名', () => {
+    const l = filingLines(suggestion({ course: '', modelCourse: '', topic: '', whatItIs: '', toFolder: 'Forms' }))
+    assert.equal(l.why, 'The model thinks this is: Unknown (confidence high; not course material)')
+  })
+
+  test('沒有課名時 topic 是 Unknown 就不要多印一截', () => {
+    const l = filingLines(suggestion({ course: '', modelCourse: '', topic: 'Unknown', whatItIs: 'exam', toFolder: 'Exams' }))
+    assert.equal(l.why, 'The model thinks this is: exam (confidence high; not course material)')
+  })
+
   test('壞掉的一列不要畫（回 null）', () => {
     assert.equal(filingLines(null), null)
     assert.equal(filingLines({}), null)
@@ -221,6 +245,126 @@ describe('面板的「歸檔建議」區', () => {
     assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
     assert.match(ui.$('cleanup-result').textContent, /Courses\/作業系統\/Notes/)
     assert.equal(ui.$('cleanup-file-undo').hidden, false, '整理完要看得到“Undo filing”')
+  })
+
+  // P7（2026-09-22）：這一條釘住一個真的會讓人「按了沒反應」的 bug。
+  // 沒有課名的那幾列 course 是空的，只送 course／kind 的話後端會在
+  // 「沒有可用的課名」那一關擋掉 —— 畫面上明明寫著去處。
+  test('**沒有課名的那一列要送 folder**，不是空的課名', async t => {
+    const applied = []
+    const ui = await open(t, {
+      suggestions: [suggestion({
+        itemId: 'it-cv', name: 'Peng-Ju_Wen_CV_1.docx', course: '', modelCourse: '',
+        kind: 'Other', topic: '', whatItIs: 'resume', toFolder: 'Resumes',
+      })],
+      onApply: body => {
+        applied.push(body)
+        return {
+          results: body.items.map(i => ({
+            itemId: i.itemId, ok: true, name: 'Peng-Ju_Wen_CV_1.docx',
+            toFolder: 'Resumes', to: 'Peng-Ju_Wen_CV_1.docx', why: '',
+          })),
+          remaining: 0,
+        }
+      },
+    })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await ui.click('cleanup-file')
+
+    assert.deepEqual(applied, [{ items: [{ itemId: 'it-cv', folder: 'Resumes' }] }])
+    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+  })
+
+  test('有課名的和沒課名的勾在一起：各送各的那一組', async t => {
+    const applied = []
+    const ui = await open(t, {
+      suggestions: [
+        suggestion(),
+        suggestion({ itemId: 'it-cv', name: 'CV.docx', course: '', modelCourse: '', whatItIs: 'resume', toFolder: 'Resumes' }),
+      ],
+      onApply: body => {
+        applied.push(body)
+        return {
+          results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x', toFolder: 'y', to: 'x', why: '' })),
+          remaining: 0,
+        }
+      },
+    })
+    for (const b of boxes(ui)) { b.checked = true; await b.onchange() }
+    await ui.click('cleanup-file')
+    assert.deepEqual(applied, [{
+      items: [
+        { itemId: 'it-1', course: '作業系統', kind: 'Notes' },
+        { itemId: 'it-cv', folder: 'Resumes' },
+      ],
+    }])
+  })
+
+  // 2026-09-22 實機回報：「按下 File 按鈕後他不會有任何反應，box 不會消失，貓咪也沒說話，
+  // 他並不會告訴我是否有成功」。原因有兩個，這是第二個：結果那一塊在整個面板的最下面，
+  // 而按鈕在每一列上 —— 清單一長，訊息就寫在螢幕外七百多像素的地方。
+  test('**結果訊息不在畫面上就捲到看得見**（不然按了像沒反應）', async t => {
+    const ui = await open(t, {
+      suggestions: [suggestion()],
+      onApply: body => ({
+        results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x.txt', toFolder: 'y', to: 'x.txt', why: '' })),
+        remaining: 0,
+      }),
+    })
+    const box = ui.$('cleanup-result')
+    const scrolled = []
+    box.getBoundingClientRect = () => ({ top: 900, bottom: 1000 })
+    box.scrollIntoView = opts => scrolled.push(opts)
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await ui.click('cleanup-file')
+    // 「處理中⋯」與最後那一句各算一次 —— 兩次都該捲，使用者才看得到事情在動
+    assert.ok(scrolled.length >= 1, '訊息在螢幕外卻沒有捲過去')
+    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+  })
+
+  test('已經看得到就不要捲（會把使用者正在看的東西搶走）', async t => {
+    const ui = await open(t, {
+      suggestions: [suggestion()],
+      onApply: body => ({
+        results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x.txt', toFolder: 'y', to: 'x.txt', why: '' })),
+        remaining: 0,
+      }),
+    })
+    const box = ui.$('cleanup-result')
+    const scrolled = []
+    // 這個假 DOM 沒有 innerHeight。量不出視窗高度的時候就捲（寧可捲也不要讓人看不到），
+    // 所以要測「已經看得到就不捲」就得把高度給它。
+    globalThis.window.innerHeight = 768
+    t.after(() => { delete globalThis.window.innerHeight })
+    box.getBoundingClientRect = () => ({ top: 10, bottom: 80 })
+    box.scrollIntoView = opts => scrolled.push(opts)
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await ui.click('cleanup-file')
+    assert.deepEqual(scrolled, [])
+  })
+
+  test('瀏覽器沒有 scrollIntoView 也要把訊息寫上去', async t => {
+    const ui = await open(t, {
+      suggestions: [suggestion()],
+      onApply: body => ({
+        results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x.txt', toFolder: 'y', to: 'x.txt', why: '' })),
+        remaining: 0,
+      }),
+    })
+    const box = ui.$('cleanup-result')
+    box.getBoundingClientRect = () => { throw new Error('沒有這個東西') }
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await ui.click('cleanup-file')
+    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+    assert.equal(ui.$('cleanup-result').hidden, false)
   })
 
   test('「復原整理」送 { last: true }，訊息照後端說的講', async t => {

@@ -112,6 +112,14 @@ const mb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
 /** 數字＋名詞。1 不加 s —— 畫面上的「1 files」看起來像程式壞了。 */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
+/**
+ * 數一數，數不出來就當成沒有。
+ *
+ * **sweep 最後那個總結不可以因為其中一份清單壞掉就整個不印** —— 使用者剛剛等了幾分鐘，
+ * 把「我還可以做什麼」吞掉比少講一行糟得多。
+ */
+const safeCount = (f, fallback = 0) => { try { return f() } catch { return fallback } }
+
 // plural 只會加 s，所以 category → categorys、kind of file → kind of files。這兩個詞常用，給它們自己的。
 const categories = n => `${n} ${n === 1 ? 'category' : 'categories'}`
 const kindsOfFile = n => `${n} ${n === 1 ? 'kind of file' : 'kinds of file'}`
@@ -1829,6 +1837,162 @@ switch (cmd) {
   }
 
   /**
+   * 一次跑完所有「看」的工作。**一個檔都不動。**
+   *
+   *   node cli.mjs sweep              掃一遍 → 把沒讀過的讀完 → 算分類 → 講現在有什麼建議
+   *   node cli.mjs sweep --no-model   只掃描（沒設定模型的時候本來就是這樣）
+   *
+   * 為什麼要有它：掃描、讀、分類是三件**一定要照這個順序**做完才有東西可看的事
+   *（沒掃過就沒有檔、沒讀過就沒有看法、沒分類過就沒有資料夾），而使用者要記三個指令
+   * 加一個 `--all` 旗標。忘了其中一個，畫面就是空的 —— 而空的畫面看起來像壞掉。
+   *
+   * **動檔案的那三個指令（cleanup apply／rename --apply／file --apply）不在這裡面。**
+   * 看跟動是兩回事，這個專案從頭到尾都是這樣分的：這一支跑完只會印出「你可以做什麼」。
+   *
+   * 一步壞掉不會拖垮後面幾步（掃不動還是可以讀已經進資料庫的檔），每一步各自講自己的結果。
+   * Ctrl+C 停在哪就是哪，已經做完的算數。
+   *
+   * 離開碼：0 全部做完（含「沒東西可做」）、1 輸入錯、2 有步驟出錯。
+   */
+  case 'sweep': {
+    showProblems()
+    const known = ['--no-model']
+    const unknown = args.find(a => a.startsWith('--') && !known.includes(a))
+    if (unknown) {
+      warn(`Don't know ${shown(unknown)}. You can use: --no-model.`)
+      process.exitCode = EXIT.badInput
+      break
+    }
+    const noModel = args.includes('--no-model')
+    const useModel = !noModel && modelEnabled(config)
+
+    const sac = new AbortController()
+    const stopSweep = () => { if (!sac.signal.aborted) sac.abort() }
+    process.on('SIGINT', stopSweep)
+    process.on('SIGTERM', stopSweep)
+    let hadError = false
+
+    say(`Looking through ${rootsLabel()}. **Nothing is moved or deleted by this command.**`)
+    if (useModel) say(`Reading with ${shown(config.model.name)}; this can take a while the first time.`)
+    say('')
+
+    // ── 1／3 看一遍 ──────────────────────────────────────────
+    say('1/3  Looking at what is there')
+    try {
+      const r = scanDownloads({
+        db, roots: CLEAN_ROOTS, maxBytes: config.maxBytes, protectDays: config.cleanup.protectDays,
+        onProblem: m => warn('     ⚠ ' + shown(m)),
+      })
+      noteOk('scan')
+      say(`     ${plural(r.scanned, 'file')} looked at`
+        + `${r.skipped ? `, ${r.skipped} still changing and skipped` : ''}`
+        + `${r.errors ? `, ${r.errors} could not be read` : ''}.`)
+      if (r.truncated) warn('     ⚠ Too many files, so only the first ones were scanned. Narrow the cleanup scope.')
+    } catch (e) {
+      noteError(e, 'scan')
+      hadError = true
+      warn(`     ⚠ The scan hit an error (${why(e?.message ?? e)}), so it may not have finished. Carrying on with what is already known.`)
+    }
+
+    // ── 2／3 把沒讀過的讀完 ──────────────────────────────────
+    say('')
+    if (!useModel) {
+      say('2/3  Reading — skipped')
+      say(`     ${noModel ? 'You asked for no model this time.' : `Reading is not on: ${whyDisabled(config)}.`}`)
+    } else if (sac.signal.aborted) {
+      say('2/3  Reading — you stopped it')
+    } else {
+      say('2/3  Reading the files it has not read yet')
+      // `think --all` 那一圈：一輪接一輪做到沒東西為止，照樣守「連續三次失敗就停」
+      const sum = { total: 0, asked: 0, cached: 0, skipped: 0, failed: 0, stopped: null }
+      let tr
+      try {
+        do {
+          tr = await thinkRound({
+            db, config, roots: CLEAN_ROOTS, limit: ROUND_MAX_ITEMS, signal: sac.signal,
+            concurrency: THINK_LANES, onError: w => noteError(new Error(w), 'model'),
+          })
+          for (const k of ['total', 'asked', 'cached', 'skipped', 'failed']) sum[k] += tr[k]
+          sum.stopped = sum.stopped ?? tr.stopped
+          if (tr.total) {
+            say(`     ${sum.asked} asked, ${sum.cached} already known, ${sum.failed} failed`
+              + `${pendingCount(db, CLEAN_ROOTS) ? `, ${pendingCount(db, CLEAN_ROOTS)} to go` : ''}`)
+          }
+        } while (tr.total && !tr.cancelled && !tr.stopped && !sac.signal.aborted)
+        if (tr.asked) noteOk('model')
+      } catch (e) {
+        hadError = true
+        warn(`     ⚠ Reading stopped (${why(e?.message ?? e)}). Carrying on with what it already read.`)
+      }
+      if (!sum.total) say('     Nothing new to read.')
+      if (sum.stopped) { hadError = true; warn('     ⚠ ' + shown(sum.stopped)) }
+      if (sac.signal.aborted) say('     (You stopped it; the rest waits for next time.)')
+    }
+
+    // ── 3／3 分類 ────────────────────────────────────────────
+    const sweepScope = {
+      roots: CLEAN_ROOTS, filed: config.filed, quarantine: QUARANTINE,
+      readonly: config.readonly, restoreRoots: restoreRootList(),
+    }
+    say('')
+    if (!useModel || config.readonly) {
+      say('3/3  Working out categories — skipped')
+      say(`     ${config.readonly ? 'Read-only mode is on.' : 'That step needs the model.'}`
+        + ' node cli.mjs group --show still shows the last ones.')
+    } else if (sac.signal.aborted) {
+      say('3/3  Working out categories — you stopped it')
+    } else {
+      say('3/3  Working out categories for the files that are not coursework')
+      try {
+        const gr = await runGrouping(db, config, sweepScope, {
+          signal: sac.signal,
+          onProgress: p => say(`     ${p.batch}/${p.batches}  ${kindsOfFile(p.phrases)} → ${categories(p.folders)} so far`),
+        })
+        if (!gr.phrases.length) say('     Nothing outside a course to sort.')
+        else if (!gr.ok) {
+          hadError = true
+          warn(`     ⚠ ${shown(gr.error ?? 'reason unknown')}. The categories from last time are still there.`)
+        } else {
+          if (gr.error) { hadError = true; warn(`     ⚠ Part of it did not work: ${shown(gr.error)}`) }
+          say(`     ${categories(gr.groups.length)} from ${kindsOfFile(gr.phrases.length)} across ${plural(gr.files, 'file')}`
+            + `${gr.unmatched.length ? `; ${kindsOfFile(gr.unmatched.length)} did not land anywhere` : ''}.`)
+        }
+      } catch (e) {
+        hadError = true
+        warn(`     ⚠ Working out categories stopped (${why(e?.message ?? e)}).`)
+      }
+    }
+    process.off('SIGINT', stopSweep)
+    process.off('SIGTERM', stopSweep)
+
+    // ── 現在有什麼可以做 ────────────────────────────────────
+    const cleanable = safeCount(() => listCandidates(db, { ...SCOPE, limit: 0 }).totalAvailable)
+    const renamable = safeCount(() => renameSuggestions(db, sweepScope).items.length)
+    const filable = safeCount(() => filingSuggestions(db, sweepScope).items, [])
+    const byCourse = Array.isArray(filable) ? filable.filter(i => i.course).length : 0
+    const byCategory = Array.isArray(filable) ? filable.filter(i => !i.course).length : 0
+
+    say('')
+    say('── What you can do now ──────────────────────────')
+    // 左欄對齊，不然四行的指令會參差不齊（數字的位數不一樣）。
+    // 單複數也要對：「1 file belong in a course」讀起來像機器講的。
+    const todo = (n, one, many, cmd) => say(`  ${`${plural(n, 'file')} ${n === 1 ? one : many}`.padEnd(32)}node cli.mjs ${cmd}`)
+    if (cleanable) todo(cleanable, 'can be cleaned up', 'can be cleaned up', 'cleanup list')
+    if (renamable) todo(renamable, 'could be renamed', 'could be renamed', 'rename')
+    if (byCourse) todo(byCourse, 'belongs in a course', 'belong in a course', 'file')
+    if (byCategory) todo(byCategory, 'has a category', 'have a category', 'group --show')
+    if (!cleanable && !renamable && !byCourse && !byCategory) {
+      say('  Nothing to suggest. Everything it can see is either tidy already or something it cannot place.')
+    } else {
+      say('')
+      say('Nothing has moved. Each of those lists it; add --apply (or press the button in the panel) to act on it.')
+      say('Or open the panel and do the lot by clicking: node cli.mjs pet')
+    }
+    if (hadError) process.exitCode = EXIT.backend
+    break
+  }
+
+  /**
    * 讓每個檔都有資料夾可以放（P7）。**分類是從模型自己說的話長出來的**，不是誰寫死的。
    *
    *   node cli.mjs group                   問一次模型，算出「說法 → 資料夾」的對照表（**一個檔都不動**）
@@ -2823,6 +2987,8 @@ switch (cmd) {
   node cli.mjs doctor                      how this machine is doing right now
   node cli.mjs pet                         start the pet and the cleanup panel
   node cli.mjs open                        open the pet and cleanup panel (pet must be running)
+  node cli.mjs sweep                       do all the looking in one go: scan, read, work out categories
+                                           (moves nothing; --no-model skips the model)
   node cli.mjs cleanup scan                scan the cleanup scope once (Downloads only, by default)
   node cli.mjs cleanup list                see what can be cleaned up
   node cli.mjs cleanup apply [--skip id] [--also id]

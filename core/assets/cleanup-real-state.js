@@ -1024,15 +1024,27 @@ export function filingLines(item) {
   const seeded = item.seeded === true
   // **模型說的那一句一定用模型自己的課名**（P5）：套了學到的偏好之後 `course` 是使用者的寫法，
   // 拿它來填「模型認為：⋯⋯」等於把使用者自己的話說成模型講的。舊的後端沒有這個欄位，退回 course。
-  const course = safeName(String(item.modelCourse ?? item.course ?? '').trim()) || 'Unknown'
+  const course = safeName(String(item.modelCourse ?? item.course ?? '').trim())
   const topic = safeName(String(item.topic ?? '').trim()) || 'Unknown'
   const confidence = safeName(String(item.confidence ?? '').trim()) || 'low'
   const evidence = safeName(String(item.evidence ?? '').trim())
   const also = safeName(String(item.alsoKnownAs ?? '').trim())
+  // ── 沒有課名的那一條路（P7）────────────────────────────────
+  //
+  // 這種檔的 course 本來就是空的（CV、獎學金表單、法規⋯本來就不屬於任何一堂課）。
+  // 退回 'Unknown' 的話畫面會寫「The model thinks: Unknown / Unknown」——
+  // **而模型其實很確定那是一份履歷**，只是確定它不是課程教材。
+  // 那句話會讓使用者以為模型看不懂，於是不敢按。講它自己說的那句話。
+  const whatItIs = safeName(String(item.whatItIs ?? '').trim())
+  const why = course
+    ? `The model thinks: ${course} / ${topic} (confidence ${confidence})`
+    : `The model thinks this is: ${whatItIs || 'Unknown'}`
+      + (topic && topic !== 'Unknown' ? ` — ${topic}` : '')
+      + ` (confidence ${confidence}; not course material)`
   return {
     seeded,
     head: `${name} → ${folder}`,
-    why: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`
+    why: `${seeded ? '[demo answer] ' : ''}${why}`
       + (item.learned === true ? '  The location is the one you moved it to last time.' : ''),
     // 證據與免責聲明分成兩欄（理由見 modelOpinionLines）。
     note: evidence ? `Evidence: ${evidence}` : 'The model gave no evidence.',
@@ -1113,11 +1125,21 @@ export function createFilings(api) {
       return items
     },
 
-    /** 整理。**只送勾起來的那幾個，而且連課名與類型一起送** —— 後端不會自己猜。 */
+    /**
+     * 整理。**只送勾起來的那幾個，而且連課名與類型一起送** —— 後端不會自己猜。
+     *
+     * 沒有課名的那幾列（P7）要送的是 `folder`，不是 course／kind：它們的 course 本來就是空的，
+     * **不送 folder 的話後端會在「沒有可用的課名」那一關把它擋掉** ——
+     * 畫面上明明寫著去處，按下去卻什麼都沒搬。兩條路互斥，一列只送其中一組。
+     */
     async apply() {
       const chosen = items.filter(i => selected.has(i.itemId))
       if (!chosen.length) throw new Error('Tick the files you want filed first.')
-      const r = await post('/file/apply', { items: chosen.map(i => ({ itemId: i.itemId, course: i.course, kind: i.kind })) })
+      const r = await post('/file/apply', {
+        items: chosen.map(i => (i.course
+          ? { itemId: i.itemId, course: i.course, kind: i.kind }
+          : { itemId: i.itemId, folder: i.toFolder })),
+      })
       undoable = Array.isArray(r?.results) && r.results.some(x => x.ok)
       selected = new Set()
       const message = filingApplyMessage(r)

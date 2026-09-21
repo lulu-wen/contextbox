@@ -38,6 +38,10 @@ node cli.mjs cleanup quarantine              # see quarantine
 node cli.mjs cleanup quarantine --empty      # preview emptying it (seven days old), and print a confirmation token
 node cli.mjs cleanup quarantine --empty --yes <token>   # really empty the files in that preview
 
+node cli.mjs sweep                           # do all the looking in one go: scan, read, work out categories
+                                             #   MOVES NOTHING. It prints what you could do next, and the
+                                             #   commands that would do it.
+node cli.mjs sweep --no-model                #   just the scan (this is what happens anyway with no model)
 node cli.mjs think                           # let the model read a round of unread files (P2)
 node cli.mjs think --limit <n>               #   how many at most this round (1–500, default 20)
 

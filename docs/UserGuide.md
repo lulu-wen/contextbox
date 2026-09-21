@@ -72,6 +72,15 @@ never in scope.
    window only. Close the window and they are gone. Every path in them points inside the sandbox, so the
    commands below cannot reach your real Downloads folder or your real `~/.contextbox`.</div>
 
+1. Do all the looking in one command.
+
+   ```bash
+   node cli.mjs sweep            # scan, read what it has not read, work out categories
+   ```
+
+   It moves nothing. It finishes by telling you what you could do and which command does it. Everything
+   below is that same work, one step at a time, if you would rather drive it yourself.
+
 1. Walk through a round.
 
    ```bash
@@ -963,6 +972,7 @@ Every flag, every exit code and every edge case is in the [CLI reference](cli.ht
 | **Drop an unapplied plan** | `node cli.mjs cleanup release PLAN_ID` | `node cli.mjs cleanup release 89af4400-c2be-49f6-8696-0428278f4621` |
 | **See quarantine** | `node cli.mjs cleanup quarantine` | `node cli.mjs cleanup quarantine` |
 | **Empty quarantine** | `node cli.mjs cleanup quarantine --empty [--yes TOKEN]` | `node cli.mjs cleanup quarantine --empty` |
+| **Do all the looking** | `node cli.mjs sweep [--no-model]` | `node cli.mjs sweep` |
 | **Read a round** | `node cli.mjs think [--limit N]` | `node cli.mjs think --limit 20` |
 | **See rename suggestions** | `node cli.mjs rename` | `node cli.mjs rename` |
 | **Rename** | `node cli.mjs rename --apply [ID]… [--to NAME]` | `node cli.mjs rename --apply e011 --to Midterm` |

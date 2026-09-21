@@ -1231,9 +1231,27 @@ $('cleanup-next').onclick = () => {
   const rows = proposalRows(s).filter(item => !inBurst.has(item.itemId))
   if (!busy && (cleanupPage + 1) * cleanupPageSize < rows.length) { cleanupPage++; render() }
 }
+/**
+ * 講出這一次做了什麼。
+ *
+ * **一定要捲到看得見**（2026-09-22，使用者實機回報）：結果這一塊掛在整個面板的最下面，
+ * 而按鈕在每一列上。清單一長，使用者按了 Filing 第一列的「File」之後，訊息寫在螢幕外
+ * 七百多像素的地方 —— 他看到的是「按了完全沒反應，也不知道成功了沒有」。
+ *
+ * 那一次同時還有一個 bug 讓那一列真的沒搬成（送出去的東西少了 folder），
+ * 兩件事疊起來就完全看不出發生過什麼。**那個 bug 修掉了，這一半也要修** ——
+ * 下一次有東西失敗的時候，使用者還是要看得到為什麼。
+ */
 function result(message) {
-  $('cleanup-result').hidden = false
-  $('cleanup-result').textContent = message
+  const box = $('cleanup-result')
+  box.hidden = false
+  box.textContent = message
+  // 已經在畫面上就不要動（捲動會把使用者正在看的東西搶走）
+  try {
+    const r = box.getBoundingClientRect()
+    const shown = r.top >= 0 && r.bottom <= (window.innerHeight || document.documentElement.clientHeight)
+    if (!shown) box.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  } catch { /* 舊瀏覽器沒有 scrollIntoView 的選項也沒關係：訊息本身已經寫上去了 */ }
 }
 async function load() {
   if (demo) return

@@ -98,6 +98,7 @@ Timestamps are backdated, so there is something to clean the moment it exists. I
 variables to paste — **they affect that one terminal only, and your real files are never in scope.**
 
 ```bash
+node cli.mjs sweep            # one command: look, read, work out categories. Moves nothing.
 node cli.mjs cleanup scan     # what's here
 node cli.mjs cleanup list     # "these three screenshots are one burst — keep the newest?"
 node cli.mjs cleanup apply    # moved to quarantine. Not deleted. `cleanup undo` brings it all back
