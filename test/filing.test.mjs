@@ -990,3 +990,103 @@ describe('稽核 ・ 英文化之後「說不出來」的各種寫法都要擋�
     assert.match(both, /original language|do not translate/i, '證據是原文引用，翻譯過的不算證據')
   })
 })
+
+// ═══ P7：不屬於任何課程的檔也要有資料夾可以放 ═══════════════════
+//
+// 使用者（2026-09-21）：
+//   > 不一定要課程名稱? 像是 CV 就是 personal file 之類的阿?
+//   > 所以她應該根據檔案的類別 來看應該怎麼分 才可以把檔案都讓他有資料夾可以放?
+//
+// 以前 filing.ts 一行 `if (!course) continue` 就把所有不屬於課程的檔放棄 ——
+// 而實機 202 筆答案裡 186 筆 course=Unknown。
+describe('課名說不出來的走分類那條路', () => {
+  const setup = (t, { folder = 'Resumes', phrase = 'resume' } = {}) => {
+    const s = sandbox(t, { 'report.txt': OS_DEADLOCK })
+    s.seed('report.txt', {
+      course: 'Unknown', topic: 'Unknown', kind: 'Other',
+      suggestedName: 'CS student profile', whatItIs: phrase, subject: 'CS student profile',
+      evidence: 'PROFILE', confidence: 'high',
+    })
+    if (folder) {
+      s.db.prepare('INSERT INTO file_group_map (phrase,folder,why,at) VALUES (?,?,?,?)')
+        .run(phrase, folder, 'career documents', new Date().toISOString())
+    }
+    return s
+  }
+
+  test('**有對照表就提議得出來**，而且目的地不經過 Courses', async t => {
+    const s = setup(t)
+    const items = filingSuggestions(s.db, s.fileScope, 99).items
+    assert.equal(items.length, 1)
+    assert.equal(items[0].toFolder, 'Resumes')
+    assert.ok(!items[0].toFolder.startsWith('Courses/'), '分類那條路是一層，不在 Courses 底下')
+    assert.equal(items[0].whatItIs, 'resume', '畫面要講得出「它是靠什麼歸進來的」')
+    assert.equal(items[0].course, '', '沒有課名就不要編一個')
+  })
+
+  // **沒對到就不提議**，不隨便塞一個 —— 塞錯地方比不提議更糟。
+  test('還沒分群（對照表是空的）→ 不提議', async t => {
+    const s = setup(t, { folder: null })
+    assert.deepEqual(filingSuggestions(s.db, s.fileScope, 99).items, [])
+  })
+
+  test('對照表裡的說法折大小寫與空白（Resume／resume 是同一種）', async t => {
+    const s = sandbox(t, { 'report.txt': OS_DEADLOCK })
+    s.seed('report.txt', {
+      course: 'Unknown', topic: 'Unknown', kind: 'Other', suggestedName: 'x',
+      whatItIs: '  Resume  ', subject: 'x', evidence: 'e', confidence: 'high',
+    })
+    s.db.prepare('INSERT INTO file_group_map (phrase,folder,why,at) VALUES (?,?,?,?)')
+      .run('resume', 'Resumes', 'w', new Date().toISOString())
+    assert.equal(filingSuggestions(s.db, s.fileScope, 99).items[0]?.toFolder, 'Resumes')
+  })
+
+  test('真的搬過去、而且復原得回來', async t => {
+    const s = setup(t)
+    const it = filingSuggestions(s.db, s.fileScope, 99).items[0]
+    const r = applyFilings(s.db, [{ itemId: it.itemId, folder: it.toFolder }], s.fileScope)
+    assert.equal(r.results[0].ok, true, r.results[0].why)
+    assert.equal(r.results[0].toFolder, 'Resumes')
+    assert.ok(existsSync(join(s.filed, 'Resumes', 'report.txt')))
+    assert.ok(!existsSync(join(s.downloads, 'report.txt')))
+
+    const u = undoFilings(s.db, { last: true }, s.fileScope)
+    assert.equal(u.results[0].ok, true)
+    assert.ok(existsSync(join(s.downloads, 'report.txt')), '要放得回來')
+  })
+
+  // 模型碰不到路徑（跟 P3／P4 同一條不變量）。folder 是呼叫端給的字串，照樣不可信。
+  test('**分類名稱跳不出 filed 那棵樹**', async t => {
+    const s = setup(t)
+    const it = filingSuggestions(s.db, s.fileScope, 99).items[0]
+    for (const bad of ['../../etc', '/etc/passwd', 'a/b', '..', '...', 'CON']) {
+      const r = applyFilings(s.db, [{ itemId: it.itemId, folder: bad }], s.fileScope)
+      if (r.results[0].ok) {
+        assert.ok(!r.results[0].toFolder.includes('/') && !r.results[0].toFolder.includes('..'),
+          bad + ' -> ' + r.results[0].toFolder)
+        // 搬成功的話要真的在 filed 底下
+        assert.ok(existsSync(join(s.filed, r.results[0].toFolder, r.results[0].to)), bad)
+        undoFilings(s.db, { last: true }, s.fileScope)
+      }
+    }
+  })
+
+  test('分類不可以叫 Courses（會跟課程那棵樹撞在一起）', async t => {
+    const s = setup(t)
+    const it = filingSuggestions(s.db, s.fileScope, 99).items[0]
+    const r = applyFilings(s.db, [{ itemId: it.itemId, folder: 'Courses' }], s.fileScope)
+    assert.equal(r.results[0].ok, false)
+    assert.match(r.results[0].why, /Courses/)
+  })
+
+  test('課程那條路一個字都沒變', async t => {
+    const s = sandbox(t, { '未命名文件 (3).txt': OS_DEADLOCK })
+    s.seed('未命名文件 (3).txt', {
+      course: '作業系統', topic: '死結', kind: 'Lecture', suggestedName: '作業系統_死結',
+      whatItIs: 'lecture handout', subject: '死結', evidence: 'e', confidence: 'high',
+    })
+    const items = filingSuggestions(s.db, s.fileScope, 99).items
+    assert.equal(items[0].toFolder, 'Courses/作業系統/Lecture')
+    assert.equal(items[0].whatItIs, undefined, '課程那條不設這個欄位')
+  })
+})

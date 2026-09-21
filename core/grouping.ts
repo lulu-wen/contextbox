@@ -227,3 +227,123 @@ export function groupMessages(rows: readonly DigestRow[]): unknown[] {
     },
   ]
 }
+
+// ── centroid：對「不重複的說法」分群，不是對檔案分群 ────────────────
+//
+// 使用者（2026-09-21）：
+//   > 像是 centroid 的感覺一樣，看那些檔案都比較靠近哪一個點? 以那個點來做分類之類的
+//   > 所以應該是要根據 whatItIs 來看要如何衍生出新的分類
+//
+// 1164 個檔 → 取 distinct whatItIs → 一兩百種說法 → **一次呼叫**收斂成 ~8 個資料夾。
+// 「點」是從資料自己長出來的，不是預先寫死的。而且因為對象是說法不是檔案，
+// 1164 個檔跟 100 個檔成本一樣，都是一次呼叫。
+
+/** 說法的比對鍵：折大小寫與空白。`Resume` 與 `resume ` 是同一種說法。 */
+export function phraseKey(s: unknown): string {
+  return String(s ?? '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase()
+}
+
+/**
+ * 一堆 whatItIs → 不重複的說法，**照出現次數多的排前面**。
+ *
+ * 排序是刻意的：一次塞不完的時候，先問最常見的那些 ——
+ * 涵蓋的檔案數最多，而長尾的怪說法本來就該落在「沒對到」。
+ */
+export function distinctPhrases(values: readonly unknown[]): { phrase: string; count: number }[] {
+  const seen = new Map<string, { phrase: string; count: number }>()
+  for (const v of values) {
+    const k = phraseKey(v)
+    if (!k) continue
+    const hit = seen.get(k)
+    if (hit) { hit.count++; continue }
+    // 留第一次出現的寫法（不折大小寫），那是給人看的
+    seen.set(k, { phrase: cleanField(String(v), 120), count: 1 })
+  }
+  return [...seen.values()].sort((a, b) =>
+    b.count - a.count || (a.phrase < b.phrase ? -1 : a.phrase > b.phrase ? 1 : 0))
+}
+
+/** 送出去的那一段：一行一個說法，帶檔案數。**沒有檔名、沒有原文。** */
+export function phraseDigest(rows: readonly { phrase: string; count: number }[]): string {
+  return rows.map((r, i) => `${i + 1}. ${cleanField(r.phrase, 120)} (${r.count})`).join('\n')
+}
+
+// **「少而有意義」要給範圍，不然會過度執行。** 第一次實測只講 prefer a few，
+// 模型回了三組 academic／professional／technical —— 而 professional 裡同時有
+// resume、invoice、receipt。那種名字放到磁碟上等於沒有分類。
+export const PHRASE_SYSTEM =
+  'You are given a list of short phrases describing the kinds of documents someone has, '
+  + 'each with how many files use that phrase. '
+  + 'Group the phrases into folders that would make sense on disk. '
+  + 'Put synonyms together — "resume" and "CV" belong in one folder. '
+  + 'Aim for between 4 and 10 folders. '
+  + '**Name each folder after what is actually in it**, the way someone would name a real folder: '
+  + '"Resumes", "Lab handouts", "Research papers", "Application forms". '
+  + 'Do not use vague umbrella names like "Documents", "Misc", "Other", "Personal", '
+  + '"Professional", "Academic" or "Technical" — a folder that could hold anything is not a folder. '
+  + 'Do not put unrelated kinds together just to reduce the count: '
+  + 'a resume and an invoice do not belong in the same folder. '
+  + 'Leave out phrases that do not clearly belong anywhere. Answer in English.'
+
+export const PHRASE_USER =
+  'name: a short folder name, in English, no path separators. '
+  + 'why: one line saying what belongs in it. '
+  + 'members: the line numbers of the phrases that belong in it. '
+  + 'Every number may appear in at most one folder.'
+
+export function phraseMessages(rows: readonly { phrase: string; count: number }[]): unknown[] {
+  return [
+    { role: 'system', content: PHRASE_SYSTEM },
+    { role: 'user', content: [{ type: 'text', text: PHRASE_USER }, { type: 'text', text: phraseDigest(rows) }] },
+  ]
+}
+
+/** 一組分類：資料夾名 ＋ 一句理由 ＋ 對到它的那些說法（已折鍵）。 */
+export type PhraseGroup = { name: string; why: string; phrases: string[] }
+
+/**
+ * 模型回的分組 → 「說法 → 資料夾」的對照表。
+ *
+ * 守的性質跟 normalizeGroups 一樣（名字洗不出來就整組丟掉、一個說法只能進一組、
+ * 指到不存在的序號就忽略），只是對象從檔案換成說法。
+ */
+export function normalizePhraseGroups(
+  raw: unknown, rows: readonly { phrase: string; count: number }[],
+): PhraseGroup[] {
+  const list = Array.isArray(raw) ? raw : []
+  const taken = new Set<string>()
+  const out: PhraseGroup[] = []
+  for (const g of list) {
+    const name = cleanGroupName((g as any)?.name)
+    if (!name) continue
+    const why = cleanField(String((g as any)?.why ?? ''), GROUP_WHY_MAX)
+    const members = Array.isArray((g as any)?.members) ? (g as any).members : []
+    const phrases: string[] = []
+    for (const m of members) {
+      const n = Number(m)
+      if (!Number.isInteger(n) || n < 1 || n > rows.length) continue
+      const k = phraseKey(rows[n - 1].phrase)
+      if (!k || taken.has(k)) continue
+      taken.add(k)
+      phrases.push(k)
+    }
+    if (!phrases.length) continue
+    out.push({ name, why, phrases })
+  }
+  return out
+}
+
+/**
+ * 組數上限。超過就留**涵蓋說法最多**的前 MAX_GROUPS 組，其餘算「沒對到」。
+ * 回傳被砍掉的說法（呼叫端要算進「沒對到」的數字，不可以安靜消失）。
+ */
+export function capPhraseGroups(
+  groups: readonly PhraseGroup[], max = MAX_GROUPS,
+): { kept: PhraseGroup[]; droppedPhrases: string[] } {
+  if (groups.length <= max) return { kept: [...groups], droppedPhrases: [] }
+  const sorted = [...groups].sort((a, b) =>
+    b.phrases.length - a.phrases.length || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  const dropped: string[] = []
+  for (const g of sorted.slice(max)) dropped.push(...g.phrases)
+  return { kept: sorted.slice(0, max), droppedPhrases: dropped }
+}

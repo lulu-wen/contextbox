@@ -14,6 +14,7 @@ import {
   batches, capGroups, cleanGroupName, digestText, groupFormat, groupMessages,
   mergeGroups, normalizeGroups,
   GROUP_BATCH, GROUP_NAME_MAX, MAX_GROUPS,
+  distinctPhrases, phraseDigest, phraseMessages, normalizePhraseGroups, capPhraseGroups, phraseKey,
 } from '../core/grouping.ts'
 import {
   describeFormat, describeIsUseful, describeMessages, parseDescribe,
@@ -262,5 +263,88 @@ describe('跨批合併與組數上限', () => {
   test('沒超過就原樣回，沒有人被退回', () => {
     const groups = [{ name: 'A', why: '', itemIds: ['1'] }]
     assert.deepEqual(capGroups(groups), { kept: groups, droppedItemIds: [] })
+  })
+})
+
+// ═══ centroid：對「不重複的說法」分群 ═════════════════════════
+//
+// 使用者（2026-09-21）：
+//   > 像是 centroid 的感覺一樣，看那些檔案都比較靠近哪一個點? 以那個點來做分類之類的
+//   > 所以應該是要根據 whatItIs 來看要如何衍生出新的分類
+describe('分群的對象是說法，不是檔案', () => {
+  test('折大小寫與空白，照次數排序，留第一次出現的寫法', () => {
+    const d = distinctPhrases(['resume', 'Resume', ' resume ', 'lab handout', 'CV'])
+    assert.equal(d.length, 3, 'resume 的三種寫法算一種')
+    assert.deepEqual(d[0], { phrase: 'resume', count: 3 }, '最常見的排最前面，寫法留第一次的')
+  })
+
+  test('空的、只有空白的不算一種說法', () => {
+    assert.deepEqual(distinctPhrases(['', '   ', null, undefined, 'resume']),
+      [{ phrase: 'resume', count: 1 }])
+  })
+
+  // **成本跟檔案數無關，只跟說法的種數有關** —— 這是這個做法的重點。
+  test('一千個檔只有三種說法 → 送出去的只有三行', () => {
+    const many = Array.from({ length: 1000 }, (_, i) => ['resume', 'lab handout', 'invoice'][i % 3])
+    const d = distinctPhrases(many)
+    assert.equal(d.length, 3)
+    assert.equal(phraseDigest(d).split(String.fromCharCode(10)).length, 3)
+  })
+
+  test('**送出去的只有說法與數量**：沒有檔名、沒有內容', () => {
+    const text = phraseDigest(distinctPhrases(['resume', 'resume']))
+    assert.equal(text, '1. resume (2)')
+    assert.ok(!text.includes('.pdf') && !text.includes('.docx'))
+  })
+
+  // 第一次實測只講 prefer a few，模型回了 academic／professional／technical ——
+  // 而 professional 裡同時有 resume、invoice、receipt。那種名字放到磁碟上等於沒有分類。
+  test('prompt 要擋掉傘狀名字，也要擋掉「為了少分組而硬湊」', () => {
+    const flat = JSON.stringify(phraseMessages([{ phrase: 'resume', count: 1 }]))
+    assert.match(flat, /between 4 and 10 folders/i, '不給範圍會被過度執行成三組')
+    assert.match(flat, /Misc/i)
+    assert.match(flat, /a resume and an invoice do not belong in the same folder/i)
+  })
+
+  test('normalizePhraseGroups：一個說法只能進一組，序號壞掉就忽略', () => {
+    // 同次數時照字母排，所以不要假設順序 —— 用序號自己算出期待值。
+    const rows = distinctPhrases(['resume', 'CV', 'invoice'])
+    assert.equal(rows.length, 3)
+    const g = normalizePhraseGroups([
+      { name: 'First', why: 'a', members: [1, 2] },
+      { name: 'Second', why: 'b', members: [2, 3, 99, 'x', 0, -1] },
+    ], rows)
+    assert.equal(g[0].phrases.length, 2, '第一組拿到 1 與 2')
+    assert.deepEqual(g[1].phrases, [phraseKey(rows[2].phrase)],
+      '2 已經進第一組了，壞序號一律忽略，所以第二組只剩 3')
+    const all = g.flatMap(x => x.phrases)
+    assert.equal(new Set(all).size, all.length, '不可以有重複')
+  })
+
+  test('名字洗不出來就整組丟掉（說法留給後面的組）', () => {
+    const rows = distinctPhrases(['resume', 'CV'])
+    const g = normalizePhraseGroups([
+      { name: '...', why: '', members: [1] },
+      { name: 'Resumes', why: '', members: [1, 2] },
+    ], rows)
+    assert.equal(g.length, 1)
+    assert.equal(g[0].phrases.length, 2)
+  })
+
+  test('組數超過上限 → 留涵蓋說法最多的，其餘算「沒對到」，數字加得起來', () => {
+    const groups = Array.from({ length: MAX_GROUPS + 2 }, (_, i) => ({
+      name: 'G' + i, why: '', phrases: Array.from({ length: i + 1 }, (_, j) => `p${i}-${j}`),
+    }))
+    const total = groups.reduce((n, g) => n + g.phrases.length, 0)
+    const { kept, droppedPhrases } = capPhraseGroups(groups)
+    assert.equal(kept.length, MAX_GROUPS)
+    assert.equal(kept.reduce((n, g) => n + g.phrases.length, 0) + droppedPhrases.length, total)
+  })
+
+  test('模型回壞東西 → 空陣列，不丟例外', () => {
+    const rows = distinctPhrases(['resume'])
+    for (const bad of [undefined, null, 'x', {}, [null], [{}], [{ name: 'a' }]]) {
+      assert.deepEqual(normalizePhraseGroups(bad, rows), [], JSON.stringify(bad))
+    }
   })
 })

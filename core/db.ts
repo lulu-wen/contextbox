@@ -302,7 +302,23 @@ CREATE TABLE IF NOT EXISTS model_item_views (
   key     TEXT NOT NULL,
   at      TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_model_item_views_key ON model_item_views(key);
+CREATE INDEX IF NOT EXISTS ix_model_item_views_key ON model_item_views(key);
+-- 「說法 → 資料夾」的對照表（2026-09-21，P7）。
+--
+-- 不屬於任何課程的檔（使用者的 Downloads 大半是這種）要有地方放。分類**不是寫死的**，
+-- 是從 model_views.what_it_is 長出來的：取不重複的說法、問模型一次、收斂成幾個資料夾。
+-- 因為對象是「說法」不是「檔案」，1164 個檔跟 100 個檔成本一樣，都是一次呼叫。
+--
+-- phrase 是折過大小寫與空白的鍵（phraseKey），所以 Resume／resume／CV 指到同一列。
+-- **重新分類會整份取代**（一次交易 DELETE + INSERT），不會累積出兩份互相矛盾的對照表。
+CREATE TABLE IF NOT EXISTS file_group_map (
+  phrase TEXT PRIMARY KEY,   -- phraseKey(what_it_is)
+  folder TEXT NOT NULL,      -- 資料夾名（已經過 cleanGroupName）
+  why    TEXT,               -- 一句人話，給畫面用
+  at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_file_group_map_folder ON file_group_map(folder);
+
 
 -- 每一次真的送出去的紀錄。**不存內容**，只存「送了多少」與「多久」——
 -- 使用者查得到「今天送了幾次、平均幾秒」，而帳本本身不可以變成第二份內容外洩管道。

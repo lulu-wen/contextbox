@@ -51,6 +51,8 @@ export function sandbox(t, files = {}, { days = 30 } = {}) {
       key: viewKey(textPayload(row.text)), item_id: item.id, source: 'text',
       course: view.course ?? '', topic: view.topic ?? '', kind: view.kind ?? '',
       suggested_name: view.suggestedName ?? '', evidence: view.evidence ?? '',
+      // P7（2026-09-21）：兩個軸。沒給就是空的 —— 舊測試照舊，只有新測試會用到。
+      what_it_is: view.whatItIs ?? '', subject: view.subject ?? '',
       confidence: view.confidence ?? 'high',
       model: view.model ?? '測試用的假模型', prompt_version: PROMPT_VERSION,
       at: new Date().toISOString(), seeded: view.seeded ? 1 : 0,

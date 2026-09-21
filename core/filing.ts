@@ -32,6 +32,7 @@ import { CleanupError, cleanupProblem, transaction, withCleanupLock } from './cl
 import { checkedPath } from './cleanup-exec.ts'
 import { VIEW_KINDS } from './model.ts'
 import { modelViewForItem, opinionOf, type ModelOpinion } from './model-store.ts'
+import { cleanGroupName, phraseKey } from './grouping.ts'
 import {
   checkFile, cleanCourse, confidentEnough, followFile, freeName, itemById, namesTaken, originalExt,
   underSomeRoot, whyNotTouchable, COURSE_MAX_CODEPOINTS, RENAMABLE_STATUSES, SUFFIX_MAX, UNKNOWN_COURSE,
@@ -53,7 +54,30 @@ export const FILING_BATCH_MAX = 100
 /** 課名的洗法與上限住在 core/rename.ts（cleanName 就在那裡），這裡 re-export，呼叫端不用改。 */
 export { cleanCourse, COURSE_MAX_CODEPOINTS, UNKNOWN_COURSE }
 /** 歸檔樹的第一層。`<filed>/課程/<課名>/<類型>/` */
-export const COURSES_DIR = 'Courses'
+export const COURSES_DIR = 'Courses'
+/**
+ * 「這是什麼文件」→ 資料夾名。沒對到回空字串（＝這一輪不提議這個檔）。
+ *
+ * 對照表是 `file_group_map`，由分群那一步寫進去的（見 core/grouping.ts）。
+ * **沒對到就不提議**，不隨便塞一個 —— 塞錯地方比不提議更糟。
+ *
+ * 洗一次再用（不變量 2）：存進去時過 cleanGroupName，拿出來再過一次同一支 ——
+ * 資料庫可能被手改過，而這個值會變成磁碟上的資料夾名。
+ * 而且**不可以叫 Courses**，那會跟課程那棵樹撞在一起。
+ */
+export function groupFolderFor(db: DatabaseSync, whatItIs: unknown): string {
+  const key = phraseKey(whatItIs)
+  if (!key) return ''
+  let row: { folder?: unknown } | undefined
+  try {
+    row = db.prepare('SELECT folder FROM file_group_map WHERE phrase=?').get(key) as typeof row
+  } catch { return '' }
+  const folder = cleanGroupName(row?.folder)
+  if (!folder) return ''
+  if (folder.toLowerCase() === COURSES_DIR.toLowerCase()) return ''
+  return folder
+}
+
 /** `kind` 不在固定選項裡時用哪一個資料夾（P2 的 VIEW_KINDS 最後一個就是它）。 */
 export const OTHER_KIND = 'Other'
 
@@ -125,6 +149,11 @@ export type FilingSuggestion = {
   modelCourse: string
   kind: string
   topic: string
+  /**
+   * 有值 ＝ 這個檔是靠「這是什麼文件」歸進來的，不是靠課名（P7）。
+   * 畫面要講得不一樣：課程那條講「課程／類型」，這條講「這是一份 resume」。
+   */
+  whatItIs?: string
   confidence: string
   evidence: string
   /** true ＝ demo 預先塞的示範答案，畫面要標示 */
@@ -206,8 +235,43 @@ export function filingSuggestions(db: DatabaseSync, scope: FilingScope, opts: { 
     if (!opinion) continue
     if (!confidentEnough(opinion.confidence)) continue
     const course = cleanCourse(opinion.course)
-    if (!course) continue
     if (whyNotFilable(db, row, scope)) continue
+
+    // ── 課名說不出來的走另一條路（2026-09-21，P7）────────────────────
+    //
+    // 以前這裡是 `if (!course) continue` —— 一行就把所有不屬於任何課程的檔放棄。
+    // 而使用者的 Downloads 大半是 CV、自傳、推薦書、獎學金表單、法規、論文、規格書：
+    // 實機 202 筆答案裡 186 筆 course=Unknown，也就是**這個工具對它實際看到的
+    // 大部分檔案都束手無策**，而原因不是看不懂。
+    //
+    // 現在：course 說得出來 → Courses/<課名>/<kind>（完全不變，learned 偏好照舊）；
+    // 說不出來 → <分類>/，分類來自 file_group_map（從 whatItIs 分群長出來的）。
+    // **兩條路互斥**，一個檔只會走一條，不會有兩個互相矛盾的目的地。
+    if (!course) {
+      const folder = groupFolderFor(db, opinion.whatItIs)
+      // 還沒分群、或這個說法沒對到任何資料夾 → 這個檔這一輪就是沒有去處。
+      // **不隨便塞一個** —— 塞錯地方比不提議更糟。
+      if (!folder) continue
+      items.push({
+        itemId: row.id,
+        name: row.name,
+        course: '',
+        modelCourse: '',
+        kind: kindFolder(opinion.kind),
+        topic: opinion.subject || opinion.topic,
+        confidence: opinion.confidence,
+        evidence: opinion.evidence,
+        seeded: opinion.seeded,
+        toFolder: folder,
+        learned: false,
+        rejectedBefore: learned.rejected(row.id, filingSummary(folder)),
+        alsoKnownAs: '',
+        /** 這個檔是靠「這是什麼文件」歸進來的，不是靠課名。畫面要講得不一樣。 */
+        whatItIs: opinion.whatItIs,
+      })
+      continue
+    }
+
     const offer = offeredFiling(learned, opinion.course, opinion.kind, known)
     const toFolder = [COURSES_DIR, offer.course, offer.kind].join('/')
     items.push({
@@ -301,7 +365,15 @@ export type FilingOutcome = {
   id?: string
 }
 
-export type FilingRequest = { itemId: unknown; course?: unknown; kind?: unknown }
+export type FilingRequest = {
+  itemId: unknown; course?: unknown; kind?: unknown
+  /**
+   * 不屬於任何課程的檔要搬去的資料夾（P7，2026-09-21）。
+   * 有它就走「分類」那條路：`<folder>/`，不經過 Courses、不分 kind。
+   * 給了 folder 就不看 course／kind —— **兩條路互斥**。
+   */
+  folder?: unknown
+}
 
 function validateRequests(items: unknown): asserts items is FilingRequest[] {
   if (!Array.isArray(items) || !items.length) {
@@ -323,6 +395,10 @@ function validateRequests(items: unknown): asserts items is FilingRequest[] {
     const kind = (it as FilingRequest).kind
     if (kind !== undefined && (typeof kind !== 'string' || kind.length > 200)) {
       throw new CleanupError('BAD_BODY', 'kind must be a string of at most 200 characters.')
+    }
+    const folder = (it as FilingRequest).folder
+    if (folder !== undefined && (typeof folder !== 'string' || folder.length > 4096)) {
+      throw new CleanupError('BAD_BODY', 'folder must be a string of at most 4096 characters.')
     }
   }
 }
@@ -391,6 +467,34 @@ function ensureDir(parentReal: string, name: string): string {
  * 課名用「第一次出現的寫法」：同一批裡先看記事本，再看磁碟上已經有的（含只差空白／全形／大小寫的），
  * 都沒有才用這一次洗出來的。最後再確認一次算出來的資料夾真的在 filed 底下 —— 那是不變量 3 的底線。
  */
+/**
+ * 分類那條路的目的地：`<folder>/`，直接在 filed 底下（P7，2026-09-21）。
+ *
+ * 跟課程那條**刻意不共用** —— 課程是兩層（`Courses/<課名>/<kind>`），
+ * 分類是一層。硬塞進同一支函式會讓「幾層」變成一個參數，而那正是最容易搞錯的地方。
+ *
+ * 名字再洗一次（不變量 2），而且最後照樣確認算出來的資料夾真的在 filed 底下 ——
+ * 那是不變量 3 的底線，不因為換了一條路就少做。
+ */
+function targetGroupDir(scope: FilingScope, folder: string): { dir: string; folder: string } {
+  const clean = cleanGroupName(folder)
+  if (!clean) {
+    throw new CleanupError('BAD_BODY', 'That folder name washes out to nothing, so it cannot be used.')
+  }
+  if (clean.toLowerCase() === COURSES_DIR.toLowerCase()) {
+    throw new CleanupError('BAD_BODY', `A category cannot be called ${COURSES_DIR} — that is where course material goes.`)
+  }
+  const want = resolve(scope.filed)
+  try { mkdirSync(want, { recursive: true }) }
+  catch (e: any) { if (e?.code !== 'EEXIST') throw e }
+  const root = checkedPath(want, true)
+  const dir = ensureDir(root, clean)
+  if (!under(root, dir)) {
+    throw new CleanupError('UNSAFE_PATH', 'The folder this works out to is not under the filed folder, so this one is skipped.')
+  }
+  return { dir, folder: clean }
+}
+
 function targetDir(scope: FilingScope, course: string, kind: string, memo: Memo): { dir: string; folder: string } {
   const want = resolve(scope.filed)
   try { mkdirSync(want, { recursive: true }) }
@@ -473,9 +577,24 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   // 第二個檔就該直接用 `OS`，而且使用者送 `OS` 不算「他又改了一次」（不然計數會灌水）。
   // 整張表有 PREF_MAX 的上限，重讀一次是固定成本。
   const offer = offeredFiling(loadLearned(db), usable?.course, usable?.kind)
-  // 呼叫端指名的課名（面板送清單上顯示的那一個、使用者也可以自己打）一樣要洗過
-  const course = cleanCourse(req.course === undefined ? offer.course : req.course)
-  if (!course) {
+
+  // ── 分類那條路（P7，2026-09-21）────────────────────────────────
+  //
+  // 呼叫端給了 folder ＝ 這個檔不屬於任何課程，要搬去 `<folder>/`。
+  // **在課名那一關之前分流**：不然下面那句「沒有可用的課名」會把它擋掉，
+  // 而那正是這一整期要修的事（實機 202 筆答案裡 186 筆 course=Unknown）。
+  //
+  // folder 是呼叫端給的字串（面板送清單上顯示的那一個），所以照樣是不可信的輸入：
+  // targetGroupDir 會洗一次、擋掉 Courses、最後確認在 filed 底下。
+  // **給了 folder 就走分類那條路**，而且要在課名那一關之前分流 ——
+  // 不然下面那句「沒有可用的課名」會把它擋掉，而那正是這一整期要修的事
+  //（實機 202 筆答案裡 186 筆 course=Unknown）。
+  const wantFolder = req.folder !== undefined && String(req.folder).trim() ? String(req.folder) : ''
+
+  // 呼叫端指名的課名（面板送清單上顯示的那一個、使用者也可以自己打）一樣要洗過。
+  // 走分類那條路的時候課名是空的，這一關整個跳過。
+  const course = wantFolder ? '' : cleanCourse(req.course === undefined ? offer.course : req.course)
+  if (!wantFolder && !course) {
     return no(req.course === undefined
       ? 'There is no usable course name: the model had no view, was not confident enough, or could not tell which course.'
       : 'That course name washes out to nothing — only path separators, control characters or reserved names are left — so it cannot be used.')
@@ -497,7 +616,11 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   try { before = checkFile(join(fromDir, name), FILE_WORDS) } catch (e) { return no(cleanupProblem(e)) }
 
   let dest: { dir: string; folder: string }
-  try { dest = targetDir(scope, course, kind, memo) } catch (e) { return no(cleanupProblem(e)) }
+  try {
+    // 分類那條路是一層（`<folder>/`），課程那條是兩層（`Courses/<課名>/<kind>`）。
+    // 兩支刻意分開，見 targetGroupDir 的說明。
+    dest = wantFolder ? targetGroupDir(scope, wantFolder) : targetDir(scope, course, kind, memo)
+  } catch (e) { return no(cleanupProblem(e)) }
   if (dest.dir === fromDir) return no('This file is already in that folder.')
 
   let taken = memo.taken.get(dest.dir)
@@ -530,10 +653,14 @@ function fileOne(db: DatabaseSync, req: FilingRequest, scope: FilingScope, at: s
   // **只在這裡學**：檔案真的搬成功了才算「使用者做過這個動作」（不變量 1）。
   // 而且只學「跟我們建議的不一樣」的那一下 —— 照單全收不是新資訊。
   // 學習本身絕對不可以讓這一項失敗：learn.ts 每一個 db 呼叫都自己包著，不往上丟。
-  if (courseKey(course) !== courseKey(offer.course)) {
+  // **分類那條路沒有課名可學**：course 是空的，學下去會寫出一筆 ''→'' 的偏好，
+  // 而 learned 那一區是給使用者看「它學到了什麼」的 —— 空的一列只會讓人困惑。
+  if (!wantFolder && courseKey(course) !== courseKey(offer.course)) {
     learnCourse(db, usable?.course, req.course, course, at, scope)
   }
-  if (kind !== offer.kind && kindTyped) learnKind(db, usable?.course, kindFolder(usable?.kind), kind, at, scope)
+  if (!wantFolder && kind !== offer.kind && kindTyped) {
+    learnKind(db, usable?.course, kindFolder(usable?.kind), kind, at, scope)
+  }
   // 同一個建議重新做一次成功 → 「你上次退過」的標記要消失（預期行為 5）
   forgetRejected(db, itemId, filingSummary(dest.folder), scope)
   return {
