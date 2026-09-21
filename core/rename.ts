@@ -173,12 +173,46 @@ export function cleanCourse(raw: unknown): string {
 }
 
 /**
+ * 建議的名字開頭那一段是「說不出來」的話，把它拿掉（2026-09-21 使用者實機回報）。
+ *
+ * prompt 規定 `suggestedName` 是 `<Course or project>_<Topic>`，而且說不出課名的時候
+ * **要寫字面的 `Unknown`**。兩條規矩加起來，模型照做就會回 `Unknown_<主題>` ——
+ * 然後那個字原封不動變成磁碟上的檔名：
+ *
+ *   report.docx → Unknown_User-Guided Semantic Seam Carving with Accelerated Seam Removal.docx
+ *
+ * `Unknown` 是我們自己的哨兵值，不是使用者檔案的一部分，不可以跑到檔名上。
+ * cleanCourse 早就為了資料夾擋過同一件事（不然會長出 `Courses/未知/`），
+ * 只是當時沒有套到檔名這一邊 —— 同一個 bug，兩個出口。
+ *
+ * 課名說不出來、主題說得出來，是**很常見而且有用**的情況（上面那個例子主題就是論文標題），
+ * 所以是把前綴拿掉、不是整個不提議。開頭一段一段剝，`Unknown_Unknown_X` 也剝得乾淨；
+ * 剝到什麼都不剩（`Unknown`、`Unknown_`）就回空字串 ＝ 這個檔不提議。
+ */
+export function stripUnknownCourse(stem: string): string {
+  let out = stem
+  // 一段一段剝。上限擋住病態輸入（`Unknown_Unknown_…` 接一百段）。
+  for (let i = 0; i < 8; i++) {
+    const cut = out.indexOf('_')
+    const head = cut === -1 ? out : out.slice(0, cut)
+    if (!UNKNOWN_COURSES.some(u => courseKey(head) === courseKey(u))) return out
+    // 整個名字就是「說不出來」：沒有主題，沒有東西可以建議
+    if (cut === -1) return ''
+    out = out.slice(cut + 1)
+  }
+  return out
+}
+
+/**
  * 模型的建議 → 完整的新檔名（含原本的副檔名）。提不出來回空字串。
  * `未命名文件 (3).txt` ＋ 模型說 `作業系統_死結` → `作業系統_死結.txt`。
  */
 export function suggestedFileName(currentName: string, suggested: unknown): string {
   const ext = originalExt(currentName)
-  const stem = cleanName(suggested, ext)
+  const cleaned = cleanName(suggested, ext)
+  if (!cleaned) return ''
+  // 哨兵值不可以變成檔名。剝完再洗一次：剝掉前綴可能露出前後的空白或點。
+  const stem = cleanName(stripUnknownCourse(cleaned), ext)
   if (!stem) return ''
   const full = stem + ext
   // 洗出來的名字自己也要過執行層那一關（`.env`、`id_rsa.*`、`data.db`⋯⋯）

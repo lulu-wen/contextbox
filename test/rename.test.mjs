@@ -137,6 +137,45 @@ describe('名字清理', () => {
     assert.equal(suggestedFileName('x.txt', 'hw3.1'), 'hw3.1.txt')
   })
 
+  // 2026-09-21 使用者實機回報：
+  //   report.docx → Unknown_User-Guided Semantic Seam Carving with Accelerated Seam Removal.docx
+  // `Unknown` 是我們自己的哨兵值（prompt 要模型說不出課名時寫這個字），不是使用者檔案的
+  // 一部分，不可以變成磁碟上的檔名。cleanCourse 早就為了資料夾擋過同一件事，只是沒套到檔名。
+  describe('說不出課名時的 `Unknown_` 前綴', () => {
+    test('課名說不出來、主題說得出來 → 拿掉前綴，照樣建議', () => {
+      assert.equal(
+        suggestedFileName('report.docx', 'Unknown_User-Guided Semantic Seam Carving with Accelerated Seam Removal'),
+        'User-Guided Semantic Seam Carving with Accelerated Seam Removal.docx')
+    })
+
+    test('中文與其他寫法一樣算（模型不一定聽話照英文回）', () => {
+      assert.equal(suggestedFileName('a.txt', '未知_語意裁切'), '語意裁切.txt')
+      assert.equal(suggestedFileName('a.txt', 'n/a_Some Topic'), 'Some Topic.txt')
+      assert.equal(suggestedFileName('a.txt', '看不出來_排程'), '排程.txt')
+    })
+
+    test('兩段都說不出來 → 整個不提議（沒有東西可以講）', () => {
+      assert.equal(suggestedFileName('a.txt', 'Unknown'), '')
+      assert.equal(suggestedFileName('a.txt', 'Unknown_'), '')
+      assert.equal(suggestedFileName('a.txt', 'Unknown_Unknown'), '')
+    })
+
+    test('剝不只一層（模型回 Unknown_Unknown_主題）', () => {
+      assert.equal(suggestedFileName('a.txt', 'Unknown_Unknown_Seam Carving'), 'Seam Carving.txt')
+    })
+
+    // **只認完整的那一段**：開頭剛好是那幾個字的真課名不可以被咬掉。
+    test('真的以 Unknow… 開頭的課名不受影響', () => {
+      assert.equal(suggestedFileName('a.txt', 'Unknowable_Thing'), 'Unknowable_Thing.txt')
+      assert.equal(suggestedFileName('a.txt', 'Unknown Pleasures_Joy Division'), 'Unknown Pleasures_Joy Division.txt')
+    })
+
+    test('正常的課名一個字都不動', () => {
+      assert.equal(suggestedFileName('a.txt', 'Operating Systems_Deadlock'), 'Operating Systems_Deadlock.txt')
+      assert.equal(suggestedFileName('a.txt', '作業系統_死結'), '作業系統_死結.txt')
+    })
+  })
+
   test('兩層副檔名（.tar.gz）整段留著', () => {
     assert.equal(originalExt('備份.tar.gz'), '.tar.gz')
     assert.equal(originalExt('a.txt'), '.txt')

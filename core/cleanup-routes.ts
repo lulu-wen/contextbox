@@ -561,10 +561,11 @@ function collect(db: DatabaseSync, scope: CleanupScope): Collected {
 
   const rows: Group[] = []
   const needsHuman: Collected['needsHuman'] = []
-  for (const g of byItem.values()) {
-    if (noFingerprint(g.item)) needsHuman.push({ item: g.item, why: TOO_LARGE_WHY })
-    else rows.push(g)
-  }
+  // **沒讀過內容的大檔也是正常候選**（2026-09-21 使用者實機回報）。以前這裡把它們
+  // 全部推去「需要你查看」，使用者想清也清不掉 —— 但規則早就判出來了（舊壓縮檔、
+  // 舊安裝檔、.part⋯⋯），沒讀內容只影響重複偵測，不影響那些規則。
+  // 身分確認由執行層用 dev／ino／大小／時間做（cleanup-exec.ts 的 fingerprint）。
+  for (const g of byItem.values()) rows.push(g)
   needsHuman.push(...brokenForHuman(db, m))
   needsHuman.sort((a, b) => cmpDesc(a.item.last_seen_at, b.item.last_seen_at) || (a.item.id < b.item.id ? -1 : 1))
   return { rows, needsHuman }
@@ -629,14 +630,14 @@ function collectCounts(db: DatabaseSync, scope: CleanupScope): { pending: number
       WHERE i.status IN (${PLANNABLE_STATUSES}) AND i.error IS NULL
         AND EXISTS (SELECT 1 FROM cleanup_candidates c WHERE ${listed})`
   ).all() as (ItemRow & { shot_kind: number })[]
-  let pending = 0, tooLarge = 0
+  let pending = 0
   for (const i of items) {
     if (!underAny(i.path, m.pre) || execRefusesName(i.name)) continue
     if (!i.shot_kind && m.shotOnly(i.path)) continue
-    if (noFingerprint(i)) tooLarge++
-    else pending++
+    // 跟 collect 一樣：沒讀過內容的大檔照樣是候選，不再算進「需要你查看」。
+    pending++
   }
-  return { pending, needsHuman: tooLarge + brokenForHuman(db, m).length }
+  return { pending, needsHuman: brokenForHuman(db, m).length }
 }
 
 const cmpDesc = (a = '', b = '') => a < b ? 1 : a > b ? -1 : 0
@@ -648,7 +649,20 @@ function needsHumanWhy(b: ItemRow): string {
   return safeWhy(b.error) ?? 'cannot read this file'
 }
 
-const isDefaultChecked = (g: Group) => g.cands[0].confidence >= DEFAULT_CHECK_MIN
+/**
+ * 預設勾不勾。**沒讀過內容的檔一律不勾**（2026-09-21）。
+ *
+ * 大檔現在清得掉了（執行層改用 dev／ino／大小／時間認身分，不再整份讀），
+ * 但「清得掉」不等於「該幫你勾起來」：超過上限的檔裡最典型的一個就是
+ * `婚禮影片備份.zip` —— 8 GB、副檔名 .zip、放了很久，archive 規則給它 65 分，
+ * 而我們**連看都沒看過它的內容**。那一格預設打勾，使用者一鍵就把婚禮影片送進隔離區。
+ *
+ * 2026-09-19 的稽核 RC4 當時的結論是「連列都不要列」，理由是執行層對它永遠拒收、
+ * 列出來只會卡住計畫。那個前提現在不成立了（它搬得動），所以改成列、但不預設勾：
+ * 使用者看得到、要清得自己伸手勾 —— 這正是這個專案對「沒把握的事」一貫的做法。
+ */
+const isDefaultChecked = (g: Group) =>
+  g.cands[0].confidence >= DEFAULT_CHECK_MIN && !noFingerprint(g.item)
 
 /**
  * 清理候選，以**檔案**為單位。

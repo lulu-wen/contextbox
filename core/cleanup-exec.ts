@@ -33,7 +33,16 @@ export type ExecOptions = {
    */
   onProgress?: (index: number, total: number) => void
 }
-export type Fingerprint = { dev: number; ino: number; size: number; mtime: string; sha256: string }
+/**
+ * 一個檔在某個瞬間的身分。
+ *
+ * `sha256` 可以是 null ＝ **這個檔太大，沒有讀內容**（2026-09-21）。那時身分由
+ * dev／ino／大小／時間認 —— ino 認的是磁碟上那個實體，換一個檔就是換一個 ino，
+ * 所以「搬到的還是不是同一個東西」這件事本來就不是靠雜湊回答的。
+ * 雜湊多擋的是「同一個 ino 被原地改內容、而且大小與 mtime 都沒變」，
+ * 那要刻意偽造 mtime 才做得到。
+ */
+export type Fingerprint = { dev: number; ino: number; size: number; mtime: string; sha256: string | null }
 
 /** Reject every symlink component, including dangling links and redirected parents. */
 export function checkedPath(path: string, directory = false): string {
@@ -59,17 +68,25 @@ export function fingerprint(path: string, maxBytes: number): Fingerprint {
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   try {
     const before = fstatSync(fd)
-    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || !before.ino) {
-      throw new CleanupError('UNSAFE_FILE', 'The file is too large, or its identity cannot be confirmed. Check it yourself.')
+    if (!before.isFile() || before.nlink !== 1 || !before.ino) {
+      throw new CleanupError('UNSAFE_FILE', 'The identity of this file cannot be confirmed. Check it yourself.')
     }
-    const hash = createHash('sha256')
-    const buffer = Buffer.alloc(64 * 1024)
-    let n: number
-    let total = 0
-    while ((n = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
-      total += n
-      if (total > maxBytes) throw new CleanupError('CHANGED', 'The file grew past the size limit while being read. Scan again.')
-      hash.update(buffer.subarray(0, n))
+    // **超過上限就不讀內容**（2026-09-21 使用者實機回報）。以前這裡直接 UNSAFE_FILE，
+    // 於是大檔永遠搬不動；而搬到隔離區是同一個磁碟上的改名，本來就不需要讀完整個檔。
+    // 剩下的檢查一項都沒少：O_NOFOLLOW、必須是一般檔、nlink 必須是 1、ino 必須在、
+    // 讀前讀後的 dev／ino／大小／mtime／ctime 全部要對得上，而且 lstat 不可以是捷徑。
+    let sha: string | null = null
+    if (before.size <= maxBytes) {
+      const hash = createHash('sha256')
+      const buffer = Buffer.alloc(64 * 1024)
+      let n: number
+      let total = 0
+      while ((n = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+        total += n
+        if (total > maxBytes) throw new CleanupError('CHANGED', 'The file grew past the size limit while being read. Scan again.')
+        hash.update(buffer.subarray(0, n))
+      }
+      sha = hash.digest('hex')
     }
     const after = fstatSync(fd)
     const atPath = lstatSync(path)
@@ -77,7 +94,7 @@ export function fingerprint(path: string, maxBytes: number): Fingerprint {
         || atPath.ino !== before.ino || atPath.dev !== before.dev || atPath.isSymbolicLink()) {
       throw new CleanupError('CHANGED', 'The file changed while being read. Scan again.')
     }
-    return { dev: before.dev, ino: before.ino, size: before.size, mtime: before.mtime.toISOString(), sha256: hash.digest('hex') }
+    return { dev: before.dev, ino: before.ino, size: before.size, mtime: before.mtime.toISOString(), sha256: sha }
   } finally { closeSync(fd) }
 }
 
@@ -205,6 +222,12 @@ function verifySnapshot(item: PlanSnapshot, opts: ExecOptions): Fingerprint {
  */
 function verifyDuplicateKeeper(db: DatabaseSync, item: PlanSnapshot, opts: ExecOptions, selected: Set<string>, self: Fingerprint) {
   if (!item.reasons.every(r => r.kind === 'duplicate')) return
+  // **沒有雜湊就證明不了「另外還有一模一樣的一份」**（2026-09-21）。太大的檔沒讀過內容，
+  // 本來也不會拿到 duplicate 這個理由（分組的 SQL 有 `sha256 IS NOT NULL`）——
+  // 這一行是擋升級前留下來的舊候選：寧可拒收，不可以拿「兩個都沒雜湊」當成相等。
+  if (!item.sha256) {
+    throw new CleanupError('NO_DUPLICATE', 'This file was never read, so an identical copy cannot be confirmed. Scan again.')
+  }
   const others = db.prepare(`SELECT id,path FROM file_items WHERE sha256=? AND id<>?
     AND status NOT IN ('quarantined','missing','error')`).all(item.sha256, item.id) as { id: string; path: string }[]
   for (const other of others) {

@@ -594,13 +594,23 @@ describe('否決旗標', () => {
                 VALUES (?,?,?,?,?,?,?,?,?)`)
       .run('c1', 'big', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
 
-    // 2026-09-19 稽核 RC4：只「不預設勾」不夠 —— 使用者還是勾得起來、建得了計畫，
-    // 而執行層對它永遠拒收，計畫卡住、檔案被佔住。所以**不列成候選**，改列在「需要你查看」。
+    // 2026-09-19 稽核 RC4 當時的結論是「連列都不要列」，理由是**執行層對它永遠拒收**：
+    // 列出來使用者勾得起來、建得了計畫，然後永遠套用不了，計畫卡住、檔案被佔住。
+    //
+    // 2026-09-21：那個前提已經不成立。使用者實機回報 8 個大檔（最大 1.42 GB）卡在
+    // 「需要你查看」清不掉，所以執行層改成對超過上限的檔不讀內容、用 dev／ino／大小／
+    // 時間認身分 —— 它搬得動了。於是這裡改成**列出來，但永遠不預設勾**。
+    //
+    // 上面那段顧慮（8 GB 的婚禮影片備份帶著 65 分被預設勾起來、而我們連看都沒看過）
+    // 一個字都沒變，所以「不預設勾」這一半必須守住。
     const r = listCandidates(db, { roots: [dl], maxBytes: 20 * 1024 * 1024 })
-    assert.equal(r.candidates.length, 0, '不可以列成候選（連 ☐ 都不行）')
-    const h = r.needsHuman.find(x => x.name === '婚禮影片備份.zip')
-    assert.ok(h, '要在「需要你查看」')
-    assert.match(h.why, /too large/)
+    const c = r.candidates.find(x => x.name === '婚禮影片備份.zip')
+    assert.ok(c, '要列得出來 —— 不然使用者想清也清不掉')
+    assert.equal(c.defaultChecked, false, '**沒讀過內容的檔一律不預設勾**')
+    assert.ok(!r.needsHuman.some(x => x.name === '婚禮影片備份.zip'),
+      '已經是候選了就不該同時出現在「需要你查看」，兩邊講的話會互相矛盾')
+    // 勾得起來就一定要建得了計畫（RC4 真正在守的那件事）
+    assert.ok(c.itemId, '要有 itemId 才勾得起來、建得了計畫')
   })
 
   test('**大的**半下載檔也不可以誤殺', () => {
@@ -632,11 +642,17 @@ describe('否決旗標', () => {
                 VALUES (?,?,?,?,?,?,?,?,?)`)
       .run('cn', 'nb', 'archive', CLEANUP_RULE_VERSION, 65, 'r', 'e', 'proposed', now)
 
-    // 不管呼叫端傳什麼，結論都一樣（2026-09-19 稽核 RC4 之後的結論是「不列，改列需要你查看」）
-    for (const opts of [{ roots: [dl] }, { roots: [dl], limit: 10 }]) {
+    // 2026-09-21：結論從「不列」改成「列出來，但永遠不預設勾」（見上面 RC4 那條）。
+    // **這條要守的性質一個字都沒變**：判準必須是這一列自己的事實（sha256 是不是 null），
+    // 不可以是呼叫端傳進來的門檻 —— 不然使用者把 maxBytes 調大（合法、不用重掃），
+    // 那個從來沒被讀過的 8GB 備份檔就自己恢復預設勾了。
+    for (const opts of [{ roots: [dl] }, { roots: [dl], limit: 10 },
+                        { roots: [dl], maxBytes: 16 * 1024 * 1024 * 1024 }]) {
       const r = listCandidates(db, opts)
-      assert.equal(r.candidates.length, 0)
-      assert.match(r.needsHuman.find(x => x.name === '備份.zip')?.why ?? '', /too large/)
+      const c = r.candidates.find(x => x.name === '備份.zip')
+      assert.ok(c, '要列得出來：' + JSON.stringify(opts))
+      assert.equal(c.defaultChecked, false,
+        '把 maxBytes 調到比檔案還大也不可以讓它恢復預設勾：' + JSON.stringify(opts))
     }
   })
 })

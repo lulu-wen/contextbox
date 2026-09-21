@@ -1120,7 +1120,24 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
     const inspected = inspectPath(path, opts)
     if (!inspected) { result.skipped++; continue }
     if ('error' in inspected) {
-      if (inspected.missing) markMissing(opts.db, path, opts.roots, nowIso)
+      // **檔案不見了不是「問題」**（2026-09-21 使用者實機回報）。
+      //
+      // 使用者刪掉一個檔、或清理剛把它搬進隔離區之後，下一次掃描一定會走到這裡。
+      // 以前這裡一律 problem() ＋ errors++，於是：
+      //   · 面板頂端掛著「The last scan reported 1 problems, so some files may have been
+      //     missed: CLAUDE.md：the file is gone」，而那句話是假的 —— 沒有任何檔被漏掉，
+      //     那個檔就是使用者自己刪的；
+      //   · CLI 印「1 could not be read」，同樣在說謊（它不是讀不到，是不在了）；
+      //   · 警告會一直掛到下一次完整掃描蓋掉它，看起來像清不完、還要人去已閱一次。
+      //
+      // 不見了本來就有正規處理：markMissing 把它記成 missing，之後不再提議。
+      // 這一格是**正常結局**，不是需要人看的事。真正該報的是另一邊：沒有權限、
+      // 磁碟錯誤 —— 那種才叫「這次沒看到它，它可能還在」。
+      if (inspected.missing) {
+        markMissing(opts.db, path, opts.roots, nowIso)
+        result.skipped++
+        continue
+      }
       problem(opts, `${basename(path)}：${inspected.error}`)
       result.errors++
       continue
@@ -1133,7 +1150,20 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
     let png: Buffer | null = null
 
     if (inspected.bytes > opts.maxBytes) {
-      error = `the file is ${(inspected.bytes / 1048576).toFixed(1)}MB, over the cleanup scan limit`
+      // **太大不是「壞掉」**（2026-09-21 使用者實機回報：379 個候選、8 個卡在「需要你查看」）。
+      //
+      // 以前這裡寫一句 error，而 collect 的 SQL 有 `i.error IS NULL` —— 一句話就把
+      // 每一個大檔踢出候選清單，只能待在「需要你查看」，使用者想清也清不掉。
+      // 但那一句話講的其實不是「這個檔壞了」，是「我們沒有讀它的內容」。
+      //
+      // 沒讀內容的後果只有一個：算不出 sha256，所以它不參與重複偵測
+      //（addDuplicateCandidates 的 SQL 本來就有 `sha256 IS NOT NULL`）。
+      // 其他規則 —— 舊安裝檔、舊壓縮檔、.part、.tmp、空檔 —— 一條都不需要雜湊，
+      // 看的是檔名、副檔名、大小與時間。一個放了三個月的 1.4 GB .gz 完全判得出來。
+      //
+      // 身分確認改由執行層用 dev／ino／大小／時間做（見 cleanup-exec.ts 的 fingerprint）。
+      // sha 留 null 就是「這個檔沒有被讀過」的記號，不需要再多一個欄位。
+      sha = null
     } else if (inspected.bytes > 0 && !inspected.partial) {
       try {
         const got = sha256Of(inspected.real, inspected)

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { applyPlan, listQuarantine, recoverInterrupted, undoPlan } from '../core/cleanup-exec.ts'
 import { createPlan, dismissPlan } from '../core/cleanup-plans.ts'
+import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { listJournal } from '../core/cleanup-journal.ts'
 import { fixture } from './helpers/cleanup.mjs'
 const nativeRename = fs.renameSync
@@ -68,6 +69,47 @@ test('missing source produces partial failure; successful items remain undoable'
   assert.equal(undoPlan(f.db, p.id, f.opts).status, 'restored')
   assert.ok(existsSync(join(f.downloads, p.items[1].name)))
   assert.equal(applyPlan(f.db, p.id, f.opts).quarantinedCount, 0)
+})
+
+// 2026-09-21 使用者實機回報：doctor 說「379 candidates; 8 too large for this tool」，
+// 那 8 個（最大的一個 1.42 GB .gz）永遠只能待在「需要你查看」，想清也清不掉。
+//
+// 太大的意思其實只是「我們沒有讀它的內容」，所以算不出 sha256 —— 它只影響重複偵測。
+// 舊壓縮檔、舊安裝檔、.part 這些規則看的是檔名、副檔名、大小與時間，一條都不需要雜湊。
+// 身分確認改由 dev／ino／大小／時間做（fingerprint 對超過上限的檔不讀內容）。
+test('超過 maxBytes 的檔照樣清得掉：不讀內容，用中繼資料認身分', t => {
+  const f = fixture(t, { 'huge.zip': 'x'.repeat(4096) })
+  // 上限調到比檔案小 —— 掃描與執行都走「不讀內容」那條路
+  const opts = { ...f.opts, maxBytes: 1024 }
+  f.db.exec('DELETE FROM cleanup_candidates')
+  f.db.exec('DELETE FROM file_items')
+  scanDownloads({ db: f.db, ...opts })
+
+  const item = f.db.prepare(`SELECT sha256, error, status FROM file_items WHERE name='huge.zip'`).get()
+  assert.equal(item.sha256, null, '沒讀內容就沒有雜湊')
+  assert.equal(item.error, null, '**太大不是「壞掉」** —— 有 error 的檔會被 collect 的 SQL 整個踢出候選')
+
+  const p = createPlan(f.db)
+  assert.equal(p.items.length, 1, '大檔要進得了計畫')
+  const r = applyPlan(f.db, p.id, opts)
+  assert.equal(r.status, 'applied')
+  assert.ok(!existsSync(join(f.downloads, 'huge.zip')))
+  // 沒有雜湊的那一列，journal 的 sha256 就是 null（不可以塞一個假的進去）
+  assert.equal(listJournal(f.db, p.id)[0].sha256, null)
+  // 放得回來，而且內容一個位元組都沒變
+  assert.equal(undoPlan(f.db, p.id, opts).status, 'restored')
+  assert.equal(readFileSync(join(f.downloads, 'huge.zip'), 'utf8'), 'x'.repeat(4096))
+})
+
+// 對照：**上限以內的檔照樣要算雜湊**。把上限拿掉等於把內容比對整個關掉，
+// 那條「同樣大小、同樣 mtime、內容被換掉」的防線就沒了（上面那條測試守的就是它）。
+test('對照：上限以內的檔還是有雜湊', t => {
+  const f = fixture(t, { 'small.zip': 'archive small' })
+  const item = f.db.prepare(`SELECT sha256 FROM file_items WHERE name='small.zip'`).get()
+  assert.equal(item.sha256.length, 64)
+  const p = createPlan(f.db)
+  assert.equal(applyPlan(f.db, p.id, f.opts).status, 'applied')
+  assert.equal(listJournal(f.db, p.id)[0].sha256.length, 64)
 })
 
 test('content changed with same size/mtime and a rescan is rejected against snapshot', t => {

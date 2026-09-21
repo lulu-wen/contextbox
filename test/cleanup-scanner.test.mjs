@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { open } from '../core/db.ts'
-import { cleanupWalk, scanDownloads } from '../core/cleanup-scanner.ts'
+import { cleanupWalk, scanDownloads, isGoneError } from '../core/cleanup-scanner.ts'
 
 const day = 24 * 60 * 60 * 1000
 const now = new Date('2026-09-13T00:00:00Z')
@@ -125,16 +125,33 @@ describe('cleanup scanner', () => {
     assert.equal(db.prepare(`SELECT status FROM file_items WHERE name='maybe.tmp'`).get().status, 'kept')
   })
 
-  test('掃描時檔案不見了會標 missing，不讓流程爆掉', () => {
+  // 2026-09-21 使用者實機回報：刪掉一個檔之後，面板頂端掛著
+  // 「The last scan reported 1 problems, so some files may have been missed」。
+  // 那句話是假的 —— 沒有檔被漏掉，那個檔是使用者自己刪的，而且已經正規記成 missing。
+  // 不見了是**正常結局**，不是需要人看的事；真正該報的是沒權限／磁碟錯誤那一種。
+  test('掃描時檔案不見了會標 missing，而且不算問題、不算錯誤', () => {
     const p = touchOld('gone.zip', 'gone', 40)
     scan()
     unlinkSync(p)
 
     const problems = []
     const r = scan({ paths: [p], onProblem: m => problems.push(m) })
-    assert.equal(r.errors, 1)
-    assert.ok(problems.some(m => /the file is gone/.test(m)))
     assert.equal(db.prepare(`SELECT status FROM file_items WHERE name='gone.zip'`).get().status, 'missing')
+    assert.equal(r.errors, 0, '刪掉一個檔不是掃描錯誤')
+    assert.deepEqual(problems, [], '刪掉一個檔不可以變成面板上的警告：' + problems.join('; '))
+  })
+
+  // 「不見了」現在的意思從「報一句」變成「安靜跳過」，所以 isGoneError 的邊界
+  // **比以前更吃重**：把沒有權限、磁碟錯誤誤判成「不見了」，等於把真正該讓人看到的
+  // 問題靜音掉，而且還會把一個其實還在的檔記成 missing。這條盯住那個邊界。
+  test('只有 ENOENT／ENOTDIR 算「不見了」——其餘一律不是（現在它決定要不要靜音）', () => {
+    for (const code of ['ENOENT', 'ENOTDIR']) {
+      assert.equal(isGoneError({ code }), true, code)
+    }
+    for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY', 'EMFILE', 'ELOOP', undefined]) {
+      assert.equal(isGoneError({ code }), false, String(code))
+    }
+    assert.equal(isGoneError(null), false)
   })
 
   test('walk 不跟 symlink、不進隱藏與黑名單資料夾', () => {
