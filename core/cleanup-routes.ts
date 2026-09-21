@@ -994,7 +994,18 @@ export function readingState(db: DatabaseSync, roots: readonly string[]): { runn
 export function petState(
   h: {
     db: { ok: boolean }; watcher: { ok: boolean; watching?: unknown; watchingCount?: unknown; rootsMissing?: unknown }
-    pendingCandidates: number; lastError: unknown
+    pendingCandidates: number
+    /**
+     * 預設勾的那幾個（有把握的）。**寵物的心情與台詞用這個數，不用 pendingCandidates**
+     * （2026-09-21）。保護副檔名清單拿掉之後 pendingCandidates 從 393 變成 908，
+     * 而 `pendingCandidates > 0 ? 'found'` 會讓寵物**永遠**停在「找到東西了」，
+     * 台詞永遠是「Found 908 files that could be cleaned up」——
+     * 那是「你的 Downloads 有多大」，不是「我發現了幾件值得說的事」。
+     *
+     * 舊後端沒有這一欄就退回 pendingCandidates（照以前的樣子講）。
+     */
+    readyCandidates?: number
+    lastError: unknown
     lastErrorAt?: string | null; lastOkAt?: string | null
     lastErrorKind?: string | null; lastOkByKind?: Partial<Record<string, string | null>> | null
     scanProblems?: unknown
@@ -1006,6 +1017,10 @@ export function petState(
     .slice(0, MAX_SCAN_PROBLEMS)
   const rootsMissing = typeof h.watcher.rootsMissing === 'number' && Number.isInteger(h.watcher.rootsMissing)
     ? h.watcher.rootsMissing : 0
+  // 有把握的那幾個。舊後端沒給就退回全部（照以前的樣子講）。
+  const ready = Number.isFinite(Number(h.readyCandidates))
+    ? Math.max(0, Math.floor(Number(h.readyCandidates)))
+    : h.pendingCandidates
   const state =
     // 壞掉的時候顯示「找到 7 個可以清」是在騙人
     !h.db.ok || errorStillActive(h) ? 'worried'
@@ -1016,7 +1031,7 @@ export function petState(
     : rootsMissing > 0 || problems.length > 0 ? 'worried'
     // 使用者正在等確認，這時候跳「找到東西了」會蓋掉待辦
     : counts.proposedPlans > 0 ? 'waiting'
-    : h.pendingCandidates > 0 ? 'found'
+    : ready > 0 ? 'found'
     : h.watcher.ok ? 'watching'
     : 'idle'
 
@@ -1030,14 +1045,17 @@ export function petState(
     !h.db.ok || errorStillActive(h) ? 'Something is off in the backend. Have a look at doctor.'
     : state === 'worried' ? scanWhy
     : state === 'waiting' ? `${plural(counts.proposedPlans, 'list')} ${counts.proposedPlans === 1 ? 'is' : 'are'} waiting for you.`
-    : state === 'found' ? `Found ${plural(h.pendingCandidates, 'file')} that could be cleaned up.`
+    : state === 'found' ? `Found ${plural(ready, 'file')} that could be cleaned up.`
     : state === 'watching' ? `Keeping an eye on ${watchingPhrase(h.watcher)}.`
     : 'Nothing going on. Just daydreaming.'
 
   return {
     state,
     message,
-    pendingCount: h.pendingCandidates,
+    // **這個欄位是寵物的對外數字**，所以給有把握的那幾個（跟 message 一致）。
+    pendingCount: ready,
+    /** 清單列得出來的全部。面板的「Files you can clear out」那一行用它，不藏。 */
+    listedCount: h.pendingCandidates,
     quarantinedCount: counts.activeQuarantine,
     undoable: counts.activeQuarantine > 0,
     /** 上一次完整掃描回報的問題（人話、不帶完整路徑）。面板要看得到，不能只有 doctor（R3-12）。 */
@@ -1322,7 +1340,7 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
       truncated: q.truncated,
     },
     pendingCandidates: pending,
-    // **有把握的那幾個**（預設勾的）。徽章與寵物用這個數，不用 pendingCandidates ——
+    // **有把握的那幾個**（預設勾的）。徽章與寵物的心情／台詞都用這個數 ——
     // 保護副檔名清單拿掉之後那個數字變成「你的 Downloads 有多大」，不是「有幾件事要說」。
     readyCandidates: counted.ready,
     needsHumanCount: errors,

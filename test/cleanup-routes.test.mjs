@@ -23,7 +23,7 @@ import { fixture } from './helpers/cleanup.mjs'
 const createPlanFor = (f) => createPlan(f.db)
 import { listCandidates, healthSnapshot, safeWhy, displayPath, META,
          cleanupRoutes, invalidateQuarantineCache, canEmptyNow,
-         DEFAULT_CHECK_MIN, KIND_CONFIDENCE, CLEANUP_KINDS } from '../core/cleanup-routes.ts'
+         DEFAULT_CHECK_MIN, KIND_CONFIDENCE, CLEANUP_KINDS, petState } from '../core/cleanup-routes.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -833,5 +833,46 @@ describe('存活突變的釘子', () => {
       assert.equal(h.quarantine.truncated, true, '沒看完就要說沒看完')
       assert.equal(h.quarantine.orphans, 0, '沒看完不可以猜一個孤兒數字')
     } finally { chmodSync(join(q, 'deep'), 0o700); invalidateQuarantineCache() }
+  })
+})
+
+// 2026-09-21：保護副檔名清單拿掉之後 pendingCandidates 從 393 變成 908（檔案的 83%）。
+// 那個數字不再是「我發現了幾件值得說的事」，而是「你的 Downloads 有多大」——
+// 而寵物與徽章只有這一個對外訊號。
+describe('寵物的數字是「有把握的」，不是「全部列得出來的」', () => {
+  const base = {
+    db: { ok: true }, watcher: { ok: true, watching: ['Downloads'], watchingCount: 1, rootsMissing: 0 },
+    lastError: null, lastErrorAt: null, lastOkAt: null, scanProblems: [],
+  }
+  const pet = (over) => petState({ ...base, ...over }, { proposedPlans: 0, activeQuarantine: 0 })
+
+  test('**台詞講有把握的那幾個**，不講全部', () => {
+    const p = pet({ pendingCandidates: 908, readyCandidates: 68 })
+    assert.match(p.message, /Found 68 files/)
+    assert.ok(!p.message.includes('908'), '不可以講 908：那是「你的 Downloads 有多大」')
+    assert.equal(p.pendingCount, 68)
+    assert.equal(p.listedCount, 908, '完整數字要留著，不可以藏起來')
+  })
+
+  // 這才是真正的 bug：908 永遠大於 0，寵物會永遠卡在 found、再也回不到發呆。
+  test('**有把握的清完了就該閒下來**，即使清單上還有一堆 ☐', () => {
+    const p = pet({ pendingCandidates: 840, readyCandidates: 0 })
+    assert.equal(p.state, 'watching', '清單上剩的都是 ☐ → 沒什麼要說的')
+    assert.ok(!/Found/.test(p.message), p.message)
+    assert.equal(p.listedCount, 840, '但清單的數字照樣看得到')
+  })
+
+  test('舊後端沒有 readyCandidates → 退回原本的數（照以前的樣子講）', () => {
+    const p = pet({ pendingCandidates: 7 })
+    assert.match(p.message, /Found 7 files/)
+    assert.equal(p.pendingCount, 7)
+  })
+
+  test('壞值不可以變成 NaN 或負數', () => {
+    for (const bad of [null, 'x', -5, NaN, 1.7]) {
+      const p = pet({ pendingCandidates: 100, readyCandidates: bad })
+      assert.ok(Number.isInteger(p.pendingCount) && p.pendingCount >= 0,
+        JSON.stringify(bad) + ' -> ' + p.pendingCount)
+    }
   })
 })
