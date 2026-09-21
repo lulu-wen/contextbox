@@ -422,8 +422,11 @@ function summary() {
   const selected = candidates.filter(item => s.selected.has(item.itemId))
   $('cleanup-summary').textContent = `${selected.length} of ${candidates.length} files selected`
     + ` · ${bytes(selected.reduce((sum, item) => sum + item.bytes, 0))}`
-  // 鎖住（結果不明、或正在提示上次那份）時按鈕仍要能按 —— 它就是「再試一次」／「繼續」
-  $('cleanup-apply').disabled = busy || (!s.canUndo && !s.locked && s.selected.size === 0)
+  // 鎖住（結果不明、或正在提示上次那份）時按鈕仍要能按 —— 它就是「再試一次」／「繼續」。
+  // **但「Cleanup done」要按不下去**（2026-09-21 實機回報）：清完之後這顆的字是
+  //「Cleanup done」，那是一句狀態、不是一個動作，可是它還亮著、按下去毫無反應。
+  // 看起來能按又什麼都不做的按鈕，使用者只會以為是壞了。旁邊的「Undo this cleanup」才是動作。
+  $('cleanup-apply').disabled = busy || s.canUndo || (!s.locked && s.selected.size === 0)
   $('cleanup-apply').textContent = applyLabel(s)
   $('cleanup-undo').hidden = !s.canUndo
   $('cleanup-undo').disabled = busy
@@ -455,6 +458,8 @@ function appendModelOpinion(node, model) {
   if (!lines) return
   const head = paragraph(lines.head, lines.seeded ? 'cleanup-model cleanup-model-seeded' : 'cleanup-model')
   node.append(head, paragraph(lines.note, 'evidence'))
+  // 免責聲明**自己一個元素**：接在證據後面會讀起來像同一段引文（見 modelOpinionLines）。
+  if (lines.caveat) node.append(paragraph(lines.caveat, 'cleanup-caveat'))
 }
 // -- 看內容（P6）---------------------------------------------
 //
@@ -582,6 +587,9 @@ function burstShotCell(shot, { keep = false, state = null } = {}) {
   cell.append(frame)
   if (keep) {
     cell.append(paragraph(`Keeping · ${safeName(shot.name)}`, 'cleanup-shot-keep'))
+    // 留下的那一張也要寫大小（2026-09-21 實機回報）：以前只有要丟的那幾張有，
+    // 三張縮圖並排比對的時候少一個數字，最該比的那一張反而沒得比。
+    cell.append(paragraph(bytes(shot.bytes), 'evidence'))
     appendModelOpinion(cell, shot.model)
     attachPreview(cell, shot.itemId)
     return cell
@@ -681,7 +689,10 @@ function renderRenames() {
     // one 掛在 row 上、**不可以掛進 label**：真瀏覽器裡點 label 底下的按鈕
     // 會連帶把那個勾選框切掉，按一下「Rename」順便偷偷取消勾選。
     row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
-    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    // 免責聲明**自己一個元素**：它是我們的字，不是模型引的內容（見 modelOpinionLines）。
+    if (lines.caveat) row.append(paragraph(lines.caveat, 'cleanup-caveat'))
+    // 「上次退過」也是我們的字，不是引文 —— 不可以掛 evidence（會被畫成引文）。
+    if (lines.back) row.append(paragraph(lines.back, 'cleanup-back'))
     attachPreview(row, item.itemId)
     box.append(row)
   }
@@ -727,7 +738,10 @@ function renderFilings() {
     one.onclick = () => oneOf(filings, filingOperate, item)
     // 同上：掛在 row 上，不可以掛進 label
     row.append(label, one, paragraph(lines.why), paragraph(lines.note, 'evidence'))
-    if (lines.back) row.append(paragraph(lines.back, 'evidence'))
+    // 免責聲明**自己一個元素**：它是我們的字，不是模型引的內容（見 modelOpinionLines）。
+    if (lines.caveat) row.append(paragraph(lines.caveat, 'cleanup-caveat'))
+    // 「上次退過」也是我們的字，不是引文 —— 不可以掛 evidence（會被畫成引文）。
+    if (lines.back) row.append(paragraph(lines.back, 'cleanup-back'))
     attachPreview(row, item.itemId)
     box.append(row)
   }

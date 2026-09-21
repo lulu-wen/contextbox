@@ -31,8 +31,15 @@ export function safeName(s) {
 /** 數字＋名詞。1 不加 s —— 畫面上的「1 files」看起來像程式壞了。 */
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
+/**
+ * 檔案大小講成人話。**1 KB 以下照 byte 講**（2026-09-21 使用者實機回報）：
+ * 少了 byte 這一級，`empty.txt`（0 B）與 `meeting-notes-draft.tmp`（7 B）在面板上
+ * 都寫「0.0 KB」—— 兩個看起來一模一樣，而且 0 B 的那個看起來像讀取失敗。
+ * CLI 那邊（cli.mjs 的 `mb`）本來就有這一級，面板卻沒有，同一個檔兩個地方講的話不一樣。
+ */
 export const formatBytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GB'
-  : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'
+  : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MB'
+  : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : `${Math.max(0, Math.round(n))} B`
 
 const why = w => safeName(w || 'the backend gave no reason')
 
@@ -710,7 +717,10 @@ export function normalizeBurstGroups(raw) {
     const members = (Array.isArray(g?.members) ? g.members : [])
       .map(m => burstShot(m, level)).filter(m => m && m.itemId !== keep.itemId)
     if (!members.length) continue
-    out.push({ id: String(g?.id ?? keep.itemId), level, keep, members })
+    // 這一組跨了幾秒。舊版後端沒有這一欄 —— 沒有就是沒有，畫面少講一句而已。
+    const span = Number(g?.spanSec)
+    const spanSec = Number.isFinite(span) && span > 0 ? Math.round(span) : 0
+    out.push({ id: String(g?.id ?? keep.itemId), level, spanSec, keep, members })
   }
   return out
 }
@@ -750,20 +760,43 @@ export function modelOpinionLines(m) {
   // **信心是多少都一樣**：說不出是哪一堂課就是說不出來。
   // 模型有時候會回「Unknown（信心 high）」—— 那是它自己前後矛盾，不是我們要轉述的東西。
   const noIdea = /^(unknown|看不出來|未知)$/i.test(course)
+  // **證據與我們自己講的話要分開兩個欄位**（2026-09-21 使用者實機回報）。
+  // 以前兩句用兩個空白接成同一個字串、畫成同一個 <p class="evidence">，畫面上長這樣：
+  //
+  //   Evidence: 文件裡寫著「四個必要條件」  This is the model's opinion, not a fact — …
+  //
+  // 證據是**模型讀使用者的檔讀出來的、不可信的輸入**，我們的免責聲明是**我們自己的字**。
+  // 接在一起之後讀起來像同一段引文 —— 等於讓不可信的內容和我們的保證長得一模一樣，
+  // 而「每一句模型的話都要看得出來是模型說的」正是這個專案的主張。分開才畫得出差別。
   return {
     seeded,
     head: `${seeded ? '[demo answer] ' : ''}`
       + (noIdea
         ? 'The model looked and could not tell what this is, so it is not suggesting anything for it.'
         : `The model thinks: ${course} / ${topic} (confidence ${confidence})`),
-    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
-      + "This is the model's opinion, not a fact — nothing gets renamed or moved because it said so.",
+    note: evidence ? `Evidence: ${evidence}` : 'The model gave no evidence.',
+    caveat: "This is the model's opinion, not a fact — nothing gets renamed or moved because it said so.",
   }
 }
 
-/** 連拍區裡那一組的標題。檔名是不可信的輸入，一律 safeName。 */
+/**
+ * 一段秒數講成人話。連拍是「連按快門」，60 秒以上就不該再用秒講。
+ */
+function spanPhrase(sec) {
+  if (sec < 60) return `${sec}s`
+  const m = Math.round(sec / 60)
+  return m < 60 ? `${m} min` : `${Math.round(m / 60)} hr`
+}
+
+/**
+ * 連拍區裡那一組的標題。檔名是不可信的輸入，一律 safeName。
+ *
+ * **要講跨了幾秒**（2026-09-21 實機回報）：「這幾張是同一批」是一句關於時間的主張，
+ * 以前畫面上只有縮圖與檔名，使用者沒辦法檢查它對不對。後端沒給秒數就不提，不猜。
+ */
 export function burstGroupLine(g) {
-  return `${burstShots(g)} shots look like one burst · keeping “${safeName(g.keep.name)}” (the newest)`
+  const span = g?.spanSec > 0 ? ` · taken within ${spanPhrase(g.spanSec)}` : ''
+  return `${burstShots(g)} shots look like one burst${span} · keeping “${safeName(g.keep.name)}” (the newest)`
 }
 
 /**
@@ -871,8 +904,9 @@ export function renameLines(item) {
     head: `${name} → ${suggested}`,
     why: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`
       + (item.learned === true ? '  The course part is spelled the way you changed it last time.' : ''),
-    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
-      + "This is the model's opinion, not a fact — nothing changes until you press “Rename”, and it can be undone.",
+    // 證據與免責聲明分成兩欄（理由見 modelOpinionLines）。
+    note: evidence ? `Evidence: ${evidence}` : 'The model gave no evidence.',
+    caveat: "This is the model's opinion, not a fact — nothing changes until you press “Rename”, and it can be undone.",
     // 你上次把這個建議退回去了（P5）。**照樣列**，但不預設勾、而且畫面上要講一句。
     rejected: item.rejectedBefore === true,
     back: item.rejectedBefore === true ? '⟲ You turned this suggestion down last time, so it is not ticked by default.' : '',
@@ -1000,8 +1034,9 @@ export function filingLines(item) {
     head: `${name} → ${folder}`,
     why: `${seeded ? '[demo answer] ' : ''}The model thinks: ${course} / ${topic} (confidence ${confidence})`
       + (item.learned === true ? '  The location is the one you moved it to last time.' : ''),
-    note: (evidence ? `Evidence: ${evidence}  ` : 'The model gave no evidence.  ')
-      + "This is the model's opinion, not a fact — nothing moves until you press “File”, and it can be undone."
+    // 證據與免責聲明分成兩欄（理由見 modelOpinionLines）。
+    note: evidence ? `Evidence: ${evidence}` : 'The model gave no evidence.',
+    caveat: "This is the model's opinion, not a fact — nothing moves until you press “File”, and it can be undone."
       // 舊資料夾**沒有被搬走、也沒有改名**（只搬不刪的延伸）：不講的話使用者會以為東西不見了
       + (also ? `  You used to call it “${also}”; that folder is still there, untouched.` : ''),
     rejected: item.rejectedBefore === true,

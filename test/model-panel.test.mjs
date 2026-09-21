@@ -77,8 +77,10 @@ describe('modelOpinionLines', () => {
     const l = modelOpinionLines(opinion())
     assert.equal(l.head, 'The model thinks: 作業系統 / 死結 (confidence high)')
     assert.match(l.note, /Evidence: 文件裡寫著「四個必要條件」/)
-    assert.match(l.note, /This is the model's opinion, not a fact/)
-    assert.match(l.note, /nothing gets renamed or moved because it said so/)
+    // 免責聲明搬到 caveat：證據是模型引的字，這句是我們自己的字，兩個欄位不可以混在一起。
+    assert.match(l.caveat, /This is the model's opinion, not a fact/)
+    assert.match(l.caveat, /nothing gets renamed or moved because it said so/)
+    assert.ok(!l.note.includes("opinion, not a fact"), '免責聲明不可以混進證據：' + l.note)
     assert.equal(l.seeded, false)
   })
 

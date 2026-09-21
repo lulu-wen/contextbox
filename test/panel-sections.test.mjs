@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mountPanel } from './helpers/panel-dom.mjs'
+import { formatBytes } from '../core/assets/cleanup-real-state.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 /** 面板開起來會去抓示範清單（按 D 用的），給它真的那一份。 */
@@ -241,5 +242,30 @@ describe('「它正在讀檔案」看得見', () => {
     })
     await ui.poll()
     assert.equal(ui.$('files-reading').hidden, true)
+  })
+})
+
+/**
+ * 檔案大小（2026-09-21 實機回報）。
+ *
+ * 少了 byte 這一級，`empty.txt`（0 B）與 `meeting-notes-draft.tmp`（7 B）
+ * 在面板上都寫「0.0 KB」：兩個看起來一模一樣，而且 0 B 那個看起來像讀取失敗。
+ * CLI（cli.mjs 的 `mb`）本來就照 byte 講 —— 同一個檔兩個地方講的話不可以不一樣。
+ */
+describe('檔案大小要講得出 1 KB 以下', () => {
+  test('1 KB 以下照 byte 講，不寫成 0.0 KB', () => {
+    assert.equal(formatBytes(0), '0 B')
+    assert.equal(formatBytes(7), '7 B')
+    assert.equal(formatBytes(1023), '1023 B')
+  })
+
+  test('1 KB 以上照舊', () => {
+    assert.equal(formatBytes(1024), '1.0 KB')
+    assert.equal(formatBytes(1024 ** 2), '1.0 MB')
+    assert.equal(formatBytes(1024 ** 3), '1.00 GB')
+  })
+
+  test('負數與壞值不可以印出「-0.0 KB」這種東西', () => {
+    assert.equal(formatBytes(-1), '0 B')
   })
 })

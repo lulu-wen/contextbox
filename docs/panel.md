@@ -100,6 +100,26 @@ the database keeps a flag saying it was undone, so it cannot run twice.
 "Run the demo again" only resets the sample list; it does not clear the record of what you did. Demo runs that
 only ever existed in memory are not backfilled.
 
+## The model's opinion, and what is ours
+
+On a rename, filing or candidate row the model's **evidence** is a quote pulled out of your file, so it is
+drawn as one: indented behind a rule. The sentence under it — "this is the model's opinion, not a fact…" —
+is the panel's own words, and is set smaller and greyer so the two never read as one paragraph. They used to
+be a single run of text, which made our promise look like part of whatever the file happened to say.
+
+## What a burst group says
+
+A group's heading names how many shots it holds, **how long the batch spans**, and which one is being kept:
+"3 shots look like one burst · taken within 7s · keeping “Screenshot … 10.31.09.png” (the newest)".
+
+The span is there because "these are one burst" is a claim about *time*, and the thumbnails alone give you no
+way to check it — three shots seconds apart and three shots hours apart look identical on screen. It comes
+from `spanSec` on `GET /cleanup/bursts`; under a minute it reads in seconds, then minutes, then hours. An
+older backend does not send it, and then the heading simply leaves the span out rather than guessing.
+
+Every frame carries its own size, **the kept one included** — without it the shot you are comparing the
+others against is the one you cannot compare.
+
 Every row in the cleanup panel — a candidate, something that needs your eye, each frame of a burst, a rename
 suggestion, a filing suggestion — has a **"View contents"** button.
 

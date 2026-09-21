@@ -98,14 +98,43 @@ async function init() {
       canvas.style.left = `${rect.left}px`
       canvas.style.top = `${rect.top}px`
     }
-    const bringPetToFront = () => {
+    const panels = [...document.querySelectorAll('#cleanup-panel, #cleanup-history-panel')]
+    const panelOpen = () => panels.some(p => p.open)
+    /**
+     * 寵物該不該待在瀏覽器的 top layer。
+     *
+     * WebGL 的 canvas 疊不到 <dialog> 上面，所以這裡把它掛成 popover 借用 top layer。
+     * **但面板打開的時候要讓開**（2026-09-21 實機回報）：面板寬 680px 置中、寵物固定在
+     * 右下角佔 220px，視窗窄於約 1160px 時牠就蓋在面板右緣上 —— 正好是每一列的
+     * 「Clean up / Not this one」與連拍區右邊那張縮圖。canvas 是 pointer-events: none，
+     * 按得到但看不到，比按不到更難查。
+     *
+     * 讓開的方式是**把 popover 屬性拿掉**，不是 hidePopover()：popover 藏起來等於
+     * display:none，貓會整隻消失；拿掉屬性牠就回到一般的堆疊順序，安安靜靜待在
+     * 面板的遮罩後面 —— 這本來就是 modal 該有的樣子。動畫迴圈本來就有這條路
+     * （沒有 popover 時用 transform 定位）。
+     */
+    const syncPetLayer = () => {
+      if (panelOpen()) {
+        if (canvas.matches(':popover-open')) canvas.hidePopover()
+        if (canvas.hasAttribute('popover')) {
+          canvas.removeAttribute('popover')
+          canvas.style.left = ''
+          canvas.style.top = ''
+        }
+        return
+      }
+      if (!canvas.hasAttribute('popover')) {
+        canvas.setAttribute('popover', 'manual')
+        canvas.style.transform = ''
+      }
       if (canvas.matches(':popover-open')) canvas.hidePopover()
       canvas.showPopover()
       alignCanvas()
     }
-    bringPetToFront()
-    const layerObserver = new MutationObserver(bringPetToFront)
-    for (const panel of document.querySelectorAll('#cleanup-panel, #cleanup-history-panel')) {
+    syncPetLayer()
+    const layerObserver = new MutationObserver(syncPetLayer)
+    for (const panel of panels) {
       layerObserver.observe(panel, { attributes: true, attributeFilter: ['open'] })
     }
     window.addEventListener('resize', alignCanvas)

@@ -1798,6 +1798,8 @@ export type BurstMemberView = {
 export type BurstGroupView = {
   id: string
   level: 'same' | 'similar'
+  /** 這一組最早與最晚差幾秒。0 代表算不出來（面板就不提時間）。 */
+  spanSec: number
   keep: { itemId: string; name: string; bytes: number; thumb: string; model: ModelOpinion | null }
   members: BurstMemberView[]
 }
@@ -1877,9 +1879,18 @@ export function burstGroupsView(
     // 留下的那張不在了（被清掉、被改掉）就整組不列 —— 「會留著 X」不成立的話不可以再問
     if (!keep || !members.length) continue
     const level = keep.level === 'same' ? 'same' : 'similar'
+    // 這一組**前後跨了幾秒**。「這幾張是同一批」本質上是一句關於時間的主張，
+    // 可是面板上只看得到縮圖與檔名 —— 使用者沒有辦法檢查那句話對不對
+    //（2026-09-21 實機回報）。給秒數，讓人自己判斷 3 秒內連按與隔了半天是兩回事。
+    // 時間解析不出來的一律當 0（面板看到 0 就不寫這一段），不猜。
+    const stamps = list.map(r => Date.parse(r.mtime)).filter(Number.isFinite)
+    const spanSec = stamps.length > 1
+      ? Math.max(0, Math.round((Math.max(...stamps) - Math.min(...stamps)) / 1000))
+      : 0
     out.push({
       id,
       level,
+      spanSec,
       at: keep.mtime,
       keep: {
         itemId: keep.item_id, name: keep.name, bytes: keep.bytes, thumb: thumbUrl(keep.item_id),

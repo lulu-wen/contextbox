@@ -265,7 +265,18 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   .cleanup-file label { display: flex; gap: 10px; align-items: flex-start; overflow-wrap: anywhere; }
   .cleanup-file input { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 3px; }
   .cleanup-file p { margin: 6px 0 0 28px; font-size: 13px; line-height: 1.5; }
+  /* 證據是**模型從使用者的檔裡引出來的字**。引文的樣子：左邊一條線，跟旁邊的話分得開。 */
   .cleanup-file .evidence { color: #796c5b; }
+  /* **只畫那一列自己的證據**：`>` 是刻意的。看內容展開的那一盒裡也有 .evidence，
+     但那裡面的「大小・修改時間」「為什麼列出來」是我們的字，不是引文。 */
+  .cleanup-model + .evidence,
+  .cleanup-rename-row > .evidence, .cleanup-filing-row > .evidence {
+    border-left: 2px solid #e4dbc9; padding-left: 10px;
+  }
+  /* 免責聲明是**我們自己的字**，不是引文：小一級、淡一點，看得出來是註腳不是內容。
+     以前它跟證據接成同一段，讀起來像模型講的話的一部分（2026-09-21 實機回報）。 */
+  .cleanup-file .cleanup-caveat { color: #9a8e7c; font-size: 12px; }
+  .cleanup-file .cleanup-back { color: #7a6a52; font-size: 13px; }
   .cleanup-file-row { display: flex; align-items: center; gap: 12px; }
   .cleanup-file-row label { flex: 1; min-width: 0; }
   .cleanup-file-size, .cleanup-file-row button { flex-shrink: 0; white-space: nowrap; }

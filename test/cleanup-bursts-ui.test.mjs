@@ -203,6 +203,31 @@ describe('A 主動詢問要講的話', () => {
     assert.equal(burstGroupLine(one), '3 shots look like one burst · keeping “a·b.png” (the newest)')
   })
 
+  // 「這幾張是同一批」是一句**關於時間**的主張。以前畫面上只有縮圖與檔名，
+  // 使用者沒有辦法檢查那句話對不對（2026-09-21 實機回報）。
+  test('有秒數時標題要講「前後跨了多久」', () => {
+    const [one] = normalizeBurstGroups([{ ...g(2), spanSec: 7 }])
+    assert.equal(one.spanSec, 7)
+    assert.equal(burstGroupLine(one),
+      '3 shots look like one burst · taken within 7s · keeping “keep.png” (the newest)')
+  })
+
+  test('60 秒以上改用分鐘、3600 秒以上改用小時（連拍不該用「5400s」講）', () => {
+    const line = sec => burstGroupLine(normalizeBurstGroups([{ ...g(2), spanSec: sec }])[0])
+    assert.match(line(59), /taken within 59s ·/)
+    assert.match(line(90), /taken within 2 min ·/)
+    assert.match(line(5400), /taken within 2 hr ·/)
+  })
+
+  // 舊版後端沒有這一欄，壞掉的值也不可以讓標題長出一句半截的話。
+  test('沒給秒數／給了壞值 → 整段不提時間，不猜', () => {
+    for (const bad of [undefined, null, 0, -5, 'x', NaN]) {
+      const [one] = normalizeBurstGroups([{ ...g(2), spanSec: bad }])
+      assert.equal(one.spanSec, 0, JSON.stringify(bad))
+      assert.ok(!burstGroupLine(one).includes('taken within'), JSON.stringify(bad))
+    }
+  })
+
   test('**similar 那一句照抄**；same 是另一句', () => {
     assert.equal(burstNote('similar'), 'This group has visible differences. Take a look before you decide.')
     assert.equal(BURST_SIMILAR_NOTE, 'This group has visible differences. Take a look before you decide.')

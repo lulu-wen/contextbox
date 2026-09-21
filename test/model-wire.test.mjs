@@ -363,7 +363,7 @@ describe('第 5 條 ・ 未命名文件 (3).txt：course 含「作業系統」�
     const lines = modelOpinionLines(card.model)
     assert.match(lines.head, /^The model thinks: 作業系統 \/ 死結 \(confidence high\)$/)
     assert.match(lines.note, /Evidence: /)
-    assert.match(lines.note, /This is the model's opinion, not a fact/)
+    assert.match(lines.caveat, /This is the model's opinion, not a fact/)
     // **不可以因為模型說了就自動勾選**（screenshot-noise 信心 35，低於預設門檻）
     assert.equal(card.defaultChecked, false, '模型說了就自動勾起來了')
   })

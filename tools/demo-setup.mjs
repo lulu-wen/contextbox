@@ -97,12 +97,19 @@ if (existsSync(dir) && readdirSync(dir).length && !flag('--force')) {
 
 // ── 產生檔案 ──────────────────────────────────────────────────
 
-/** 寫一個檔，並把它的時間往回撥 days 天。 */
-function put(rel, content, days) {
+/**
+ * 寫一個檔，並把它的時間往回撥 days 天。
+ *
+ * `secondsLater` 是在那個時間點**之後**再加幾秒，連拍那三張用得到：
+ * 以前三張都只給 days=2，時間是各自呼叫 Date.now() 算的，結果三張的 mtime
+ * 只差十幾毫秒 —— 檔名寫著 10.31.02 / 05 / 09，畫面上卻說「Same burst, 0s apart」
+ * （2026-09-21 實機回報）。連拍的證據是秒數，示範資料要對得上自己的檔名。
+ */
+function put(rel, content, days, secondsLater = 0) {
   const path = join(downloads, rel)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, content)
-  const at = new Date(Date.now() - days * DAY)
+  const at = new Date(Date.now() - days * DAY + secondsLater * 1000)
   utimesSync(path, at, at)
   return path
 }
@@ -178,9 +185,10 @@ put('half-downloaded-video.mp4.part', Buffer.alloc(3_200_000, 3), 18); note('hal
 // 連拍截圖（P0 的主角）：同一個畫面，差別很小。
 // **差異要夠小才算同一批**：換掉一整行字在比對模組裡是「不一樣」（那是刻意的，寧可少問），
 // 所以這裡用游標與未讀數字這種小變化。
-put('Screenshot 2026-09-18 at 10.31.02.png', shot({ badge: 1 }), 2)
-put('Screenshot 2026-09-18 at 10.31.05.png', shot({ badge: 1, cursor: true }), 2)
-put('Screenshot 2026-09-18 at 10.31.09.png', shot({ badge: 2 }), 2)
+// 秒數跟著檔名走：02 → 05 → 09，相隔 3 秒與 4 秒。
+put('Screenshot 2026-09-18 at 10.31.02.png', shot({ badge: 1 }), 2, 0)
+put('Screenshot 2026-09-18 at 10.31.05.png', shot({ badge: 1, cursor: true }), 2, 3)
+put('Screenshot 2026-09-18 at 10.31.09.png', shot({ badge: 2 }), 2, 7)
 note('Screenshot …10.31.02/05/09.png', 2, 'a burst of three: only the cursor and the unread badge differ')
 // 對照：同一個版面但內容不同，不可以被當成連拍
 put('Screenshot 2026-09-18 at 14.02.44.png', shot({ lines: 9, badge: 3 }), 2)

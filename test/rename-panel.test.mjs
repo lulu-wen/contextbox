@@ -80,8 +80,10 @@ describe('renameLines', () => {
     assert.equal(l.head, '未命名文件 (3).txt → 作業系統_死結.txt')
     assert.equal(l.why, 'The model thinks: 作業系統 / 死結 (confidence high)')
     assert.match(l.note, /Evidence: 文件裡寫著「四個必要條件」/)
-    assert.match(l.note, /This is the model's opinion, not a fact/)
-    assert.match(l.note, /it can be undone/)
+    // 免責聲明搬到 caveat：證據是模型引的字，這句是我們自己的字，兩個欄位不可以混在一起。
+    assert.match(l.caveat, /This is the model's opinion, not a fact/)
+    assert.match(l.caveat, /it can be undone/)
+    assert.ok(!l.note.includes("opinion, not a fact"), '免責聲明不可以混進證據：' + l.note)
   })
 
   test('示範答案要標出來', () => {
