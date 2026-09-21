@@ -120,7 +120,23 @@ export function responseFormat(): Record<string, unknown> {
           topic: { type: 'string', description: 'What the topic is' },
           kind: { type: 'string', enum: [...VIEW_KINDS] },
           suggestedName: { type: 'string', description: '<Course or project>_<Topic>, with no extension and no date' },
-          evidence: { type: 'string', description: 'Words you actually saw in the image or the text' },
+          // **一定要給上限**（2026-09-21 使用者實機回報）。
+          //
+          // 沒有上限的字串欄位等於邀請模型把整份文件倒進來。實機上這三個檔
+          // （Ameba平台總架構.pptx／3／4，投影片匯出的架構圖，滿滿的短標籤、沒有句子）
+          // 每一次都長這樣：前四欄乖乖答完（course/topic 都是 Unknown，它確實看不出來），
+          // 然後 evidence 一路吐原文到 max_tokens，`confidence` 永遠沒出現 ——
+          // JSON 沒收尾 → parseView 整筆丟掉 → 算一次失敗 → 下一輪再問 → 一模一樣。
+          // 使用者的 model_calls 裡 7 次 answer 失敗全部是這三個檔，每次燒 50 秒。
+          //
+          // 上限就用 FIELD_MAX：**parseView 本來就把 evidence 截到 FIELD_MAX**，
+          // 超過的部分我們一個字都沒留過。差別只在於現在是模型不要產生它，
+          // 而不是產生完了再由我們丟掉、順便把整筆答案賠進去。
+          evidence: {
+            type: 'string',
+            maxLength: FIELD_MAX,
+            description: 'A short quote of words you actually saw in the image or the text',
+          },
           confidence: { type: 'string', enum: [...CONFIDENCES] },
         },
       },

@@ -152,6 +152,34 @@ describe('response_format 就是 json_schema', () => {
     assert.deepEqual(f.json_schema.schema.properties.kind.enum, [...VIEW_KINDS])
     assert.deepEqual(f.json_schema.schema.properties.confidence.enum, [...CONFIDENCES])
   })
+
+  // 2026-09-21 使用者實機回報：model_calls 裡 7 次「答案形狀不對」全部是同三個檔
+  //（投影片匯出的架構圖，滿滿短標籤、沒有句子）。每一次的回應都長這樣：
+  //   {"course":"Unknown","topic":"Unknown","kind":"Other","suggestedName":"Unknown_Unknown",
+  //    "evidence":"架構 圖例 入口／共用 …  ← 一路吐到 max_tokens
+  // 前四欄答完了，evidence 把整份文件倒進去，confidence 永遠沒出現 → JSON 沒收尾
+  // → parseView 整筆丟掉 → 下一輪再問 → 一模一樣，每次燒 50 秒。
+  // 加上 maxLength 之後實機重測：四個檔全部 finish_reason=stop、parseView OK。
+  test('**evidence 一定要有長度上限** —— 沒有上限等於邀請模型把整份文件倒進來', () => {
+    const ev = responseFormat().json_schema.schema.properties.evidence
+    assert.equal(typeof ev.maxLength, 'number', 'evidence 沒有 maxLength')
+    assert.ok(ev.maxLength > 0)
+    // 上限要跟 parseView 留下來的長度一致 —— 超過的部分我們本來就丟掉，
+    // 讓模型先產生再丟掉只會賠掉整筆答案。
+    const v = parseView(JSON.stringify({ ...GOOD_VIEW, evidence: '字'.repeat(5000) }))
+    assert.equal(ev.maxLength, v.evidence.length,
+      'schema 的上限跟 parseView 截斷的長度對不上：一邊放行、另一邊丟掉')
+  })
+
+  // 其他自由文字欄位也不可以無上限（同一個坑，換一個欄位而已）。
+  // course／topic／suggestedName 現在沒有上限，但它們沒出過事 ——
+  // 這條只釘住「有人拿掉 evidence 的上限就要紅」，不強迫其他欄位現在就加。
+  test('自由文字欄位裡，至少 evidence 是有界的', () => {
+    const p = responseFormat().json_schema.schema.properties
+    const freeText = ['course', 'topic', 'suggestedName', 'evidence']
+    const bounded = freeText.filter(k => typeof p[k].maxLength === 'number')
+    assert.ok(bounded.includes('evidence'), '有界的欄位：' + JSON.stringify(bounded))
+  })
 })
 
 // ═══ 要送出去的東西 ═══════════════════════════════════════════
