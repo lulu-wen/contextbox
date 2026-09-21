@@ -64,9 +64,11 @@ describe('cleanup scanner', () => {
     assert.equal(item.status, 'candidate')
     assert.equal(item.sha256.length, 64)
 
+    // 2026-09-21：保護副檔名清單拿掉、門檻改 14 天之後，40 天的 .zip 同時命中
+    // archive(65) 與 old-download(35)。**archive 要排在前面**（卡片標題與預設勾看最高信心）。
     const rows = candidates()
-    assert.equal(rows.length, 1)
-    assert.equal(rows[0].kind, 'archive')
+    assert.equal(rows[0].kind, 'archive', '最高信心那條要排第一：' + JSON.stringify(rows.map(r => r.kind)))
+    assert.deepEqual(rows.map(r => r.kind).sort(), ['archive', 'old-download'])
     assert.match(rows[0].evidence, /40 days/)
   })
 

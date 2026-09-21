@@ -326,7 +326,12 @@ function updateAlert() {
   // 後端有回話、而且沒說自己壞掉，才算連得上。
   // （health 現在存的是原始快照，ok:false 也留著讓 systemHealthProblem 講得出是哪裡壞。）
   const offline = healthChecked && (!health || health.ok === false)
-  const count = demo ? demo.candidates.length : health?.pendingCandidates
+  // **徽章數的是「有把握的那幾個」**（2026-09-21）。保護副檔名清單拿掉之後
+  // pendingCandidates 從 393 變成 908 —— 那是「你的 Downloads 有多大」，
+  // 不是「我發現了幾件值得說的事」。舊後端沒有 readyCandidates 就退回原本的數。
+  const ready = health?.readyCandidates
+  const count = demo ? demo.candidates.length
+    : Number.isFinite(Number(ready)) ? Number(ready) : health?.pendingCandidates
   $('quaso-candidate-count').textContent = count == null ? '—' : count > 99 ? '99+' : String(count)
   const source = demo ? 'demo' : 'local'
   const label = count == null ? 'Candidate count not available yet — click to retry' : `${plural(count, source + ' file')} waiting to be cleaned up — click to open the cleanup panel`

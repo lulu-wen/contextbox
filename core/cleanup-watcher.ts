@@ -7,6 +7,8 @@ export type CleanupWatcherOptions = {
   db: DatabaseSync
   roots: string[]
   maxBytes: number
+  /** 幾天內動過的檔一律不提議（cleanup.protectDays）。 */
+  protectDays?: number
   settleMs?: number
   tickMs?: number
   pollMs?: number
@@ -124,6 +126,7 @@ export function createCleanupWatcher(opts: CleanupWatcherOptions) {
           db: opts.db,
           roots: opts.roots,
           maxBytes: opts.maxBytes,
+          protectDays: opts.protectDays,
           maxDepth,
           maxFiles,
           paths: [path],

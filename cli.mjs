@@ -2246,7 +2246,7 @@ switch (cmd) {
         // 讀不到的資料夾、保險絲（整個資料夾看起來不見了）都經由 onProblem 講出來 ——
         // 不接的話，那些話只存在於 API 層，使用者永遠看不到。
         r = scanDownloads({
-          db, roots: CLEAN_ROOTS, maxBytes: config.maxBytes,
+          db, roots: CLEAN_ROOTS, maxBytes: config.maxBytes, protectDays: config.cleanup.protectDays,
           onProblem: m => { found.push(m); warn('⚠ ' + shown(m)) },
         })
       } catch (e) {

@@ -200,12 +200,21 @@ describe('A4 保護副檔名', () => {
     assert.equal(byName(scanAndList(), '新增文字文件.txt').defaultChecked, true)
   })
 
-  test('保護副檔名 + 低信心 → 不勾', () => {
+  // 2026-09-21：保護副檔名清單拿掉了（使用者：「說不定使用者就是要清理，保護 2 周內資料即可」）。
+  // 舊的 .pdf 現在**列得出來**，但低信心 → **不預設勾**。守的性質從「不出現」變成「不勾」，
+  // 而後者才是真正在保護使用者的那一半。
+  test('舊的保護型副檔名：列得出來，但不預設勾', () => {
     put('很舊的合約.pdf', { days: 200 })
-    // 原本寫成 `if (c) assert...`，而 c 永遠是 undefined ——
-    // 條件斷言等於一個斷言都沒跑。改成斷言真正該成立的事。
-    assert.equal(byName(scanAndList(), '很舊的合約.pdf'), undefined,
-      '保護副檔名不該被低信心規則挑中，連出現都不該出現')
+    const c = byName(scanAndList(), '很舊的合約.pdf')
+    assert.ok(c, '拿掉保護清單之後它應該列得出來')
+    assert.equal(c.defaultChecked, false, '低信心不可以預設勾')
+    assert.equal(c.confidence, 35)
+  })
+
+  test('門檻以內的完全不出現（這才是保護）', () => {
+    put('剛下載的合約.pdf', { days: 3 })
+    assert.equal(byName(scanAndList(), '剛下載的合約.pdf'), undefined,
+      '最近動過的檔連出現都不該出現')
   })
 })
 

@@ -57,6 +57,8 @@ export type CleanupRuleInput = {
   mtimeMs: number
   nowMs?: number
   sha256?: string | null
+  /** 幾天內動過的不提議（預設 DEFAULT_PROTECT_DAYS）。 */
+  protectDays?: number
 }
 
 export type CleanupCandidateDraft = {
@@ -96,17 +98,33 @@ export const ARCHIVE_EXT = new Set([
   '.tgz',
 ])
 
+/**
+ * **保護副檔名清單拿掉了**（2026-09-21 使用者決定）。
+ *
+ * 以前 `.pdf`／`.docx`／`.txt`⋯⋯ 永遠不會是 old-download 候選，理由是
+ *「論文、合約、講義多半是這些格式，放很久不代表該丟」。使用者的話：
+ *
+ *   > 不用有保護副檔名清單? 因為說不定使用者就是要清理，保護 2 周內資料即可
+ *
+ * 他是對的：用**副檔名**猜「你捨不得丟什麼」太粗糙，而且它擋掉的正是
+ * 使用者實機上最想處理的那一批（491 天沒動的 PDF 從來不上清單）。
+ * 改成用**時間**保護 —— 最近動過的不碰，其餘讓使用者自己決定。
+ *
+ * 留著這個常數是為了那些**真的不該用年齡判斷**的格式（macOS 的套裝文件），
+ * 但清單縮到只剩它們。`.key` 另外還在執行層的 EXEC_PROTECTED_EXT 裡（那是私鑰，
+ * 跟這裡無關、不可以混為一談）。
+ */
 export const PROTECTED_EXT = new Set([
-  '.pdf',
-  '.docx',
-  '.xlsx',
-  '.pptx',
-  '.key',
   '.pages',
   '.numbers',
-  '.txt',
-  '.md',
 ])
+
+/**
+ * 幾天內動過的檔一律不碰（`cleanup.protectDays`，預設 14）。
+ *
+ * 這是取代保護副檔名清單的那條線：不猜「什麼格式重要」，只認「你最近還在用它」。
+ */
+export const DEFAULT_PROTECT_DAYS = 14
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -138,6 +156,10 @@ function draft(kind: CleanupCandidateKind, confidence: number, reason: string, e
 export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[] {
   const nowMs = input.nowMs ?? Date.now()
   const days = ageDays(input.mtimeMs, nowMs)
+  // 幾天內動過的一律不碰。壞值（負數、NaN、非整數）退回預設，不可以變成 0
+  //（0 等於「連今天下載的檔都提議清掉」）。
+  const raw = Number(input.protectDays)
+  const protectDays = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_PROTECT_DAYS
   const ext = extOf(input)
   const name = nameOf(input)
   const out: CleanupCandidateDraft[] = []
@@ -191,12 +213,12 @@ export function classifyByRules(input: CleanupRuleInput): CleanupCandidateDraft[
     ))
   }
 
-  if (!PROTECTED_EXT.has(ext) && days >= 90) {
+  if (!PROTECTED_EXT.has(ext) && days >= protectDays) {
     out.push(draft(
       'old-download',
       35,
       'A download nobody has touched in a long time',
-      `untouched for ${days} days, and ${ext || '(no extension)'} is not on the protected list`,
+      `untouched for ${days} days`,
     ))
   }
 

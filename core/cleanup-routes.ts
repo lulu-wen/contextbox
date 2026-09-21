@@ -618,26 +618,43 @@ const SHOT_KINDS_SQL = SCREENSHOT_KINDS.map(k => `'${k.replace(/'/g, "''")}'`).j
  * 任何網頁都能用 <img> 連發，7000 個檔時完整版要 30 多 ms，這一版不到十分之一。
  * test/audit-0919-routes.test.mjs 有一條拿兩版對照。
  */
-function collectCounts(db: DatabaseSync, scope: CleanupScope): { pending: number; needsHuman: number } {
+/**
+ * 徽章與 doctor 要的數字。
+ *
+ * **回兩個數，不是一個**（2026-09-21）。保護副檔名清單拿掉之後，`pending` 從 393 變成 908
+ *（1089 個檔裡的 83%）—— 那個數字技術上沒錯，但它不再是「我發現了幾件值得說的事」，
+ * 而是「你的 Downloads 有多大」。而寵物與徽章只有這一個對外訊號，
+ * 讓它變成雜訊等於把 README 那句 it only speaks up when it has something worth saying 作廢。
+ *
+ * 所以：`ready` ＝ 預設勾的（有把握的那些，實機 68 個）給徽章用；
+ * `pending` ＝ 列得出來的全部（908）留著給清單與 doctor。**兩個都不藏。**
+ */
+function collectCounts(
+  db: DatabaseSync, scope: CleanupScope,
+): { pending: number; ready: number; needsHuman: number } {
   const m = scopeMatcher(scope)
   const listed = `c.item_id = i.id AND c.status='proposed'
                   AND c.rule_version IN (${RULE_VERSIONS_SQL})
                   AND trim(c.reason) <> '' AND trim(c.evidence) <> ''`
   const items = db.prepare(
     `SELECT i.id, i.path, i.name, i.bytes, i.sha256,
-            EXISTS (SELECT 1 FROM cleanup_candidates c WHERE ${listed} AND c.kind IN (${SHOT_KINDS_SQL})) AS shot_kind
+            EXISTS (SELECT 1 FROM cleanup_candidates c WHERE ${listed} AND c.kind IN (${SHOT_KINDS_SQL})) AS shot_kind,
+            (SELECT max(c.confidence) FROM cleanup_candidates c WHERE ${listed}) AS top_conf
        FROM file_items i
       WHERE i.status IN (${PLANNABLE_STATUSES}) AND i.error IS NULL
         AND EXISTS (SELECT 1 FROM cleanup_candidates c WHERE ${listed})`
-  ).all() as (ItemRow & { shot_kind: number })[]
+  ).all() as (ItemRow & { shot_kind: number; top_conf: number })[]
   let pending = 0
+  let ready = 0
   for (const i of items) {
     if (!underAny(i.path, m.pre) || execRefusesName(i.name)) continue
     if (!i.shot_kind && m.shotOnly(i.path)) continue
     // 跟 collect 一樣：沒讀過內容的大檔照樣是候選，不再算進「需要你查看」。
     pending++
+    // **跟 isDefaultChecked 同一個判斷**，不可以有第二份：信心過門檻、而且讀過內容。
+    if (Number(i.top_conf) >= DEFAULT_CHECK_MIN && !noFingerprint(i)) ready++
   }
-  return { pending, needsHuman: brokenForHuman(db, m).length }
+  return { pending, ready, needsHuman: brokenForHuman(db, m).length }
 }
 
 const cmpDesc = (a = '', b = '') => a < b ? 1 : a > b ? -1 : 0
@@ -1249,7 +1266,8 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
 
   // 徽章數字跟清單**同一套篩選**（collectCounts 是 collect 的只數數字版）。各自寫一條 COUNT 的話，
   // 清單排掉的（桌面上的、太大的、跟清理無關的大檔）這裡還會算進去。
-  const counted = safe(() => collectCounts(db, { roots: rootList, screenshotsDir: shots }), { pending: 0, needsHuman: 0 })
+  const counted = safe(() => collectCounts(db, { roots: rootList, screenshotsDir: shots }),
+    { pending: 0, ready: 0, needsHuman: 0 })
   const pending = counted.pending
   const errors = counted.needsHuman
 
@@ -1304,6 +1322,9 @@ export function healthSnapshot(db: DatabaseSync, opts: HealthOptions) {
       truncated: q.truncated,
     },
     pendingCandidates: pending,
+    // **有把握的那幾個**（預設勾的）。徽章與寵物用這個數，不用 pendingCandidates ——
+    // 保護副檔名清單拿掉之後那個數字變成「你的 Downloads 有多大」，不是「有幾件事要說」。
+    readyCandidates: counted.ready,
     needsHumanCount: errors,
     // lastError 的內容只給帶 token 的。存進去的時候已經翻成人話（recordCleanupError），
     // 讀出來再翻一次 —— 舊版存的是原文，帶完整路徑（fs 的 message 一律含 path）。

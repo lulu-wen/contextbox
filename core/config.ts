@@ -20,6 +20,7 @@
  * 是「會不會離開你的網路」。家裡的叢集用明文本來就是常態。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs'
+import { DEFAULT_PROTECT_DAYS } from './cleanup-rules.ts'
 import { homedir, platform } from 'node:os'
 import {
   join,
@@ -62,6 +63,16 @@ export type CleanupConfig = {
    * macOS 的截圖資料夾**就是桌面**，套全部規則的話，桌面上的舊 zip、安裝檔都會被預設勾走。
    */
   screenshotsDir: string | null
+  /**
+   * 幾天內動過的檔一律不提議（預設 14）。
+   *
+   * **取代了保護副檔名清單**（2026-09-21）。以前 .pdf／.docx／.txt 永遠不會是
+   * old-download 候選，但那擋掉的正是使用者最想處理的那一批（491 天沒動的 PDF
+   * 從來不上清單）。改成用時間保護：最近還在用的不碰，其餘由使用者自己決定。
+   *
+   * 想回到以前那種保守程度就把它調大（90 天差不多等於舊行為的量）。
+   */
+  protectDays: number
 }
 
 export type Config = {
@@ -124,7 +135,7 @@ export function defaults(sys: SysInfo = {}): Config {
     readonly: false,
     pdfPages: 3,
     maxBytes: 20 * 1024 * 1024,
-    cleanup: { roots: [d.downloads], screenshots: false, screenshotsDir: null },
+    cleanup: { roots: [d.downloads], screenshots: false, screenshotsDir: null, protectDays: DEFAULT_PROTECT_DAYS },
   }
 }
 
@@ -449,6 +460,16 @@ function cleanupOf(v: unknown, dfltRoots: string[], screenshotsDir: string, prob
     else problems.push('The cleanup setting could not be read, so the cleanup scope falls back to the default (Downloads only).')
   }
 
+  // 幾天內動過的不碰。**壞值倒向保守那一邊**（退回預設 14，不可以變成 0）——
+  // 0 等於「連今天下載的檔都提議清掉」，那是打錯一個字就會擴大範圍的方向。
+  let protectDays = DEFAULT_PROTECT_DAYS
+  if (c.protectDays !== undefined) {
+    const n = Number(c.protectDays)
+    if (Number.isFinite(n) && Number.isInteger(n) && n >= 1 && n <= 3650) protectDays = n
+    else problems.push(`cleanup.protectDays must be a whole number of days between 1 and 3650 `
+      + `(you wrote ${JSON.stringify(c.protectDays)}), so it falls back to ${DEFAULT_PROTECT_DAYS}.`)
+  }
+
   let screenshots = false
   if (c.screenshots !== undefined) {
     if (typeof c.screenshots === 'boolean') screenshots = c.screenshots
@@ -475,7 +496,7 @@ function cleanupOf(v: unknown, dfltRoots: string[], screenshotsDir: string, prob
   // 截圖資料夾加進清理範圍，**但那底下只清截圖**（screenshotsDir，第二輪 R2-8）
   const shots = screenshots ? realOrAbs(screenshotsDir) : null
   if (shots) roots.push(shots)
-  return { roots: [...new Set(roots)], screenshots, screenshotsDir: shots }
+  return { roots: [...new Set(roots)], screenshots, screenshotsDir: shots, protectDays }
 }
 
 export type Loaded = { config: Config; problems: string[]; path: string; created: boolean }
@@ -502,7 +523,7 @@ export function load(path: string = CONFIG_PATH): Loaded {
       mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
       // screenshotsDir 是算出來的（看 screenshots 開關），不寫進檔案 —— 寫了使用者會以為改它有用
       const d = defaults()
-      const file = { ...d, cleanup: { roots: d.cleanup.roots, screenshots: d.cleanup.screenshots } }
+      const file = { ...d, cleanup: { roots: d.cleanup.roots, screenshots: d.cleanup.screenshots, protectDays: d.cleanup.protectDays } }
       writeFileSync(path, JSON.stringify(file, null, 2) + '\n', { mode: 0o600 })
       created = true
     } catch (e: any) {

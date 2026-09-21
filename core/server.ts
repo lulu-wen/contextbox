@@ -608,7 +608,8 @@ export function start(opts: {
           res.end(Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength))
         },
         // onProblem 一定要傳：保險絲與讀不到的檔只經由它報，回應的 problems 就是這些
-        scan: onProblem => scanDownloads({ db: F.db, roots: roots(), maxBytes: opts.maxBytes ?? cfg().maxBytes, onProblem }),
+        scan: onProblem => scanDownloads({ db: F.db, roots: roots(),
+          maxBytes: opts.maxBytes ?? cfg().maxBytes, protectDays: cfg().cleanup?.protectDays, onProblem }),
       })) return
 
       // key 註冊表。手填頁面靠這個長出 75 個欄位，不用自己抄一份。

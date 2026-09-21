@@ -74,6 +74,8 @@ export type CleanupScanOptions = {
   db: DatabaseSync
   roots: string[]
   maxBytes: number
+  /** 幾天內動過的檔一律不提議（cleanup.protectDays，預設 14）。沒給就用規則層的預設。 */
+  protectDays?: number
   now?: Date
   /** 最近還在變動的檔案先不分類，避免把下載到一半的正式檔名搬走。 */
   minStableMs?: number
@@ -1223,6 +1225,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
       mtimeMs: inspected.mtimeMs,
       nowMs: now.getTime(),
       sha256: sha,
+      protectDays: opts.protectDays,
     })
     for (const d of drafts) upsertCandidate(opts.db, item.id, d, nowIso)
     skipStaleCandidates(opts.db, item.id, drafts.map(d => d.kind))
