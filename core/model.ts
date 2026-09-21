@@ -33,7 +33,9 @@ import { resizeGray } from './imagehash.ts'
 import { encodeGrayPng } from './png-write.ts'
 
 /** 提示詞版本。**改了提示詞就要改這個字串** —— 它是快取鍵的一半，舊答案才不會被當成新提示詞的答案。 */
-export const PROMPT_VERSION = 'v2-en'
+// v3：那段文字前面開始講檔名（2026-09-21）。課名常常只寫在檔名上，
+// 不給的話 syllabus 這種檔永遠答不出課名。prompt 變了，快取就要重算。
+export const PROMPT_VERSION = 'v3-en'
 
 /** 每個請求最多等這麼久。 */
 export const MODEL_TIMEOUT_MS = 60_000
@@ -193,10 +195,50 @@ function clean(s: string, max: number): string {
  *
  * 建議的檔名再擋一次路徑分隔符：P3 會拿它去改名，一個帶 `/` 或 `..` 的名字是另一回事。
  */
+/**
+ * 把字串字面量裡的**裸控制字元**跳脫掉（2026-09-21 使用者實機回報）。
+ *
+ * JSON 規定 U+0000–U+001F 不可以直接出現在字串裡，要寫成跳脫序列。但模型會直接吐出來 ——
+ * 實機上這一筆六個欄位全都對、內容也對，只因為 evidence 裡有一個**真的 TAB**
+ * （從 .docx 的表格抄來的）就整筆被丟掉：
+ *
+ *   {"course":"Unknown", …, "evidence":"AI-RAN LLM Platform<TAB>2026", "confidence":"high"}
+ *
+ * 從檔案裡抄出來的引文本來就常常帶 TAB 與換行（表格、投影片），所以這不是偶發。
+ *
+ * **只補跳脫，不補別的。** 不加括號、不猜缺的欄位、不改任何值 ——
+ * 跳脫完照樣走同一套嚴格檢查，該退的還是退。parseView 後面的 clean() 本來就會
+ * 把控制字元換成空白，所以救回來的值跟本來就寫對跳脫的那一筆一模一樣。
+ *
+ * 用字元掃描不用正規式：要分辨「字串裡面」與「字串外面」，而且要看得懂反斜線跳脫。
+ */
+export function escapeRawControlChars(s: string): string {
+  const BACKSLASH = String.fromCharCode(92)
+  let out = ''
+  let inStr = false
+  let esc = false
+  for (const ch of s) {
+    if (esc) { out += ch; esc = false; continue }
+    if (inStr && ch === BACKSLASH) { out += ch; esc = true; continue }
+    if (ch === '"') { inStr = !inStr; out += ch; continue }
+    const code = ch.charCodeAt(0)
+    if (inStr && code < 0x20) {
+      out += BACKSLASH + 'u' + code.toString(16).padStart(4, '0')
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
 export function parseView(raw: unknown): ModelView | null {
   let v: unknown = raw
   if (typeof raw === 'string') {
-    try { v = JSON.parse(raw) } catch { return null }
+    try { v = JSON.parse(raw) }
+    catch {
+      // 裸控制字元是唯一會補救的情況，補完照樣走下面那套嚴格檢查
+      try { v = JSON.parse(escapeRawControlChars(raw)) } catch { return null }
+    }
   }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null
   const o = v as Record<string, unknown>
@@ -278,8 +320,8 @@ export function imagePayload(png: Buffer | Uint8Array): { bytes: Buffer; width: 
 
 /** 一次請求的內容。文字與圖片二選一。 */
 export type AskInput =
-  | { source: 'text'; text: string }
-  | { source: 'image'; png: Buffer }
+  | { source: 'text'; text: string; name?: string | null }
+  | { source: 'image'; png: Buffer; name?: string | null }
 
 export type AskOk = { ok: true; view: ModelView; ms: number; charsSent: number; bytesSent: number }
 export type AskFail = {
@@ -302,13 +344,39 @@ export type AskFail = {
 export type AskResult = AskOk | AskFail
 
 /** 組 messages。匯出給測試看得到真的送了什麼。 */
+
+/**
+ * 那段文字前面的一句話。**有檔名就講檔名**（2026-09-21 使用者實機回報）。
+ *
+ * 以前只送內文，檔名從來沒進過 prompt。結果：
+ *
+ *   Introduction to Database Systems, 2026 Spring - Syllabus.pdf
+ *     內文是一張週次表（Week／Date／Main Course Topic／Lab Topic⋯⋯），從頭到尾沒寫課名
+ *     不給檔名 → Unknown / Unknown (low)
+ *     給檔名   → Introduction to Database Systems / Using PostgreSQL (high)
+ *
+ * 課名寫在檔名上是**最常見的情況**（講義、syllabus、作業），而那正是這個工具最該認出來的一類。
+ *
+ * **檔名是不可信的輸入**（下載來的檔叫什麼都可以，包括一句指令）。但這不是新的風險：
+ * 內文本來就一起送出去，而且同樣不可信。真正擋住它的一直是**輸出的形狀** ——
+ * 回答的 schema 裡沒有路徑欄位，路徑一律由程式組、洗過、再檢查一次在不在該在的樹底下。
+ * 模型再怎麼被說服也講不出一條路徑來。這裡照樣把檔名洗過（控制字元、方向字元、絕對路徑）
+ * 再放進去，而且放在引號裡、明講它只是檔名。
+ */
+function fileHeader(name?: string | null): string {
+  const shown = cleanField(String(name ?? ''), 200).split('"').join("'")
+  return shown
+    ? 'Here is an excerpt from a file named "' + shown + '":\n\n'
+    : 'Here is an excerpt from a file:\n\n'
+}
+
 export function buildMessages(input: AskInput): unknown[] {
   const user: unknown[] = input.source === 'image'
     ? [
         { type: 'image_url', image_url: { url: `data:image/png;base64,${input.png.toString('base64')}` } },
         { type: 'text', text: USER_PROMPT },
       ]
-    : [{ type: 'text', text: `Here is an excerpt from a file:\n\n${input.text}\n\n${USER_PROMPT}` }]
+    : [{ type: 'text', text: fileHeader(input.name) + `${input.text}\n\n${USER_PROMPT}` }]
   return [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: user },

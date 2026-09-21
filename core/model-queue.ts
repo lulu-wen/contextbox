@@ -31,6 +31,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from 'node:fs'
 import type { Config } from './config.ts'
 import { modelKey } from './config.ts'
+import { stripCopySuffix } from './cleanup-scanner.ts'
 import { under } from './guard.ts'
 import {
   PROMPT_VERSION, askModel, imagePayload, longEnough, modelEnabled, textPayload,
@@ -300,10 +301,17 @@ export function payloadFor(db: DatabaseSync, item: PendingItem, key: string): Pa
     const s = screen({ name: row.name, text: full, key })
     if (!s.send) return { ok: false, why: s.why ?? SECRET_WHY, remember: true }
     const text = textPayload(full)
+    // **檔名現在會進 prompt，所以也要進快取鍵**（2026-09-21）。
+    // 不然「同樣的內容只問一次」會變成「同樣的內容，答案照第一個問到的檔名算」——
+    // Syllabus.pdf 與 random.pdf 內容一樣時，後者會拿到前者的課名。
+    // 位元組一模一樣的真重複檔不受影響：那條由 pendingItems 的 sha256 兄弟條款擋著。
+    // 複本後綴剝掉：`講義 (1).txt` 與 `講義.txt` 是同一份東西，那個 (1) 是瀏覽器加的，
+    // 不該讓它們變成兩把不同的鑰匙、問兩次、還可能給出不一樣的答案。
+    const askName = stripCopySuffix(row.name)
     return {
       ok: true,
-      input: { source: 'text', text },
-      payload: Buffer.from(text, 'utf8'),
+      input: { source: 'text', text, name: askName },
+      payload: Buffer.from(askName + ' ' + text, 'utf8'),
       charsSent: [...text].length,
       bytesSent: Buffer.byteLength(text, 'utf8'),
     }

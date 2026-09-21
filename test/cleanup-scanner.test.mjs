@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { open } from '../core/db.ts'
-import { cleanupWalk, scanDownloads, isGoneError, addSameTextCandidates } from '../core/cleanup-scanner.ts'
+import { cleanupWalk, scanDownloads, isGoneError, addSameTextCandidates, stripCopySuffix, looksLikeCopy } from '../core/cleanup-scanner.ts'
 
 const day = 24 * 60 * 60 * 1000
 const now = new Date('2026-09-13T00:00:00Z')
@@ -234,5 +234,35 @@ describe('cleanup scanner', () => {
 
     const found = cleanupWalk(downloads).files.map(p => basename(p)).sort()
     assert.deepEqual(found, ['real.zip'])
+  })
+})
+
+// 2026-09-21：檔名開始進模型的 prompt、也進快取鍵之後，`講義 (1).txt` 與 `講義.txt`
+// 會變成兩把不同的鑰匙 —— 同一份東西問兩次，而且兩次可能給出不一樣的答案。
+// 那個 (1) 是瀏覽器加的，不是檔案內容的一部分，所以問之前先剝掉。
+describe('stripCopySuffix：問模型之前把複本痕跡剝掉', () => {
+  test('常見的複本後綴都剝得掉', () => {
+    assert.equal(stripCopySuffix('講義 (1).txt'), '講義.txt')
+    assert.equal(stripCopySuffix('報告 - 副本 (2).docx'), '報告.docx')
+    assert.equal(stripCopySuffix('report copy 2.pdf'), 'report.pdf')
+    assert.equal(stripCopySuffix('Copy of report.pdf'), 'report.pdf')
+    assert.equal(stripCopySuffix('data (3).tar.gz'), 'data.tar.gz', '兩段副檔名要留著')
+  })
+
+  // **不可以剝過頭。** 這幾個是原檔自己的名字，剝掉就毀了檔名。
+  test('不是複本的一個字都不動', () => {
+    for (const n of ['report.pdf', 'Budget (2026).xlsx', 'photocopy.pdf', '合約副本.pdf', 'a.tar.gz']) {
+      assert.equal(stripCopySuffix(n), n, n)
+    }
+  })
+
+  test('剝完是空的就回原名（整個名字都是後綴）', () => {
+    assert.equal(stripCopySuffix('(1).pdf'), '(1).pdf')
+  })
+
+  test('跟 looksLikeCopy 用同一組樣式：看起來不像複本就不該被改', () => {
+    for (const n of ['report.pdf', 'Budget (2026).xlsx', '講義 (1).txt', 'report copy 2.pdf']) {
+      if (!looksLikeCopy(n)) assert.equal(stripCopySuffix(n), n, n + ' 不像複本卻被改了')
+    }
   })
 })

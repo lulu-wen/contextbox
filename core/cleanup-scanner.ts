@@ -1265,6 +1265,36 @@ export function looksLikeCopy(name: string): boolean {
   return COPY_NAME.test(name)
 }
 
+/** 複本後綴本身（不含副檔名）。跟 COPY_NAME 是同一組樣式，拆出來給 stripCopySuffix 用。 */
+const COPY_SUFFIX =
+  /(?:\s*\(\d{1,3}\)|\s+-\s+(?:copy|副本|複製|复制|複本)(?:\s*\(\d{1,3}\))?|\s+(?:copy|拷貝|拷贝|副本|的副本|複本)(?:\s+\d{1,3})?)$/i
+
+/**
+ * 把「複本」的痕跡從檔名上拿掉：`報告 (1).pdf` → `報告.pdf`。
+ *
+ * **給模型那條路用的**（2026-09-21）。檔名開始進 prompt、也進快取鍵之後，
+ * `講義.txt` 與 `講義 (1).txt` 會變成兩把不同的鑰匙 —— 同一份東西問兩次，
+ * 而且兩次可能給出不一樣的答案。那個 `(1)` 是瀏覽器加的，不是檔案內容的一部分。
+ *
+ * 剝掉之後兩者的鑰匙一樣，「同樣的內容只問一次」照舊成立；
+ * 而真的不同名的檔（`report.pdf` 與 `OS HW3.pdf`）鑰匙仍然不同 —— 那是對的，
+ * 因為名字會影響答案。
+ *
+ * 剝完是空的就回原名（`(1).pdf` 這種整個名字都是後綴的，剝了反而更糟）。
+ */
+export function stripCopySuffix(name: string): string {
+  const s = String(name ?? '')
+  if (!looksLikeCopy(s)) return s
+  const lead = /^copy of\s+/i
+  if (lead.test(s)) return s.replace(lead, '') || s
+  // 副檔名最多兩段（.tar.gz），先摘下來再剝後綴
+  const m = /^(.*?)((?:\.[^.\s]{1,8}){0,2})$/.exec(s)
+  const stem = m ? m[1] : s
+  const ext = m ? m[2] : ''
+  const stripped = stem.replace(COPY_SUFFIX, '').trim()
+  return stripped ? stripped + ext : s
+}
+
 /**
  * 重複檔的**保留者排在最前面**。scanner 與路由（evidence 的「會留著 X」）共用這一支，兩邊才會指名同一份。
  *

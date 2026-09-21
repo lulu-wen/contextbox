@@ -401,15 +401,36 @@ describe('第 6、7 條 ・ 同樣的內容只問一次；改過內容重問', (
     assert.equal(s.db.prepare('SELECT count(*) n FROM model_views').get().n, 1)
   })
 
+  // 2026-09-21：檔名開始進 prompt 之後，快取鍵是「檔名＋砍完的內容」。
+  // 複本後綴會先剝掉（stripCopySuffix），所以 a.txt 與 a (1).txt 還是同一把鑰匙 ——
+  // 這條照樣走得到快取那條路，而且守的是同一件事：**砍完一樣就不要問第二次**。
   test('內容不同、但砍到 2000 字之後一樣 → 命中快取（真的走快取那條路）', async t => {
     const head = '作業系統 第 6 章 死結。' + '這一段在砍掉之前就已經填滿前兩千個字了。'.repeat(120)
     assert.ok([...head].length > 2000, '前提：超過 2000 字')
-    const s = sandbox(t, { 'a.txt': head + '尾巴一', 'b.txt': head + '尾巴二' })
+    const s = sandbox(t, { 'a.txt': head + '尾巴一', 'a (1).txt': head + '尾巴二' })
     const fake = await startFakeModel(t)
     withKey(t, FAKE_KEY)
     const r = await round(s, cfg([s.downloads], fake.baseUrl))
     assert.equal(fake.requests.length, 1, '砍完一樣的內容問了兩次')
     assert.equal(r.cached, 1, '第二個要走快取')
+  })
+
+  // **名字真的不一樣就要分開問。** 這是檔名進 prompt 的代價，也是它的重點：
+  // `Syllabus.pdf` 與 `report.pdf` 內容一樣時，答案本來就該不一樣
+  //（實機：同一份內容，有檔名 → 認得出課名；沒檔名 → Unknown）。
+  test('**名字不一樣 → 分開問**（因為名字會影響答案）', async t => {
+    const s = sandbox(t, { 'Operating Systems Syllabus.txt': OS_CH6, 'report.txt': OS_CH6 })
+    const fake = await startFakeModel(t)
+    withKey(t, FAKE_KEY)
+    const r = await round(s, cfg([s.downloads], fake.baseUrl))
+    // **這是檔名進 prompt 的代價，如實記下來**：位元組一模一樣、名字不一樣的兩個檔
+    // 現在各問一次（以前共用一筆）。換來的是每一個檔都拿到照自己名字算的答案 ——
+    // 實機上 Syllabus 那個檔就是靠名字才認得出課名的。
+    assert.equal(r.asked, 2, '名字不一樣就是兩把鑰匙')
+    assert.equal(fake.requests.length, 2)
+    for (const n of ['Operating Systems Syllabus.txt', 'report.txt']) {
+      assert.ok(modelViewForItem(s.db, s.idOf(n)), n + ' 要有自己的看法')
+    }
   })
 
   test('改過內容：重問', async t => {
