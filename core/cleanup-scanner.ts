@@ -21,6 +21,7 @@ import {
   CLEANUP_RULE_VERSION,
   PARTIAL_EXT,
   burstDraft,
+  sameTextDraft,
   classifyByRules,
   duplicateDraft,
   type CleanupCandidateDraft,
@@ -1222,6 +1223,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   }
 
   addDuplicateCandidates(opts.db, nowIso, touched, opts.roots)
+  addSameTextCandidates(opts.db, nowIso, touched, opts.roots)
 
   // 連拍分組只在完整掃描做（跟對帳一樣）。單檔模式是 watcher 的一串事件，
   // 每一個事件都把整個資料夾的圖重比一次是白做工；下一次完整掃描（寵物每半小時、
@@ -1337,6 +1339,73 @@ export function addDuplicateCandidates(
  * （CLI 與 server 的設定不同、設定改過）時，同一個候選會被一邊改成 skipped、另一邊改回 proposed，
  * 清單上的檔忽隱忽現（稽核第三波 K5）。roots 外面的候選留給掃那裡的人判斷。
  */
+/**
+ * 位元組不同、抽出來的文字一模一樣的檔（2026-09-21 使用者實機回報）。
+ *
+ * `.pdf`／`.docx` 是保護副檔名，90 天的 old-download 不挑它們；duplicate 又要求
+ * sha256 完全相同，而重新下載一次的 PDF 位元組就不一樣了。兩條路都斷掉，所以
+ *「最新(第18-20題)…(1).pdf」與「(2).pdf」這種一眼看得出重複的檔從來不上清單。
+ *
+ * **門檻很重要**：使用者的資料庫裡有 23 個檔抽出來的文字是空字串（沒有文字圖層的
+ * 掃描件 PDF）。照文字分組的話它們會互為「重複」，那是**會刪掉真東西的誤判**。
+ * 所以只看長度過得了 MIN_SAME_TEXT_CHARS 的文字，空的、太短的一律不分組。
+ *
+ * sha256 一樣的那幾份不在這裡處理 —— 那是真的重複檔，duplicate（98、預設勾）已經管了，
+ * 兩邊都提議會讓同一個檔出現兩個理由。這裡只收「跟留下那份的 sha256 不一樣」的。
+ */
+export const MIN_SAME_TEXT_CHARS = 200
+
+export function addSameTextCandidates(
+  db: DatabaseSync, nowIso = new Date().toISOString(), onlyItemIds?: string[], roots?: string[],
+) {
+  const pre = roots ? rootPrefixes(roots) : null
+  const groups = db.prepare(
+    `SELECT t.text AS text, count(*) n
+       FROM file_texts t JOIN file_items i ON i.id = t.item_id
+      WHERE t.text IS NOT NULL AND length(trim(t.text)) >= ?
+        AND i.status NOT IN ('quarantined','missing','error')
+      GROUP BY t.text HAVING count(*) > 1`
+  ).all(MIN_SAME_TEXT_CHARS) as { text: string; n: number }[]
+
+  const only = onlyItemIds ? new Set(onlyItemIds) : null
+  const extra = new Set<string>()
+  for (const g of groups) {
+    const rows = keepersFirst((db.prepare(
+      `SELECT i.* FROM file_items i JOIN file_texts t ON t.item_id = i.id
+        WHERE t.text = ? AND i.status NOT IN ('quarantined','missing','error')
+        ORDER BY i.first_seen_at, i.path`
+    ).all(g.text) as CleanupFileItem[]).filter(r => !pre || pre.some(x => fold(r.path).startsWith(x))))
+    if (rows.length < 2) continue
+    const keep = rows[0]
+    for (const item of rows.slice(1)) {
+      if (execRefusesName(item.name) || item.status === 'new') continue
+      // 位元組也一樣的話那是真的重複檔，duplicate 已經管了
+      if (item.sha256 && keep.sha256 && item.sha256 === keep.sha256) continue
+      extra.add(item.id)
+      if (only && !only.has(item.id)) continue
+      upsertCandidate(db, item.id, sameTextDraft(keep.name, rows.length), nowIso)
+      setItemStatus(db, item.id, 'candidate')
+    }
+  }
+  skipStaleKind(db, 'same-text', extra, pre)
+}
+
+/** kind 不再成立的候選收成 skipped。duplicate 與 same-text 共用這一支。 */
+function skipStaleKind(db: DatabaseSync, kind: string, extra: Set<string>, pre: string[] | null) {
+  const stale = (db.prepare(
+    `SELECT c.id, c.item_id, i.path FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id
+     WHERE c.kind=? AND c.rule_version=? AND c.status='proposed'
+       AND i.status NOT IN ('quarantined','missing','error')`
+  ).all(kind, CLEANUP_RULE_VERSION) as { id: string; item_id: string; path: string }[])
+    .filter(r => !extra.has(r.item_id) && (!pre || pre.some(x => fold(r.path).startsWith(x))))
+  for (const r of stale) {
+    waitForDb(() => db.prepare(`UPDATE cleanup_candidates SET status='skipped' WHERE id=?`).run(r.id))
+    if (!candidatesFor(db, r.item_id).length) {
+      waitForDb(() => db.prepare(`UPDATE file_items SET status='kept' WHERE id=? AND status='candidate'`).run(r.item_id))
+    }
+  }
+}
+
 function skipStaleDuplicates(db: DatabaseSync, extra: Set<string>, pre: string[] | null) {
   const stale = (db.prepare(
     `SELECT c.id, c.item_id, i.path FROM cleanup_candidates c JOIN file_items i ON i.id=c.item_id

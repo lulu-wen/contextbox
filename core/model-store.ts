@@ -108,7 +108,27 @@ export function adoptModelView(db: DatabaseSync, key: string, itemId: string): v
  * 一個檔的看法。先直接對 item_id；對不到就找 sha256 一樣的兄弟（同樣的內容，同樣的看法）。
  * 兩邊都沒有回 null。
  */
+/**
+ * 記住「這個檔的答案是哪一筆」（2026-09-21）。
+ *
+ * `model_views` 一筆內容一列，`item_id` 只認得最近一個檔。位元組不同、抽出來的文字
+ * 一模一樣的檔（同一份 PDF 下載兩次）因此永遠對不到自己的答案 —— 見 db.ts 的說明。
+ * 問到答案、或命中快取，都要來記一筆。
+ */
+export function linkModelView(db: DatabaseSync, itemId: string, key: string, at: string): void {
+  db.prepare(
+    `INSERT INTO model_item_views (item_id,key,at) VALUES (?,?,?)
+     ON CONFLICT(item_id) DO UPDATE SET key=excluded.key, at=excluded.at`
+  ).run(itemId, key, at)
+}
+
 export function modelViewForItem(db: DatabaseSync, itemId: string): ModelViewRow | null {
+  // **先看這個檔自己連到哪一筆。** 舊資料庫沒有這些列，就往下走原本的兩條路。
+  const linked = db.prepare(
+    `SELECT v.* FROM model_item_views l JOIN model_views v ON v.key = l.key
+      WHERE l.item_id=? AND v.at >= ${freshAt('l.item_id')} LIMIT 1`
+  ).get(itemId) as ModelViewRow | undefined
+  if (linked) return linked
   const direct = db.prepare(
     `SELECT * FROM model_views WHERE item_id=? AND at >= ${freshAt('model_views.item_id')}
       ORDER BY at DESC, key LIMIT 1`

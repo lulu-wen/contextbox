@@ -38,7 +38,7 @@ import {
 } from './model.ts'
 import { SECRET_WHY, TOO_SHORT_WHY, UNANSWERED_WHY, UNUSABLE_WHY, screen, secretByName } from './model-guard.ts'
 import {
-  adoptModelView, failedCallCount, getModelView, putModelSkip, putModelView, recordModelCall,
+  adoptModelView, failedCallCount, getModelView, linkModelView, putModelSkip, putModelView, recordModelCall,
   sweepModel, viewKey,
 } from './model-store.ts'
 
@@ -130,11 +130,15 @@ export function pendingItems(db: DatabaseSync, roots: readonly string[], limit: 
         AND NOT EXISTS (SELECT 1 FROM model_skips s WHERE s.item_id = i.id AND s.at >= ${SKIP_CONTENT_AT})
         AND NOT EXISTS (SELECT 1 FROM model_views v WHERE v.item_id = i.id AND v.at >= ${CONTENT_AT}
                            AND v.prompt_version = ?)
+        -- **這個檔自己連到的那一筆**（2026-09-21）。model_views 的 item_id 只認得最近一個檔，
+        -- 所以位元組不同、抽出來的文字一樣的第二個檔永遠對不到自己的答案，每一輪都被撿回來。
+        AND NOT EXISTS (SELECT 1 FROM model_item_views l JOIN model_views v ON v.key = l.key
+                         WHERE l.item_id = i.id AND v.at >= ${CONTENT_AT} AND v.prompt_version = ?)
         AND NOT EXISTS (SELECT 1 FROM model_views v JOIN file_items j ON j.id = v.item_id
                          WHERE j.id <> i.id AND i.sha256 IS NOT NULL AND j.sha256 = i.sha256
                            AND v.at >= ${SIB_CONTENT_AT} AND v.prompt_version = ?)
       ORDER BY i.last_seen_at DESC, i.id`
-  ).all(PROMPT_VERSION, PROMPT_VERSION) as ItemRow[]
+  ).all(PROMPT_VERSION, PROMPT_VERSION, PROMPT_VERSION) as ItemRow[]
 
   const out: PendingItem[] = []
   for (const r of rows) {
@@ -426,6 +430,11 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
     if (cached) {
       // **同樣的內容只問一次**（不變量 7）
       try { adoptModelView(db, cacheKey, item.id) } catch { /* 忙就下次 */ }
+      // **一定要連起來**（2026-09-21）。adoptModelView 只在那一列的 item_id 是 NULL 或
+      // 已經不存在時才改 —— 位元組不同、文字一樣的第二個檔（同一份 PDF 下載兩次）
+      // 因此永遠拿不到「自己那一列」，於是每一輪都被撿回來重問，`think --all` 無限跑。
+      try { linkModelView(db, item.id, cacheKey, String(cached.at ?? new Date().toISOString())) }
+      catch { /* 忙就下次 */ }
       result.cached++
       step({
         outcome: 'cached',
@@ -496,6 +505,7 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
         suggested_name: r.view.suggestedName, evidence: r.view.evidence, confidence: r.view.confidence,
         model: config.model.name, prompt_version: PROMPT_VERSION, at, seeded: 0,
       })
+      linkModelView(db, item.id, cacheKey, at)
     } catch { /* 寫不進去下一輪會再問一次 */ }
     result.asked++
     step({ outcome: 'asked', course: r.view.course, topic: r.view.topic, confidence: r.view.confidence })

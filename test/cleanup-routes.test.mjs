@@ -109,6 +109,9 @@ describe('A1b 新增 kind 不可以靜悄悄變成預設勾', () => {
       duplicate: true, partial: true, empty: true, temp: true,
       installer: true, archive: true,
       'old-download': false, 'screenshot-noise': false,
+      // 位元組不同、抽出來的文字一樣（2026-09-21）。**文字一樣不等於檔案一樣** ——
+      // 兩份 PDF 可以文字層相同、圖片不同，所以這條只負責讓人看得到，不預設勾。
+      'same-text': false,
     }
     // **真值來源是 cleanup-rules.ts 匯出的 CLEANUP_KINDS**，不是用探針反推。
     // 第一版用一組寫死的探針輸入跑分類器來湊出這張表，結果新規則沒有

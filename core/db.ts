@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS cleanup_candidates (
   id           TEXT PRIMARY KEY,
   item_id      TEXT NOT NULL REFERENCES file_items(id),
   kind         TEXT NOT NULL CHECK (kind IN
-               ('duplicate','installer','archive','temp','empty','old-download','partial','screenshot-noise')),
+               ('duplicate','same-text','installer','archive','temp','empty','old-download','partial','screenshot-noise')),
   rule_version TEXT NOT NULL,
   confidence   INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100),
   reason       TEXT NOT NULL,
@@ -278,6 +278,27 @@ CREATE TABLE IF NOT EXISTS model_views (
 );
 CREATE INDEX IF NOT EXISTS ix_model_views_item ON model_views(item_id);
 
+-- 哪一個檔對應到哪一筆看法（2026-09-21）。
+--
+-- model_views 一筆內容一列（key ＝ 內容雜湊＋提示詞版本），item_id 只是「最近一次是哪個檔」。
+-- 那對**位元組不同、但抽出來的文字一模一樣**的檔是不夠的 —— 同一份 PDF 下載兩次，
+-- metadata 不一樣所以 sha256 不一樣，文字卻一個字不差：
+--   · 第一個檔問到答案、佔住那一列的 item_id
+--   · 第二個檔命中快取，adoptModelView 卻只在原本的 item_id 是 NULL 或已經不存在時才改
+--   · 於是第二個檔永遠沒有「自己那一列」→ pendingItems 每一輪都把它撿回來
+--     （think --all 無限跑同一批檔，2026-09-21 使用者實機回報），
+--     而且 modelViewForItem 也找不到它的看法 → 永遠不會有改名／歸檔建議。
+--
+-- 這張表把「哪一個檔」跟「哪一筆答案」分開記，一個檔一列，key 指向 model_views。
+-- 舊資料庫沒有這些列 —— 不補，modelViewForItem 的 item_id／sha256 兩條舊路照樣走得通，
+-- 下一次問到或命中快取就會補上。
+CREATE TABLE IF NOT EXISTS model_item_views (
+  item_id TEXT PRIMARY KEY,
+  key     TEXT NOT NULL,
+  at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_model_item_views_key ON model_item_views(key);
+
 -- 每一次真的送出去的紀錄。**不存內容**，只存「送了多少」與「多久」——
 -- 使用者查得到「今天送了幾次、平均幾秒」，而帳本本身不可以變成第二份內容外洩管道。
 CREATE TABLE IF NOT EXISTS model_calls (
@@ -397,7 +418,61 @@ const ADDED_COLUMNS: [string, string, string][] = [
  * 補欄位。**同一瞬間可能有很多個行程在做同一件事**（右鍵一次選 8 個檔就是 8 個行程），
  * 所以「已經有這一欄」不算錯 —— 檢查跟 ALTER 之間別人加好了，接住那個訊息就好。
  */
+/**
+ * `cleanup_candidates.kind` 的 CHECK 加一種（2026-09-21 的 same-text）。
+ *
+ * **CHECK 改不動**：SQLite 沒有 ALTER ... DROP CONSTRAINT，`CREATE TABLE IF NOT EXISTS`
+ * 對已經存在的表一個字都不會改。使用者現有的資料庫（1266 個檔）帶著舊的 CHECK，
+ * 新 kind 一寫進去就 SQLITE_CONSTRAINT_CHECK —— 所以只能整張表重建。
+ *
+ * 照 SQLite 官方的順序做，而且**可以重複跑**：schema 裡已經有 same-text 就直接回。
+ * · foreign_keys 要在交易**外面**關掉（在裡面設是沒有作用的），因為 cleanup_plan_items
+ *   有一條 REFERENCES cleanup_candidates(id)，DROP TABLE 會踩到它
+ * · 整段包在一個交易裡：中途斷電就整個回到原樣，不會留下半張表
+ * · BEGIN IMMEDIATE ＋ busy_timeout（open 裡設了 15 秒）＝ 同時開好幾個行程也只有一個做得成
+ * · 重建之後索引要自己補回來（它們跟著舊表一起被 DROP 掉了）
+ */
+function widenCandidateKinds(db: DatabaseSync): void {
+  const row = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='cleanup_candidates'`
+  ).get() as { sql?: string } | undefined
+  if (!row?.sql || row.sql.includes("'same-text'")) return
+  db.exec('PRAGMA foreign_keys=OFF')
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    db.exec(`CREATE TABLE cleanup_candidates_new (
+      id           TEXT PRIMARY KEY,
+      item_id      TEXT NOT NULL REFERENCES file_items(id),
+      kind         TEXT NOT NULL CHECK (kind IN
+                   ('duplicate','same-text','installer','archive','temp','empty','old-download','partial','screenshot-noise')),
+      rule_version TEXT NOT NULL,
+      confidence   INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100),
+      reason       TEXT NOT NULL,
+      evidence     TEXT NOT NULL,
+      status       TEXT NOT NULL CHECK (status IN
+                   ('proposed','skipped','approved','quarantined','restored','dismissed','error')),
+      created_at   TEXT NOT NULL,
+      UNIQUE (item_id, kind, rule_version)
+    )`)
+    db.exec(`INSERT INTO cleanup_candidates_new
+      (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
+      SELECT id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at
+        FROM cleanup_candidates`)
+    db.exec('DROP TABLE cleanup_candidates')
+    db.exec('ALTER TABLE cleanup_candidates_new RENAME TO cleanup_candidates')
+    db.exec(`CREATE INDEX IF NOT EXISTS ix_cleanup_candidates_item   ON cleanup_candidates(item_id, status)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS ix_cleanup_candidates_status ON cleanup_candidates(status, created_at)`)
+    db.exec('COMMIT')
+  } catch (e) {
+    try { db.exec('ROLLBACK') } catch { /* 沒開成交易就沒東西好回 */ }
+    throw e
+  } finally {
+    db.exec('PRAGMA foreign_keys=ON')
+  }
+}
+
 function migrate(db: DatabaseSync): void {
+  widenCandidateKinds(db)
   for (const [table, column, ddl] of ADDED_COLUMNS) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
     if (cols.some(c => c.name === column)) continue

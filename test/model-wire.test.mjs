@@ -882,6 +882,51 @@ describe('這一期不做的事', () => {
   })
 })
 
+// 2026-09-21 使用者實機回報：`node cli.mjs think --all` 一輪一輪跑同一批檔，
+// 每一筆都寫「(same contents were asked before; reusing that answer)」，永遠停不下來。
+//
+// 根因：model_views 一筆內容一列（key ＝ 內容雜湊＋提示詞版本），item_id 只是
+// 「最近一次是哪個檔」。adoptModelView 只在那一列的 item_id 是 NULL 或已經不存在時才改，
+// 所以**位元組不同、但抽出來的文字一模一樣**的第二個檔（同一份 PDF 下載兩次，
+// metadata 不同所以 sha256 不同、文字一個字不差）永遠拿不到「自己那一列」：
+//   · pendingItems 每一輪都把它撿回來 → think --all 無限跑
+//   · modelViewForItem 也找不到 → 那個檔永遠不會有改名／歸檔建議
+describe('稽核 ・ 內容一樣但位元組不同的檔（2026-09-21）', () => {
+  test('命中快取之後就不該再被撿回來，而且找得到自己的看法', async t => {
+    const s = sandbox(t, { '講義(1).txt': OS_CH6, '講義(2).txt': OS_CH6 + '\n ' })
+    // .txt 的文字就是內容，做不出「位元組不同、文字相同」；PDF 才會。
+    // 直接把第二列的 text 對齊第一列 —— 這就是那兩份 PDF 在資料庫裡的樣子。
+    const rows = s.db.prepare('SELECT item_id FROM file_texts ORDER BY item_id').all()
+    const first = s.db.prepare('SELECT text FROM file_texts WHERE item_id=?').get(rows[0].item_id).text
+    s.db.prepare('UPDATE file_texts SET text=? WHERE item_id=?').run(first, rows[1].item_id)
+
+    const a = s.db.prepare('SELECT sha256 FROM file_items ORDER BY name').all()
+    assert.notEqual(a[0].sha256, a[1].sha256, '前提：兩個檔的位元組不一樣')
+    assert.equal(pendingItems(s.db, [s.downloads], 50).length, 2, '前提：兩個都排在隊上')
+
+    const fake = await startFakeModel(t, () => completion(GOOD_VIEW))
+    withKey(t, FAKE_KEY)
+    const config = cfg([s.downloads], fake.baseUrl)
+
+    const r1 = await round(s, config)
+    assert.equal(r1.asked + r1.cached, 2, '第一輪兩個都處理掉了')
+    assert.equal(r1.asked, 1, '**同樣的內容只問一次**')
+    assert.equal(r1.cached, 1, '另一個是命中快取')
+
+    // 這就是那個 bug：以前這裡還是 1，於是 --all 永遠跑不完
+    assert.deepEqual(pendingItems(s.db, [s.downloads], 50), [],
+      '命中快取的那個檔不可以再被撿回來（--all 會無限跑同一批）')
+
+    const r2 = await round(s, config)
+    assert.equal(r2.total, 0, '第二輪要是空的')
+
+    // 而且兩個檔都要找得到自己的看法 —— 不然第二個檔永遠不會有改名／歸檔建議
+    for (const row of s.db.prepare('SELECT id,name FROM file_items').all()) {
+      assert.ok(modelViewForItem(s.db, row.id), `${row.name} 找不到看法`)
+    }
+  })
+})
+
 describe('稽核 ・ 換了提示詞之後（2026-09-20）', () => {
   test('**舊提示詞問到的答案不算「讀過」**：換版本之後要重問', t => {
     const s = sandbox(t, { 'a.txt': 'Operating Systems, chapter 6: deadlock. The four necessary conditions are mutual exclusion, hold and wait, no preemption and circular wait.' })

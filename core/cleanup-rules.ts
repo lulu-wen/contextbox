@@ -22,6 +22,11 @@ export const CLEANUP_RULE_VERSION = 'cleanup-rules-v2-en'
  */
 export const KIND_CONFIDENCE = {
   duplicate: 98,
+  // 位元組不一樣，但**抽出來的文字一個字不差**（同一份 PDF 下載兩次，metadata 不同）。
+  // 45 < DEFAULT_CHECK_MIN（50）＝ **列得出來、勾得起來，但永遠不預設勾**。
+  // 文字一樣不等於檔案一樣：兩份 PDF 可以文字層相同、圖片不同，所以這個判斷
+  // 不足以代替 sha256。要清得由使用者自己看過再伸手勾（旁邊就有 View contents）。
+  'same-text': 45,
   partial: 95,
   empty: 95,
   temp: 85,
@@ -35,6 +40,7 @@ export const CLEANUP_KINDS = Object.keys(KIND_CONFIDENCE) as (keyof typeof KIND_
 
 export type CleanupCandidateKind =
   | 'duplicate'
+  | 'same-text'
   | 'installer'
   | 'archive'
   | 'temp'
@@ -255,6 +261,28 @@ export function burstDraft(level: 'same' | 'similar', keepName: string, gapSec: 
       ? `Almost identical to “${keepName}”`
       : `Much like “${keepName}”`,
     `Same burst, ${gapSec}s apart; “${keepName}” is the one being kept`,
+  )
+}
+
+/**
+ * 位元組不同、抽出來的文字一模一樣（2026-09-21 使用者實機回報）。
+ *
+ * `.pdf`／`.docx` 在 PROTECTED_EXT 裡，90 天的 old-download 規則不挑它們；
+ * 而 duplicate 要求 sha256 完全相同，重新下載一次的 PDF 位元組就不一樣了
+ *（metadata、時間戳）。兩條路都斷掉，所以「最新(第18-20題)…(1).pdf」與「(2).pdf」
+ * 這種一眼就看得出重複的檔，從來不會出現在清理清單上。
+ *
+ * **信心 45 ＝ 不預設勾。** 文字一樣不等於檔案一樣（兩份 PDF 可以文字層相同、圖片不同），
+ * 所以這條只負責「讓你看得到」，要不要清是你自己按下去的。證據指名留的是哪一份。
+ */
+export function sameTextDraft(keepName: string, count: number): CleanupCandidateDraft {
+  const others = count - 1
+  return draft(
+    'same-text',
+    KIND_CONFIDENCE['same-text'],
+    `Reads exactly the same as “${keepName}”`,
+    `${others} other file${others === 1 ? '' : 's'} ${others === 1 ? 'has' : 'have'} identical text`
+      + ` but different bytes; “${keepName}” is the one being kept`,
   )
 }
 
