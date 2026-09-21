@@ -54,7 +54,7 @@ export const FILING_BATCH_MAX = 100
 /** 課名的洗法與上限住在 core/rename.ts（cleanName 就在那裡），這裡 re-export，呼叫端不用改。 */
 export { cleanCourse, COURSE_MAX_CODEPOINTS, UNKNOWN_COURSE }
 /** 歸檔樹的第一層。`<filed>/課程/<課名>/<類型>/` */
-export const COURSES_DIR = 'Courses'
+export const COURSES_DIR = 'Courses'
 /**
  * 「這是什麼文件」→ 資料夾名。沒對到回空字串（＝這一輪不提議這個檔）。
  *
