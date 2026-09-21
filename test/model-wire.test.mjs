@@ -927,6 +927,44 @@ describe('稽核 ・ 內容一樣但位元組不同的檔（2026-09-21）', () =
   })
 })
 
+// 2026-09-21 使用者第二次回報：修完「內容一樣的兄弟」之後還是在跑同一個檔，
+// 這次是 [1/1] 一直重複。實機資料庫長這樣：
+//   file_texts.at = 09-21T07:05   （檔案動過，文字被重抽）
+//   model_views.at = 09-20T12:49  （答案是前一天別的時候問到的）
+// 排除條件寫成 v.at >= CONTENT_AT，拿「答案產生的時間」去比「內容最後讀出來的時間」，
+// 只要文字在答案之後被重抽過就永遠不成立 → 每一輪撿回來 → 每一輪命中同一筆快取。
+// 該比的是 l.at：**這個檔**上一次被結掉的時間。
+describe('稽核 ・ 答案比內容舊（2026-09-21 之二）', () => {
+  test('文字在答案之後被重抽過 → 結掉一次就不該再回來', async t => {
+    const s = sandbox(t, { '講義.txt': OS_CH6 })
+    const fake = await startFakeModel(t, () => completion(GOOD_VIEW))
+    withKey(t, FAKE_KEY)
+    const config = cfg([s.downloads], fake.baseUrl)
+
+    assert.equal((await round(s, config)).asked, 1)
+    assert.deepEqual(pendingItems(s.db, [s.downloads], 50), [], '前提：問完就不在隊上了')
+
+    // 實機的形狀：答案是前一天問到的，文字在那之後才被重抽（檔案動過），
+    // 但**內容一個字都沒改**，所以快取鍵不變、還是會命中快取。
+    const id = s.idOf('講義.txt')
+    const yesterday = new Date(Date.now() - DAY).toISOString()
+    s.db.prepare('UPDATE model_views SET at=?').run(yesterday)
+    s.db.prepare('UPDATE model_item_views SET at=?').run(yesterday)
+
+    const again = pendingItems(s.db, [s.downloads], 50)
+    assert.equal(again.length, 1, '前提：內容比答案新，所以要重新排隊')
+
+    const r = await round(s, config)
+    assert.equal(r.cached, 1, '內容沒變 → 命中快取，不重問模型')
+    assert.equal(r.asked, 0)
+
+    // 這就是那個 bug：以前這裡還是 1，於是 --all 永遠跑同一個檔
+    assert.deepEqual(pendingItems(s.db, [s.downloads], 50), [],
+      '命中快取就是結掉了 —— 不可以因為「答案比內容舊」又被撿回來')
+    assert.ok(modelViewForItem(s.db, id), '而且要找得到看法，不然不會有改名建議')
+  })
+})
+
 describe('稽核 ・ 換了提示詞之後（2026-09-20）', () => {
   test('**舊提示詞問到的答案不算「讀過」**：換版本之後要重問', t => {
     const s = sandbox(t, { 'a.txt': 'Operating Systems, chapter 6: deadlock. The four necessary conditions are mutual exclusion, hold and wait, no preemption and circular wait.' })

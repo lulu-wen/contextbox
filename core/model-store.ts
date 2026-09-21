@@ -124,9 +124,11 @@ export function linkModelView(db: DatabaseSync, itemId: string, key: string, at:
 
 export function modelViewForItem(db: DatabaseSync, itemId: string): ModelViewRow | null {
   // **先看這個檔自己連到哪一筆。** 舊資料庫沒有這些列，就往下走原本的兩條路。
+  // 新鮮度比 l.at（這個檔上一次被結掉的時間），不是 v.at（那筆答案產生的時間）——
+  // 命中快取時 v.at 可能是好幾天前別的檔問到的，拿它比一定過期。理由見 model-queue.ts。
   const linked = db.prepare(
     `SELECT v.* FROM model_item_views l JOIN model_views v ON v.key = l.key
-      WHERE l.item_id=? AND v.at >= ${freshAt('l.item_id')} LIMIT 1`
+      WHERE l.item_id=? AND l.at >= ${freshAt('l.item_id')} LIMIT 1`
   ).get(itemId) as ModelViewRow | undefined
   if (linked) return linked
   const direct = db.prepare(

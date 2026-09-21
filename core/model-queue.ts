@@ -132,8 +132,15 @@ export function pendingItems(db: DatabaseSync, roots: readonly string[], limit: 
                            AND v.prompt_version = ?)
         -- **這個檔自己連到的那一筆**（2026-09-21）。model_views 的 item_id 只認得最近一個檔，
         -- 所以位元組不同、抽出來的文字一樣的第二個檔永遠對不到自己的答案，每一輪都被撿回來。
+        --
+        -- **新鮮度要比 l.at，不是 v.at。** v.at 是「那個答案是什麼時候產生的」——
+        -- 命中快取時那可能是好幾天前別的檔問到的。只要這個檔的文字在那之後被重抽過
+        -- （檔案改過 mtime、重新下載⋯⋯），v.at < CONTENT_AT 就永遠成立，於是這個檔
+        -- 每一輪都被撿回來、每一輪都命中同一筆快取 —— 實機上就是「[1/1] 跑不完」
+        --（2026-09-21 使用者回報，第二次）。
+        -- l.at 是「**這個檔**上一次被結掉是什麼時候」，那才是該跟內容時間比的東西。
         AND NOT EXISTS (SELECT 1 FROM model_item_views l JOIN model_views v ON v.key = l.key
-                         WHERE l.item_id = i.id AND v.at >= ${CONTENT_AT} AND v.prompt_version = ?)
+                         WHERE l.item_id = i.id AND l.at >= ${CONTENT_AT} AND v.prompt_version = ?)
         AND NOT EXISTS (SELECT 1 FROM model_views v JOIN file_items j ON j.id = v.item_id
                          WHERE j.id <> i.id AND i.sha256 IS NOT NULL AND j.sha256 = i.sha256
                            AND v.at >= ${SIB_CONTENT_AT} AND v.prompt_version = ?)
@@ -433,7 +440,9 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       // **一定要連起來**（2026-09-21）。adoptModelView 只在那一列的 item_id 是 NULL 或
       // 已經不存在時才改 —— 位元組不同、文字一樣的第二個檔（同一份 PDF 下載兩次）
       // 因此永遠拿不到「自己那一列」，於是每一輪都被撿回來重問，`think --all` 無限跑。
-      try { linkModelView(db, item.id, cacheKey, String(cached.at ?? new Date().toISOString())) }
+      // **記「現在」，不是那筆答案的時間。** 答案可能是好幾天前別的檔問到的；
+      // 這裡要記的是「這個檔是什麼時候被結掉的」，不然下一輪又會被當成過期。
+      try { linkModelView(db, item.id, cacheKey, new Date().toISOString()) }
       catch { /* 忙就下次 */ }
       result.cached++
       step({
