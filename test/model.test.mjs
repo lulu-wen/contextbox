@@ -20,7 +20,7 @@ import {
   responseFormat, textPayload, whyDisabled,
 } from '../core/model.ts'
 import { viewKey } from '../core/model-store.ts'
-import { GOOD_VIEW, completion, startFakeModel } from './helpers/fake-model.mjs'
+import { NO_COURSE_VIEW, GOOD_VIEW, completion, startFakeModel } from './helpers/fake-model.mjs'
 
 const KEY_ENV = 'CONTEXTBOX_MODEL_KEY'
 /** 測試用的假金鑰。**真的金鑰只在 ~/.contextbox/env，這裡永遠不碰。** */
@@ -364,10 +364,11 @@ describe('askModel 打假的伺服器', () => {
     assert.match(r.error, /too long|Could not read/)
   })
 
-  // v2-en → v3-en（2026-09-21）：那段文字前面開始講檔名。
+  // v2-en → v3-en：那段文字前面開始講檔名。
+  // v3-en → v4-en：兩個軸（whatItIs 一定有、course 只在真的屬於某門課時才填）。
   // **改了提示詞就一定要改版本號**，不然舊答案會被當成新提示詞問到的。
   test('提示詞版本跟著提示詞走（改了提示詞要一起改版本號）', () => {
-    assert.equal(PROMPT_VERSION, 'v3-en')
+    assert.equal(PROMPT_VERSION, 'v4-en')
   })
 
   // 版本號的用途就是「換了就重問」。這條盯住它真的有進快取鍵。
@@ -453,5 +454,57 @@ describe('檔名要進 prompt（2026-09-21）', () => {
   test('圖片那條路不受影響（這一次只動文字）', () => {
     const m = buildMessages({ source: 'image', png: Buffer.from('89504e470d0a1a0a', 'hex'), name: 'x.png' })
     assert.equal(m[1].content[0].type, 'image_url')
+  })
+})
+
+// P7（2026-09-21）：以前只問「屬於哪一堂課」，而 course 與 topic 綁在同一個問題上 ——
+// 答不出課名就整組欄位一起空掉。使用者的 Downloads 大半是 CV、表單、論文、規格書，
+// 它們本來就不屬於任何一堂課（實機：202 筆答案裡 186 筆 course=Unknown，
+// 其中 145 筆連 topic 都是 Unknown）。
+describe('兩個軸：whatItIs 一定有，course 只在真的屬於某門課時才填', () => {
+  test('**whatItIs 與 subject 都在回答的欄位裡**', () => {
+    for (const f of ['whatItIs', 'subject']) {
+      assert.ok(VIEW_FIELDS.includes(f), f + ' 不在 VIEW_FIELDS 裡')
+      assert.equal(typeof responseFormat().json_schema.schema.properties[f].maxLength, 'number',
+        f + ' 沒有長度上限（evidence 那個坑不踩第二次）')
+    }
+  })
+
+  test('**course=Unknown 不再是失敗**：照樣是完整的一筆，confidence 可以是 high', () => {
+    const v = parseView(JSON.stringify(NO_COURSE_VIEW))
+    assert.ok(v, 'course=Unknown 不該讓整筆被丟掉')
+    assert.equal(v.course, 'Unknown')
+    assert.equal(v.whatItIs, 'resume')
+    assert.equal(v.confidence, 'high', '「我很確定這是履歷，而它不屬於任何課」是完整的答案')
+  })
+
+  test('少了 whatItIs 就不採用（它是必填的）', () => {
+    const { whatItIs, ...rest } = NO_COURSE_VIEW
+    assert.equal(parseView(JSON.stringify(rest)), null)
+  })
+
+  test('prompt 要講死「大部分檔案不是課程教材」，不然模型會硬湊課名', () => {
+    const sys = JSON.stringify(buildMessages({ source: 'text', text: 'x', name: 'a.pdf' }))
+    assert.match(sys, /Most files are not coursework/i)
+    assert.match(sys, /whatItIs is always required/i)
+    assert.match(sys, /not a failure/i, 'course=Unknown 要明講是正常的，不然模型會把信心壓低')
+  })
+
+  test('新欄位存得進資料庫也讀得回來', async () => {
+    const { open } = await import('../core/db.ts')
+    const store = await import('../core/model-store.ts')
+    const db = open(':memory:')
+    db.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,mtime,first_seen_at,last_seen_at,status)
+      VALUES ('i1','/x/a.pdf','a.pdf','.pdf',1,'t','t','t','kept')`).run()
+    store.putModelView(db, {
+      key: 'k:' + PROMPT_VERSION, item_id: 'i1', source: 'text',
+      course: 'Unknown', topic: 'Unknown', kind: 'Other', suggested_name: 'Resume',
+      what_it_is: 'resume', subject: 'CS student', evidence: 'e', confidence: 'high',
+      model: 'm', prompt_version: PROMPT_VERSION, at: new Date().toISOString(), seeded: 0,
+    })
+    const o = store.opinionOf(store.modelViewForItem(db, 'i1'))
+    assert.equal(o.whatItIs, 'resume')
+    assert.equal(o.subject, 'CS student')
+    db.close()
   })
 })

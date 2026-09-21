@@ -271,6 +271,11 @@ CREATE TABLE IF NOT EXISTS model_views (
   item_id    TEXT,               -- 最近一次是哪個檔（只是方便查，不是主鍵）
   source     TEXT NOT NULL,      -- image／text
   course     TEXT, topic TEXT, kind TEXT, suggested_name TEXT,
+  -- 「這是什麼文件」與「關於什麼」，模型自己的話（2026-09-21，P7）。
+  -- course 只在真的屬於某門課時才有值；what_it_is **一定有** ——
+  -- 使用者的 Downloads 大半是 CV、表單、論文、規格書，它們不屬於任何課，
+  -- 而舊的 prompt 把 course 與 topic 綁在同一個問題上，答不出課名就整組欄位一起空掉。
+  what_it_is TEXT, subject TEXT,
   evidence   TEXT, confidence TEXT,           -- 高／中／低
   model      TEXT NOT NULL, prompt_version TEXT NOT NULL,
   at         TEXT NOT NULL,
@@ -412,6 +417,8 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ['file_items', 'naming', `naming TEXT CHECK (naming IN ('untitled','generic','named'))`],
   ['file_items', 'naming_why', 'naming_why TEXT'],
   ['model_calls', 'blame', 'blame TEXT'],
+  ['model_views', 'what_it_is', 'what_it_is TEXT'],
+  ['model_views', 'subject', 'subject TEXT'],
 ]
 
 /**

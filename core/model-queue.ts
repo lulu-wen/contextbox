@@ -519,7 +519,9 @@ export async function thinkRound(opts: RoundOptions): Promise<RoundResult> {
       putModelView(db, {
         key: cacheKey, item_id: item.id, source: item.source,
         course: r.view.course, topic: r.view.topic, kind: r.view.kind,
-        suggested_name: r.view.suggestedName, evidence: r.view.evidence, confidence: r.view.confidence,
+        suggested_name: r.view.suggestedName,
+        what_it_is: r.view.whatItIs, subject: r.view.subject,
+        evidence: r.view.evidence, confidence: r.view.confidence,
         model: config.model.name, prompt_version: PROMPT_VERSION, at, seeded: 0,
       })
       linkModelView(db, item.id, cacheKey, at)

@@ -35,7 +35,9 @@ import { encodeGrayPng } from './png-write.ts'
 /** 提示詞版本。**改了提示詞就要改這個字串** —— 它是快取鍵的一半，舊答案才不會被當成新提示詞的答案。 */
 // v3：那段文字前面開始講檔名（2026-09-21）。課名常常只寫在檔名上，
 // 不給的話 syllabus 這種檔永遠答不出課名。prompt 變了，快取就要重算。
-export const PROMPT_VERSION = 'v3-en'
+// v4：兩個軸（2026-09-21，P7）。whatItIs 一定有、course 只在真的屬於某門課時才填。
+// 以前只問「哪一堂課」，而使用者的 Downloads 大半不是課程教材 —— 答不出課名就整組欄位空掉。
+export const PROMPT_VERSION = 'v4-en'
 
 /** 每個請求最多等這麼久。 */
 export const MODEL_TIMEOUT_MS = 60_000
@@ -62,9 +64,23 @@ export const VIEW_KINDS: readonly string[] = Object.freeze([
 /** 信心三級。數字沒有校準過，別假裝精確。 */
 export const CONFIDENCES: readonly string[] = Object.freeze(['high', 'medium', 'low'])
 
-/** 回答的六個欄位。**不多不少** —— parseView 照這個比。 */
+/**
+ * 回答的欄位。**不多不少** —— parseView 照這個比。
+ *
+ * `whatItIs`／`subject` 是 2026-09-21 加的（P7）。以前只問「屬於哪一堂課」，
+ * 而 course 與 topic 綁在同一個問題上 —— 答不出課名就整組欄位一起空掉：
+ *
+ *   Peng-Ju_Wen_CV_1.docx → course=Unknown topic=Unknown kind=Other confidence=high
+ *
+ * 內容明明讀到了（evidence 是真的引文），只是被問錯問題。使用者的 Downloads 裡
+ * 大半是 CV、自傳、推薦書、表單、法規、論文、規格書，它們**本來就不屬於任何一堂課**。
+ * 實機量過：202 筆答案裡 186 筆 course=Unknown，其中 145 筆連 topic 都是 Unknown。
+ *
+ * 所以改成兩個軸：`whatItIs` **一定有**（這是什麼文件），`course` 只在真的屬於
+ * 某門課或專案時才填。`course=Unknown` 不再是失敗，只是「這不是課程教材」。
+ */
 export const VIEW_FIELDS: readonly string[] = Object.freeze([
-  'course', 'topic', 'kind', 'suggestedName', 'evidence', 'confidence',
+  'course', 'topic', 'kind', 'suggestedName', 'whatItIs', 'subject', 'evidence', 'confidence',
 ])
 
 /** 每個欄位存進資料庫之前的長度上限（字）。 */
@@ -75,6 +91,10 @@ export type ModelView = {
   topic: string
   kind: string
   suggestedName: string
+  /** 這是什麼文件，模型自己的話（resume／lab handout／feasibility study）。**一定有。** */
+  whatItIs: string
+  /** 關於什麼，幾個字。 */
+  subject: string
   evidence: string
   confidence: string
 }
@@ -94,16 +114,30 @@ export type ModelSource = 'image' | 'text'
  * 翻譯過的引用不算證據。
  */
 export const SYSTEM_PROMPT =
-  'You sort files. Look at the screenshot or document excerpt the user gives you and work out which course or '
-  + 'project it belongs to, what its topic is, and suggest a file name. Answer only from what you can see. '
+  'You sort files. Look at the screenshot or document excerpt the user gives you and say what it is. '
+  + 'Answer only from what you can see. '
+  + '**Most files are not coursework**: resumes, application forms, contracts, research papers, '
+  + 'specifications, receipts, photos. whatItIs is always required — say plainly what kind of document '
+  + 'it is, in your own words. course is only for material that clearly belongs to a named course or '
+  + 'project; write the exact word Unknown for course when it does not belong to one. '
+  + 'That is normal and expected, not a failure, so keep your confidence high when you are sure what the '
+  + 'document is even though it has no course. '
   + 'The file may be in any language; read it in whatever language it is written in. '
-  + 'Always answer in English, and use the exact word Unknown for course and topic when you cannot tell — '
-  + 'never a translation of it. If you cannot tell, also set confidence to "low". '
-  + 'Do not guess and do not invent course names.'
+  + 'Always answer in English, even when the file is not, and use the exact word Unknown rather than a '
+  + 'translation of it. Do not guess and do not invent course names.'
 
 export const USER_PROMPT =
-  'Answer in the fixed format, in English. suggestedName is <Course or project>_<Topic>, with no extension '
-  + 'and no date, in English. evidence must quote words you actually saw in the image or the text — '
+  'Answer in the fixed format, in English. '
+  + 'whatItIs: a short noun phrase for the kind of document this is, in your own words — for example '
+  + '"resume", "lab handout", "scholarship application form", "research paper", "API design spec", '
+  + '"meeting notes". No file extension, no date. '
+  + 'subject: what it is about, in a few words. '
+  + 'course: the named course or project it belongs to, or Unknown. '
+  + 'topic: the topic within that course, or Unknown. '
+  + 'suggestedName is <Course or project>_<Topic> when there is a course, otherwise just <Subject>, '
+  + 'with no extension and no date, in English. '
+  + 'confidence: how sure you are about whatItIs. '
+  + 'evidence must quote words you actually saw in the image or the text — '
   + 'quote them in their original language, do not translate them.'
 
 /** 強制回答格式（vLLM 的 xgrammar 會照這個壓）。 */
@@ -134,6 +168,16 @@ export function responseFormat(): Record<string, unknown> {
           // 上限就用 FIELD_MAX：**parseView 本來就把 evidence 截到 FIELD_MAX**，
           // 超過的部分我們一個字都沒留過。差別只在於現在是模型不要產生它，
           // 而不是產生完了再由我們丟掉、順便把整筆答案賠進去。
+          whatItIs: {
+            type: 'string',
+            maxLength: FIELD_MAX,
+            description: 'What kind of document this is, in your own words. Always required.',
+          },
+          subject: {
+            type: 'string',
+            maxLength: FIELD_MAX,
+            description: 'What it is about, in a few words',
+          },
           evidence: {
             type: 'string',
             maxLength: FIELD_MAX,
@@ -259,6 +303,8 @@ export function parseView(raw: unknown): ModelView | null {
     topic: clean(String(o.topic), FIELD_MAX),
     kind,
     suggestedName: suggested,
+    whatItIs: clean(String(o.whatItIs), FIELD_MAX),
+    subject: clean(String(o.subject), FIELD_MAX),
     evidence: clean(String(o.evidence), FIELD_MAX),
     confidence,
   }

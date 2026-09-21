@@ -25,6 +25,8 @@ export type ModelViewRow = {
   topic: string | null
   kind: string | null
   suggested_name: string | null
+  what_it_is?: string | null
+  subject?: string | null
   evidence: string | null
   confidence: string | null
   model: string
@@ -80,15 +82,17 @@ export function getModelView(db: DatabaseSync, key: string): ModelViewRow | null
 export function putModelView(db: DatabaseSync, row: ModelViewRow): void {
   db.prepare(
     `INSERT INTO model_views
-       (key,item_id,source,course,topic,kind,suggested_name,evidence,confidence,model,prompt_version,at,seeded)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       (key,item_id,source,course,topic,kind,suggested_name,what_it_is,subject,evidence,confidence,model,prompt_version,at,seeded)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(key) DO UPDATE SET
        item_id=excluded.item_id, source=excluded.source, course=excluded.course, topic=excluded.topic,
-       kind=excluded.kind, suggested_name=excluded.suggested_name, evidence=excluded.evidence,
+       kind=excluded.kind, suggested_name=excluded.suggested_name,
+       what_it_is=excluded.what_it_is, subject=excluded.subject, evidence=excluded.evidence,
        confidence=excluded.confidence, model=excluded.model, prompt_version=excluded.prompt_version,
        at=excluded.at, seeded=excluded.seeded`
   ).run(
     row.key, row.item_id, row.source, row.course, row.topic, row.kind, row.suggested_name,
+    row.what_it_is ?? null, row.subject ?? null,
     row.evidence, row.confidence, row.model, row.prompt_version, row.at, row.seeded ? 1 : 0,
   )
 }
@@ -152,6 +156,10 @@ export type ModelOpinion = {
   topic: string
   kind: string
   suggestedName: string
+  /** 這是什麼文件，模型自己的話。**一定有**（P7，2026-09-21）。 */
+  whatItIs: string
+  /** 關於什麼。 */
+  subject: string
   evidence: string
   confidence: string
   /** 哪一個模型講的 */
@@ -171,6 +179,8 @@ export function opinionOf(row: ModelViewRow | null): ModelOpinion | null {
     topic: str(row.topic),
     kind: str(row.kind),
     suggestedName: str(row.suggested_name),
+    whatItIs: str(row.what_it_is),
+    subject: str(row.subject),
     evidence: str(row.evidence),
     confidence: str(row.confidence),
     model: str(row.model),

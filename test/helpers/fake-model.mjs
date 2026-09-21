@@ -16,7 +16,26 @@ export const GOOD_VIEW = {
   topic: '死結',
   kind: 'Lecture',
   suggestedName: '作業系統_死結',
+  // P7（2026-09-21）：兩個軸。whatItIs 一定有，course 只在真的屬於某門課時才填。
+  whatItIs: 'lecture handout',
+  subject: '死結的四個必要條件',
   evidence: '文件裡寫著「作業系統 第 6 章 死結」',
+  confidence: 'high',
+}
+
+/**
+ * **不屬於任何課程**的一筆（使用者的 Downloads 大半是這種）。
+ * course=Unknown 不是失敗，而且 confidence 照樣是 high ——
+ * 「我很確定這是一份履歷，而它不屬於任何一堂課」是一個完整的答案。
+ */
+export const NO_COURSE_VIEW = {
+  course: 'Unknown',
+  topic: 'Unknown',
+  kind: 'Other',
+  suggestedName: 'Computer Science student profile',
+  whatItIs: 'resume',
+  subject: 'Computer Science student profile',
+  evidence: 'PENG-JU WEN　PROFILE',
   confidence: 'high',
 }
 
