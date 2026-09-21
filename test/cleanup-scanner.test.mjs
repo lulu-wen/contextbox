@@ -266,3 +266,37 @@ describe('stripCopySuffix：問模型之前把複本痕跡剝掉', () => {
     }
   })
 })
+
+// 2026-09-21 使用者實機回報：面板頂端掛著
+//   ⚠ The last scan reported 1 problems, so some files may have been missed:
+//     2 files could not be made sense of, so their contents were not read this time.
+// 那幾個檔是 21–35 MB 的 PDF，reason 全部是 'too large'。三個地方都不對：
+//   · 不是「讀不懂」—— 是我們照設定拒絕讀它
+//   · 檔案沒有「被漏掉」—— 照樣掃到、照樣進候選清單，只是沒抽文字
+//   · **永遠不會變好** —— 每一次掃描都會再警告一次，變成永久的雜訊
+describe('太大沒讀不是「問題」', () => {
+  test('**超過 maxBytes 的檔不報問題**，但照樣記在 file_texts 裡', () => {
+    const big = 'x'.repeat(2 * 1024 * 1024)   // scan() 的 maxBytes 是 1 MB
+    touchOld('巨大講義.txt', big, 40)
+    const problems = []
+    scan({ onProblem: m => problems.push(m) })
+
+    assert.deepEqual(problems, [], '太大不該變成畫面上的警告：' + problems.join('; '))
+    const t = db.prepare(`SELECT reason, has_text FROM file_texts t
+      JOIN file_items i ON i.id = t.item_id WHERE i.name = ?`).get('巨大講義.txt')
+    assert.equal(t.reason, 'too large', '資訊不可以跟著消失，doctor 還要看得到')
+    assert.equal(t.has_text, 0)
+  })
+
+  // 對照：真的解析不出來的要報。把「太大」拿掉的時候不可以順手把這一邊也關掉。
+  test('對照：真的讀不懂的照樣報，而且措辭不講「被漏掉」', () => {
+    touchOld('壞掉.pdf', 'this is not a real pdf', 40)
+    const problems = []
+    scan({ onProblem: m => problems.push(m) })
+    const msg = problems.join(' ')
+    if (problems.length) {
+      assert.match(msg, /could not be opened/, '要講「打不開」不是「讀不懂」')
+      assert.ok(!/may have been missed/.test(msg), '不可以暗示檔案被漏掉')
+    }
+  })
+})

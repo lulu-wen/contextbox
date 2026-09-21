@@ -743,8 +743,25 @@ type TextBatch = {
   deaths: number
   /** 已經放棄這一輪了 */
   off: boolean
-  /** 這一輪有幾個檔讀不懂（含太大、逾時）—— 只用來報一條總結，不逐檔洗版 */
+  /** 這一輪有幾個檔**真的讀不懂**（壞掉、加密、不認得的格式、逾時）——
+      只用來報一條總結，不逐檔洗版。**不含「太大」**，見 tooLarge。 */
   unreadable: number
+  /**
+   * 這一輪有幾個檔**因為超過 maxBytes 所以沒讀**。
+   *
+   * **跟 unreadable 分開算**（2026-09-21 使用者實機回報）。以前併在一起，
+   * 畫面上就長出這一句：
+   *
+   *   ⚠ The last scan reported 1 problems, so some files may have been missed:
+   *     2 files could not be made sense of…
+   *
+   * 三個地方都不對：它不是「讀不懂」（是我們照設定拒絕讀）、檔案沒有「被漏掉」
+   *（照樣掃到、照樣進候選清單，只是沒抽文字），而且它**永遠不會變好** ——
+   * 那幾個 21–35 MB 的 PDF 每一次掃描都會再警告一次，變成永久的雜訊。
+   *
+   * 太大是一個**政策結果**，不是問題。有需要就把 maxBytes 調高。
+   */
+  tooLarge: number
   reader: TextReader | null
 }
 
@@ -791,7 +808,8 @@ function ensureFileText(
 
   if (f.bytes > opts.maxBytes) {
     put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: TEXT_REASON.tooLarge })
-    batch.unreadable++
+    // **太大不算「讀不懂」**：那是照設定拒絕讀，不是失敗（見 TextBatch.tooLarge）
+    batch.tooLarge++
     return
   }
   if (f.bytes === 0) {
@@ -1110,7 +1128,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   // 這一輪算了幾張長相指紋、還剩幾張沒算（一批最多 MAX_IMAGE_BATCH 張）
   const batch: ImageBatch = { hashed: 0, pending: 0 }
   // 讀文件內容的額度（一批最多 MAX_TEXT_BATCH 個）。reader 要到真的有文件類的檔才會開 worker
-  const texts: TextBatch = { read: 0, pending: 0, deaths: 0, off: false, unreadable: 0, reader: null }
+  const texts: TextBatch = { read: 0, pending: 0, deaths: 0, off: false, unreadable: 0, tooLarge: 0, reader: null }
   // 舊版留下的錯誤作廢要在 upsert 之前改回 skipped，這一輪條件還成立的才會回到 proposed
   repairLegacyDismissed(opts.db)
   const { files, truncated } = fileList(opts)
@@ -1235,9 +1253,12 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   }
   result.imagesPending = batch.pending
   result.textsPending = texts.pending
-  // 讀不懂不是錯（預想的不變量第 6 條）：**只講幾個，不逐檔洗版**
+  // 讀不懂不是錯（預想的不變量第 6 條）：**只講幾個，不逐檔洗版**。
+  // **太大的不報**：那是政策結果，而且永遠不會變好，報了就是每次掃描都洗一次版。
   if (texts.unreadable > 0) {
-    problem(opts, `${texts.unreadable} ${texts.unreadable === 1 ? 'file' : 'files'} could not be made sense of, so ${texts.unreadable === 1 ? 'its' : 'their'} contents were not read this time.`)
+    const n = texts.unreadable
+    problem(opts, `${n} ${n === 1 ? 'file' : 'files'} could not be opened as ${n === 1 ? 'its' : 'their'} format`
+      + ` (broken, encrypted, or something this tool does not read), so ${n === 1 ? 'its' : 'their'} contents were not read.`)
   }
 
   // 只算清單上真的會出現的：候選在 missing 的檔上會留在 proposed（見 markMissing），
