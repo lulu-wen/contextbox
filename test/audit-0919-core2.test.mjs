@@ -49,6 +49,7 @@ import * as server from '../core/server.ts'
 import * as config from '../core/config.ts'
 import { CLEANUP_RULE_VERSION } from '../core/cleanup-rules.ts'
 import { fixture } from './helpers/cleanup.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const DAY = 86400_000
 const noPerm = process.platform === 'win32' || process.getuid?.() === 0
@@ -245,7 +246,7 @@ describe('c 沒有時間戳的舊格式鎖一律視為殘留', () => {
   function lockDb(t) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-lock-')))
     const db = open(join(dir, 'data.db'))
-    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db.close(); rmTmp(dir) })
     journal.initCleanup(db)
     const hold = owner => db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, owner)
     return { db, hold }
@@ -523,7 +524,7 @@ describe('h 升級前留下的受保護檔名候選不可以列出來', () => {
 describe('i cleanup.roots 不可以是根目錄、家目錄、家目錄的上一層', () => {
   test('POSIX：/、家目錄、家目錄的每一層上層都拒絕並出聲，退回 Downloads；旁邊的資料夾與子資料夾照收', t => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-home-')))
-    t.after(() => rmSync(base, { recursive: true, force: true }))
+    t.after(() => rmTmp(base))
     const home = join(base, 'users', 'alice')
     mkdirSync(join(home, 'Downloads', 'sub'), { recursive: true })
     const sys = { home }
@@ -626,7 +627,7 @@ describe('k 空 token 不可以跑起來', () => {
 
   test('token 檔是空的或只有空白 → 重新產生一把、寫回去（0600）；有內容的不動', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-tok-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     for (const empty of ['', '  \n\t ']) {
       const p = join(dir, 'token-' + empty.length)
       writeFileSync(p, empty, { mode: 0o644 })
@@ -645,7 +646,7 @@ describe('k 空 token 不可以跑起來', () => {
     // 使用者想自己指定一把（沙盒與真實環境共用、換機器不用重拿網址）。
     // 但這一把鑰匙開的是「搬你的檔案」那道門，所以短到沒有意義的一律不收。
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-core2-env-')))
-    t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.CONTEXTBOX_TOKEN })
+    t.after(() => { rmTmp(dir); delete process.env.CONTEXTBOX_TOKEN })
     const p = join(dir, 'token')
     writeFileSync(p, 'from-the-file-1234567890')
 
@@ -828,7 +829,7 @@ async function serve(t, { files = {}, token = 'core2-token', extraRoot = null } 
   const S = server.start({ port: 0, db: join(dir, 'data.db'), token: token === null ? undefined : token, roots, quarantine: join(dir, 'q'),
     maxBytes: 1024 * 1024, readonly: false })
   const port = await S.ready
-  t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { S.server.close(); rmTmp(dir) })
   const raw = (method, path, { body, token: tk = S.token, headers = {} } = {}) => new Promise((resolve, reject) => {
     const h = { ...(tk !== null ? { 'x-contextbox-token': tk } : {}), ...headers }
     if (body !== undefined) h['content-type'] ??= 'application/json'

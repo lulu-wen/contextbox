@@ -29,6 +29,7 @@ import * as routes from '../core/cleanup-routes.ts'
 import * as server from '../core/server.ts'
 import * as config from '../core/config.ts'
 import { fixture } from './helpers/cleanup.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const DAY = 86400_000
 const TOKEN = 'audit-0919-token'
@@ -766,7 +767,7 @@ describe('RC19 /cleanup/plans 要快', () => {
   test('3000 份計畫，?undoable=1 < 150 ms', t => {
     const dir = mkdtempSync(join(tmpdir(), 'cb-a0919-bench-'))
     const db = open(join(dir, 'd.db'))
-    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db.close(); rmTmp(dir) })
     seedPlans(db, 3000)
     const f = { db, opts: { roots: ['/dl'], quarantine: join(dir, 'q'), maxBytes: 1e6 }, scan: () => ({}) }
     let best = Infinity, r

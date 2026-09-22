@@ -1,4 +1,5 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * P4 ・ `node cli.mjs file`／`--apply`／`--undo`。
  *
@@ -43,7 +44,7 @@ function box(t, files, { readonly = false } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-flcli-')))
   const downloads = join(home, 'Downloads')
   mkdirSync(downloads)
-  t.after(() => rmSync(home, { recursive: true, force: true }))
+  t.after(() => rmTmp(home))
   for (const [name, content] of Object.entries(files)) {
     const p = join(downloads, name)
     writeFileSync(p, content)
@@ -289,7 +290,7 @@ describe('中斷的整理，每個指令進來都會收尾', () => {
 describe('demo 沙盒（預期行為 1）', () => {
   test('--seed-model 的沙盒：三個課程檔都歸得了類，搬完再搬回來', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-fldemo-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     const setup = spawnSync(process.execPath,
       [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', dir, '--seed-model'],
       { encoding: 'utf8', env: { ...process.env, HOME: FAKE_HOME, USERPROFILE: FAKE_HOME }, timeout: 180_000 })

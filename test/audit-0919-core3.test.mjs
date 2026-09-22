@@ -46,6 +46,7 @@ import * as quarantine from '../core/cleanup-quarantine.ts'
 import * as routes from '../core/cleanup-routes.ts'
 import { CLEANUP_RULE_VERSION } from '../core/cleanup-rules.ts'
 import { fixture } from './helpers/cleanup.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const DAY = 86400_000
 const MIN = 60_000
@@ -57,7 +58,7 @@ function sandbox(t) {
   mkdirSync(dl)
   mkdirSync(desk)
   const db = open(join(dir, 'data.db'))
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { db.close(); rmTmp(dir) })
   const put = (root, rel, content, days = 20) => {
     const p = join(root, rel)
     mkdirSync(dirname(p), { recursive: true })
@@ -461,7 +462,7 @@ describe('K7 /pet/state 的 watching 文字：講清理資料夾的名字（只�
     const roots = names.map(n => n === null ? FAKE_HOME : join(dir, n))
     for (const r of roots) mkdirSync(r, { recursive: true })
     const db = open(join(dir, 'data.db'))
-    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db.close(); rmTmp(dir) })
     db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(routes.META.heartbeat, new Date().toISOString())
     db.prepare('INSERT INTO meta (k,v) VALUES (?,?)').run(routes.META.pid, String(process.pid))
     let got = null

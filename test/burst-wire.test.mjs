@@ -1,4 +1,5 @@
 import './helpers/isolate-home.mjs'   // 一定要第一個 import：這支會起 server，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * P0 連拍截圖主動詢問的**接線**（~/contextbox-預想-20260919-P0接線.md）。
  *
@@ -693,7 +694,7 @@ describe('D8 縮圖端點', () => {
       quarantine: join(dir, 'quarantine'), maxBytes: 16 * 1024 * 1024, readonly: false,
     })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { S.server.close(); rmTmp(dir) })
 
     const hit = (path, { token = TOKEN } = {}) => new Promise((resolve, reject) => {
       const headers = token ? { 'x-contextbox-token': token } : {}

@@ -1,4 +1,6 @@
 import { before, beforeEach, after, describe, test } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
+import { NO_FILE_LINKS, linkDir, linkFile } from './helpers/links.mjs'
 import assert from 'node:assert/strict'
 import {
   mkdirSync,
@@ -24,7 +26,7 @@ before(() => {
   downloads = join(root, 'Downloads')
 })
 
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 beforeEach(() => {
   rmSync(downloads, { recursive: true, force: true })
@@ -226,13 +228,15 @@ describe('cleanup scanner', () => {
     })
   })
 
-  test('walk 不跟 symlink、不進隱藏與黑名單資料夾', () => {
+  test('walk 不跟 symlink、不進隱藏與黑名單資料夾', t => {
     touchOld('real.zip')
     mkdirSync(join(downloads, '.git'), { recursive: true })
     writeFileSync(join(downloads, '.git', 'hidden.zip'), 'x')
     mkdirSync(join(downloads, 'tokens'), { recursive: true })
     writeFileSync(join(downloads, 'tokens', 'secret.zip'), 'x')
-    symlinkSync(join(downloads, 'real.zip'), join(downloads, 'link.zip'))
+    if (!linkFile(join(downloads, 'real.zip'), join(downloads, 'link.zip'))) {
+      t.skip(NO_FILE_LINKS); return
+    }
 
     const found = cleanupWalk(downloads).files.map(p => basename(p)).sort()
     assert.deepEqual(found, ['real.zip'])

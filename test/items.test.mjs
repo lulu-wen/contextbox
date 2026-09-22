@@ -6,6 +6,7 @@
  *   2. 內容換了（同名覆蓋），舊的理解一定要作廢，不然會拿舊摘要配新圖。
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -22,7 +23,7 @@ before(() => {
   mkdirSync(watchDir, { recursive: true })
   opts = { roots: [watchDir], maxBytes: 1024 * 1024 }
 })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 beforeEach(() => {
   db = open(':memory:')

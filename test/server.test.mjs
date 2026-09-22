@@ -1,4 +1,5 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
@@ -19,7 +20,7 @@ before(async () => {
   base = `http://127.0.0.1:${await S.ready}`
 })
 // 暫存資料夾也要收（稽核 RC22：以前每跑一次就在暫存資料夾留一個 cb-*）
-after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+after(() => { S.server.close(); rmTmp(dir) })
 
 const call = (path, { token = TOKEN, origin = 'chrome-extension://abc', ...init } = {}) =>
   fetch(base + path, {

@@ -25,6 +25,7 @@
  * | 連不上 | 說成「不是 ContextBox」 | 照實回 OFFLINE／TIMEOUT | fetch 丟例外 | OFFLINE，不是 NOT_CONTEXTBOX |
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs'
@@ -410,7 +411,7 @@ describe('R3-7 對照組：真的 ContextBox server 照樣通', () => {
       quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false,
     })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { S.server.close(); rmTmp(dir) })
     return port
   }
 

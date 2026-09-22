@@ -27,6 +27,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { start } from '../core/server.ts'
 import { mountPanel, uiApi } from './helpers/panel-dom.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 import {
   normalizeBurstGroups, burstAskMessage, burstGroupLine, burstNote, applyBurstDefaults,
   createBursts, BURST_SIMILAR_NOTE,
@@ -593,7 +594,7 @@ async function serve(t, files) {
     if (!r.ok) { const e = new Error(data.error); e.code = data.code; e.status = r.status; e.data = data; throw e }
     return data
   }
-  t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { S.server.close(); rmTmp(dir) })
   await raw('/cleanup/scan', { method: 'POST', body: '{}' })
   return {
     dir, downloads, base, port, netFetch, raw, seen,

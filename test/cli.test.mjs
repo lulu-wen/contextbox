@@ -7,6 +7,7 @@
  * **離開碼是三個作業系統右鍵選單的契約**，所以每一條都要斷言。
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -34,7 +35,7 @@ before(() => {
     readonly: false, pdfPages: 3, maxBytes: 20971520,
   }))
 })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 /**
  * 子行程的環境：**家目錄、隔離區、token 全部指到暫存資料夾**（稽核 RC22）。
@@ -98,13 +99,20 @@ describe('propose 的離開碼', () => {
     assert.match(again.out, /already known/)
   })
 
+  // **不可以拿 /etc/hosts 當「範圍外」**：Windows 上它不存在，於是 CLI 講的是
+  // 「讀不到這個檔」而不是「不在監看範圍裡」—— 測到的變成另一件事（而且是紅的）。
+  // 拿一個真的在、只是不在監看資料夾裡的檔，測的才是範圍那一關。
   test('被擋下來：非 0', () => {
-    assert.notEqual(run('propose', '/etc/hosts').code, 0)
-    assert.match(run('propose', '/etc/hosts').out, /not inside a watched folder/)
+    const outside = join(root, 'outside-the-scope.txt')
+    writeFileSync(outside, 'x'.repeat(50))
+    assert.notEqual(run('propose', outside).code, 0)
+    assert.match(run('propose', outside).out, /not inside a watched folder/)
   })
 
   test('一半成功一半被擋：算成功，但要講清楚', () => {
-    const r = run('propose', put('c.png'), '/etc/hosts')
+    const outside = join(root, 'outside-too.txt')
+    writeFileSync(outside, 'x'.repeat(50))
+    const r = run('propose', put('c.png'), outside)
     assert.equal(r.code, 0)
     assert.match(r.out, /1 were turned away/)
   })

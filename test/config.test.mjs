@@ -5,6 +5,7 @@
  * 剛好都落在這裡。不是巧合。
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
@@ -13,7 +14,7 @@ import { normalize, load, defaults, osDefaults, expand, modelKey } from '../core
 
 let root
 before(() => { root = mkdtempSync(join(tmpdir(), 'cb-config-')) })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 let n = 0
 const tmp = () => {

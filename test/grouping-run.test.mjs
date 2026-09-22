@@ -26,6 +26,7 @@ import {
 } from '../core/grouping-run.ts'
 import { applyFilings, filingSuggestions, groupFolderFor } from '../core/filing.ts'
 import { startFakeModel } from './helpers/fake-model.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const KEY_ENV = 'CONTEXTBOX_MODEL_KEY'
 const FAKE_KEY = 'fake-key-for-tests-0123456789'
@@ -62,7 +63,7 @@ function sandbox(t, files) {
   mkdirSync(downloads)
   mkdirSync(filed)
   const db = openDb(join(dir, 'data.db'))
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { db.close(); rmTmp(dir) })
 
   const at = new Date(Date.now() - DAY).toISOString()
   files.forEach(([name, whatItIs, over = {}], i) => {

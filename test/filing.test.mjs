@@ -22,11 +22,11 @@ import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行�
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import fs, {
-  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync,
+  existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync,
   utimesSync, writeFileSync,
 } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   applyFilings, cleanCourse, courseKey, COURSES_DIR, COURSE_MAX_CODEPOINTS, FILING_BATCH_MAX,
@@ -37,6 +37,7 @@ import { listCandidates } from '../core/cleanup-routes.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { sandbox, OS_DEADLOCK, DS_MIDTERM, OS_SCHEDULING } from './helpers/rename.mjs'
+import { NO_FILE_LINKS, linkDir, linkFile } from './helpers/links.mjs'
 
 /** demo 沙盒（`tools/demo-setup.mjs --seed-model`）那三筆答案，一字不改。 */
 const SEEDED = {
@@ -379,7 +380,9 @@ describe('預期行為 7 ・ 課名是敵意輸入', () => {
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, true, r.results[0].why)
     const where = s.db.prepare('SELECT path FROM file_items WHERE id=?').get(s.itemId).path
-    assert.ok(where.startsWith(s.filed + '/'), `跑出去了：${where}`)
+    // **不可以用 '/' 拼**：Windows 上真路徑是反斜線，這一條會在行為完全正確的時候紅掉
+    assert.ok(where.startsWith(s.filed + sep) || where.startsWith(s.filed + '/'),
+      `跑出去了：${where}`)
     assert.equal(existsSync(join(s.filed, COURSES_DIR, 'etc', 'Notes', '未命名文件 (3).txt')), true)
   })
 
@@ -396,7 +399,7 @@ describe('預期行為 7 ・ 課名是敵意輸入', () => {
     const s = one(t)
     mkdirSync(s.filed, { recursive: true })
     mkdirSync(join(s.dir, '別的地方'))
-    symlinkSync(join(s.dir, '別的地方'), join(s.filed, COURSES_DIR))
+    linkDir(join(s.dir, '別的地方'), join(s.filed, COURSES_DIR))
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, false)
     assert.match(r.results[0].why, /symlink/)
@@ -707,11 +710,22 @@ describe('不搬的那幾種（跟改名同一批，但不看 naming）', () => 
     assert.match(whyNotFilable(s.db, s.rowOf('期末報告.zip'), s.fileScope), /cleanup plan/)
   })
 
-  test('捷徑與硬鏈結不搬', t => {
+  // **拆成兩條**（2026-09-22）：硬鏈結每個平台都建得起來，捷徑在 Windows 上要權限。
+  // 併在一起的話，Windows 連硬鏈結那一半都測不到 —— 而那一半本來測得到。
+  test('硬鏈結不搬（還有別人指著同一份資料）', t => {
+    const s = one(t)
+    linkSync(join(s.downloads, s.name), join(s.dir, '另一個名字'))
+    const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
+    assert.equal(r.results[0].ok, false)
+    assert.match(r.results[0].why, /link|ordinary file/i, r.results[0].why)
+    assert.equal(existsSync(join(s.downloads, s.name)), true, '一個檔都不可以動')
+  })
+
+  test('捷徑不搬', t => {
     const s = one(t)
     const real = join(s.dir, '真的檔')
     renameSync(join(s.downloads, s.name), real)
-    symlinkSync(real, join(s.downloads, s.name))
+    if (!linkFile(real, join(s.downloads, s.name))) { t.skip(NO_FILE_LINKS); return }
     const r = applyFilings(s.db, [{ itemId: s.itemId }], s.fileScope)
     assert.equal(r.results[0].ok, false)
     assert.match(r.results[0].why, /symlink|ordinary file/)

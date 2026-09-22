@@ -5,6 +5,7 @@
  * 每一條規則至少一個案例，而且要用真的檔案系統跑（symlink 這種東西模擬不出來）。
  */
 import { test, describe, before, after } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,7 +24,7 @@ before(() => {
   for (const d of [watchDir, shotDir, outside, filed]) mkdirSync(d, { recursive: true })
   opts = { roots: [watchDir, shotDir], maxBytes: 1024 * 1024, exclude: [filed] }
 })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 const put = (dir, name, content = 'x') => {
   const p = join(dir, name)

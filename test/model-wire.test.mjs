@@ -29,6 +29,7 @@ import { load } from '../core/config.ts'
 import { reloadInto } from '../core/live-config.ts'
 import { modelOpinionLines } from '../core/assets/cleanup-real-state.js'
 import { GOOD_VIEW, completion, startFakeModel } from './helpers/fake-model.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const REPO = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 const CLI = join(REPO, 'cli.mjs')
@@ -53,7 +54,7 @@ function sandbox(t, files) {
   mkdirSync(downloads)
   const dbPath = join(dir, 'data.db')
   const db = openDb(dbPath)
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { db.close(); rmTmp(dir) })
   const put = (name, content, days = 40) => {
     const p = join(downloads, name)
     writeFileSync(p, content)
@@ -662,7 +663,7 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
 
   test('tools/demo-setup.mjs --seed-model 真的塞得進去（demo 那五個檔）', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-demoseed-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     const home = join(dir, 'fake-home')
     mkdirSync(home)
     const r = spawnSync(process.execPath, [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', join(dir, 'box'), '--seed-model'],

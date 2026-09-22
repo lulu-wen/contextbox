@@ -1,4 +1,5 @@
 import './helpers/isolate-home.mjs'   // 一定要第一個 import：這支會起 server，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * P6「看得到檔案內容」的**接線**（~/contextbox-預想-20260920-P6面板分頁與預覽.md）。
  *
@@ -359,7 +360,7 @@ describe('P6-6 沒帶 token 是 401；回應裡沒有絕對路徑', () => {
       quarantine: join(dir, 'quarantine'), maxBytes: 16 * 1024 * 1024, readonly: false,
     })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { S.server.close(); rmTmp(dir) })
 
     const hit = (path, token) => new Promise((resolve, reject) => {
       const headers = token ? { 'x-contextbox-token': token } : {}

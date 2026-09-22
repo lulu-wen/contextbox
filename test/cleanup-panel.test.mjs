@@ -7,6 +7,7 @@
  * 檔案是真的、搬移是真的、資料庫是真的。
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, rmSync, readFileSync, realpathSync } from 'node:fs'
@@ -60,7 +61,7 @@ async function serve(t, files, { readonly = false } = {}) {
     }
     return data
   }
-  t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { S.server.close(); rmTmp(dir) })
   await api('/cleanup/scan', { method: 'POST', body: '{}' })
   calls.length = 0
   const db = () => new DatabaseSync(dbPath, { readOnly: true })
@@ -515,7 +516,7 @@ test('監看資料夾是捷徑（symlink）時，對帳也要做得到', async t
   const { scanDownloads } = await import('../core/cleanup-scanner.ts')
   const { open } = await import('../core/db.ts')
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-link-')))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.after(() => rmTmp(dir))
   const real = join(dir, 'real-dl')
   mkdirSync(real)
   const link = join(dir, 'Downloads')

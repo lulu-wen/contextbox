@@ -5,6 +5,7 @@
  * 同時開一個還不存在的資料庫。這件事以前會炸掉 11/12。
  */
 import { test, describe, before, after } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, chmodSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -16,7 +17,7 @@ import { open } from '../core/db.ts'
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 let root
 before(() => { root = mkdtempSync(join(tmpdir(), 'cb-db-')) })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 let n = 0
 const tmp = () => { const d = join(root, 'c' + n++); mkdirSync(d, { recursive: true }); return d }

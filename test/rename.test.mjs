@@ -34,6 +34,7 @@ import {
 } from '../core/rename.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { sandbox, DAY, OS_DEADLOCK, DS_MIDTERM, OS_SCHEDULING } from './helpers/rename.mjs'
+import { NO_FILE_LINKS, linkFile } from './helpers/links.mjs'
 
 const HIGH = { course: '作業系統', topic: '死結', suggestedName: '作業系統_死結', evidence: '四個必要條件', confidence: 'high' }
 
@@ -559,7 +560,8 @@ describe('改名', () => {
     utimesSync(real, at, at)
     // 原本那個檔被換成一個指向別處的捷徑（TOCTOU）
     renameSync(join(s.downloads, '未命名文件 (3).txt'), join(s.dir, 'moved.txt'))
-    symlinkSync(real, join(s.downloads, '未命名文件 (3).txt'))
+    // 檔案的捷徑在 Windows 上要權限。建不起來就跳過 —— 不要讓一條安全測試變成紅字。
+    if (!linkFile(real, join(s.downloads, '未命名文件 (3).txt'))) { t.skip(NO_FILE_LINKS); return }
     const r = applyRenames(s.db, [{ itemId: s.itemId, to: '作業系統_死結' }], s.scope)
     assert.equal(r.results[0].ok, false, '捷徑不可以被改名')
     assert.match(r.results[0].why, /symlink/)

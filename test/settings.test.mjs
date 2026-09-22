@@ -1,4 +1,5 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -23,7 +24,7 @@ import { start } from '../core/server.ts'
 
 let root
 before(() => { root = realpathSync(mkdtempSync(join(tmpdir(), 'cb-settings-'))) })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 let n = 0
 /** 每個案例自己一個資料夾。`raw` 是字串就原樣寫進去（拿來做壞掉的 JSON）。 */

@@ -5,6 +5,7 @@
  * 手動呼叫 poll() 與 tick()，時間由我們控制。只有最後一個案例用真的 fs.watch。
  */
 import { test, describe, before, after, beforeEach } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, renameSync,
          symlinkSync, rmSync } from 'node:fs'
@@ -27,7 +28,7 @@ before(() => {
   watchDir = join(root, 'Downloads')
   mkdirSync(watchDir, { recursive: true })
 })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 beforeEach(() => {
   // 每個案例自己一個乾淨的資料夾

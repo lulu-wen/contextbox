@@ -1,4 +1,5 @@
 import { before, beforeEach, after, describe, test } from 'node:test'
+import { rmTmp } from './helpers/rm.mjs'
 import assert from 'node:assert/strict'
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,7 +19,7 @@ before(() => {
   downloads = join(root, 'Downloads')
 })
 
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 beforeEach(() => {
   rmSync(downloads, { recursive: true, force: true })

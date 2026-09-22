@@ -32,6 +32,7 @@ import { createPlan } from '../core/cleanup-plans.ts'
 import { applyPlan, undoPlan } from '../core/cleanup-exec.ts'
 // 這三支本來長在這一支裡；設定那條線的文件守門（test/docs-settings.test.mjs）要用同一套「算不算有講到」的判斷，所以搬出去共用（自我測試還留在這裡）
 import { fieldSet, sectionOf, undocumentedFields } from './helpers/markdown.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 // tools/ 也要看（稽核 2026-09-20）：這條檢查宣稱守整個專案，但漏掉 tools/ ——
@@ -469,7 +470,7 @@ describe('docs/api/README.md 的錯誤表（RC20）', () => {
     const dl = join(dir, 'Downloads'), q = join(dir, 'q')
     mkdirSync(dl)
     const db = openDb(join(dir, 'data.db'))
-    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db.close(); rmTmp(dir) })
     const opts = { roots: [dl], quarantine: q, maxBytes: 1 << 20 }
     const file = join(dl, 'old.zip')
     writeFileSync(file, 'old zip')
@@ -517,7 +518,7 @@ describe('docs/api/README.md 講的行為真的是這樣（第三波 D4）', () 
     db = openDb(join(dir, 'data.db'))
     opts = { roots: [dl], quarantine: q, maxBytes: 1 << 20 }
   })
-  after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  after(() => { db.close(); rmTmp(dir) })
   const put = (name, content, days) => {
     const p = join(dl, name)
     writeFileSync(p, content)
@@ -1509,7 +1510,7 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
     // 真的跑第 7 步那一行：只剩空資料夾 → 沒有輸出；有一個檔 → 印出來
     const line = sectionOf(md, '## 7 ・').split('\n').find(l => /"\$CONTEXTBOX_QUARANTINE"/.test(l)) ?? ''
     const qdir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-smoke-q-')))
-    t.after(() => rmSync(qdir, { recursive: true, force: true }))
+    t.after(() => rmTmp(qdir))
     mkdirSync(join(qdir, 'plan-1', 'item-1'), { recursive: true })
     assert.equal(bash(line, { CONTEXTBOX_QUARANTINE: qdir }).stdout.trim(), '', `只剩空資料夾要沒有輸出：${line.trim()}`)
     writeFileSync(join(qdir, 'plan-1', 'item-1', 'content'), 'x')
@@ -1572,7 +1573,7 @@ writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ argv: process.argv.slice
 
   test('6.5 講的是真的：CONTEXTBOX_PORT=0 時 open 改讀 pet 記下的 port；明講別的 port 才照用（真的跑 cli.mjs，第三波之二）', async t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-smoke-port-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     // 兩個剛剛還開著、現在關掉的 port：保證沒有人在聽（open 回 2；挑的是哪個 port，從「127.0.0.1:<port> 沒有回應」那句讀得到）
     const closedPort = async () => {
       const srv = createServer()

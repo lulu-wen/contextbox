@@ -1,4 +1,5 @@
 import './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * P1 ・ 掃描時把看得懂的檔的內容讀出來（接線）。
  *
@@ -19,7 +20,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { open } from '../core/db.ts'
@@ -704,14 +705,18 @@ describe('worker 的上限', () => {
     // 它一開起來就死，呼叫端只看得到「等不到回應」—— 每個檔白等 5 秒，而且沒有任何錯誤訊息。
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-argv-')))
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-argv-home-')))
-    t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }) })
+    t.after(() => { rmTmp(dir); rmTmp(home) })
     const dl = join(dir, 'Downloads')
     mkdirSync(dl)
     writeFileSync(join(dl, '講義.txt'), '作業系統 第 5 章 行程排程\n')
+    // **絕對路徑不是合法的 ESM specifier**：Windows 上 `import … from "C:\…"` 會回
+    // ERR_UNSUPPORTED_ESM_URL_SCHEME（protocol 'c:'），所以這一條在 Windows 上一直是紅的
+    // —— 而它測的東西（worker 不繼承 --input-type）跟路徑一點關係都沒有。用 file:// URL。
+    const mod = rel => JSON.stringify(pathToFileURL(join(REPO, rel)).href)
     const script = `
-      import { open } from ${JSON.stringify(join(REPO, 'core/db.ts'))}
-      import { scanDownloads } from ${JSON.stringify(join(REPO, 'core/cleanup-scanner.ts'))}
-      import { fileTextByPath } from ${JSON.stringify(join(REPO, 'core/file-texts.ts'))}
+      import { open } from ${mod('core/db.ts')}
+      import { scanDownloads } from ${mod('core/cleanup-scanner.ts')}
+      import { fileTextByPath } from ${mod('core/file-texts.ts')}
       const db = open(${JSON.stringify(join(dir, 'data.db'))})
       scanDownloads({ db, roots: [${JSON.stringify(dl)}], maxBytes: ${MAX_BYTES}, minStableMs: 0 })
       console.log(JSON.stringify(fileTextByPath(db, ${JSON.stringify(join(dl, '講義.txt'))})))
@@ -743,7 +748,7 @@ describe('worker 的上限', () => {
 describe('runTextJob（worker 裡跑的那一段，直接呼叫）', () => {
   function job(t, name, content, over = {}) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-job-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     const p = join(dir, name)
     writeFileSync(p, content)
     const st = statSync(p)
@@ -825,7 +830,7 @@ describe('資料庫', () => {
 
   test('**舊的資料庫升級不可以壞**：沒有 naming 欄位的 file_items 補得上，舊的列還在', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-mig-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     const path = join(dir, 'old.db')
     // P1 之前的 file_items（沒有 naming／naming_why），塞一列進去
     const old = new DatabaseSync(path)
@@ -850,7 +855,7 @@ describe('資料庫', () => {
 
   test('升級跑兩次也不會壞（同一個資料庫再 open 一次）', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-mig2-')))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmTmp(dir))
     const path = join(dir, 'twice.db')
     const a = open(path)
     a.close()

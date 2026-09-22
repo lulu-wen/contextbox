@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { start } from '../core/server.ts'
 import { fixture } from './helpers/cleanup.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 import { cleanupRoutes } from '../core/cleanup-routes.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 
@@ -47,7 +48,7 @@ describe('RC21 503 BUSY 要帶 Retry-After', () => {
     const port = await S.ready
     let db = null
     // 收尾順序：先關資料庫與 server，再刪資料夾（Windows 上開著的檔刪不掉）
-    t.after(() => { db?.close(); S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db?.close(); S.server.close(); rmTmp(dir) })
 
     const call = (method, path, body) => new Promise((ok, fail) => {
       const payload = body === undefined ? undefined : JSON.stringify(body)

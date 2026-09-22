@@ -1,4 +1,6 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
+import { linkDir } from './helpers/links.mjs'
 /**
  * tools/demo-setup.mjs 的守門。
  *
@@ -38,7 +40,7 @@ function run(args, env = {}) {
 
 const box = t => {
   const d = mkdtempSync(join(tmpdir(), 'cb-demo-guard-'))
-  t.after(() => rmSync(d, { recursive: true, force: true }))
+  t.after(() => rmTmp(d))
   return d
 }
 
@@ -76,7 +78,7 @@ describe('demo 沙盒的守門（唯一一處遞迴刪除）', () => {
     const home = join(d, 'home')
     mkdirSync(home, { recursive: true })
     const link = join(d, 'link')
-    symlinkSync(home, link)
+    linkDir(home, link)
     const r = run(['--dir', link], { HOME: home, USERPROFILE: home })
     assert.notEqual(r.code, 0, r.out)
     assert.match(r.out, /home directory/)

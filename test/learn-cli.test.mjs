@@ -1,4 +1,5 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * P5 ・ `node cli.mjs learned`／`--forget`／`--forget-all`，以及
  * `file --apply --course`、`rename --apply --to`、「退過貨的不預設做」。
@@ -48,7 +49,7 @@ function box(t, files, { readonly = false } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-learn-')))
   const downloads = join(home, 'Downloads')
   mkdirSync(downloads)
-  t.after(() => rmSync(home, { recursive: true, force: true }))
+  t.after(() => rmTmp(home))
   for (const [name, content] of Object.entries(files)) {
     const p = join(downloads, name)
     writeFileSync(p, content)

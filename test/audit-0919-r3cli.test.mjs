@@ -1,4 +1,5 @@
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行：這支 spawn cli.mjs，家目錄要先換掉
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * 2026-09-19 稽核第三輪：CLI、pet 與路由的接線（cli.mjs、core/cleanup-routes.ts、docs/cli.md）。
  *
@@ -186,7 +187,7 @@ function coreBox(t) {
   mkdirSync(dl)
   const db = open(join(dir, 'data.db'))
   initCleanup(db)
-  t.after(() => { try { db.close() } catch { /* 已經關了 */ } ; rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { try { db.close() } catch { /* 已經關了 */ } ; rmTmp(dir) })
   const opts = { roots: [dl], quarantine: join(dir, 'q'), maxBytes: MAX }
   return { dir, dl, db, opts }
 }

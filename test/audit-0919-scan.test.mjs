@@ -1,4 +1,5 @@
 import './helpers/isolate-home.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * 2026-09-19 稽核的釘子測試（S）：RC1、RC2（watcher 那半）、RC3、RC4（1 的受保護副檔名、2）、RC25、RC26。
  *
@@ -497,7 +498,7 @@ describe('RC25 殘留鎖：owner 帶時間戳，超過 30 分鐘視為殘留', (
   function lockDb(t) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-a0919-lock-')))
     const db = open(join(dir, 'data.db'))
-    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { db.close(); rmTmp(dir) })
     journal.initCleanup(db)
     const hold = owner => db.prepare('INSERT OR REPLACE INTO cleanup_operation_lock VALUES (1,?,?)').run(process.pid, owner)
     return { db, hold }

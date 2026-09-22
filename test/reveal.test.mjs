@@ -1,4 +1,5 @@
 import './helpers/isolate-home.mjs'   // 一定要第一個 import
+import { rmTmp } from './helpers/rm.mjs'
 /**
  * 「在檔案總管裡指給我看」（2026-09-22）。規格見 core/reveal-routes.ts 的檔頭。
  *
@@ -29,7 +30,7 @@ function sandbox(t, files = []) {
   mkdirSync(downloads)
   mkdirSync(outside)
   const db = openDb(join(dir, 'data.db'))
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { db.close(); rmTmp(dir) })
   const at = new Date(Date.now() - DAY).toISOString()
   const add = (id, path, name) => {
     writeFileSync(path, 'x'.repeat(200))

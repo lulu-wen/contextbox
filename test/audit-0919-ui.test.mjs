@@ -27,6 +27,7 @@
  * 擴充套件先驗 token）的測試在檔案後段，那裡有自己的預想表。
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
+import { rmTmp } from './helpers/rm.mjs'
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -142,7 +143,7 @@ async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads
     if (!r.ok) { const e = new Error(data.error); e.code = data.code; e.status = r.status; e.data = data; throw e }
     return data
   }
-  t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+  t.after(() => { S.server.close(); rmTmp(dir) })
   await raw('/cleanup/scan', { method: 'POST', body: '{}' })
   const q = (sql, ...a) => { const d = new DatabaseSync(dbPath, { readOnly: true }); try { return d.prepare(sql).all(...a) } finally { d.close() } }
   const exec = (sql, ...a) => { const d = new DatabaseSync(dbPath); try { return d.prepare(sql).run(...a) } finally { d.close() } }
@@ -1232,7 +1233,7 @@ describe('RC16 擴充套件：「去補」要帶 ?k= 開手填頁，而且 k 不
     const S = start({ port: 0, db: ':memory:', token: 'a+b/c=', roots: [join(dir, 'Downloads')],
       quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmSync(dir, { recursive: true, force: true }) })
+    t.after(() => { S.server.close(); rmTmp(dir) })
     const bg = loadBackground({ token: 'a+b/c=', port })
     await bg.send({ type: 'open-home' })
     assert.equal(bg.created[0]?.url, `http://127.0.0.1:${port}/?k=a%2Bb%2Fc%3D`)

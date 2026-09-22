@@ -9,7 +9,7 @@ import { test, describe, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 import { randomUUID } from 'node:crypto'
@@ -19,6 +19,7 @@ import { scanDownloads } from '../core/cleanup-scanner.ts'
 import { applyPlan } from '../core/cleanup-exec.ts'
 import { createPlan } from '../core/cleanup-plans.ts'
 import { fixture } from './helpers/cleanup.mjs'
+import { rmTmp } from './helpers/rm.mjs'
 
 const createPlanFor = (f) => createPlan(f.db)
 import { listCandidates, healthSnapshot, safeWhy, displayPath, META,
@@ -30,7 +31,7 @@ const DAY = 24 * 60 * 60 * 1000
 let root, dl, db
 
 before(() => { root = mkdtempSync(join(tmpdir(), 'cb-routes-')) })
-after(() => rmSync(root, { recursive: true, force: true }))
+after(() => rmTmp(root))
 
 let n = 0
 beforeEach(() => {
@@ -448,13 +449,16 @@ describe('B4 信心打平時，卡片標題要穩定', () => {
       // 要有 sha256：沒指紋（太大）的檔不列成候選（2026-09-19 稽核 RC4）
       d.prepare(`INSERT INTO file_items (id,path,name,ext,bytes,sha256,mtime,first_seen_at,last_seen_at,status)
                  VALUES (?,?,?,?,?,?,?,?,?,?)`)
-        .run('i1', '/r/Screenshot x.png', 'Screenshot x.png', '.png', 10, 'sha-i1', now, now, now, 'candidate')
+        // **路徑要 resolve 過**：Windows 上 roots 會被 resolve 成 C:\r，而寫死的
+        // '/r/…' 不會 —— under() 比不起來，候選一個都不會列出來（這條測試就紅了，
+        // 而它要測的「順序穩不穩」跟路徑一點關係都沒有）。
+        .run('i1', join(resolve('/r'), 'Screenshot x.png'), 'Screenshot x.png', '.png', 10, 'sha-i1', now, now, now, 'candidate')
       for (const k of ['old-download', 'screenshot-noise']) {
         d.prepare(`INSERT INTO cleanup_candidates (id,item_id,kind,rule_version,confidence,reason,evidence,status,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?)`)
           .run(randomUUID(), 'i1', k, CLEANUP_RULE_VERSION, 35, 'r', 'e', 'proposed', now)
       }
-      const c = listCandidates(d, { roots: ['/r'] }).candidates[0]
+      const c = listCandidates(d, { roots: [resolve('/r')] }).candidates[0]
       seen.add(c.kind + '|' + c.reasons.map(x => x.kind).join(','))
     }
     assert.equal(seen.size, 1, `重掃之間不穩定，出現了 ${seen.size} 種順序：${[...seen].join(' / ')}`)
@@ -822,7 +826,10 @@ describe('存活突變的釘子', () => {
       'B 搬完檔呼叫這個，數字要立刻更新')
   })
 
-  test('走訪沒看完就 fail closed —— 說不出有沒有孤兒', () => {
+  // **chmod 0 在 Windows 上沒有作用**：目錄照樣讀得進去，於是走訪沒有被截斷，
+  // truncated 是 false。那不是產品的問題，是這台機器上做不出那個情境。
+  test('走訪沒看完就 fail closed —— 說不出有沒有孤兒', t => {
+    if (process.platform === 'win32') { t.skip('chmod 0 does nothing on Windows, so a walk cannot be truncated here'); return }
     const q = join(root, 'q-trunc' + n)
     mkdirSync(join(q, 'deep'), { recursive: true })
     writeFileSync(join(q, 'deep', 'a.zip'), 'x')
