@@ -88,6 +88,8 @@ let cleanupPage = 0
  * 跟清理那一區同一個大小（一頁十列），也同一套「頁碼超出範圍就夾回去」。
  */
 let filingsPage = 0
+/** 改名那一區的頁碼。跟歸檔同一套。 */
+let renamesPage = 0
 const cleanupPageSize = 10
 /** 歸檔那一區一頁幾列。跟清理同一個大小 —— 兩區的節奏不該不一樣。 */
 const filingsPageSize = 10
@@ -750,9 +752,15 @@ function renderRenames() {
   box.hidden = items.length === 0
   $('cleanup-rename').hidden = items.length === 0
   $('cleanup-rename-undo').hidden = isDemo() || !renames.canUndo
+  $('cleanup-renames-pager').hidden = items.length <= filingsPageSize
   if (!items.length) return
   box.append(paragraph("Suggested names · these are the model's opinion, not facts. Nothing changes until you tick them and press “Rename”, and it can be undone.", 'cleanup-note'))
-  for (const item of items) {
+  const pages = Math.max(1, Math.ceil(items.length / filingsPageSize))
+  renamesPage = Math.min(Math.max(0, renamesPage), pages - 1)
+  $('cleanup-renames-page').textContent = `Page ${renamesPage + 1} of ${pages} · ${plural(items.length, 'file')}`
+  $('cleanup-renames-prev').disabled = busy || renamesPage === 0
+  $('cleanup-renames-next').disabled = busy || renamesPage === pages - 1
+  for (const item of items.slice(renamesPage * filingsPageSize, (renamesPage + 1) * filingsPageSize)) {
     const lines = renameLines(item)
     if (!lines) continue
     const row = document.createElement('article')
@@ -1317,6 +1325,10 @@ function render() {
   // **一定要在 summary() 之後**：summary 會依狀態決定每顆按鈕的 hidden，
   // 這裡再把「不屬於現在這一區」的收起來。
   renderSections()
+}
+$('cleanup-renames-prev').onclick = () => { if (!busy && renamesPage > 0) { renamesPage--; render() } }
+$('cleanup-renames-next').onclick = () => {
+  if (!busy && (renamesPage + 1) * filingsPageSize < renames.items.length) { renamesPage++; render() }
 }
 $('cleanup-filings-prev').onclick = () => { if (!busy && filingsPage > 0) { filingsPage--; render() } }
 $('cleanup-filings-next').onclick = () => {

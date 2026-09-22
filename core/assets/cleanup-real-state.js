@@ -880,8 +880,18 @@ export function createBursts(api, { createUrl, revokeUrl } = {}) {
 
 // ── 建議的名字（P3）──────────────────────────────────────────
 
-/** 面板上一次最多列幾個建議。再多就叫人去跑 CLI（面板不是批次工具）。 */
-export const RENAME_SHOWN = 50
+/**
+ * 面板一次拿幾個建議。
+ *
+ * **本來是 50**，理由是「面板一次把所有列都畫出來，再多就叫人去跑 CLI」。
+ * 2026-09-22 那一區加了分頁（一頁十列），那個理由就沒了 —— 而 50 這個數字是
+ * 使用者看得見的傷害：實機上 344 個檔有去處，面板只列 50，其他 294 個
+ * 只在「還有 N 個」那一句話裡。
+ *
+ * 現在跟後端的預設上限同一個數字（renameSuggestions／filingSuggestions 都是 500）,
+ * 也就是**後端給多少就畫多少**，超過的才講「還有 N 個」。
+ */
+export const RENAME_SHOWN = 500
 
 /**
  * 一列建議要印的字：`原名 → 建議名`、模型說了什麼、證據。
@@ -1006,8 +1016,8 @@ export function createRenames(api) {
     clear() { items = []; total = 0; selected = new Set(); undoable = false },
   }
 }
-/** 面板一次畫幾列歸檔建議（跟改名同一個數字）。 */
-export const FILING_SHOWN = 50
+/** 面板一次拿幾個歸檔建議（跟改名同一個數字，理由見 RENAME_SHOWN）。 */
+export const FILING_SHOWN = 500
 
 /**
  * 一列歸檔建議要印的字：`檔名 → 課程/作業系統/講義`、模型說了什麼、證據。

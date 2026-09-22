@@ -553,6 +553,12 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
        勾起來按「改名」才會真的動檔案，旁邊永遠有「復原改名」。沒有建議的時候整區不顯示。 -->
   <div class="cleanup-section" id="cleanup-sec-renames" data-section="renames">
     <div id="cleanup-renames" hidden></div>
+    <!-- 分頁：理由跟歸檔那一區一樣（2026-09-22）。一頁十列。 -->
+    <div class="cleanup-actions" id="cleanup-renames-pager" aria-label="Rename list pages" hidden>
+      <button id="cleanup-renames-prev" type="button">Previous</button>
+      <span id="cleanup-renames-page" aria-live="polite"></span>
+      <button id="cleanup-renames-next" type="button">Next</button>
+    </div>
   </div>
   <!-- 歸檔建議（P4）。**模型的意見，不是事實**：一列一個「檔名 → 課程/作業系統/講義」，
        勾起來按「整理」才會真的搬檔，旁邊永遠有「復原整理」。沒有建議的時候整區不顯示。
