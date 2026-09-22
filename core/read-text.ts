@@ -64,6 +64,21 @@ const EXT_KIND = new Map<string, TextKind>([
   ['.pdf', 'pdf'],
 ])
 
+/**
+ * Office 開著文件時放在旁邊的那個小檔（`~$報告.docx`）。
+ *
+ * 它**不是文件**，是一個幾十到幾百位元組的擁有者記錄，裡面是誰開著這個檔。
+ * 拿去給 docx 解析器只會得到「讀不懂」—— 而且它永遠讀不懂，所以每一次掃描都會
+ * 再警告一次，變成永久的雜訊（2026-09-22 實機：使用者收到
+ * 「1 file could not be opened as its format」，那個檔是 0 位元組的 `~$傳及讀書計畫.docx`）。
+ *
+ * **這跟「太大」是同一類的決定**：它不是問題，是一個我們知道的非文件。
+ * 不試、不報，跟那一條同一個理由（見 cleanup-scanner.ts 的 TextBatch.tooLarge）。
+ */
+export function isOfficeLockFile(name: unknown): boolean {
+  return String(name ?? '').startsWith('~$')
+}
+
 /** 副檔名（小寫、含點）對應的種類；不讀的回 null。 */
 export function kindOfExt(ext: string): TextKind | null {
   return EXT_KIND.get(String(ext ?? '').toLowerCase()) ?? null

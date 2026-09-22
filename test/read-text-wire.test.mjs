@@ -274,15 +274,34 @@ describe('3 ・ 惡意檔：掃描照常完成，其他檔照樣讀得到', () =
     assert.equal(reader.deaths(), 0)
   })
 
-  test('讀不懂的檔只報一條總結，不逐檔洗版，而且不帶路徑', t => {
+  // 這一條改過兩次：
+  //   · 訊息本來是「could not be made sense of」，P7 那一輪改成現在這句 —— 測試沒跟著改，紅了一陣子
+  //   · 本來斷言「一個檔名都不可以出現」。2026-09-22 使用者收到這句話之後問
+  //     「可以在看看哪裡有問題之類的」—— 只給數字，他知道有東西壞了卻找不到它。
+  //     現在**講前三個名字**：夠他去找，也不會逐檔洗版。
+  test('讀不懂的檔只報一條總結，講得出是哪幾個，而且不帶路徑', t => {
     const s = sandbox(t)
     for (let i = 0; i < 4; i++) s.put(`壞的-${i}.pdf`, Buffer.from('%PDF-1.7\n這不是真的 PDF\n'))
     s.scan()
-    const about = s.problems.filter(m => m.includes('could not be made sense of'))
+    const about = s.problems.filter(m => m.includes('could not be opened as'))
     assert.equal(about.length, 1, `problems：${JSON.stringify(s.problems)}`)
     assert.match(about[0], /4 files/)
     assert.ok(!about[0].includes(s.dl), '不可以帶資料夾的完整路徑')
-    assert.ok(!about[0].includes('壞的-0.pdf'), '不逐檔洗版')
+    assert.match(about[0], /壞的-0\.pdf/, '要講得出是哪幾個')
+    assert.match(about[0], /and 1 more/)
+    assert.equal(about[0].split('.pdf').length - 1, 3, '最多只列三個名字')
+  })
+
+  // Office 開著文件時放在旁邊的 `~$…`：它不是文件，讀了永遠只會「讀不懂」，
+  // 於是每一次掃描都再警告一次（2026-09-22 實機：使用者的 ~$傳及讀書計畫.docx，162 位元組）。
+  test('**Office 的鎖定檔不試也不報**（不然每次掃描都警告一次）', t => {
+    const s = sandbox(t)
+    s.put('~$報告.docx', Buffer.from('this is an owner record, not a document'))
+    s.put('講義.txt', '作業系統的講義內容，長度夠讓它被讀進去。')
+    s.scan()
+    assert.deepEqual(s.problems.filter(m => m.includes('could not be opened as')), [],
+      `不該為鎖定檔報問題：${JSON.stringify(s.problems)}`)
+    assert.equal(s.textOf('~$報告.docx'), null, '根本不該去讀它')
   })
 })
 

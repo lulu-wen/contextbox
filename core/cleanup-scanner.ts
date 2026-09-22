@@ -28,7 +28,7 @@ import {
 } from './cleanup-rules.ts'
 import { decodePngGray } from './png.ts'
 import { fileTextFresh, putFileText, sweepFileTexts } from './file-texts.ts'
-import { TEXT_REASON, kindOfExt, textReader, type TextReader } from './read-text.ts'
+import { TEXT_REASON, isOfficeLockFile, kindOfExt, textReader, type TextReader } from './read-text.ts'
 import { UntitledError, classifyName } from './untitled.ts'
 import {
   DEFAULT_MAX_GAP_MS,
@@ -749,6 +749,13 @@ type TextBatch = {
       只用來報一條總結，不逐檔洗版。**不含「太大」**，見 tooLarge。 */
   unreadable: number
   /**
+   * 那幾個檔叫什麼（給警告那一句用）。
+   *
+   * 只講數字的話使用者知道有東西壞了卻找不到它（2026-09-22 實機回報）。
+   * **只留名字，不留路徑**；報的時候也只列前三個。
+   */
+  unreadableNames: string[]
+  /**
    * 這一輪有幾個檔**因為超過 maxBytes 所以沒讀**。
    *
    * **跟 unreadable 分開算**（2026-09-21 使用者實機回報）。以前併在一起，
@@ -784,6 +791,9 @@ function ensureFileText(
 ): void {
   const kind = kindOfExt(f.ext)
   if (kind === null) return
+  // Office 的擁有者記錄（`~$報告.docx`）不是文件，讀了永遠只會得到「讀不懂」。
+  // 不試也不報 —— 跟「太大」同一類的決定，見 isOfficeLockFile。
+  if (isOfficeLockFile(f.name)) return
   const db = opts.db
   const mtime = f.mtime.toISOString()
   if (fileTextFresh(db, itemId, f.bytes, mtime)) return
@@ -832,6 +842,7 @@ function ensureFileText(
       put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: got.reason })
     }
     batch.unreadable++
+    if (batch.unreadableNames.length < 20) batch.unreadableNames.push(f.name)
     if (batch.deaths >= MAX_WORKER_DEATHS) {
       batch.off = true
       // 只講次數，不講檔名也不講資料夾
@@ -848,6 +859,7 @@ function ensureFileText(
   if (got.status === 'unreadable') {
     put({ text: null, chars: 0, truncated: false, hasText: false, pages: null, unmapped: null, reason: got.reason })
     batch.unreadable++
+    if (batch.unreadableNames.length < 20) batch.unreadableNames.push(f.name)
     return
   }
   put({
@@ -1130,7 +1142,7 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   // 這一輪算了幾張長相指紋、還剩幾張沒算（一批最多 MAX_IMAGE_BATCH 張）
   const batch: ImageBatch = { hashed: 0, pending: 0 }
   // 讀文件內容的額度（一批最多 MAX_TEXT_BATCH 個）。reader 要到真的有文件類的檔才會開 worker
-  const texts: TextBatch = { read: 0, pending: 0, deaths: 0, off: false, unreadable: 0, tooLarge: 0, reader: null }
+  const texts: TextBatch = { read: 0, pending: 0, deaths: 0, off: false, unreadable: 0, unreadableNames: [], tooLarge: 0, reader: null }
   // 舊版留下的錯誤作廢要在 upsert 之前改回 skipped，這一輪條件還成立的才會回到 proposed
   repairLegacyDismissed(opts.db)
   const { files, truncated } = fileList(opts)
@@ -1260,8 +1272,13 @@ export function scanDownloads(opts: CleanupScanOptions): CleanupScanResult {
   // **太大的不報**：那是政策結果，而且永遠不會變好，報了就是每次掃描都洗一次版。
   if (texts.unreadable > 0) {
     const n = texts.unreadable
+    // **講出是哪幾個**（2026-09-22 使用者：「可以在看看哪裡有問題之類的」）。
+    // 只講數字的話，使用者知道有東西壞了卻不知道是什麼，也就什麼都做不了。
+    // 檔名而已，不是路徑（不變量 8 管的是路徑）；多的時候只列前三個，不洗版。
+    const named = texts.unreadableNames.slice(0, 3).join(', ')
     problem(opts, `${n} ${n === 1 ? 'file' : 'files'} could not be opened as ${n === 1 ? 'its' : 'their'} format`
-      + ` (broken, encrypted, or something this tool does not read), so ${n === 1 ? 'its' : 'their'} contents were not read.`)
+      + ` (broken, encrypted, or something this tool does not read), so ${n === 1 ? 'its' : 'their'} contents were not read.`
+      + (named ? ` ${named}${texts.unreadableNames.length > 3 ? `, and ${texts.unreadableNames.length - 3} more` : ''}.` : ''))
   }
 
   // 只算清單上真的會出現的：候選在 missing 的檔上會留在 proposed（見 markMissing），
