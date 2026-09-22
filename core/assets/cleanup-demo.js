@@ -10,6 +10,7 @@ import {
   createReal, createRealHistory, safeName, formatBytes, applyMessage, undoMessage, historyUndoMessage, pendingPlanMessage,
   folderPhrase, createBursts, applyBurstDefaults, burstAskMessage, burstGroupLine, burstNote,
   modelOpinionLines, createRenames, renameLines, createFilings, filingLines,
+  renameUndoMessage, filingUndoMessage,
   createLearned, learnedLines,
   createSettings, settingLabel,
   createPreviews, previewLines, plural,
@@ -80,7 +81,16 @@ updateMock()
 const historyPanel = $('cleanup-history-panel')
 let historyOffset = 0, historyData = null, historyBusy = false
 let cleanupPage = 0
+/**
+ * 歸檔那一區的頁碼（2026-09-22 使用者回報）。
+ *
+ * 分類一多，這一區就是一條滑不完的捲軸 —— 實機上 344 個檔有去處，全部畫成一列一列。
+ * 跟清理那一區同一個大小（一頁十列），也同一套「頁碼超出範圍就夾回去」。
+ */
+let filingsPage = 0
 const cleanupPageSize = 10
+/** 歸檔那一區一頁幾列。跟清理同一個大小 —— 兩區的節奏不該不一樣。 */
+const filingsPageSize = 10
 // 「先不清」只動這一輪的提案：不送後端的 dismiss，也不碰任何檔案。
 const skippedOperations = []
 const proposalSkips = () => skippedOperations.filter(op => op.demo === demoEnabled)
@@ -189,6 +199,24 @@ async function refreshHistoryBadge() {
   }
 }
 const historySelected = new Set()
+/**
+ * 復原那一頁現在看的是哪一種動作（2026-09-22 實機回報）。
+ *
+ * 「我剛剛按 file 案件後，undo 的部分並沒有出現 file 的返回，可能其他類型的檔案也是。」
+ * —— 對的，這一頁本來只讀 /cleanup/plans，改名與歸檔在這裡根本不存在，
+ * 所以**按得到「復原」的唯一地方是各自那一區旁邊的按鈕**，而那一顆是「復原最近一次」，
+ * 選不了要復原哪一筆。
+ */
+let historySection = 'cleanups'
+/** 改名與歸檔的紀錄（後端 /rename/records、/file/records）。清理走原本那條分頁的路。 */
+let historyMoves = { renames: null, filings: null }
+/** 三區各自記自己勾了什麼 —— 切過去再切回來不該把上一區的勾選帶著走。 */
+const movesSelected = { renames: new Set(), filings: new Set() }
+const historyPick = () => (historySection === 'cleanups' ? historySelected : movesSelected[historySection])
+const HISTORY_SECTION_NOTE = {
+  renames: 'One row per file that was renamed. Tick the ones you want back under their old names.',
+  filings: 'One row per file that was filed. Tick the ones you want back in the folder they came from.',
+}
 const demoHistoryApi = (path, body) => window.api('/demo/cleanup/' + path,
   body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) })
 const realHistory = createRealHistory((path, init) => window.api(path, init))
@@ -531,6 +559,50 @@ function previewBox(itemId) {
 }
 
 /** 在一列底下掛「看內容」，展開時把內容接在同一列裡。 */
+/**
+ * 叫後端在檔案總管裡把這個檔指出來。
+ *
+ * **一個檔都不動**，所以 busy 的時候照樣按得動（跟「看內容」同一個理由）。
+ * 開不起來的時候要講出為什麼 —— 使用者最常遇到的是「它已經被清掉了」，
+ * 那句話比一個沒反應的按鈕有用得多。
+ */
+/**
+ * 這一刻使用者在看哪個對話框，訊息就寫到哪一個。
+ *
+ * 復原那一頁是**另一個 dialog**，而 result() 寫的是主面板那一塊 ——
+ * 在復原頁按了東西，訊息會寫到一個看不見的地方（跟 2026-09-22 那個
+ * 「按了沒反應」是同一種錯，只是換個地方犯）。
+ */
+function tell(message) {
+  if (historyPanel.open) historyResult(message)
+  else result(message)
+}
+
+/**
+ * 叫後端在檔案總管裡把這個檔指出來。**一個檔都不動**，所以 busy 的時候照樣按得動。
+ *
+ * 訊息寫在結果那一塊，不是只改按鈕上的字（2026-09-22 實機回報「按了沒跳出來」）：
+ * 視窗其實開了，但 Windows 不讓背景行程搶前景，所以它出現在其他視窗後面；
+ * 而按鈕上的字**每一次輪詢重畫就沒了**（那一整列是重造的），於是看起來像什麼都沒發生 ——
+ * 使用者連按了三次，就開了三個視窗。結果那一塊不會被重畫，而且看不到時會自己捲過去。
+ */
+async function revealItem(itemId, button) {
+  if (isDemo()) return
+  const was = button.textContent
+  button.disabled = true
+  button.textContent = 'Opening…'
+  try {
+    await window.api('/reveal', { method: 'POST', body: JSON.stringify({ itemId }) })
+    tell('Opened it in your file manager. If you cannot see the window, look in the taskbar — it may have opened behind this one.')
+    button.textContent = 'Opened'
+  } catch (error) {
+    tell(safeName(error?.message ?? 'Could not open the file manager.'))
+    button.textContent = was
+  } finally {
+    setTimeout(() => { button.textContent = was; button.disabled = false }, 1500)
+  }
+}
+
 function attachPreview(host, itemId) {
   if (isDemo() || typeof itemId !== 'string' || !itemId) return
   const open = previewOpen.has(itemId)
@@ -542,6 +614,15 @@ function attachPreview(host, itemId) {
   // **忙的時候照樣可以看**：看內容不動任何檔案，而正在搬檔的時候更需要看得到自己在清什麼
   peek.onclick = () => togglePreview(itemId)
   host.append(peek)
+  // 「在檔案總管裡指給我看」（2026-09-22 使用者要的）。掛在這裡，所以**凡是列得出檔案的地方**
+  // 都有：清理、連拍、改名、歸檔、還有復原那一頁的三區 —— 它們本來就都呼叫 attachPreview。
+  // 面板不知道那個檔的絕對路徑，也不需要知道：送的是 itemId，路徑由後端自己查（見 reveal-routes.ts）。
+  const where = document.createElement('button')
+  where.type = 'button'
+  where.className = 'cleanup-peek'
+  where.textContent = 'Show in folder'
+  where.onclick = () => revealItem(itemId, where)
+  host.append(where)
   if (open) {
     // **連拍那一格只有 150px 寬，預覽是 420px。**（2026-09-21 使用者截圖）
     // 不標記的話，預覽會從格子裡滿出來、把同一排的其他張擠出畫面右邊，
@@ -720,9 +801,23 @@ function renderFilings() {
   box.hidden = items.length === 0
   $('cleanup-file').hidden = items.length === 0
   $('cleanup-file-undo').hidden = isDemo() || !filings.canUndo
+  $('cleanup-filings-pager').hidden = items.length <= filingsPageSize
   if (!items.length) return
-  box.append(paragraph("Filing suggestions · these are the model's opinion, not facts. Nothing moves until you tick them and press “File”, and it can be undone.", 'cleanup-note'))
-  for (const item of items) {
+  // **一定要講它們會落在哪裡**（2026-09-22 實機回報）：使用者按了 File、看到
+  // 「→ Scholarship applications/」，然後在檔案總管裡到處找不到那個資料夾 ——
+  // 它其實好好地在 Documents\Filed 底下。面板從頭到尾只講相對的那一段，
+  // 而**「相對於哪裡」只寫在設定那一區**，按按鈕的人不會先去翻那一頁。
+  // filed 是使用者自己設的資料夾，設定區本來就顯示它，這裡不是新的外洩面。
+  const filedAt = settings.view?.shown?.filed
+  box.append(paragraph("Filing suggestions · these are the model's opinion, not facts. Nothing moves until you tick them and press “File”, and it can be undone."
+    + (filedAt ? `  They land in ${filedAt}.` : ''), 'cleanup-note'))
+  // 頁碼夾回範圍內：搬掉幾個之後最後一頁可能整頁沒了，不夾的話畫面會空白
+  const pages = Math.max(1, Math.ceil(items.length / filingsPageSize))
+  filingsPage = Math.min(Math.max(0, filingsPage), pages - 1)
+  $('cleanup-filings-page').textContent = `Page ${filingsPage + 1} of ${pages} · ${plural(items.length, 'file')}`
+  $('cleanup-filings-prev').disabled = busy || filingsPage === 0
+  $('cleanup-filings-next').disabled = busy || filingsPage === pages - 1
+  for (const item of items.slice(filingsPage * filingsPageSize, (filingsPage + 1) * filingsPageSize)) {
     const lines = filingLines(item)
     if (!lines) continue
     const row = document.createElement('article')
@@ -753,7 +848,7 @@ function renderFilings() {
     attachPreview(row, item.itemId)
     box.append(row)
   }
-  if (filings.more) box.append(paragraph(`${filings.more} more. File these, then open the panel again to see them.`, 'evidence'))
+  if (filings.more) box.append(paragraph(`${filings.more} more than the server sends at once. File these, then open the panel again to see the rest.`, 'evidence'))
 }
 
 /**
@@ -1223,6 +1318,10 @@ function render() {
   // 這裡再把「不屬於現在這一區」的收起來。
   renderSections()
 }
+$('cleanup-filings-prev').onclick = () => { if (!busy && filingsPage > 0) { filingsPage--; render() } }
+$('cleanup-filings-next').onclick = () => {
+  if (!busy && (filingsPage + 1) * filingsPageSize < filings.items.length) { filingsPage++; render() }
+}
 $('cleanup-prev').onclick = () => { if (!busy && cleanupPage > 0) { cleanupPage--; render() } }
 $('cleanup-next').onclick = () => {
   const s = session()
@@ -1232,26 +1331,39 @@ $('cleanup-next').onclick = () => {
   if (!busy && (cleanupPage + 1) * cleanupPageSize < rows.length) { cleanupPage++; render() }
 }
 /**
- * 講出這一次做了什麼。
+ * 讓貓說這一句。
  *
- * **一定要捲到看得見**（2026-09-22，使用者實機回報）：結果這一塊掛在整個面板的最下面，
- * 而按鈕在每一列上。清單一長，使用者按了 Filing 第一列的「File」之後，訊息寫在螢幕外
- * 七百多像素的地方 —— 他看到的是「按了完全沒反應，也不知道成功了沒有」。
+ * 使用者 2026-09-22：「這種成功訊息應該交給 quaso 貓貓來說」。
+ * 之前是寫在面板最下面那一塊，而按鈕在每一列上 —— 要嘛看不到（在畫面外），
+ * 要嘛為了讓人看到而**每按一個檔就把整頁捲到最底下**，兩種都不能要。
+ * 貓固定在右下角、而且現在浮在面板之上，不管捲到哪裡都看得見。
  *
- * 那一次同時還有一個 bug 讓那一列真的沒搬成（送出去的東西少了 folder），
- * 兩件事疊起來就完全看不出發生過什麼。**那個 bug 修掉了，這一半也要修** ——
- * 下一次有東西失敗的時候，使用者還是要看得到為什麼。
+ * dataset.ask 跟連拍的問句同一個機制：讓每五秒一次的輪詢不要把它蓋掉，
+ * 狀態一變（開始清理、出問題）就換回狀態算出來的話。
+ */
+function petSay(message) {
+  const text = String(message ?? '').trim()
+  if (!text) return
+  $('quaso-status').dataset.ask = '1'
+  $('quaso-status').textContent = text
+  $('quaso-dialog').hidden = false
+  $('quaso-stage').setAttribute('aria-expanded', 'true')
+}
+
+/**
+ * 講出這一次做了什麼。**同一句話寫兩個地方**：
+ *
+ *   · 貓的泡泡 —— 使用者現在就會看到的那一個
+ *   · 面板裡那一塊 —— 留著當紀錄，捲回去還在（但**不會再自己捲過去**）
+ *
+ * 以前這裡會 scrollIntoView，於是「按一個檔就整頁跳到最底下」（2026-09-22 回報）。
+ * 那個捲動本來是為了修「按了沒反應」，現在那件事由貓接手，捲動就不必了。
  */
 function result(message) {
   const box = $('cleanup-result')
   box.hidden = false
   box.textContent = message
-  // 已經在畫面上就不要動（捲動會把使用者正在看的東西搶走）
-  try {
-    const r = box.getBoundingClientRect()
-    const shown = r.top >= 0 && r.bottom <= (window.innerHeight || document.documentElement.clientHeight)
-    if (!shown) box.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  } catch { /* 舊瀏覽器沒有 scrollIntoView 的選項也沒關係：訊息本身已經寫上去了 */ }
+  petSay(message)
 }
 async function load() {
   if (demo) return
@@ -1302,7 +1414,7 @@ async function openCleanupPanel() {
   if (!currentPetProblem()) setPetBaseState(reading.running ? 'thinking' : 'idle')
   if (demo) {
     render()
-    if (!panel.open) panel.showModal()
+    if (!panel.open) { panel.showModal(); liftPet() }
     return
   }
   // 本機模式：真的清理。模擬的資料與真的資料**永遠不混用** ——
@@ -1315,7 +1427,7 @@ async function openCleanupPanel() {
   $('cleanup-list').replaceChildren(paragraph('Loading candidate files…'))
   $('cleanup-needs-human').replaceChildren()
   $('cleanup-summary').textContent = ''
-  if (!panel.open) panel.showModal()
+  if (!panel.open) { panel.showModal(); liftPet() }
   // 每次打開都是新的一輪 —— **除非上一輪結果還不明**。那時候丟掉就會撞上
   // 自己剛建的那份計畫，要保留下來讓使用者「再試一次」。
   if (!real || !real.locked) real = createReal((path, init) => window.api(path, init))
@@ -1341,6 +1453,31 @@ async function openCleanupPanel() {
     else if (real.locked) result('The result of the last cleanup was never confirmed. “Try again” reuses that same plan; nothing extra gets moved.')
   } catch { $('cleanup-list').replaceChildren(paragraph('Loading failed. Check that the server is running, close the panel and click the trash can to try again.')) }
 }
+/**
+ * 把貓放進 top layer，讓它浮在面板（modal dialog）之上。
+ *
+ * 使用者 2026-09-22：「希望貓貓的圖層提到最上面來」。**z-index 做不到這件事** ——
+ * showModal() 開的 dialog 在 top layer，不參與一般的堆疊順序。
+ * 唯一乾淨的做法是讓貓自己也進去：popover="manual" 進 top layer，
+ * 而且**不會讓面板變成 inert**（showModal 會），所以面板照樣點得動。
+ *
+ * **top layer 是照加入順序堆的**：面板是在貓之後 showModal 的，所以光是開一次 popover
+ * 還是會被壓在下面（實測 elementFromPoint 打到的是 cleanup-panel）。
+ * 每次開／關對話框之後都重推一次，貓才會回到最上面。
+ *
+ * **支援才掛**：popover 元素預設是 display:none，舊瀏覽器掛了會讓整隻貓消失。
+ */
+function liftPet() {
+  try {
+    const petBox = $('quaso')
+    if (!petBox || typeof petBox.showPopover !== 'function') return
+    if (petBox.getAttribute('popover') !== 'manual') petBox.setAttribute('popover', 'manual')
+    // 先收再開 ＝ 從 top layer 拿掉再放回去，也就是放到最上面
+    try { petBox.hidePopover() } catch { /* 本來就沒開 */ }
+    petBox.showPopover()
+  } catch { /* 掛不上去就維持原本的 z-index：貓還在，只是會被面板蓋住 */ }
+}
+liftPet()
 alertButton.onclick = openCleanupPanel
 // 檔案管理那一塊的入口（P6）：跟可頌貓底下的垃圾桶開的是同一個面板
 $('files-open-cleanup').onclick = openCleanupPanel
@@ -1661,15 +1798,72 @@ $('cleanup-reset').onclick = () => {
 function historyResult(message) {
   $('cleanup-history-result').hidden = false
   $('cleanup-history-result').textContent = message
+  petSay(message)
 }
 function historyControls() {
-  $('cleanup-history-undo').textContent = `Undo selected (${historySelected.size})`
-  $('cleanup-history-undo').disabled = historyBusy || busy || historySelected.size === 0
+  const picked = historyPick()
+  $('cleanup-history-undo').textContent = `Undo selected (${picked.size})`
+  $('cleanup-history-undo').disabled = historyBusy || busy || picked.size === 0
+  // 翻頁只有清理那一區有（改名與歸檔一次拿最近 50 筆，不分頁）
+  const paged = historySection === 'cleanups'
+  $('cleanup-history-paging').hidden = !paged
   $('cleanup-history-prev').disabled = historyBusy || historyOffset === 0
   $('cleanup-history-next').disabled = historyBusy || !historyData || historyOffset + historyData.limit >= historyData.total
   $('cleanup-history-refresh').disabled = historyBusy
+  // 示範模式沒有真的改名／歸檔紀錄可以看，整個選單收起來（不然切過去是空的，像壞掉）
+  $('cleanup-history-tabs').hidden = demoEnabled
+  $('cleanup-history-tabs').disabled = historyBusy
+  $('cleanup-history-tabs').value = historySection
+}
+
+/**
+ * 改名／歸檔那兩區的一列。**每一列都看得到它從哪裡來、到哪裡去** ——
+ * 這一頁的人正在決定「要不要收回這個動作」，只給一個檔名是不夠的。
+ */
+function moveRow(kind, record) {
+  const card = document.createElement('article')
+  card.className = 'cleanup-file'
+  const label = document.createElement('label')
+  const check = document.createElement('input')
+  check.type = 'checkbox'
+  check.disabled = historyBusy
+  check.checked = movesSelected[kind].has(record.id)
+  check.onchange = () => {
+    if (check.checked) movesSelected[kind].add(record.id)
+    else movesSelected[kind].delete(record.id)
+    historyControls()
+  }
+  const head = document.createElement('strong')
+  head.textContent = kind === 'renames'
+    ? `${uiSafeName(record.from)} → ${uiSafeName(record.to)}`
+    : `${uiSafeName(record.name)} → ${uiSafeName(record.toFolder)}/`
+  label.append(check, head)
+  card.append(label)
+  const line = document.createElement('div')
+  line.className = 'cleanup-history-item'
+  // 搬走／改名之後它已經不在清理清單上了 —— 這是唯一還列得到它、看得到內容的地方
+  attachPreview(line, record.itemId)
+  card.append(line)
+  card.append(paragraph(`Can be undone · ${new Date(record.at).toLocaleString('en-US')}`, 'evidence'))
+  return card
+}
+
+function renderMoves() {
+  const list = $('cleanup-history-list')
+  list.replaceChildren()
+  const records = historyMoves[historySection] ?? []
+  const word = historySection === 'renames' ? 'rename' : 'filing'
+  $('cleanup-history-count').textContent = `${plural(records.length, word)} can still be undone`
+  for (const record of records) list.append(moveRow(historySection, record))
+  if (!records.length) {
+    list.append(paragraph(historySection === 'renames'
+      ? 'Nothing has been renamed yet, so there is nothing to undo here.'
+      : 'Nothing has been filed yet, so there is nothing to undo here.'))
+  }
+  historyControls()
 }
 function renderHistory() {
+  if (historySection !== 'cleanups') return renderMoves()
   const list = $('cleanup-history-list')
   list.replaceChildren()
   const { total, operations, limit } = historyData
@@ -1710,10 +1904,28 @@ function renderHistory() {
 async function refreshHistory() {
   if (historyBusy) return
   historyBusy = true
-  historySelected.clear()
+  historyPick().clear()
   historyControls()
-  $('cleanup-history-note').textContent = demoEnabled ? HISTORY_NOTE.demo : HISTORY_NOTE.local
+  $('cleanup-history-note').textContent = historySection !== 'cleanups'
+    ? HISTORY_SECTION_NOTE[historySection]
+    : demoEnabled ? HISTORY_NOTE.demo : HISTORY_NOTE.local
   $('cleanup-history-list').replaceChildren(paragraph('Loading the action log…'))
+  // 改名與歸檔：後端各有一條 records，一次拿最近 50 筆已經完成的
+  if (historySection !== 'cleanups') {
+    const path = historySection === 'renames' ? '/rename/records?limit=50' : '/file/records?limit=50'
+    try {
+      const body = await window.api(path)
+      historyMoves[historySection] = Array.isArray(body?.items) ? body.items : []
+      renderMoves()
+    } catch {
+      // 舊版後端沒有這條路由：講一句話，別的區照常（跟面板其他區同一條規矩）
+      historyMoves[historySection] = []
+      $('cleanup-history-list').replaceChildren()
+      $('cleanup-history-count').textContent = 'Not available'
+      historyResult('This version of the server does not list those yet. Cleanups still work here.')
+    } finally { historyBusy = false; historyControls() }
+    return
+  }
   try {
     historyData = await historyApi(`history?offset=${historyOffset}&limit=20`)
     historyOffset = historyData.offset
@@ -1733,7 +1945,7 @@ async function openHistory() {
   $('quaso-dialog').hidden = true
   $('quaso-stage').setAttribute('aria-expanded', 'false')
   $('cleanup-history-result').hidden = true
-  if (!historyPanel.open) historyPanel.showModal()
+  if (!historyPanel.open) { historyPanel.showModal(); liftPet() }
   await refreshHistory()
 }
 $('quaso-history-open').onclick = openHistory
@@ -1743,10 +1955,61 @@ $('cleanup-history-refresh').onclick = () => {
   $('cleanup-history-result').hidden = true
   refreshHistory()
 }
+$('cleanup-history-tabs').onchange = () => {
+  if (historyBusy) return
+  const want = $('cleanup-history-tabs').value
+  if (want === historySection) return
+  historySection = want
+  $('cleanup-history-result').hidden = true
+  refreshHistory()
+}
 $('cleanup-history-prev').onclick = () => { historyOffset = Math.max(0, historyOffset - 20); refreshHistory() }
 $('cleanup-history-next').onclick = () => { historyOffset += 20; refreshHistory() }
+/**
+ * 改名／歸檔的復原。**走的是那兩條既有的 undo**（同一本 journal、同一個七天），
+ * 這一頁只是多了一個「選得到要收回哪一筆」的入口。
+ */
+async function undoMoves(kind) {
+  const ids = [...movesSelected[kind]]
+  if (!ids.length) return
+  historyBusy = true
+  operationProblem = null
+  setPetMessageData({ lastAction: 'restoring', restoredCount: 0, freedBytes: 0, errorMessage: '' })
+  setPetTransientState('restoring')
+  historyControls()
+  historyResult(kind === 'renames' ? 'Changing those names back…' : 'Putting those files back where they came from…')
+  let message
+  try {
+    const path = kind === 'renames' ? '/rename/undo' : '/file/undo'
+    const r = await tracked(() => window.api(path, { method: 'POST', body: JSON.stringify({ ids }) }))
+    const results = Array.isArray(r?.results) ? r.results : []
+    const back = results.filter(x => x.ok).length
+    setPetMessageData({ restoredCount: back })
+    message = (kind === 'renames' ? renameUndoMessage(r) : filingUndoMessage(r))
+    // 那些檔又回到原本的資料夾了 —— 面板上的清單與預覽都作廢
+    previews.clear()
+    previewOpen.clear()
+    if (real && !real.locked) real = null
+    if (panel.open && panel.dataset.mode === 'local') panel.close()
+    pollHealth()
+    if (back < results.length) reportOperationProblem(message, 'warning')
+    else if (back > 0) setPetTransientState('happy')
+    else clearPetTransientState()
+  } catch (error) {
+    reportOperationProblem(error.message, seriousOperationError(error) ? 'error' : 'warning')
+    message = 'The undo was not confirmed. Reload the log and try again.'
+  } finally {
+    historyBusy = false
+    movesSelected[kind].clear()
+    await refreshHistory()
+    historyResult(message)
+  }
+}
+
 $('cleanup-history-undo').onclick = async () => {
-  if (historyBusy || busy || !historySelected.size) return
+  if (historyBusy || busy) return
+  if (historySection !== 'cleanups') return undoMoves(historySection)
+  if (!historySelected.size) return
   operationProblem = null
   historyBusy = true
   // ① 開始放回

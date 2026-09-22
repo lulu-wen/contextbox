@@ -33,6 +33,7 @@ import { FACT_KEYS, SCHEMA_VERSION, fillModeOf } from '../schema/factKeys.ts'
 import { cleanupRoutes, healthSnapshot } from './cleanup-routes.ts'
 import { renameRoutes } from './rename-routes.ts'
 import { filingRoutes } from './filing-routes.ts'
+import { revealRoutes } from './reveal-routes.ts'
 import { learnRoutes } from './learn-routes.ts'
 import { scanDownloads } from './cleanup-scanner.ts'
 import { load as loadConfig, type Config } from './config.ts'
@@ -572,6 +573,16 @@ export function start(opts: {
         readonly: readonlyNow,
         url, method: req.method ?? 'GET', body, send,
         scan: () => { throw new Error('filing does not scan') },
+      })) return
+      // 「在檔案總管裡指給我看」（2026-09-22）。只認 `/reveal`。
+      // **一個位元組都不動**，所以唯讀模式照開；它要知道所有我們管得到的樹，
+      // 才能判斷這個檔在不在範圍裡（不在就拒絕）。
+      if (revealRoutes({
+        db: F.db, roots, quarantine: QUARANTINE, filed: () => filedDir,
+        restoreRoots: () => restoreRootList,
+        screenshotsDir,
+        url, method: req.method ?? 'GET', body, send,
+        scan: () => { throw new Error('reveal does not scan') },
       })) return
       // 它學到的事（P5）。只認 `/learned`，跟上面兩個一樣認不得就回 false。
       // 不需要 roots／filed —— 它只讀寫 preferences 那張表，永遠不碰檔案。

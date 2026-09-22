@@ -305,7 +305,31 @@ describe('面板的「歸檔建議」區', () => {
   // 2026-09-22 實機回報：「按下 File 按鈕後他不會有任何反應，box 不會消失，貓咪也沒說話，
   // 他並不會告訴我是否有成功」。原因有兩個，這是第二個：結果那一塊在整個面板的最下面，
   // 而按鈕在每一列上 —— 清單一長，訊息就寫在螢幕外七百多像素的地方。
-  test('**結果訊息不在畫面上就捲到看得見**（不然按了像沒反應）', async t => {
+  //
+  // 第一版的修法是「捲到看得見」，同一天使用者就打回來了：
+  // 「每次點一個 file 他就會無限往下跳到成功的訊息那邊」。
+  // 現在的做法是**交給貓說**（使用者自己指定的）—— 貓固定在右下角、浮在面板之上，
+  // 不管捲到哪裡都看得見，所以誰都不用捲。
+  test('**成功訊息要讓貓說出來**（它固定在畫面上，不必捲動）', async t => {
+    const ui = await open(t, {
+      suggestions: [suggestion()],
+      onApply: body => ({
+        results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x.txt', toFolder: 'y', to: 'x.txt', why: '' })),
+        remaining: 0,
+      }),
+    })
+    const [first] = boxes(ui)
+    first.checked = true
+    await first.onchange()
+    await ui.click('cleanup-file')
+    assert.match(ui.$('quaso-status').textContent, /Filed 1/, '貓沒有把結果說出來')
+    assert.equal(ui.$('quaso-dialog').hidden, false, '泡泡要打開，不然那句話沒人看得到')
+    // 面板裡那一塊照樣留著當紀錄
+    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+  })
+
+  // 使用者 2026-09-22：「不然每次點一個 file 他就會無限往下跳到成功的訊息那邊」
+  test('**不可以自己捲動畫面**', async t => {
     const ui = await open(t, {
       suggestions: [suggestion()],
       onApply: body => ({
@@ -315,18 +339,15 @@ describe('面板的「歸檔建議」區', () => {
     })
     const box = ui.$('cleanup-result')
     const scrolled = []
-    box.getBoundingClientRect = () => ({ top: 900, bottom: 1000 })
     box.scrollIntoView = opts => scrolled.push(opts)
     const [first] = boxes(ui)
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-file')
-    // 「處理中⋯」與最後那一句各算一次 —— 兩次都該捲，使用者才看得到事情在動
-    assert.ok(scrolled.length >= 1, '訊息在螢幕外卻沒有捲過去')
-    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
+    assert.deepEqual(scrolled, [], '按一個檔就把整頁捲到最底下')
   })
 
-  test('已經看得到就不要捲（會把使用者正在看的東西搶走）', async t => {
+  test('貓說的那一句要標成 ask，輪詢才不會馬上蓋掉它', async t => {
     const ui = await open(t, {
       suggestions: [suggestion()],
       onApply: body => ({
@@ -334,39 +355,12 @@ describe('面板的「歸檔建議」區', () => {
         remaining: 0,
       }),
     })
-    const box = ui.$('cleanup-result')
-    const scrolled = []
-    // 這個假 DOM 沒有 innerHeight。量不出視窗高度的時候就捲（寧可捲也不要讓人看不到），
-    // 所以要測「已經看得到就不捲」就得把高度給它。
-    globalThis.window.innerHeight = 768
-    t.after(() => { delete globalThis.window.innerHeight })
-    box.getBoundingClientRect = () => ({ top: 10, bottom: 80 })
-    box.scrollIntoView = opts => scrolled.push(opts)
     const [first] = boxes(ui)
     first.checked = true
     await first.onchange()
     await ui.click('cleanup-file')
-    assert.deepEqual(scrolled, [])
+    assert.equal(ui.$('quaso-status').dataset.ask, '1')
   })
-
-  test('瀏覽器沒有 scrollIntoView 也要把訊息寫上去', async t => {
-    const ui = await open(t, {
-      suggestions: [suggestion()],
-      onApply: body => ({
-        results: body.items.map(i => ({ itemId: i.itemId, ok: true, name: 'x.txt', toFolder: 'y', to: 'x.txt', why: '' })),
-        remaining: 0,
-      }),
-    })
-    const box = ui.$('cleanup-result')
-    box.getBoundingClientRect = () => { throw new Error('沒有這個東西') }
-    const [first] = boxes(ui)
-    first.checked = true
-    await first.onchange()
-    await ui.click('cleanup-file')
-    assert.match(ui.$('cleanup-result').textContent, /Filed 1/)
-    assert.equal(ui.$('cleanup-result').hidden, false)
-  })
-
   test('「復原整理」送 { last: true }，訊息照後端說的講', async t => {
     const undos = []
     const ui = await open(t, {

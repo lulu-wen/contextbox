@@ -149,6 +149,12 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
 .foot{color:var(--faint); font-size:12px; text-align:center; padding:8px 0 0}
 </style>
 <style>
+  /* **modal dialog 在 top layer，z-index 再高也蓋不過它**（2026-09-22 使用者：
+     「希望貓貓的圖層提到最上面來」）。唯一乾淨的做法是讓貓自己也進 top layer ——
+     popover="manual"（由 cleanup-demo.js 在支援時才掛上，不支援的瀏覽器維持原樣）。
+     popover 的 UA 預設會給 margin 與 inset:0，這裡全部蓋回去。 */
+  #quaso:popover-open { margin: 0; padding: 0; border: 0; background: transparent;
+    overflow: visible; inset: auto 20px 16px auto; width: 220px; }
   #quaso { position: fixed; inset: auto 20px 16px auto; z-index: 50; width: 220px;
     display: grid; justify-items: center;
     margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; color: inherit; }
@@ -322,7 +328,10 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
   #cleanup-panel .cleanup-shot p { margin: 4px 0 0; font-size: 13px; }
   .cleanup-shot-keep { font-weight: 600; color: #4d6b3a; }
   /* 看內容（P6）。內容是**不可信的輸入**：一律 textContent，這裡只管它長什麼樣。 */
+  /* 一列現在有兩顆（「看內容」與「在資料夾裡指出來」）。**中間要有距離** ——
+     兩顆同色同大小的按鈕貼在一起，看起來像一顆被切開的（2026-09-22 使用者截圖）。 */
   .cleanup-peek { margin-top: 8px; font-size: 13px; }
+  .cleanup-peek + .cleanup-peek { margin-left: 10px; }
   .cleanup-preview { margin-top: 10px; border: 1px solid #e9dfce; border-radius: 10px;
     padding: 10px 12px; background: #fffdf8; }
   .cleanup-preview img { display: block; max-width: 100%; height: auto;
@@ -550,6 +559,13 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
        只給相對於「整理好的」資料夾的那一段 —— 絕對路徑永遠不離開後端。 -->
   <div class="cleanup-section" id="cleanup-sec-filings" data-section="filings">
     <div id="cleanup-filings" hidden></div>
+    <!-- 分頁（2026-09-22 使用者回報）：分類一多，這一區就是一條滑不完的捲軸。
+         一頁十列，跟清理那一區同一個大小。 -->
+    <div class="cleanup-actions" id="cleanup-filings-pager" aria-label="Filing list pages" hidden>
+      <button id="cleanup-filings-prev" type="button">Previous</button>
+      <span id="cleanup-filings-page" aria-live="polite"></span>
+      <button id="cleanup-filings-next" type="button">Next</button>
+    </div>
   </div>
   <!-- 它學到的事（P5）。**看得到、忘得掉**：每一列「模型說 A ・ 你要 B ・ 用過 N 次」＋一個「忘掉」。
        這一區裡**沒有路徑、沒有檔名以外的東西**（後端的 preferences 表本來就只存課名、類型與
@@ -605,10 +621,18 @@ select.inp{appearance:none; background-image:linear-gradient(45deg,transparent 5
     <h2 id="cleanup-history-title">Undo recent actions</h2>
     <button id="cleanup-history-close" type="button">Close</button>
   </div>
+  <!-- 三種動作各一區（2026-09-22 實機回報：「undo 的部分並沒有出現 file 的返回」）。
+       以前這一頁只讀 /cleanup/plans，所以改名與歸檔在「可以復原的動作」裡根本不存在。
+       選單用跟主面板同一個 class，兩邊的位置才對得起來。 -->
+  <select id="cleanup-history-tabs" class="cleanup-section-select" aria-label="Which actions">
+    <option value="cleanups" selected>Cleanups</option>
+    <option value="renames">Renames</option>
+    <option value="filings">Filing</option>
+  </select>
   <p id="cleanup-history-note" class="cleanup-note">One row per cleanup. Tick one and the files it moved go back where they were.</p>
   <p id="cleanup-history-count" aria-live="polite"></p>
   <div id="cleanup-history-list"></div>
-  <div class="cleanup-actions">
+  <div class="cleanup-actions" id="cleanup-history-paging">
     <button id="cleanup-history-prev" type="button">Previous</button>
     <button id="cleanup-history-next" type="button">Next</button>
     <button id="cleanup-history-refresh" type="button">Reload</button>

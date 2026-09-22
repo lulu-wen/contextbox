@@ -13,12 +13,16 @@
  */
 import { CleanupError } from './cleanup-journal.ts'
 import { statusFor, type RouteCtx } from './cleanup-routes.ts'
-import { applyRenames, renameSuggestions, undoRenames, type RenameScope } from './rename.ts'
+import { applyRenames, listRenames, renameSuggestions, undoRenames, type RenameScope } from './rename.ts'
+// 顯示用的過濾只留一份（filing-routes 就是它的家，learn-routes 也是拿那一支）。
+// 檔名是不可信的輸入：控制字元與方向字元原樣回到畫面上，就可以偽造一行結果。
+import { shown } from './filing-routes.ts'
 import { settleMoves } from './settle.ts'
 
 /** 認得的路徑與方法。已知的路徑用錯方法回 405，不是 404（RC24）。 */
 const KNOWN: [RegExp, string[]][] = [
   [/^\/rename\/suggestions$/, ['GET']],
+  [/^\/rename\/records$/, ['GET']],
   [/^\/rename\/apply$/, ['POST']],
   [/^\/rename\/undo$/, ['POST']],
 ]
@@ -96,6 +100,22 @@ function route(ctx: RouteCtx): boolean {
       return true
     }
     send(200, renameSuggestions(ctx.db, scopeOf(ctx), { limit }))
+    return true
+  }
+
+  // 改過名的紀錄（2026-09-22）。理由跟 /file/records 一樣：
+  // 復原面板以前只看得到清理，改名與歸檔在那一頁根本不存在。
+  if (p === '/rename/records' && method === 'GET') {
+    const raw = url.searchParams.get('limit')
+    const limit = raw === null ? undefined : Number(raw)
+    if (raw !== null && (!Number.isInteger(limit) || limit! < 1 || limit! > 200)) {
+      fail(send, 400, 'limit must be a whole number between 1 and 200.', 'BAD_BODY')
+      return true
+    }
+    const rows = listRenames(ctx.db, limit ?? 20)
+      .filter(r => r.status === 'done')
+      .map(r => ({ id: r.id, itemId: r.itemId, from: shown(r.from), to: shown(r.to), at: r.at }))
+    send(200, { items: rows })
     return true
   }
 

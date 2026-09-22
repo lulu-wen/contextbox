@@ -97,11 +97,23 @@ export function kindFolder(kind: unknown): string {
 /**
  * `<filed>/課程/<課名>/<類型>` 裡**畫面看得到的那一段**（不變量 8）。
  *
- * 從真路徑的最後兩層取名字，前面補上固定的第一層 —— 不管 filed 放在哪、有幾層深，
+ * 兩條路的形狀不一樣，所以要分開算（2026-09-22）：
+ *
+ *   有課名 → `<filed>/課程/<課名>/<類型>`：取最後兩層，前面補固定的第一層
+ *   沒課名 → `<filed>/<分類>`（P7）：**只有一層**，取最後一層就好
+ *
+ * 以前只有前一種，於是分類那條路的紀錄被算成 `Courses/Filed/Scholarship Applications`
+ * —— 畫面上是一條假路徑，而且它同時是「你上次退過這個建議」的比對鍵，
+ * 跟 filingSuggestions 算出來的對不起來，所以復原之後那個標記永遠不會出現。
+ *
+ * 不管 filed 放在哪、有幾層深，
  * 洩漏出去的都只有課名與類型這兩個資料夾名字。
  */
-export function folderOf(toDir: string): string {
+export function folderOf(toDir: string, course?: unknown): string {
   const parts = String(toDir ?? '').split(/[\\/]+/).filter(Boolean)
+  if (!parts.length) return ''
+  // course 是空字串 ＝ 走分類那條路。**沒給 course 的呼叫端維持舊行為**。
+  if (course !== undefined && !String(course ?? '').trim()) return parts[parts.length - 1]
   if (parts.length < 2) return ''
   return [COURSES_DIR, parts[parts.length - 2], parts[parts.length - 1]].join('/')
 }
@@ -824,7 +836,7 @@ function undoOne(db: DatabaseSync, row: FilingRow, scope: FilingScope): FilingUn
   // ── 學（P5）：undo ＝ 這個建議被退貨了 ──────────────────────
   // 記在**檔現在那一列**上（跟著 followFiled 改過道的 id 走），不然下一次列清單找不到這個標記。
   // 只記「哪一個建議」，清單照樣列它，只是**不預設勾**（預期行為 5）。
-  rememberRejected(db, nowItem, filingSummary(folderOf(row.to_dir)), new Date().toISOString(), scope)
+  rememberRejected(db, nowItem, filingSummary(folderOf(row.to_dir, row.course)), new Date().toISOString(), scope)
   const restoredAs = back === row.name ? null : back
   return {
     ...base, ok: true, name: back, restoredAs,
@@ -901,7 +913,7 @@ export function listFilings(db: DatabaseSync, limit = 20): {
     rows = db.prepare('SELECT * FROM filings ORDER BY at DESC, id LIMIT ?').all(n) as FilingRow[]
   } catch { return [] }
   return rows.map(r => ({
-    id: r.id, itemId: r.item_id, name: r.name, to: r.to_name, toFolder: folderOf(r.to_dir),
+    id: r.id, itemId: r.item_id, name: r.name, to: r.to_name, toFolder: folderOf(r.to_dir, r.course),
     course: r.course, kind: r.kind, status: r.status, at: r.at,
   }))
 }
