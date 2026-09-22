@@ -14,7 +14,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, realpathSync, existsSync,
-  readFileSync, chmodSync, renameSync, readdirSync, appendFileSync,
+  readFileSync, chmodSync, renameSync, readdirSync, appendFileSync, statSync,
 } from 'node:fs'
 import { spawnSync, spawn } from 'node:child_process'
 import { request, createServer as httpServer } from 'node:http'
@@ -41,6 +41,21 @@ assert.ok(FAKE_HOME, '前提：測試行程的家目錄已經換掉')
  * 一個完全隔離的 CLI 環境。HOME 就是這個暫存資料夾，所以 cleanup.roots 的預設
  * （~/Downloads）落在沙盒裡。
  */
+/**
+ * 這台機器做不出來的那幾種情境（2026-09-22）。
+ *
+ * 這些測試不是壞了，是**Windows 上沒辦法把場景搭起來**。留著紅字最糟：
+ * 它會訓練人忽略紅色，而這一支裡面有幾條是真的在守安全不變量。
+ * 所以跳過，而且每一條都講出為什麼跳 —— 跳過看得見，紅字看不見。
+ */
+const WINDOWS = process.platform === 'win32'
+/** `chmod 0` 在 Windows 上對目錄與檔案都沒有作用：照樣讀得進去。 */
+const NO_LOCK = 'chmod 0 has no effect on Windows, so a file cannot be made unreadable here'
+/** Windows 的檔名不收控制字元（ESC、C1），連建都建不起來。 */
+const NO_CTRL_NAMES = 'Windows does not allow control characters in file names'
+/** 測試的「開啟程式」是一支 /bin/sh 腳本；Windows 的 spawn 執行不了它。 */
+const NO_OPENER = 'the recording opener is a /bin/sh script, which Windows cannot execute'
+
 function sandbox(t, { files = {}, config = {} } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'cb-cli0919-')))
   const dl = join(home, 'Downloads')
@@ -77,7 +92,9 @@ function sandbox(t, { files = {}, config = {} } = {}) {
     ...extra,
   })
   const run = (args, extra = {}) => {
-    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: env(extra), timeout: 60_000 })
+    // 60 秒對「搬一千個檔」在 Windows 上不夠（實測 85 秒），而逾時回的是 status: null ——
+    // 看起來像離開碼錯了，其實是被殺掉。這個逾時是防卡住的保險，不是效能斷言。
+    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: env(extra), timeout: 180_000 })
     return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? ''), stdout: r.stdout ?? '' }
   }
   const dbs = []
@@ -96,7 +113,22 @@ function sandbox(t, { files = {}, config = {} } = {}) {
     rmSync(home, { recursive: true, force: true })
   })
   /** chmod 000，測試結束會改回來才刪 */
-  const lock = f => { chmodSync(f, 0o000); locked.push(f) }
+  /**
+   * 把一個檔或資料夾弄成讀不到。**回傳它真的鎖住了沒有。**
+   *
+   * Windows 上 `chmod 0` 會成功回傳，但東西照樣讀得到 —— 於是「打不開的資料夾要講出來」
+   * 這種測試在那裡永遠是紅的，而它測的行為其實好好的。不猜平台，**直接去讀一次**：
+   * 讀得到就是沒鎖住，呼叫端 t.skip。
+   */
+  const lock = f => {
+    try { chmodSync(f, 0o000) } catch { return false }
+    locked.push(f)
+    try {
+      if (statSync(f).isDirectory()) readdirSync(f)
+      else readFileSync(f)
+      return false
+    } catch { return true }
+  }
   return { home, dl, p, put, run, env, db, writeCfg, lock, stops }
 }
 
@@ -481,6 +513,7 @@ describe('RC12 預設清理一次最多 1000 個', () => {
 
 describe('RC14 CLI 印的檔名不可以帶控制字元', () => {
   test('ESC、C1、換行都換成「·」，不能偽造一行結果', t => {
+    if (WINDOWS) { t.skip(NO_CTRL_NAMES); return }
     const s = sandbox(t)
     const evil = 'x\u001b[31mRED\u009b\n  ✔ 偽造.zip'
     s.put(evil, 60)
@@ -581,7 +614,7 @@ describe('scan 印出 problem、成功記 lastOk；apply 存失敗原因', () =>
     const s = sandbox(t, { files: { 'a.zip': 60 } })
     const sub = join(s.dl, '鎖住的')
     s.put('b.zip', 60, 'b', sub)
-    s.lock(sub)
+    if (!s.lock(sub)) { t.skip(NO_LOCK); return }
     const r = s.run(['cleanup', 'scan'])
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /⚠[^\n]*ould not be open/, `onProblem 的訊息沒印出來：\n${r.out}`)
@@ -658,7 +691,7 @@ describe('doctor 分開算「讀不到」與「太大」', () => {
     const s = sandbox(t, { config: { maxBytes: 1024 } })
     s.put('big.zip', 60, 'x'.repeat(4096))
     const locked = s.put('locked.zip', 60, 'y')
-    s.lock(locked)
+    if (!s.lock(locked)) { t.skip(NO_LOCK); return }
     s.run(['cleanup', 'scan'])
     const r = s.run(['doctor'])
     assert.equal(r.code, 0, r.out)
@@ -792,7 +825,7 @@ describe('RC16／RC2 pet 與 open', () => {
     const s = sandbox(t, { files: { 'a.zip': 60 } })
     const sub = join(s.dl, '鎖住的')
     s.put('b.zip', 60, 'b', sub)
-    s.lock(sub)
+    if (!s.lock(sub)) { t.skip(NO_LOCK); return }
     const pet = startPet(t, s)
     await pet.until(/Startup scan: looked at/)
     assert.match(pet.out(), /⚠[^\n]*ould not be open/, pet.out())
@@ -829,6 +862,7 @@ describe('RC16／RC2 pet 與 open', () => {
   })
 
   test('open：pet 在跑的時候印出帶 k 的網址，並交給系統打開', async t => {
+    if (WINDOWS) { t.skip(NO_OPENER); return }
     const s = sandbox(t)
     const pet = startPet(t, s)
     const m = await pet.until(/127\.0\.0\.1:(\d+)\/\?k=([^\s　）)]+)/)
@@ -1098,7 +1132,7 @@ describe('C2 pet 的全量掃描在子行程跑，不卡住 server', () => {
     const s = sandbox(t, { files: { 'a.zip': 60, 'b.zip': 60 } })
     const sub = join(s.dl, '鎖住的')
     s.put('c.zip', 60, 'c', sub)
-    s.lock(sub)
+    if (!s.lock(sub)) { t.skip(NO_LOCK); return }
     const r = s.run(['cleanup', 'scan', '--json'])
     assert.equal(r.code, 0, r.out)
     const lines = r.stdout.trim().split('\n')
@@ -1239,6 +1273,7 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
   })
 
   test('對照：形狀對、而且算得出 proof（手上有鑰匙）→ 打開（0），記錄上的 pid 不在也一樣', async t => {
+    if (WINDOWS) { t.skip(NO_OPENER); return }
     const s = sandbox(t)
     const token = 'r2-cli-token-for-proof'
     writeFileSync(s.p.token, token)
@@ -1275,6 +1310,10 @@ describe('C3 open 只把帶鑰匙的網址交給真的 pet', () => {
   })
 
   test('pet 結束時清掉 pet_port', async t => {
+    // Windows 沒有真的 SIGTERM：child.kill() 是硬殺，行程的收尾處理器根本不會跑，
+    // 所以「收到訊號之後有沒有收乾淨」這件事在這裡做不出來（留下的 pet_port 是舊的，
+    // 而 open 本來就會驗 pid 與 proof，見上面那幾條）。
+    if (WINDOWS) { t.skip('Windows cannot deliver SIGTERM, so the graceful-shutdown path cannot run here'); return }
     const s = sandbox(t)
     const pet = startPet(t, s)
     const port = (await pet.until(/127\.0\.0\.1:(\d+)\/\?k=/))[1]
@@ -1548,7 +1587,9 @@ describe('C7 需要人看的超過 50 個：「太大」與「讀不到」照全
   test('40 個太大＋20 個讀不到：doctor 各講各的數字；核心的計數加起來等於總數', t => {
     const s = sandbox(t, { config: { maxBytes: 1024 } })
     for (let i = 0; i < 40; i++) s.put(`big${i}.zip`, 60, 'x'.repeat(4096))
-    for (let i = 0; i < 20; i++) s.lock(s.put(`locked${i}.zip`, 60, 'y'))
+    let lockedOk = true
+    for (let i = 0; i < 20; i++) lockedOk = s.lock(s.put(`locked${i}.zip`, 60, 'y')) && lockedOk
+    if (!lockedOk) { t.skip(NO_LOCK); return }
     assert.equal(s.run(['cleanup', 'scan']).code, 0)
     const l = listCandidates(s.db(), { roots: [s.dl], limit: 0 })
     assert.equal(l.needsHumanTotal, 60, '前提')
