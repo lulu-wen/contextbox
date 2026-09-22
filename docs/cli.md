@@ -264,6 +264,7 @@ read-only mode is **1**.
 | `CONTEXTBOX_TOKEN` | **the panel's key, given directly** (beats the key file). At least 16 characters; anything shorter counts as unset. Supply your own and the sandbox and the real thing can share one, so the address stays the same and can be bookmarked |
 | `CONTEXTBOX_READONLY=1` | read-only mode: it only says what it would do — no plans, no moves, no deletes, **and no tidying up either** (round three, R3-9) |
 | `CONTEXTBOX_PORT` | the port for `pet` and `open` (default 7391; `0` lets the system pick a free one, and `pet` records the real port for `open`) |
+| `CONTEXTBOX_DEV` | `1` turns on **auto-refresh while you edit the panel**. `/health` then also carries the timestamp of the files the browser gets, and the panel reloads itself when one of them changes — but **never mid-action** (something ticked, something in flight). It also says when `core/*.ts` changed, because a refresh cannot pick that up: restart `node cli.mjs pet`. Off by default: refreshing the panel while someone is halfway through a cleanup throws their ticks away. |
 | `CONTEXTBOX_RESCAN_MS` | how often `pet` rescans everything, in milliseconds (default 30 minutes; minimum 100) |
 | `CONTEXTBOX_SCAN_TIMEOUT_MS` | how long `pet`'s background scan may run, in milliseconds (default 10 minutes; minimum 100). Beyond that it is killed and recorded as the last error |
 | `CONTEXTBOX_THINK_MS` | how often `pet` lets the model read a round, in milliseconds (default 10 minutes; minimum 100). With no model configured, none of it runs |

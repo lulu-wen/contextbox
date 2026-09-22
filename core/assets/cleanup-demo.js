@@ -578,6 +578,9 @@ function previewBox(itemId) {
 function tell(message) {
   if (historyPanel.open) historyResult(message)
   else result(message)
+  // 「在資料夾裡指出來」沒有自己的貓話，而視窗常常開在別的視窗後面 ——
+  // 不講的話使用者會以為按了沒反應（2026-09-22 實機回報）
+  petSay(message)
 }
 
 /**
@@ -1345,6 +1348,11 @@ $('cleanup-next').onclick = () => {
 /**
  * 讓貓說這一句。
  *
+ * **只給本來就沒有貓話的那幾種動作**：歸檔、改名、在資料夾裡指出來。
+ * 清理與復原有自己寫好的句子（pet-state.ts 的 getPetMessage，像
+ * 「Undo done. Put 1 file back ✨」），把面板的原文蓋上去等於把那些句子丟掉 ——
+ * 第一版就是這樣，三條測試當場抓到。
+ *
  * 使用者 2026-09-22：「這種成功訊息應該交給 quaso 貓貓來說」。
  * 之前是寫在面板最下面那一塊，而按鈕在每一列上 —— 要嘛看不到（在畫面外），
  * 要嘛為了讓人看到而**每按一個檔就把整頁捲到最底下**，兩種都不能要。
@@ -1375,7 +1383,6 @@ function result(message) {
   const box = $('cleanup-result')
   box.hidden = false
   box.textContent = message
-  petSay(message)
 }
 async function load() {
   if (demo) return
@@ -1640,6 +1647,8 @@ async function renameOperate(kind) {
   try {
     const r = await tracked(() => (kind === 'apply' ? renames.apply() : renames.undo()))
     result(r.message)
+    // 改名也沒有自己的貓話（理由同歸檔）
+    petSay(r.message)
   } catch (error) {
     result(safeName(error.message))
   } finally {
@@ -1666,6 +1675,8 @@ async function filingOperate(kind) {
   try {
     const r = await tracked(() => (kind === 'apply' ? filings.apply() : filings.undo()))
     result(r.message)
+    // 歸檔沒有自己的貓話，而按鈕在每一列上 —— 不講的話使用者看不到任何結果
+    petSay(r.message)
   } catch (error) {
     result(safeName(error.message))
   } finally {
@@ -1810,7 +1821,6 @@ $('cleanup-reset').onclick = () => {
 function historyResult(message) {
   $('cleanup-history-result').hidden = false
   $('cleanup-history-result').textContent = message
-  petSay(message)
 }
 function historyControls() {
   const picked = historyPick()
@@ -2093,6 +2103,42 @@ $('cleanup-history-undo').onclick = async () => {
   }
 }
 
+/**
+ * 開發模式的自動重新整理（後端 CONTEXTBOX_DEV=1 才會回 dev 這個欄位）。
+ *
+ * 前端本來就**不用重開 server**：每個請求都重讀檔案、一律 cache-control: no-store，
+ * 所以改完按 F5 就會生效。這一段是為了連 F5 都不用按 —— 本來就每五秒問一次 /health，
+ * 順便看一眼素材的時間戳變了沒有。
+ *
+ * **兩條線畫死：**
+ *   · 正在做事的時候不重新整理（busy／historyBusy／有動作在飛／面板開著而且勾了東西）。
+ *     重新整理會把勾選與正在進行的動作洗掉 —— 那比手動按 F5 糟得多。
+ *   · `core/*.ts` 改了**不會**自動重新整理：Node 已經把那些模組載進記憶體，
+ *     換了檔也不生效。與其假裝，不如講一句「重開 pet」。
+ */
+let devAssets = null
+let devToldStale = false
+function devReload(snapshot) {
+  const dev = snapshot?.dev
+  if (!dev) return
+  if (dev.serverStale && !devToldStale) {
+    devToldStale = true
+    petSay('The server code changed. Restart it (Ctrl+C, then node cli.mjs pet) — a refresh cannot pick that up.')
+  }
+  const now = String(dev.assets ?? '')
+  if (!now) return
+  if (devAssets === null) { devAssets = now; return }
+  if (now === devAssets) return
+  // 有東西在做就先不動，下一次輪詢再看（版本號不更新，所以不會漏掉）
+  const mid = busy || historyBusy || actionsInFlight > 0
+    || (panel.open && (real?.selected?.size || filings.selected.size || renames.selected.size))
+  if (mid) return
+  devAssets = now
+  stopped = true
+  clearTimeout(healthTimer)
+  location.reload()
+}
+
 async function pollHealth() {
   if (healthBusy || stopped) return
   clearTimeout(healthTimer)
@@ -2108,6 +2154,7 @@ async function pollHealth() {
     // systemHealthProblem 會照它講得出是資料庫壞了還是資料夾不見了。
     health = snapshot
     healthChecked = true
+    devReload(snapshot)
   } catch {
     // **沒回應**（逾時、連不上）的時候，面板自己的動作在這次輪詢期間跑過（開始時就在跑、或中途開始／結束）
     // → 多半是 server 正忙著搬檔，這次不算數，寵物維持上一次的樣子；動作結束之後的輪詢照常算（稽核 C-f14）。

@@ -21,7 +21,7 @@
  * （server 印出來的網址、`node cli.mjs open` 會帶好），沒帶就 401（稽核 RC16）。
  */
 import { createServer, type IncomingMessage } from 'node:http'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -162,6 +162,50 @@ const OWN_ROUTES: [RegExp, string[]][] = [
 
 /** 手填頁面。跟這支放在同一個資料夾，每次請求才讀，改完不用重開 server。 */
 const UI_PATH = new URL('./ui.html', import.meta.url)
+
+/**
+ * 開發模式（`CONTEXTBOX_DEV=1`）。**只影響面板會不會自己重新整理**，其他一律不變。
+ *
+ * 平常不開：面板在使用者清到一半的時候自己重新整理，會把勾選與正在進行的動作洗掉。
+ */
+export const DEV = process.env.CONTEXTBOX_DEV === '1'
+
+/**
+ * 送到瀏覽器的那幾個檔，最後一次改動是什麼時候。
+ *
+ * 前端本來就**不用重開 server** —— 每個請求都重讀檔案，而且一律 `cache-control: no-store`，
+ * 所以按 F5 就會拿到新的。這個版本號是為了連 F5 都不用按：面板本來每五秒問一次 /health，
+ * 順便看一眼這個數字變了沒有，變了就自己重新整理。
+ *
+ * **只在開發模式算**：平常每五秒 stat 十幾個檔是白花的力氣。
+ */
+function assetsVersion(): string {
+  let newest = 0
+  const files = [UI_PATH, ...[...PET_ASSETS.values()].map(a => new URL(a[0], import.meta.url))]
+  for (const f of files) {
+    try { newest = Math.max(newest, statSync(f).mtimeMs) } catch { /* 少一個檔不影響版本號的用途 */ }
+  }
+  return String(Math.round(newest))
+}
+
+/**
+ * server 自己那幾支 `.ts` 在開機之後有沒有被改過。
+ *
+ * **前端可以自己重新整理，後端不行** —— Node 已經把那些模組載進記憶體了，
+ * 換了檔也不會生效。所以與其假裝熱重載，不如誠實講一句「程式改過了，重開 pet」。
+ */
+const CORE_DIR = new URL('./', import.meta.url)
+function coreMtime(): number {
+  let newest = 0
+  try {
+    for (const name of readdirSync(CORE_DIR)) {
+      if (!name.endsWith('.ts')) continue
+      try { newest = Math.max(newest, statSync(new URL(name, CORE_DIR)).mtimeMs) } catch { /* 跳過 */ }
+    }
+  } catch { /* 讀不到就當沒變 */ }
+  return newest
+}
+const CORE_AT_BOOT = DEV ? coreMtime() : 0
 
 // 只提供明列的公開素材，不將 URL 拼成本機檔案路徑。
 const PET_ASSETS = new Map([
@@ -489,11 +533,16 @@ export function start(opts: {
       // **一樣包起來**：facts 表壞掉時以前整個掉進 catch，回第三種形狀（稽核 B-r5）。
       // 讀不到就是 0，而且後端不算好的（ok false）—— 事實庫是這台後端的另一半。
       const facts = safe(() => F.list('confirmed').length, null)
+      // 開發模式才多這兩個欄位（CONTEXTBOX_DEV=1）：
+      //   dev.assets —— 送到瀏覽器那幾個檔最後改動的時間。面板看到它變了就自己重新整理。
+      //   dev.serverStale —— core/*.ts 在開機之後被改過。**那個前端救不了**，要重開 pet。
+      const dev = DEV ? { dev: { assets: assetsVersion(), serverStale: coreMtime() > CORE_AT_BOOT } } : {}
       return send(200, {
         ...snap,
         ok: snap.ok && facts !== null,
         db: { ...snap.db, ok: snap.db.ok && facts !== null },
         facts: facts ?? 0,
+        ...dev,
         ...proof,
       })
     }

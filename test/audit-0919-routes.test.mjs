@@ -96,7 +96,7 @@ async function serve(t, { files = {}, maxBytes = 20 * 1024 * 1024, quarantine = 
   const S = server.start({ port: 0, db: dbPath, token: TOKEN, roots: [downloads], quarantine: q, maxBytes, readonly: false })
   const port = await S.ready
   t.after(() => {
-    globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref()
+    globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }
     try { chmodSync(join(dir, 'locked'), 0o700) } catch { /* 沒有就算了 */ }
     rmSync(dir, { recursive: true, force: true })
   })
@@ -619,7 +619,7 @@ describe('RC15 清理範圍只有 Downloads', () => {
     const S = server.start(opts)
     const port = await S.ready
     t.after(() => {
-      globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref()
+      globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }
       rmSync(dir, { recursive: true, force: true })
       rmSync(desktop, { recursive: true, force: true })
       rmSync(downloads, { recursive: true, force: true })

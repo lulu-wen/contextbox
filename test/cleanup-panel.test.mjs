@@ -8,6 +8,7 @@
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
 import { rmTmp } from './helpers/rm.mjs'
+import { linkDir } from './helpers/links.mjs'
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, rmSync, readFileSync, realpathSync } from 'node:fs'
@@ -61,7 +62,7 @@ async function serve(t, files, { readonly = false } = {}) {
     }
     return data
   }
-  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
   await api('/cleanup/scan', { method: 'POST', body: '{}' })
   calls.length = 0
   const db = () => new DatabaseSync(dbPath, { readOnly: true })
@@ -520,7 +521,9 @@ test('監看資料夾是捷徑（symlink）時，對帳也要做得到', async t
   const real = join(dir, 'real-dl')
   mkdirSync(real)
   const link = join(dir, 'Downloads')
-  symlinkSync(real, link)
+  // 資料夾的捷徑：Windows 用 junction（免權限），lstat 照樣說它是捷徑 ——
+  // 被測的那件事（realpath 之後前綴才對得上）看到的東西一模一樣。
+  linkDir(real, link)
   for (const n of ['a.zip', 'b.zip']) {
     writeFileSync(join(real, n), 'x' + n)
     const at = new Date(Date.now() - 60 * DAY); utimesSync(join(real, n), at, at)
@@ -592,9 +595,14 @@ describe('獨立重推抓到的', () => {
     // 不看否決 —— 不帶 id 建計畫的話它會被收進去。
     const s = await serve(t, { 'a.zip': { days: 60 }, 'big.zip': { days: 60, content: 'x'.repeat(30 * 1024 * 1024) } })
     const list = await s.api('/cleanup/candidates')
-    // 2026-09-19 稽核 RC4：太大沒指紋的檔不再列成 ☐，而是不列、改列在「需要你查看」
-    assert.ok(!list.candidates.some(c => c.name === 'big.zip'), '前提：big.zip 不在候選清單上')
-    assert.ok(list.needsHuman.some(h => h.name === 'big.zip'), '前提：big.zip 在「需要你查看」')
+    // 2026-09-19 稽核 RC4 原本是「太大沒指紋的檔不列，改列在『需要你查看』」。
+    // 2026-09-21 使用者：「為甚麼要設定 maxBytes，直接讓他刪掉就好啊」——
+    // 那幾個檔是他最想清掉的（1.42 GB 的 .gz），不列等於看不到。
+    // 現在是**列出來、但不預設勾**，而這一條守的那件事一字沒變：
+    // 不帶 id 的預設計畫**不可以動到清單上顯示 ☐ 的檔**。
+    const big = list.candidates.find(c => c.name === 'big.zip')
+    assert.ok(big, '前提：太大的檔現在列得出來')
+    assert.equal(big.defaultChecked, false, '前提：算不出指紋就不預設勾')
     const plan = await s.api('/cleanup/plans', { method: 'POST', body: '{}' })
     assert.deepEqual(plan.items.map(i => i.name), ['a.zip'], '不帶 id 的預設要跟清單上的 ✔ 一模一樣')
   })

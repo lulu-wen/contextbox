@@ -28,7 +28,7 @@ async function serve(t, s, extra = {}) {
     filed: s.filed, maxBytes: 20 * 1024 * 1024, readonly: false, ...extra,
   })
   const port = await S.ready
-  t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
+  t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ })
   const raw = async (method, path, { body, token = TOKEN } = {}) => {
     const headers = {
       ...(token ? { 'x-contextbox-token': token } : {}),

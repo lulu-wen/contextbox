@@ -48,7 +48,7 @@ describe('RC21 503 BUSY 要帶 Retry-After', () => {
     const port = await S.ready
     let db = null
     // 收尾順序：先關資料庫與 server，再刪資料夾（Windows 上開著的檔刪不掉）
-    t.after(() => { db?.close(); globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+    t.after(() => { db?.close(); globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
 
     const call = (method, path, body) => new Promise((ok, fail) => {
       const payload = body === undefined ? undefined : JSON.stringify(body)

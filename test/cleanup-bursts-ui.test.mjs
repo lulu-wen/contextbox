@@ -594,7 +594,7 @@ async function serve(t, files) {
     if (!r.ok) { const e = new Error(data.error); e.code = data.code; e.status = r.status; e.data = data; throw e }
     return data
   }
-  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
   await raw('/cleanup/scan', { method: 'POST', body: '{}' })
   return {
     dir, downloads, base, port, netFetch, raw, seen,

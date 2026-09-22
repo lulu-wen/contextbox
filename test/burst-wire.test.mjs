@@ -694,7 +694,7 @@ describe('D8 縮圖端點', () => {
       quarantine: join(dir, 'quarantine'), maxBytes: 16 * 1024 * 1024, readonly: false,
     })
     const port = await S.ready
-    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
 
     const hit = (path, { token = TOKEN } = {}) => new Promise((resolve, reject) => {
       const headers = token ? { 'x-contextbox-token': token } : {}

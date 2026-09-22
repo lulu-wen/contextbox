@@ -20,7 +20,7 @@ before(async () => {
   base = `http://127.0.0.1:${await S.ready}`
 })
 // 暫存資料夾也要收（稽核 RC22：以前每跑一次就在暫存資料夾留一個 cb-*）
-after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
 
 const call = (path, { token = TOKEN, origin = 'chrome-extension://abc', ...init } = {}) =>
   fetch(base + path, {

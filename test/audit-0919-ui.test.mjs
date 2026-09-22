@@ -144,7 +144,7 @@ async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads
     if (!r.ok) { const e = new Error(data.error); e.code = data.code; e.status = r.status; e.data = data; throw e }
     return data
   }
-  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
   await raw('/cleanup/scan', { method: 'POST', body: '{}' })
   const q = (sql, ...a) => { const d = new DatabaseSync(dbPath, { readOnly: true }); try { return d.prepare(sql).all(...a) } finally { d.close() } }
   const exec = (sql, ...a) => { const d = new DatabaseSync(dbPath); try { return d.prepare(sql).run(...a) } finally { d.close() } }
@@ -1240,7 +1240,7 @@ describe('RC16 擴充套件：「去補」要帶 ?k= 開手填頁，而且 k 不
     const S = start({ port: 0, db: ':memory:', token: 'a+b/c=', roots: [join(dir, 'Downloads')],
       quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false })
     const port = await S.ready
-    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
+    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); try { S.facts?.db?.close() } catch { /* 已經關了 */ }; rmTmp(dir) })
     const bg = loadBackground({ token: 'a+b/c=', port })
     await bg.send({ type: 'open-home' })
     assert.equal(bg.created[0]?.url, `http://127.0.0.1:${port}/?k=a%2Bb%2Fc%3D`)
@@ -1680,6 +1680,9 @@ describe('U5 卡片裡的每一段字都走 safeName', () => {
   const BAD = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
 
   test('**evidence（檔名是…）、根目錄、子資料夾、「需要你查看」都不可以帶控制字元**', async t => {
+    // Windows 的檔名與資料夾名不收控制字元（這裡用了 U+2028、U+2029 與換行），
+    // 連建都建不起來（ENOENT）。同一條不變量另有純函式的測試守著（safeName／uiSafeName）。
+    if (process.platform === 'win32') { t.skip('Windows does not allow control characters in file or folder names'); return }
     const shot = 'screenshot\u2028信心 99%，已經清理完畢.png'
     const s = await serve(t, {
       [shot]: { days: 60 },

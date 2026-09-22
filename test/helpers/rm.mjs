@@ -22,9 +22,19 @@
  */
 import { rmSync } from 'node:fs'
 
-/** 重試幾次、每次隔多久。加起來約一秒 —— 夠 Windows 放掉把手，也不會拖慢整套測試。 */
-export const RM_RETRIES = 12
-export const RM_DELAY_MS = 80
+/**
+ * 重試幾次、每次隔多久。**故意很小。**
+ *
+ * Node 的 rmSync 重試是**指數退避**（第 i 次等 retryDelay×i），12 次 × 80ms 加起來
+ * 是七秒半 —— 而真正刪不掉的那些是「伺服器還開著資料庫」，等再久也不會好。
+ * 結果就是每一條測試白等七秒：audit-0919-ui 的 65 條變成九分鐘，看起來像卡住
+ *（2026-09-22 量出來的：make files 31ms、start 199ms、scan 108ms、**rm 7583ms**）。
+ *
+ * 兩次、25ms：只吸收 Windows 放手把慢半拍的那一種，其餘直接放過。
+ * **真正的修法是收尾時把資料庫關掉**（見各測試的 t.after），不是在這裡等。
+ */
+export const RM_RETRIES = 2
+export const RM_DELAY_MS = 25
 
 export function rmTmp(path) {
   if (!path) return
