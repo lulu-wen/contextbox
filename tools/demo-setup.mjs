@@ -218,6 +218,27 @@ put('IMG_2041.txt', Buffer.from(
   + 'When: next Wednesday, periods 3 and 4. One handwritten A4 sheet allowed.\n'), 5)
 note('IMG_2041.txt', 5, 'a camera default name; the contents are an exam syllabus')
 
+// ── 不屬於任何一堂課的兩個檔（P7）──────────────────────────
+//
+// 使用者的 Downloads 大半是這種：履歷、表單、規章、論文。**它們本來就不屬於任何一堂課**，
+// 所以 `file` 那條路對它們無能為力 —— 沒有這兩個檔，`group` 在示範沙盒裡就沒有東西可以分，
+// 而那正是這一期要示範的事。
+put('CV.txt', Buffer.from(
+  'Curriculum Vitae\n\n'
+  + 'Education: BSc in Computer Science, expected 2027. GPA 3.8/4.0.\n'
+  + 'Experience: backend intern, summer 2026 — built a job queue in Go, cut median latency from 340ms to 90ms.\n'
+  + 'Projects: a seam carving image editor (C++, OpenCV); a campus bus timetable scraper (Python).\n'
+  + 'Skills: Go, Python, C++, SQL, Linux. Languages: Mandarin (native), English (fluent).\n'
+  + 'References available on request.\n'), 11)
+note('CV.txt', 11, 'a CV — it belongs to no course at all')
+put('scholarship-application-form.txt', Buffer.from(
+  'Application form: Undergraduate Research Scholarship, 2026-2027\n\n'
+  + 'Section A: applicant details (name, student number, department, year of study).\n'
+  + 'Section B: the research plan, at most two pages, including the question and the method.\n'
+  + 'Section C: a letter of recommendation from the supervising professor, sealed.\n'
+  + 'Deadline: 31 October. Hand the completed form to the departmental office.\n'), 14)
+note('scholarship-application-form.txt', 14, 'a scholarship form — also no course')
+
 // ── 一份不可以被送出去的檔 ──────────────────────────────────
 //
 // 瀏覽器匯出的密碼清單。**檔名一點都不可疑**（沒有 password、沒有「機密」），
@@ -301,19 +322,38 @@ const SEEDED = [
   ['operating-systems-ch5-scheduling.txt', {
     course: 'Operating Systems', topic: 'Process Scheduling', kind: 'Lecture',
     suggestedName: 'Operating Systems_Process Scheduling',
+    whatItIs: 'lecture handout', subject: 'CPU scheduling algorithms',
     evidence: 'Operating Systems, Chapter 5: Process Scheduling — 1. Scheduling criteria: CPU utilisation, throughput, turnaround time… 2. FCFS: first come, first served, which produces the convoy effect',
     confidence: 'high',
   }],
   ['Untitled document (3).txt', {
     course: 'Operating Systems', topic: 'Deadlock', kind: 'Notes',
     suggestedName: 'Operating Systems_Deadlock',
+    whatItIs: 'lecture notes', subject: 'deadlock and the banker\'s algorithm',
     evidence: 'Operating Systems, Chapter 6: Deadlock — the four necessary conditions: mutual exclusion, hold and wait, no preemption, circular wait',
     confidence: 'high',
   }],
   ['IMG_2041.txt', {
     course: 'Data Structures', topic: 'Midterm scope', kind: 'Exam',
     suggestedName: 'Data Structures_Midterm scope',
+    whatItIs: 'exam scope announcement', subject: 'what the midterm covers',
     evidence: 'Data Structures: what the midterm covers — Part 1: implementing and using stacks and queues (infix to postfix, the BFS queue)',
+    confidence: 'high',
+  }],
+  // **course=Unknown 不是失敗**（P7）：這兩個檔的確不屬於任何一堂課，
+  // 而模型對「它是什麼」很有把握。`group` 就是靠 whatItIs 把它們分出資料夾的。
+  ['CV.txt', {
+    course: 'Unknown', topic: 'Unknown', kind: 'Other',
+    suggestedName: 'Curriculum Vitae',
+    whatItIs: 'resume', subject: 'a computer science undergraduate',
+    evidence: 'Curriculum Vitae — Education: BSc in Computer Science, expected 2027',
+    confidence: 'high',
+  }],
+  ['scholarship-application-form.txt', {
+    course: 'Unknown', topic: 'Unknown', kind: 'Form',
+    suggestedName: 'Undergraduate Research Scholarship_application form',
+    whatItIs: 'scholarship application form', subject: 'undergraduate research scholarship',
+    evidence: 'Application form: Undergraduate Research Scholarship, 2026-2027 — Section A: applicant details',
     confidence: 'high',
   }],
 ]
@@ -325,6 +365,7 @@ if (flag('--seed-model') && !live) {
   const { scanDownloads } = await import(new URL('../core/cleanup-scanner.ts', import.meta.url))
   const { putModelView, viewKey } = await import(new URL('../core/model-store.ts', import.meta.url))
   const { textPayload, PROMPT_VERSION } = await import(new URL('../core/model.ts', import.meta.url))
+  const { stripCopySuffix } = await import(new URL('../core/cleanup-scanner.ts', import.meta.url))
   const db = openDb(dbPath)
   try {
     scanDownloads({ db, roots: [downloads], quarantine: join(dir, 'quarantine'), maxBytes: cfg.maxBytes })
@@ -337,10 +378,15 @@ if (flag('--seed-model') && !live) {
       const row = db.prepare('SELECT text FROM file_texts WHERE item_id=?').get(item.id)
       const text = typeof row?.text === 'string' ? row.text : null
       if (!text) { console.error(`  (skipping ${name}: its text has not been read yet)`); continue }
+      // **鍵要跟 core/model-queue.ts 的 payloadFor 算出來的一模一樣**，不然真的接上模型跑
+      // think 的時候一個都不會命中，示範答案等於白塞（檔名 v3-en 起就進了鍵，見 commit 2419b14）。
+      const payload = stripCopySuffix(name) + '\u0000' + textPayload(text)
       putModelView(db, {
-        key: viewKey(textPayload(text)), item_id: item.id, source: 'text',
+        key: viewKey(payload), item_id: item.id, source: 'text',
         course: view.course, topic: view.topic, kind: view.kind,
-        suggested_name: view.suggestedName, evidence: view.evidence, confidence: view.confidence,
+        suggested_name: view.suggestedName,
+        what_it_is: view.whatItIs, subject: view.subject,
+        evidence: view.evidence, confidence: view.confidence,
         model: 'demo answer (seeded by demo-setup)', prompt_version: PROMPT_VERSION, at, seeded: 1,
       })
       n++
@@ -421,6 +467,8 @@ console.log(live
   : '  node cli.mjs think              # let the model read a round (does nothing without a model; --seed-model already seeded the answers)')
 console.log('  node cli.mjs rename             # what it would call these files (undoable)')
 console.log('  node cli.mjs file               # put one course together (undoable)')
+console.log('  node cli.mjs group              # the files that belong to no course: work out categories (needs a model)')
+console.log('  node cli.mjs sweep              # or do all the looking above in one go (moves nothing)')
 console.log('')
 console.log('')
 console.log('To demo again — the list empties out because anything put back is not suggested again:')

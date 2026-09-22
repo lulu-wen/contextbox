@@ -660,7 +660,7 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
     assert.equal(opinionOf(modelViewForItem(s.db, id)).seeded, true)
   })
 
-  test('tools/demo-setup.mjs --seed-model 真的塞得進去（demo 那三個檔）', t => {
+  test('tools/demo-setup.mjs --seed-model 真的塞得進去（demo 那五個檔）', t => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cb-demoseed-')))
     t.after(() => rmSync(dir, { recursive: true, force: true }))
     const home = join(dir, 'fake-home')
@@ -668,7 +668,7 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
     const r = spawnSync(process.execPath, [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', join(dir, 'box'), '--seed-model'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, HOME: home, USERPROFILE: home } })
     assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.match(r.stdout, /Seeded 3 model answers/)
+    assert.match(r.stdout, /Seeded 5 model answers/)
     const db = openDb(join(dir, 'box', 'data.db'))
     t.after(() => db.close())
     const rows = db.prepare('SELECT course, topic, seeded FROM model_views ORDER BY course, topic').all()
@@ -676,7 +676,13 @@ describe('第 10 條 ・ --seed-model 塞的答案標「示範答案」，不會
       ['Data Structures', 'Midterm scope', 1],
       ['Operating Systems', 'Deadlock', 1],
       ['Operating Systems', 'Process Scheduling', 1],
+      // P7：不屬於任何一堂課的那兩個。**course=Unknown 不是失敗**，
+      // 而且它們一定要有 whatItIs —— group 就是靠那個分資料夾的。
+      ['Unknown', 'Unknown', 1],
+      ['Unknown', 'Unknown', 1],
     ])
+    const said = db.prepare("SELECT what_it_is FROM model_views WHERE course='Unknown' ORDER BY what_it_is").all()
+    assert.deepEqual(said.map(x => x.what_it_is), ['resume', 'scholarship application form'])
   })
 })
 

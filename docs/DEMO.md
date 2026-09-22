@@ -33,11 +33,12 @@ The key for `--live-model` **never passes through that script**; it is read from
 you get a reminder if it is not set. Which model to point at — local, self-hosted or cloud — is covered in
 [model-setup](model-setup.html).
 
-It builds a fake home directory in `/tmp/contextbox-demo` with 14 realistic files in Downloads: an old
+It builds a fake home directory in `/tmp/contextbox-demo` with 16 realistic files in Downloads: an old
 installer, two byte-identical archives, a half-finished download, an empty file, a temporary file, three burst
 screenshots, one screenshot with the same layout but different content, three course handouts (some named
-properly, one called `Untitled document (3).txt`), and **a password export from a browser** (`2026-09 export.csv`, all
-of it fake — it is there so you can watch it **not** being sent).
+properly, one called `Untitled document (3).txt`), **two files that belong to no course at all** (a CV and a
+scholarship application form — most of a real Downloads folder looks like this), and **a password export from a
+browser** (`2026-09 export.csv`, all of it fake — it is there so you can watch it **not** being sent).
 
 Timestamps are backdated, so there is something to clean the moment it exists.
 
@@ -56,6 +57,55 @@ They affect that one window only. Close it and they are gone.
 
 ---
 
+## 1.5 Or: one command that does all the looking
+
+Everything from here to section 4.10 is *looking* — scan the folder, read what it has not read, work out
+categories. Three commands, in an order that matters. One command does all three:
+
+```bash
+node cli.mjs sweep
+```
+
+```
+Looking through Downloads. **Nothing is moved or deleted by this command.**
+Reading with Qwen/Qwen3-VL-8B-Instruct; this can take a while the first time.
+
+1/3  Looking at what is there
+     16 files looked at.
+
+2/3  Reading the files it has not read yet
+     9 asked, 0 already known, 0 failed
+
+3/3  Working out categories for the files that are not coursework
+     1/1  4 kinds of file → 3 categories so far
+     3 categories from 4 kinds of file across 7 files; 1 kind of file did not land anywhere.
+
+── What you can do now ──────────────────────────
+  9 files can be cleaned up       node cli.mjs cleanup list
+  7 files could be renamed        node cli.mjs rename
+  2 files belong in a course      node cli.mjs file
+  3 files have a category         node cli.mjs group --show
+
+Nothing has moved. Each of those lists it; add --apply (or press the button in the panel) to act on it.
+Or open the panel and do the lot by clicking: node cli.mjs pet
+```
+
+**What to look at:**
+
+- **It moves nothing.** Cleaning, renaming and filing are not in it. Looking and acting are two commands,
+  always — that is the same line this project draws everywhere else.
+- **It finishes by telling you what you could do**, and which command does it. A tool that spends four
+  minutes and then says nothing is indistinguishable from a broken one.
+- **A step that fails does not take the rest with it.** A folder it cannot read still leaves everything
+  already in the database readable; a model that times out still leaves the scan done.
+- **Ctrl+C stops it where it is** and whatever finished still counts.
+- `--no-model` does step 1 only. With no model configured that is what happens anyway, and it says so.
+
+The rest of this page walks the same ground one command at a time, which is what you want when you are
+showing someone *why* each step is separate.
+
+---
+
 ## 2. Scan, and see what it found
 
 ```bash
@@ -64,13 +114,13 @@ node cli.mjs cleanup list
 ```
 
 ```
-Looked at 14 files; 6 can be cleaned up.
+Looked at 16 files; 9 can be cleaned up.
 ```
 
 The list looks like this (extract):
 
 ```
-6 things can be cleaned up, roughly 12.1 MB
+9 things can be cleaned up, roughly 12.1 MB
 
   [1427] ✔ data-structures-lab3 (1).zip
             27 KB  duplicate  Downloads
@@ -82,10 +132,11 @@ The list looks like this (extract):
 
 - Every line says **why**, and says it with evidence (the same sha256, how many days untouched) rather than
   "the AI thinks so".
-- `✔` is cleaned by default, `☐` is not. Anything the rules are less than half sure about is not ticked, but
-  you can add it yourself.
-- What is *not* on the list: the three screenshots, the course handouts, and the half-downloaded file's
-  companion. Rules do not touch what rules cannot read.
+- `✔` is cleaned by default, `☐` is not. Six are ticked; three are listed and **not** ticked — two of the
+  burst screenshots and `scholarship-application-form.txt`. The rules are less than half sure about those,
+  so they are shown with their reason and left alone unless you say otherwise.
+- What is *not* on the list at all: the course handouts and the CV. Rules do not touch what rules cannot
+  read, and a file touched inside the last two weeks is left alone whatever its extension.
 
 ---
 
@@ -158,7 +209,7 @@ Quarantine: /tmp/contextbox-demo/quarantine
 The startup scan runs in the background and says so when it finishes; after that it rescans everything every 30 min.
 Reading: off (no model configured, so reading is off). Everything else works as usual.
 Ctrl+C to stop.
-Startup scan: looked at 13 files; 0 can be cleaned up.
+Startup scan: looked at 16 files; 3 can be cleaned up.
 ```
 
 **What to look at:**
@@ -386,6 +437,77 @@ The tree afterwards:
 - A filing killed halfway through is recoverable: every command tidies up first, looking at where the file
   actually is, and does not move it twice.
 - The panel does the same thing: the "Filing" section, tick and press File, with Undo filing next to it.
+
+---
+
+## 4.10b Everything that is not coursework: `group`
+
+`file` puts a file with the rest of its course. But look at the sandbox: a CV and a scholarship form belong
+to **no course at all**, and on a real Downloads folder that is most of it — of 202 files one machine had
+read, 186 had no course. Those used to get no suggestion of any kind.
+
+`group` gives them somewhere to go. It does **not** ask about each file. It asks once per batch of forty
+about the *kinds* of document you have:
+
+```bash
+node cli.mjs group             # ask, work out the categories, print them. Moves nothing.
+node cli.mjs group --show      # the categories from last time. No model call.
+```
+
+```
+3 categories (**these are the model's opinions, not facts**):
+
+  Exam Prep Materials/  (1 kind of file)
+         Guides and resources to help study for tests.
+         exam review guide
+  Resumes/  (1 kind of file)
+         Documents used to apply for jobs or internships.
+         resume
+  Scholarship Applications/  (1 kind of file)
+         Forms and materials submitted to apply for financial aid for education.
+         scholarship application form
+
+To file the files that match: node cli.mjs group --apply
+```
+
+And now `node cli.mjs file` has **both kinds of destination on one list**:
+
+```
+  [3ddc] scholarship-application-form.txt
+         → Scholarship Applications/
+         The model thinks this is: scholarship application form — undergraduate research scholarship (confidence high; not course material)
+  [86b4] Untitled document (3).txt
+         → Courses/Operating Systems/Notes/
+         The model thinks: Operating Systems / Deadlock (confidence high)
+  [9aff] CV.txt
+         → Resumes/
+         The model thinks this is: resume — professional background and skills (confidence high; not course material)
+```
+
+```bash
+node cli.mjs group --apply                      # file everything that matched a category
+node cli.mjs group --apply "Resumes"            # or just one category
+node cli.mjs file --undo                        # the same undo as filing: everything goes back
+```
+
+**What to look at:**
+
+- **The categories came out of your own files.** There is no built-in list of folders. The model is shown
+  the phrases *it itself* used to describe the documents — "resume", "scholarship application form",
+  "exam review guide" — and asked which belong together.
+- **That is all it is shown.** Not the filenames, not the text, not the evidence it quoted earlier. Only the
+  phrases and how many files use each. A test compares the request body byte for byte.
+- **A course beats a category.** A file it *can* place in a course never appears here. One file, one
+  destination — you will never see two contradictory suggestions for the same file.
+- **The cost is the number of phrases, not the number of files.** A thousand files collapse into a couple of
+  hundred phrases. On a real machine: 411 files → 188 phrases → 12 folders, five calls.
+- **"Miscellaneous" is not a folder.** Names that could hold anything — `Misc`, `Other`, `Documents`,
+  `Technical` — are thrown out and their files stay put. The model proposed exactly that on the first real
+  run, which is why the rule is in the code and not only in the prompt.
+- **Not everything gets a home, and it says so.** The line about kinds that landed nowhere is the point, not
+  an apology: a folder that does not fit is worse than no folder.
+- `group` itself moves nothing; `group --apply` goes through the same move, the same journal and the same
+  seven-day undo as `file`.
 
 ---
 

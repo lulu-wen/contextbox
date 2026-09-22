@@ -311,7 +311,7 @@ export function payloadFor(db: DatabaseSync, item: PendingItem, key: string): Pa
     return {
       ok: true,
       input: { source: 'text', text, name: askName },
-      payload: Buffer.from(askName + ' ' + text, 'utf8'),
+      payload: Buffer.from(askName + '\u0000' + text, 'utf8'),
       charsSent: [...text].length,
       bytesSent: Buffer.byteLength(text, 'utf8'),
     }

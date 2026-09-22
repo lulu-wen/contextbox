@@ -294,7 +294,7 @@ describe('demo 沙盒（預期行為 1）', () => {
       [join(REPO, 'tools', 'demo-setup.mjs'), '--dir', dir, '--seed-model'],
       { encoding: 'utf8', env: { ...process.env, HOME: FAKE_HOME, USERPROFILE: FAKE_HOME }, timeout: 180_000 })
     assert.equal(setup.status, 0, setup.stdout + setup.stderr)
-    assert.match(setup.stdout, /Seeded 3 model answers/, '前提：示範答案塞進去了')
+    assert.match(setup.stdout, /Seeded 5 model answers/, '前提：示範答案塞進去了')
 
     const home = join(dir, 'home')
     const env = {
