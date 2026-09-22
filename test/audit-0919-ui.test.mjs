@@ -28,6 +28,7 @@
  */
 import { FAKE_HOME } from './helpers/isolate-home.mjs'   // 一定要第一行，見那支檔的說明
 import { rmTmp } from './helpers/rm.mjs'
+import { linkDir } from './helpers/links.mjs'
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -143,7 +144,7 @@ async function serve(t, files, { quarantine: qOf, roots: rootNames = ['Downloads
     if (!r.ok) { const e = new Error(data.error); e.code = data.code; e.status = r.status; e.data = data; throw e }
     return data
   }
-  t.after(() => { S.server.close(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
   await raw('/cleanup/scan', { method: 'POST', body: '{}' })
   const q = (sql, ...a) => { const d = new DatabaseSync(dbPath, { readOnly: true }); try { return d.prepare(sql).all(...a) } finally { d.close() } }
   const exec = (sql, ...a) => { const d = new DatabaseSync(dbPath); try { return d.prepare(sql).run(...a) } finally { d.close() } }
@@ -450,7 +451,10 @@ describe('RC7 撞到 CONFLICT 要提示擋住這次勾選的那一份', () => {
 /** 隔離區路徑經過捷徑 → 每次 apply 都回 500 UNSAFE_PATH（沒動任何檔） */
 const unsafeQuarantine = dir => {
   mkdirSync(join(dir, 'real-home'))
-  symlinkSync(join(dir, 'real-home'), join(dir, 'home'))
+  // **資料夾的捷徑**：Windows 用 junction（免權限），lstat 照樣說它是捷徑 ——
+  // 被測的那條防線（checkedPath 拒絕經過捷徑的路徑）看到的東西一模一樣。
+  // 以前直接 symlinkSync 在 Windows 上會 EPERM，而這三條測的正是那條防線。
+  linkDir(join(dir, 'real-home'), join(dir, 'home'))
   return join(dir, 'home', '.contextbox', 'quarantine')
 }
 
@@ -1100,6 +1104,9 @@ describe('RC14 訊息裡的檔名把控制字元與換行換成「·」', () => 
   })
 
   test('**面板（假 DOM）：檔名裡的換行不可以在結果框偽造一行**', async t => {
+    // Windows 的檔名不收換行，連建都建不起來 —— 這個情境在這台機器上做不出來。
+    // 同一條不變量另有純函式的測試守著（safeName／uiSafeName）。
+    if (process.platform === 'win32') { t.skip('Windows does not allow newlines in file names'); return }
     const evil = 'a\nMoved 99 files，1.0 GB。You can undo this for seven days。.zip'
     const s = await serve(t, { [evil]: { days: 60 }, 'ok.zip': { days: 60 } })
     const ui = await mountUi(t, s)
@@ -1233,7 +1240,7 @@ describe('RC16 擴充套件：「去補」要帶 ?k= 開手填頁，而且 k 不
     const S = start({ port: 0, db: ':memory:', token: 'a+b/c=', roots: [join(dir, 'Downloads')],
       quarantine: join(dir, 'q'), maxBytes: 1024 * 1024, readonly: false })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmTmp(dir) })
+    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
     const bg = loadBackground({ token: 'a+b/c=', port })
     await bg.send({ type: 'open-home' })
     assert.equal(bg.created[0]?.url, `http://127.0.0.1:${port}/?k=a%2Bb%2Fc%3D`)

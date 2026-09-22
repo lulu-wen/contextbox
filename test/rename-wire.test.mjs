@@ -29,7 +29,7 @@ async function serve(t, s, extra = {}) {
     maxBytes: 20 * 1024 * 1024, readonly: false, ...extra,
   })
   const port = await S.ready
-  t.after(() => S.server.close())
+  t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
   const raw = async (method, path, { body, token = TOKEN } = {}) => {
     const headers = {
       ...(token ? { 'x-contextbox-token': token } : {}),

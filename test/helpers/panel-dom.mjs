@@ -181,9 +181,18 @@ export async function mountPanel(t, { api = null, fetch: fetchImpl = null, token
     }
     await idle()
   }
+  /**
+   * 停掉這一頁（面板會停止輪詢）。**暴露成全域**是為了讓起伺服器那一邊先呼叫它 ——
+   * `t.after` 是照註冊順序跑的，而 serve() 比 mountPanel 早註冊，所以伺服器會先關。
+   * 頁面那時候還在每五秒打一次 /health，於是在關閉的空檔又連回來，伺服器的 handle
+   * 永遠放不掉 —— 整支測試檔跑到後面就卡住（audit-0919-ui、cleanup-panel）。
+   */
+  const stopPage = () => { for (const f of winListeners.pagehide ?? []) f({ type: 'pagehide' }) }
+  globalThis.__cbStopPage = stopPage
   t.after(async () => {
     await new Promise(r => setTimeout(r, 30))
-    for (const f of winListeners.pagehide ?? []) f({ type: 'pagehide' })
+    stopPage()
+    if (globalThis.__cbStopPage === stopPage) delete globalThis.__cbStopPage
   })
   await idle()
   return { $, click, key, idle, poll: async () => { await pollHealth(); await idle() }, els, calls, doc }

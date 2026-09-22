@@ -133,7 +133,7 @@ async function serve(t, s, extra = {}) {
   const S = server.start({ port: 0, db: s.dbPath, token: TOKEN, roots: s.opts.roots, quarantine: s.opts.quarantine,
     maxBytes: s.opts.maxBytes, readonly: false, ...extra })
   const port = await S.ready
-  t.after(() => S.server.close())
+  t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
   const raw = async (method, path, { body, token = TOKEN } = {}) => {
     const headers = { ...(token ? { 'x-contextbox-token': token } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }
     const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body })
@@ -413,7 +413,7 @@ describe('R2-4 面板（HTTP）的復原用 清理範圍 ∪ 監看資料夾；�
       const opts = { port: 0, db: dbPath, token: TOKEN, quarantine: q }
       const S = server.start(opts)
       const port = await S.ready
-      t.after(() => S.server.close())
+      t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
       const r = await fetch(`http://127.0.0.1:${port}/cleanup/plans/${plan.id}/undo`, {
         method: 'POST', headers: { 'x-contextbox-token': TOKEN, 'content-type': 'application/json' }, body: '{}' })
       const body = await r.json()
@@ -722,7 +722,7 @@ describe('R2-8 截圖資料夾（cleanup.screenshotsDir）底下只收截圖類�
     const opts = { port: 0, db: join(dir, 'data.db'), token: TOKEN, quarantine: join(dir, 'q') }
     const S = server.start(opts)
     const port = await S.ready
-    t.after(() => S.server.close())
+    t.after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
     const get = async (path, method = 'GET') => {
       const r = await fetch(`http://127.0.0.1:${port}${path}`, {
         method, headers: { 'x-contextbox-token': TOKEN, 'content-type': 'application/json' }, body: method === 'POST' ? '{}' : undefined })

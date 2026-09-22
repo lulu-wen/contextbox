@@ -61,7 +61,7 @@ async function serve(t, files, { readonly = false } = {}) {
     }
     return data
   }
-  t.after(() => { S.server.close(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
   await api('/cleanup/scan', { method: 'POST', body: '{}' })
   calls.length = 0
   const db = () => new DatabaseSync(dbPath, { readOnly: true })

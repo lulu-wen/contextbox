@@ -829,7 +829,7 @@ async function serve(t, { files = {}, token = 'core2-token', extraRoot = null } 
   const S = server.start({ port: 0, db: join(dir, 'data.db'), token: token === null ? undefined : token, roots, quarantine: join(dir, 'q'),
     maxBytes: 1024 * 1024, readonly: false })
   const port = await S.ready
-  t.after(() => { S.server.close(); rmTmp(dir) })
+  t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
   const raw = (method, path, { body, token: tk = S.token, headers = {} } = {}) => new Promise((resolve, reject) => {
     const h = { ...(tk !== null ? { 'x-contextbox-token': tk } : {}), ...headers }
     if (body !== undefined) h['content-type'] ??= 'application/json'

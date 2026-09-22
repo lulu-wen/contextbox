@@ -745,7 +745,7 @@ describe('擴充套件送一整張表過來，server 回的 plan 形狀', () => 
     await 手填('work[0].company', '甲公司')                   // 一筆，直接填
     await 手填('work[0].salary', '月薪 6 萬')                 // 敏感
   })
-  after(() => S.server.close())
+  after(() => globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref())
 
   test('掃到的欄位一次問完，五種 action 都回得出來', async () => {
     const keys = [

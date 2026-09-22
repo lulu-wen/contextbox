@@ -360,7 +360,7 @@ describe('P6-6 沒帶 token 是 401；回應裡沒有絕對路徑', () => {
       quarantine: join(dir, 'quarantine'), maxBytes: 16 * 1024 * 1024, readonly: false,
     })
     const port = await S.ready
-    t.after(() => { S.server.close(); rmTmp(dir) })
+    t.after(() => { globalThis.__cbStopPage?.(); S.server.closeAllConnections(); S.server.close(); S.server.unref(); rmTmp(dir) })
 
     const hit = (path, token) => new Promise((resolve, reject) => {
       const headers = token ? { 'x-contextbox-token': token } : {}

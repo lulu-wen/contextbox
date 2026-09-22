@@ -2130,7 +2130,14 @@ async function pollHealth() {
   if (health) await askAboutBursts(petSnapshot)
   // 背景那一輪問完模型之後，面板要自己跟上（不用關掉重開）
   if (health) await refreshSuggestions()
-  if (!stopped) healthTimer = setTimeout(pollHealth, 5000)
+  if (!stopped) {
+    healthTimer = setTimeout(pollHealth, 5000)
+    // **一個「五秒後再問一次」不該是行程結束不了的原因。**
+    // 瀏覽器裡沒有 unref（沒有這個方法，也沒有事件迴圈這回事），所以這一行是 no-op；
+    // 面板的程式在 Node 裡跑測試的時候，它讓整支測試檔跑完就真的結束
+    // （沒有它的話，audit-0919-ui 與 cleanup-panel 全部的測試都過了，行程卻永遠不回來）。
+    healthTimer?.unref?.()
+  }
 }
 
 /**
